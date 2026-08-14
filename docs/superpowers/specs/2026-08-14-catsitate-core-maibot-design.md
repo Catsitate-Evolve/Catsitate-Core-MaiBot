@@ -24,7 +24,7 @@ Catsitate 是部署在 MaiBot 上的 QQ 聊天机器人人设(伪三无猫耳少
 | 缓存 | 注入合并为至多一条尾部消息+版本化复用;旁路 LLM 有预算与计数;测量用主程序日志/统计 |
 | 存储 | 标准库 `sqlite3`(插件 data 目录单库);轻量限频状态用 JSON 快照 |
 | 好感度 | LLM 判定;v3 窗口结算制(不配对、不语义分类,私聊/群聊差异化材料,纯计数触发);注入=等级(5级)+关系注记(A+C) |
-| reply 拦截 | 规则必选 + LLM 校验可选开关;在 `maisaka.planner.after_response` 移除调用 |
+| reply 拦截 | 上下文补传(查了上下文工具、reference 与 reasoning 双空才补)+ LLM 哨兵可选开关;锚点 `maisaka.planner.after_response` |
 | 戳一戳 | 入站解析增强(补拟人渲染)+ 主动戳工具(好感度门槛);**被戳反应逻辑剔除** |
 | 贴表情 | 仅 `@Tool`,无概率旁路 |
 | 备忘录 | 双通道(工具+命令)各自开关;注入含当前流+当前说话人两个维度 |
@@ -150,16 +150,17 @@ LLM 路径:统一经 ctx.llm.generate + 每能力可配模型(含 catsitate_cust
 - **主动戳工具**:`@Tool("poke_user", visibility="visible")`,参数:目标用户/流;前置校验:好感度等级 ≥ 门槛(默认"熟悉")+ 每用户冷却;调用 `ctx.api.call("adapter.napcat.message.send_poke", ...)`;
 - **被戳反应逻辑:不实现**(已剔除)。
 
-### 4.7 reply 误调用拦截(`reply_guard.py`)
+### 4.7 reply 上下文补传与拦截(`reply_guard.py`)
 
 锚点:`maisaka.planner.after_response`(在 reply 工具真正执行前触发,可改写 `output_items`,已核实)。
 
-- **规则层(必选,零成本)**:检查每个 reply 类工具调用:
-  - 目标消息是通知消息/纯表情/纯图片 → 移除该调用,并向 `items` 尾部追加内部提醒(「该消息不适合回复,已拦截」);
-  - 参数不足(缺 `reply_reference` 且内容为空等)→ 移除并追加提醒让 planner 补参数;
-  - 保留主程序已有的重复回复兜底,不做重复轮子;
-- **LLM 层(可选,配置开关默认关)**:存疑场景(消息文本过短等)调用小模型判定"当前是否适合回复";打开时才产生额外 token;
-- 拦截动作 = 从 `output_items` 删除对应 `FunctionCallOutputItem`(证据:`reasoning_engine` 在 after_response 之后才执行工具调用)。
+- **上下文补传(规则层,必选,零成本)**:
+  - 事实依据:replyer 自带完整聊天历史+被回复消息块;`reply_reason`(planner 的 reasoning,主程序自动提取,`reply.py:303,361`)为空时 replyer 参考块完全缺位;planner 查到的记忆/人物信息(`query_memory`/`query_person_profile`/`fetch_history`/`view_forward_message`/`memo_read` 等上下文工具的结果)只有写入 `reply_reference` 才会进入 replyer,写不写全凭模型自觉;
+  - 触发条件(确定性,零误伤):本轮 planner 调用过上述上下文工具(集合可配),**且**该 reply 调用的 `reply_reference` 为空,**且**其关联 reasoning(即主程序将提取为 `reply_reason` 的内容)为空;
+  - 动作:**自动补传**——把对应工具结果的文本摘要(截断)填入该 reply 调用的 `reply_reference` 参数;不改动其它工具调用;
+  - 不重复主程序的重复回复提醒兜底。
+- **LLM 哨兵层(可选,配置开关默认关)**:`maisaka.replyer.after_response` 判定"本次回复是否与聊天上下文不符/是否不该回复",不符则撤回并闭环反馈 planner(corpus-callosum 式);
+- 改写动作 = 修改/删除 `output_items` 中对应项(证据:`reasoning_engine` 在 after_response 之后才执行工具调用)。
 
 ### 4.8 图片重看(`image_relook.py`)
 
@@ -182,7 +183,7 @@ LLM 路径:统一经 ctx.llm.generate + 每能力可配模型(含 catsitate_cust
 | 环境/好感度/备忘注入 | 进主链路(尾部) | 每轮 planner 请求 | 合并单条 ≤600 字符;版本化 |
 | 好感度结算判定 | 旁路 `ctx.llm.generate` | 每活跃用户 ≤3 次/日 | 素材截断(用户消息最新优先,默认 ≤4000 字符);小 prompt |
 | 贴表情选表情 | 旁路 | 每次贴表情 | 极小 prompt(目标消息+白名单) |
-| reply_guard LLM 层 | 旁路 | 默认关 | 配置开关 |
+| reply_guard 哨兵层 | 旁路 | 默认关 | 配置开关 |
 | 图片重看 | 旁路 VLM | planner 主动调用 | 需求本身;模型可配 |
 
 **缓存命中优化**(供应商前缀缓存语义下):
@@ -210,7 +211,7 @@ LLM 路径:统一经 ctx.llm.generate + 每能力可配模型(含 catsitate_cust
 - `memo`:enabled、tool_enabled、command_enabled、default_ttl_hours(默认 24)、inject_max(默认 3)
 - `msg_react`:enabled、emoji_whitelist、per_stream_cooldown_seconds、llm
 - `poke`:enabled、enhance_notice_text、inject_to_context、poke_tool_enabled、min_level_for_poke(默认"熟悉")、cooldown_seconds
-- `reply_guard`:enabled、rule_layer_enabled、llm_layer_enabled(默认 false)、llm
+- `reply_guard`:enabled、context_backfill_enabled、context_tools(可配工具名列表)、sentinel_enabled(默认 false)、sentinel_llm
 - `image_relook`:enabled、vlm_model、llm
 
 所有 LLM 节结构统一:`{model: str(留空=默认)}`,支持选择主程序已配置模型或 `catsitate_custom` 端点。

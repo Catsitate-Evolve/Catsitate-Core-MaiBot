@@ -21,7 +21,7 @@ Catsitate 是部署在 MaiBot 上的 QQ 聊天机器人人设(伪三无猫耳少
 |---|---|
 | 形态 | 单插件多模块(一个 git 仓库,内部按模块拆文件,配置开关独立启停) |
 | 分期 | 一期=2.4 全组+2.3 基础;二期=2.1 日程+2.3 主动私聊联动;三期=2.2 QQ空间 |
-| 缓存 | 注入分层分条(规则表→环境→备忘→好感度,按稳定性降序)+版本化+长度源头控制;前插 system 后、历史前;旁路 LLM 有预算与计数;测量用主程序日志/统计 |
+| 缓存 | 注入分层分条(规则表→环境→备忘→好感度,按稳定性降序)+版本化+长度源头控制;前插 system 后、历史前;**旁路 LLM 请求同样遵守稳定前缀纪律(§4.10)**;旁路 LLM 有预算与计数;测量用主程序日志/统计 |
 | 存储 | 标准库 `sqlite3`(插件 data 目录单库);轻量限频状态用 JSON 快照 |
 | 好感度 | LLM 判定;v3 窗口结算制(不配对、不语义分类,私聊/群聊差异化材料,纯计数触发);注入=等级(5级)+关系注记(A+C) |
 | reply 拦截 | 上下文补传(查了上下文工具、reference 与 reasoning 双空才补)+ LLM 哨兵可选开关;锚点 `maisaka.planner.after_response` |
@@ -59,7 +59,7 @@ plugins/catsitate_core_maibot/          # 独立 git 仓库
     poke.py                             # 2.4.5 戳一戳(解析增强+主动戳工具)
     reply_guard.py                      # 2.4.3 reply 误调用拦截
     image_relook.py                     # 2.4.6 图片重看
-    llm_provider.py                     # @LLMProvider 声明(catsitate_custom)
+    llm_provider.py                     # @LLMProvider 声明(catsitate_custom)+ 旁路 LLM 请求组装辅助(稳定段前置)
     services/
       __init__.py
       scheduler.py                      # 后台 asyncio 任务引擎(60s tick,各模块注册任务)
@@ -82,7 +82,7 @@ chat 主链路 ──maisaka.planner.before_request──> inject.py(尾部注�
     - favorability.py 日终结算/高活跃结算
     - memo.py 过期清理
 工具注册:msg_react / poke_user / memo_write / memo_read / inspect_image
-LLM 路径:统一经 ctx.llm.generate + 每能力可配模型(含 catsitate_custom provider)
+LLM 路径:统一经 ctx.llm.generate + 每能力可配模型(含 catsitate_custom provider);旁路请求统一经 llm_provider.py 组装辅助(稳定段前置)
 ```
 
 模块间通过内部接口调用(如天气/好感度数据都经 `storage.py` 读取),互不 import 实现细节;每个模块可独立启停(配置开关),关闭时其注入与后台任务均不生效。
@@ -133,8 +133,8 @@ LLM 路径:统一经 ctx.llm.generate + 每能力可配模型(含 catsitate_cust
 - **材料构造(私聊/群聊差异化)**:
   - 私聊:窗口内对话切片(该流内用户消息+bot 消息,天然交替,归属明确);
   - 群聊:该用户全部消息 + bot 在该群全部发言 + 每条用户消息紧邻上下文(前后各 1–2 条),供 LLM 自行判断 bot 是否在回应 ta;
-  - 素材按用户截断(默认 4000 字符),超出取窗口内最近部分;
-- **LLM 判定**:prompt 输出 JSON `{delta: 整数(-5~+5), note: 一句话关系注记}`;模型可配(默认主程序任务,可选 `catsitate_custom`);失败跳过本轮并记录日志;结果落 sqlite `favorability` 表;
+  - 素材按用户截断(默认 4000 字符),超出取窗口内最近部分;所有消息素材**按时间正序拼接**(稳定增量,截断只发生在素材段尾部);
+- **LLM 判定**:prompt 模板固定,结构 = `[判定指令+输出格式][5 级规则][窗口素材]`(稳定段在前、素材在后,§4.10 旁路规范),输出 JSON `{delta: 整数(-5~+5), note: 一句话关系注记}`;模型可配(默认主程序任务,可选 `catsitate_custom`);失败跳过本轮并记录日志;结果落 sqlite `favorability` 表;
 - **注入(Q8 A+C,同一模块的三个组件拆两块)**:好感度模块共有三个注入组件——①5 级行为准则表(陌生/熟悉/亲近/挚友/特别)、②等级+分数、③关系注记。按更新频率拆成两块:规则表仅随配置变化 → 独立"等级规则块"(最稳,几乎永久命中);等级+分数+注记同为 per-user、说话人驱动 → 合并为"好感度块"(注记与等级同频,拆开无缓存收益)。好感度块内容:`[好感度] XXX:等级「熟悉」(累计 42),注记:最近主动关心过你。`;私聊=对端用户,群聊=当前消息发送者;等级/注记变化(结算)才更新该块;
 - **存储 schema**:`favorability(user_id TEXT, stream_id TEXT, level INTEGER, score INTEGER, note TEXT, window_start TEXT, judged_at TEXT, PRIMARY KEY(user_id, stream_id))`;判定日志表 `favorability_log(judge_id, user_id, stream_id, delta, note, judged_at)` 幂等防重;
 - 二期扩展:达标用户主动私聊(依赖 2.1 调度)。
@@ -150,7 +150,7 @@ LLM 路径:统一经 ctx.llm.generate + 每能力可配模型(含 catsitate_cust
 ### 4.5 贴表情(`msg_react.py`)
 
 - `@Tool("msg_react", visibility="visible")`,参数:目标消息 ID、贴表情意图(可选文字);
-- 执行:表情白名单配置(emoji_id 表)→ 小 prompt LLM 从白名单选最合适的表情(模型可配)→ `ctx.api.call("adapter.napcat.message.set_msg_emoji_like", ...)`;
+- 执行:表情白名单配置(emoji_id 表)→ 小 prompt LLM 从白名单选最合适的表情(模型可配,prompt 结构 = `[任务指令+输出格式][白名单][目标消息+意图]`,§4.10 旁路规范)→ `ctx.api.call("adapter.napcat.message.set_msg_emoji_like", ...)`;
 - 防刷:每流冷却(JSON 快照限频,仅工程护栏);无任何概率旁路。
 
 ### 4.6 戳一戳(`poke.py`)
@@ -168,38 +168,56 @@ LLM 路径:统一经 ctx.llm.generate + 每能力可配模型(含 catsitate_cust
   - 触发条件(确定性,零误伤):本轮 planner 调用过上述上下文工具(集合可配),**且**该 reply 调用的 `reply_reference` 为空,**且**其关联 reasoning(即主程序将提取为 `reply_reason` 的内容)为空;
   - 动作:**自动补传**——把对应工具结果的文本摘要(截断)填入该 reply 调用的 `reply_reference` 参数;不改动其它工具调用;
   - 不重复主程序的重复回复提醒兜底。
-- **LLM 哨兵层(可选,配置开关默认关)**:`maisaka.replyer.after_response` 判定"本次回复是否与聊天上下文不符/是否不该回复",不符则撤回并闭环反馈 planner(corpus-callosum 式);
+- **LLM 哨兵层(可选,配置开关默认关)**:`maisaka.replyer.after_response` 判定"本次回复是否与聊天上下文不符/是否不该回复",不符则撤回并闭环反馈 planner(corpus-callosum 式);prompt 结构 = `[哨兵指令][人设/等级背景(可选,稳定)][待判定回复+聊天上下文(变量)]`(§4.10 旁路规范);
 - 改写动作 = 修改/删除 `output_items` 中对应项(证据:`reasoning_engine` 在 after_response 之后才执行工具调用)。
 
 ### 4.8 图片重看(`image_relook.py`)
 
 - `@Tool("inspect_image", visibility="visible")`,参数:目标消息 ID(或 image_index)+ 具体问题;
-- 执行:`ctx.message.get_recent(include_binary_data=True)` 解析 image 段;仅 hash 时经 `ctx.db.get(model_name="Images", ...)` 补读原图;VLM(视觉模型配置项)回答具体问题,返回文本结果;
+- 执行:`ctx.message.get_recent(include_binary_data=True)` 解析 image 段;仅 hash 时经 `ctx.db.get(model_name="Images", ...)` 补读原图;VLM(视觉模型配置项)回答具体问题,返回文本结果;prompt 结构 = `[任务指令(稳定)][图片+问题(变量)]`——图片 token 本身无前缀缓存意义,仅保证文本前缀稳定(§4.10 旁路规范);
 - 不实现根目录启发式探测(参考插件该做法绕过 SDK 边界,我们不用);若 db 无法补图,报错暴露并记录日志。
 
 ### 4.9 LLM Provider(`llm_provider.py`)
 
 - `@LLMProvider(client_type="catsitate_custom", name="Catsitate 自定义端点", ...)`:仅实现 `response` 操作(embedding/audio 返回"不支持");处理器接收 `api_provider` 快照(用户在 model_config 配置的 base_url/key),以 OpenAI 兼容协议自行调用并返回统一格式;
 - manifest `llm_providers` 与装饰器声明一致;
-- 每个 LLM 能力配置节:`{enabled, model}`——`model` 填主程序 task 名/模型标识(留空=插件默认),或指向用户自定义的 `catsitate_custom` 端点。
+- 每个 LLM 能力配置节:`{enabled, model}`——`model` 填主程序 task 名/模型标识(留空=插件默认),或指向用户自定义的 `catsitate_custom` 端点;
+- 同文件提供**旁路请求组装辅助**:统一 `build_side_prompt(template_id, stable_ctx, variable_tail)` 渲染(模板固定+版本化、稳定段在前),§4.10 旁路规范的唯一实现落点。
 
 ### 4.10 Token 开销与缓存预算
 
 **开销全景(插件引入的所有 token 来源)**:
 
-| 来源 | 路径 | 频次 | 预算手段 |
+| 来源 | 路径 | 频次 | 预算与缓存手段 |
 |---|---|---|---|
 | 环境/好感度/备忘注入 | 进主链路(system 后前插) | 每轮 planner 请求 | 分层 4 条,长度源头控制(无注入截断);每块版本化 |
-| 好感度结算判定 | 旁路 `ctx.llm.generate` | 每活跃用户 ≤3 次/日 | 素材截断(用户消息最新优先,默认 ≤4000 字符);小 prompt |
-| 贴表情选表情 | 旁路 | 每次贴表情 | 极小 prompt(目标消息+白名单) |
-| reply_guard 哨兵层 | 旁路 | 默认关 | 配置开关 |
-| 图片重看 | 旁路 VLM | planner 主动调用 | 需求本身;模型可配 |
+| 好感度结算判定 | 旁路 `ctx.llm.generate` | 每活跃用户 ≤3 次/日 | 素材截断(用户消息最新优先,默认 ≤4000 字符);固定模板稳定段在前(下方旁路规范) |
+| 贴表情选表情 | 旁路 | 每次贴表情 | 极小 prompt(白名单稳定段在前);固定模板 |
+| reply_guard 哨兵层 | 旁路 | 默认关 | 配置开关;开启时同样遵守旁路规范 |
+| 图片重看 | 旁路 VLM | planner 主动调用 | 需求本身;模型可配;文本前缀稳定 |
 
-**缓存命中优化**(供应商前缀缓存语义下):
+**主链路缓存命中优化**(供应商前缀缓存语义下):
 - 插件承诺不碰 system prompt 与历史(最长公共前缀不受损);注入块**前插到 system 之后、历史之前**(§4.1 排列分析),使注入块与旧历史整体进入公共前缀;动态段(时间/tail/主程序动态注入)全部在其后,仅损失其后少量 token;
 - 块级波动隔离:分层分条后,任一后部块变化只失效自身及之后的块(见 §4.1);环境块 45 分钟级稳定(天气)、日级稳定(节日);好感度块仅在等级/注记变化时更新(群聊按当前说话人,换人即换块内容,故排最后);备忘块仅在活跃备忘集合变化时更新,条数有上限;
 - 主程序自带的"当前时间"尾部消息本身每轮变化,插件不再叠加更多动态片段;
 - 验证方法:基线(插件关)→ 逐模块开启,观测日志 hit_rate 与 `llm_cache_stats` 诊断,定位波动源后再调更新频率。
+
+**旁路 LLM 请求缓存规范**(不进入主聊天流的所有 LLM 请求,缓存目标同样成立):
+- 适用范围:好感度结算、贴表情选表情、哨兵层、图片重看,以及二期/三期全部 LLM 能力;
+- 与主聊天流的关系:旁路请求携带的是插件自己的任务指令模板,与主聊天流 system 前缀互不共享(也不必共享);**缓存目标是同类任务内部的稳定前缀命中**——跨用户、跨次调用共享同一稳定段;
+- 统一 prompt 结构:`[任务指令+输出格式(固定模板,版本化)][稳定上下文(5 级规则/白名单/人设背景)][变量素材]`——稳定段在前、变量段在后,模板版本变更才改前缀(自然失效,不追求兼容);
+- 各能力排布:
+
+  | 能力 | 稳定段(共享前缀) | 变量段(尾部) |
+  |---|---|---|
+  | 好感度结算 | 判定指令+输出格式、5 级规则 | 窗口素材(时间正序,截断只在尾部) |
+  | 贴表情 | 任务指令+输出格式、表情白名单 | 目标消息+意图 |
+  | 哨兵层 | 哨兵指令、人设/等级背景(可选) | 待判定回复+聊天上下文 |
+  | 图片重看 | 任务指令 | 图片+问题(图片 token 无前缀缓存意义) |
+
+- 素材纪律:消息类素材一律时间正序拼接(稳定增量);截断只发生在素材段尾部,不改变已固化前缀;
+- 频次与收益:旁路请求低频(好感度 ≤3 次/用户/日),缓存收益绝对值小,但该纪律近乎零成本,且为二期(日程 LLM)/三期(QQ空间信息流)的高频旁路请求打底;
+- 实现落点:`llm_provider.py` 提供统一请求组装辅助(模板渲染+稳定段前置),各模块只填素材段,缓存纪律不散落在各模块。
 
 **可观测性**:旁路 LLM 调用次数与 token 用量计入插件自建 `llm_usage` 表(按模块分列),README 说明查看方式;超过每日调用数阈值(可配)记录告警日志。
 
@@ -236,7 +254,8 @@ LLM 路径:统一经 ctx.llm.generate + 每能力可配模型(含 catsitate_cust
 ## 8. 测试方式
 
 **单元测试(插件仓库内 `tests/`,pytest,不依赖 MaiBot 运行)**:
-- 材料构造器(私聊/群聊切片、截断)、窗口触发逻辑(计数/日终/上限);
+- 材料构造器(私聊/群聊切片、截断、时间正序)、窗口触发逻辑(计数/日终/上限);
+- 旁路 prompt 组装辅助(稳定段前置、模板版本化、素材正序);
 - 节日数据解析与回退链、天气码映射;
 - reply 规则校验器(通知/纯表情/参数缺失);
 - sqlite 层与 JSON 快照读写;注入框架的片段缓存与截断优先级。

@@ -21,7 +21,7 @@ Catsitate 是部署在 MaiBot 上的 QQ 聊天机器人人设(伪三无猫耳少
 |---|---|
 | 形态 | 单插件多模块(一个 git 仓库,内部按模块拆文件,配置开关独立启停) |
 | 分期 | 一期=2.4 全组+2.3 基础;二期=2.1 日程+2.3 主动私聊联动;三期=2.2 QQ空间 |
-| 缓存 | 注入分层分条(规则表→环境→备忘→好感度,按稳定性降序)+版本化+预算截断;前插 system 后、历史前;旁路 LLM 有预算与计数;测量用主程序日志/统计 |
+| 缓存 | 注入分层分条(规则表→环境→备忘→好感度,按稳定性降序)+版本化+长度源头控制;前插 system 后、历史前;旁路 LLM 有预算与计数;测量用主程序日志/统计 |
 | 存储 | 标准库 `sqlite3`(插件 data 目录单库);轻量限频状态用 JSON 快照 |
 | 好感度 | LLM 判定;v3 窗口结算制(不配对、不语义分类,私聊/群聊差异化材料,纯计数触发);注入=等级(5级)+关系注记(A+C) |
 | reply 拦截 | 上下文补传(查了上下文工具、reference 与 reasoning 双空才补)+ LLM 哨兵可选开关;锚点 `maisaka.planner.after_response` |
@@ -106,11 +106,11 @@ LLM 路径:统一经 ctx.llm.generate + 每能力可配模型(含 catsitate_cust
   - 主程序自有消息**不重排**(收益仅"注意事项"几百 token,语义风险大);
   - spike 验证:system 后紧跟 user item 的协议合法性与主程序反序列化容忍度;插入失败回退追加尾部(仅日志,不阻塞主链路);
 - **注入分层分条(缓存分层结构)**:各模块注入内容**不合并**,按更新频率从低到高排列为独立块,每块一条 user 消息:
-  - 顺序固定:`[等级规则块] [环境块(节日+天气)] [备忘块] [好感度块]`——规则表仅随配置变化(最稳,几乎永久命中);环境 45 分钟/日级;备忘集合驱动;好感度按当前说话人注入(群聊换说话人即变,故放最后);
+  - 顺序固定:`[等级规则块] [环境块(节日+天气)] [备忘块] [好感度块]`——规则表仅随配置变化(最稳,几乎永久命中);环境 45 分钟/日级;备忘集合驱动;好感度按当前说话人注入(群聊相邻消息换人率通常 50–90%,几乎每轮变化,故放最后;私聊说话人固定则该块稳定数小时);
   - 效果:任一后部块变化不影响前部块的缓存命中(前缀缓存分层失效);空块跳过不产生消息;
   - framing 开销 ~30 token/请求(4 条消息),相对缓存收益可忽略;
 - **注入版本化**:每个块由 (模块, 内容 key, 内容 hash) 标识,内容未变时字节级复用上一轮渲染结果,保证跨请求稳定;
-- **预算与截断**:总预算默认 800 字符(可配);块级上限:规则表 350 / 环境 100 / 备忘 300 / 好感度 200;备忘单条 ≤80 字符、每维度 ≤3 条、合计 ≤5 条;好感度注记 ≤40 字符;超限按语义优先级截断(顺序:环境 > 好感度 > 备忘;规则表不参与截断,排列顺序与截断顺序是正交决策);
+- **长度源头控制(注入管线不设截断)**:各块长度在源头强制——备忘在写入时强制 ≤80 字符(工具描述声明约束+实现校验,超长返回错误让 LLM 重写;命令方式超长直接提示用户),每维度 ≤3 条、合计 ≤5 条;注记在结算落库时强制 ≤40 字符;环境块内容天然短小;规则表为配置文本由用户自控;
 - 失败原则:任一注入源出错仅记录日志并跳过该小节,不阻塞主链路;
 - 命中率验证:对比主程序日志 `Planner缓存:...hit_rate=xx%` 与 `llm_cache_stats` 诊断,一期交付附基线对比报告。
 
@@ -135,15 +135,15 @@ LLM 路径:统一经 ctx.llm.generate + 每能力可配模型(含 catsitate_cust
   - 群聊:该用户全部消息 + bot 在该群全部发言 + 每条用户消息紧邻上下文(前后各 1–2 条),供 LLM 自行判断 bot 是否在回应 ta;
   - 素材按用户截断(默认 4000 字符),超出取窗口内最近部分;
 - **LLM 判定**:prompt 输出 JSON `{delta: 整数(-5~+5), note: 一句话关系注记}`;模型可配(默认主程序任务,可选 `catsitate_custom`);失败跳过本轮并记录日志;结果落 sqlite `favorability` 表;
-- **注入(Q8 A+C)**:`maisaka.planner.before_request` 注入当前说话人片段——私聊=对端用户,群聊=当前消息发送者;内容:`[好感度] XXX:等级「熟悉」(累计 42),注记:最近主动关心过你。`;5 级行为准则表(陌生/熟悉/亲近/挚友/特别)作为独立稳定块(等级规则块)前置注入,仅随配置变化;等级与注记变化才更新好感度块(低频,缓存友好);
+- **注入(Q8 A+C,同一模块的三个组件拆两块)**:好感度模块共有三个注入组件——①5 级行为准则表(陌生/熟悉/亲近/挚友/特别)、②等级+分数、③关系注记。按更新频率拆成两块:规则表仅随配置变化 → 独立"等级规则块"(最稳,几乎永久命中);等级+分数+注记同为 per-user、说话人驱动 → 合并为"好感度块"(注记与等级同频,拆开无缓存收益)。好感度块内容:`[好感度] XXX:等级「熟悉」(累计 42),注记:最近主动关心过你。`;私聊=对端用户,群聊=当前消息发送者;等级/注记变化(结算)才更新该块;
 - **存储 schema**:`favorability(user_id TEXT, stream_id TEXT, level INTEGER, score INTEGER, note TEXT, window_start TEXT, judged_at TEXT, PRIMARY KEY(user_id, stream_id))`;判定日志表 `favorability_log(judge_id, user_id, stream_id, delta, note, judged_at)` 幂等防重;
 - 二期扩展:达标用户主动私聊(依赖 2.1 调度)。
 
 ### 4.4 短时备忘录(`memo.py`)
 
 - 双通道(各自配置开关):
-  - `@Tool("memo_write"/"memo_read")`:planner 自主记取(写入参数:内容、关联流/用户、有效期;读取:当前流相关未过期备忘);
-  - `@Command("/记一下", pattern=r"^/记一下\s+(?P<content>.+)$")`:用户显式让 bot 记备忘;
+  - `@Tool("memo_write"/"memo_read")`:planner 自主记取(写入参数:内容、关联流/用户、有效期;读取:当前流相关未过期备忘);工具描述声明内容 ≤80 字符约束,实现中校验,超长返回错误让 LLM 重写;
+  - `@Command("/记一下", pattern=r"^/记一下\s+(?P<content>.+)$")`:用户显式让 bot 记备忘;超长(>80 字符)直接提示用户精简;
 - 存储 sqlite `memo(id, content, stream_id, user_id, expires_at, created_at)`;默认有效期 24h(可配);后台任务清理过期项;
 - 注入:**当前流相关 + 当前说话人相关**(user_id 维度,含用户在其它流留下的备忘)的活跃备忘,最近 N 条(默认 3),经注入框架合并追加:`[备忘] 用户说过:周四要交作业。`;
 
@@ -189,7 +189,7 @@ LLM 路径:统一经 ctx.llm.generate + 每能力可配模型(含 catsitate_cust
 
 | 来源 | 路径 | 频次 | 预算手段 |
 |---|---|---|---|
-| 环境/好感度/备忘注入 | 进主链路(system 后前插) | 每轮 planner 请求 | 分层 4 条,总预算 ≤800 字符;每块版本化 |
+| 环境/好感度/备忘注入 | 进主链路(system 后前插) | 每轮 planner 请求 | 分层 4 条,长度源头控制(无注入截断);每块版本化 |
 | 好感度结算判定 | 旁路 `ctx.llm.generate` | 每活跃用户 ≤3 次/日 | 素材截断(用户消息最新优先,默认 ≤4000 字符);小 prompt |
 | 贴表情选表情 | 旁路 | 每次贴表情 | 极小 prompt(目标消息+白名单) |
 | reply_guard 哨兵层 | 旁路 | 默认关 | 配置开关 |
@@ -214,10 +214,10 @@ LLM 路径:统一经 ctx.llm.generate + 每能力可配模型(含 catsitate_cust
 `PluginConfigBase+Field` 嵌套 section,WebUI 生成 schema,热重载支持:
 
 - `plugin`:enabled(总开关)、config_version
-- `inject`:enabled、max_inject_chars(默认 800)、block_max_chars(每块独立上限,按规则表 350/环境 100/备忘 300/好感度 200 分列)、memo_entry_max_chars(默认 80)、memo_max_entries(默认 5)
+- `inject`:enabled(注入管线无截断,长度在源头控制)
 - `time_aware`:enabled、city(默认"北京")、weather_refresh_minutes(默认 45)、holiday_online(默认开)
-- `favorability`:enabled、window_hours(默认 24)、early_settle_threshold(默认 20)、daily_max_judgments(默认 3)、level_rules(5 级准则文本)、llm(`{model}`)
-- `memo`:enabled、tool_enabled、command_enabled、default_ttl_hours(默认 24)、inject_max(默认 3)
+- `favorability`:enabled、window_hours(默认 24)、early_settle_threshold(默认 20)、daily_max_judgments(默认 3)、level_rules(5 级准则文本)、note_max_chars(默认 40,结算落库时强制)、llm(`{model}`)
+- `memo`:enabled、tool_enabled、command_enabled、default_ttl_hours(默认 24)、entry_max_chars(默认 80,写入时强制)、inject_max(默认 5,合计条数)
 - `msg_react`:enabled、emoji_whitelist、per_stream_cooldown_seconds、llm
 - `poke`:enabled、enhance_notice_text、inject_to_context、poke_tool_enabled、min_level_for_poke(默认"熟悉")、cooldown_seconds
 - `reply_guard`:enabled、context_backfill_enabled、context_tools(可配工具名列表)、sentinel_enabled(默认 false)、sentinel_llm

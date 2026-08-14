@@ -133,7 +133,7 @@ LLM 路径:统一经 ctx.llm.generate + 每能力可配模型(含 catsitate_cust
 - **材料构造(私聊/群聊差异化)**:
   - 私聊:窗口内对话切片(该流内用户消息+bot 消息,天然交替,归属明确);
   - 群聊:该用户全部消息 + bot 在该群全部发言 + 每条用户消息紧邻上下文(前后各 1–2 条),供 LLM 自行判断 bot 是否在回应 ta;
-  - 素材按用户截断(默认 4000 字符),超出取窗口内最近部分;所有消息素材**按时间正序拼接**(稳定增量,截断只发生在素材段尾部);
+  - 素材按**条数**计上限:取窗口内该用户相关最近 N 条消息(默认 30,可配);**单条**消息超过长度上限(默认 200 字符,可配)截断该条(加省略标记),截断发生在单条尾部、消息边界之间,不产生跨条切断;所有消息素材**按时间正序拼接**(稳定增量);
 - **LLM 判定**:prompt 模板固定,结构 = `[判定指令+输出格式][5 级规则][窗口素材]`(稳定段在前、素材在后,§4.10 旁路规范),输出 JSON `{delta: 整数(-5~+5), note: 一句话关系注记}`;模型可配(默认主程序任务,可选 `catsitate_custom`);失败跳过本轮并记录日志;结果落 sqlite `favorability` 表;
 - **注入(Q8 A+C,同一模块的三个组件拆两块)**:好感度模块共有三个注入组件——①5 级行为准则表(陌生/熟悉/亲近/挚友/特别)、②等级+分数、③关系注记。按更新频率拆成两块:规则表仅随配置变化 → 独立"等级规则块"(最稳,几乎永久命中);等级+分数+注记同为 per-user、说话人驱动 → 合并为"好感度块"(注记与等级同频,拆开无缓存收益)。好感度块内容:`[好感度] XXX:等级「熟悉」(累计 42),注记:最近主动关心过你。`;私聊=对端用户,群聊=当前消息发送者;等级/注记变化(结算)才更新该块;
 - **存储 schema**:`favorability(user_id TEXT, stream_id TEXT, level INTEGER, score INTEGER, note TEXT, window_start TEXT, judged_at TEXT, PRIMARY KEY(user_id, stream_id))`;判定日志表 `favorability_log(judge_id, user_id, stream_id, delta, note, judged_at)` 幂等防重;
@@ -191,7 +191,7 @@ LLM 路径:统一经 ctx.llm.generate + 每能力可配模型(含 catsitate_cust
 | 来源 | 路径 | 频次 | 预算与缓存手段 |
 |---|---|---|---|
 | 环境/好感度/备忘注入 | 进主链路(system 后前插) | 每轮 planner 请求 | 分层 4 条,长度源头控制(无注入截断);每块版本化 |
-| 好感度结算判定 | 旁路 `ctx.llm.generate` | 每活跃用户 ≤3 次/日 | 素材截断(用户消息最新优先,默认 ≤4000 字符);固定模板稳定段在前(下方旁路规范) |
+| 好感度结算判定 | 旁路 `ctx.llm.generate` | 每活跃用户 ≤3 次/日 | 素材按条数上限(默认最近 30 条)+ 单条超长截断(默认 200 字符);固定模板稳定段在前(下方旁路规范) |
 | 贴表情选表情 | 旁路 | 每次贴表情 | 极小 prompt(白名单稳定段在前);固定模板 |
 | reply_guard 哨兵层 | 旁路 | 默认关 | 配置开关;开启时同样遵守旁路规范 |
 | 图片重看 | 旁路 VLM | planner 主动调用 | 需求本身;模型可配;文本前缀稳定 |
@@ -210,12 +210,12 @@ LLM 路径:统一经 ctx.llm.generate + 每能力可配模型(含 catsitate_cust
 
   | 能力 | 稳定段(共享前缀) | 变量段(尾部) |
   |---|---|---|
-  | 好感度结算 | 判定指令+输出格式、5 级规则 | 窗口素材(时间正序,截断只在尾部) |
+  | 好感度结算 | 判定指令+输出格式、5 级规则 | 窗口素材(时间正序;按条数取最近 N 条,单条超长截断在单条尾部) |
   | 贴表情 | 任务指令+输出格式、表情白名单 | 目标消息+意图 |
   | 哨兵层 | 哨兵指令、人设/等级背景(可选) | 待判定回复+聊天上下文 |
   | 图片重看 | 任务指令 | 图片+问题(图片 token 无前缀缓存意义) |
 
-- 素材纪律:消息类素材一律时间正序拼接(稳定增量);截断只发生在素材段尾部,不改变已固化前缀;
+- 素材纪律:消息类素材一律时间正序拼接(稳定增量);素材边界与截断一律落在消息单元之间(按条数取最近 N 条,单条超长截断在单条尾部),不改变已固化前缀;
 - 频次与收益:旁路请求低频(好感度 ≤3 次/用户/日),缓存收益绝对值小,但该纪律近乎零成本,且为二期(日程 LLM)/三期(QQ空间信息流)的高频旁路请求打底;
 - 实现落点:`llm_provider.py` 提供统一请求组装辅助(模板渲染+稳定段前置),各模块只填素材段,缓存纪律不散落在各模块。
 
@@ -234,7 +234,7 @@ LLM 路径:统一经 ctx.llm.generate + 每能力可配模型(含 catsitate_cust
 - `plugin`:enabled(总开关)、config_version
 - `inject`:enabled(注入管线无截断,长度在源头控制)
 - `time_aware`:enabled、city(默认"北京")、weather_refresh_minutes(默认 45)、holiday_online(默认开)
-- `favorability`:enabled、window_hours(默认 24)、early_settle_threshold(默认 20)、daily_max_judgments(默认 3)、level_rules(5 级准则文本)、note_max_chars(默认 40,结算落库时强制)、llm(`{model}`)
+- `favorability`:enabled、window_hours(默认 24)、early_settle_threshold(默认 20)、daily_max_judgments(默认 3)、level_rules(5 级准则文本)、note_max_chars(默认 40,结算落库时强制)、material_max_messages(默认 30,素材条数上限)、material_message_max_chars(默认 200,单条素材截断长度)、llm(`{model}`)
 - `memo`:enabled、tool_enabled、command_enabled、default_ttl_hours(默认 24)、entry_max_chars(默认 80,写入时强制)、inject_max(默认 5,合计条数)
 - `msg_react`:enabled、emoji_whitelist、per_stream_cooldown_seconds、llm
 - `poke`:enabled、enhance_notice_text、inject_to_context、poke_tool_enabled、min_level_for_poke(默认"熟悉")、cooldown_seconds
@@ -254,7 +254,7 @@ LLM 路径:统一经 ctx.llm.generate + 每能力可配模型(含 catsitate_cust
 ## 8. 测试方式
 
 **单元测试(插件仓库内 `tests/`,pytest,不依赖 MaiBot 运行)**:
-- 材料构造器(私聊/群聊切片、截断、时间正序)、窗口触发逻辑(计数/日终/上限);
+- 材料构造器(私聊/群聊切片、按条数取最近 N 条、单条截断、时间正序)、窗口触发逻辑(计数/日终/上限);
 - 旁路 prompt 组装辅助(稳定段前置、模板版本化、素材正序);
 - 节日数据解析与回退链、天气码映射;
 - reply 规则校验器(通知/纯表情/参数缺失);

@@ -24,7 +24,7 @@ Catsitate 是部署在 MaiBot 上的 QQ 聊天机器人人设(伪三无猫耳少
 | 缓存 | 注入分层分条(规则表→环境→备忘→好感度,按稳定性降序)+版本化+长度源头控制;前插 system 后、历史前;**旁路 LLM 请求同样遵守稳定前缀纪律(§4.10)**;旁路 LLM 有预算与计数;测量用主程序日志/统计 |
 | 存储 | 标准库 `sqlite3`(插件 data 目录单库);轻量限频状态用 JSON 快照 |
 | 好感度 | LLM 判定;v3 窗口结算制(不配对、不语义分类,私聊/群聊差异化材料,纯计数触发);注入=等级(5级)+关系注记(A+C) |
-| reply 拦截 | 上下文补传(查了上下文工具、reference 与 reasoning 双空才补)+ LLM 哨兵可选开关;锚点 `maisaka.planner.after_response` |
+| reply 拦截 | 上下文补传(查了上下文工具、reference 与 reasoning 双空才补,锚点 `maisaka.planner.after_response`)+ LLM 哨兵可选开关(锚点 `maisaka.replyer.after_response`) |
 | 戳一戳 | 入站解析增强(补拟人渲染)+ 主动戳工具(好感度门槛);**被戳反应逻辑剔除** |
 | 贴表情 | 仅 `@Tool`,无概率旁路 |
 | 备忘录 | 双通道(工具+命令)各自开关;注入含当前流+当前说话人两个维度 |
@@ -67,14 +67,14 @@ plugins/catsitate_core_maibot/          # 独立 git 仓库
     test_storage.py / test_favorability.py / test_time_aware.py / test_reply_guard.py ...
 ```
 
-> 实现期 spike 清单:① 插件加载器是否支持子包(插件目录加入 `sys.path` 后绝对导入 `catsitate_core.*`),不支持则退化为同目录平铺多模块;② `before_request` Hook 中 `items` 的插入语义——构造合法 context item(`item_schema_version`)插到 system 之后的容忍度,失败则回退追加尾部。
+> 实现期 spike 清单:① 插件加载器是否支持子包(插件目录加入 `sys.path` 后绝对导入 `catsitate_core.*`),不支持则退化为同目录平铺多模块;② `before_request` Hook 中 `items` 的插入语义——构造合法 context item(`item_schema_version`)插到 system 之后的容忍度,失败则回退追加尾部;③ `chat.receive.before_process` 能否改写消息文本(不能则 `enhance_notice_text` 退化为仅日志记录增强文本)。
 
 ### 3.2 模块依赖与数据流
 
 ```
 入站消息 ──chat.receive.before_process(观察)──> poke.py(解析增强)
          ──chat.receive.after_process(观察)───> favorability.py(计数)
-chat 主链路 ──maisaka.planner.before_request──> inject.py(尾部注入:节日/天气/好感度/备忘录)
+chat 主链路 ──maisaka.planner.before_request──> inject.py(前插注入 system 后历史前:节日/天气/好感度/备忘录)
            ──maisaka.planner.after_response──> reply_guard.py(移除误调用)
 发送链路 ──(无配对逻辑)── 好感度不依赖发送事件
 后台 scheduler.py(60s tick):
@@ -126,7 +126,7 @@ LLM 路径:统一经 ctx.llm.generate + 每能力可配模型(含 catsitate_cust
 
 **判定单元**:(用户 × 时间窗口),默认窗口 24h(可配)。**不做消息配对、不做语义分类**。
 
-- **计数**:`chat.receive.after_process`(OBSERVE)记录当日每用户消息数(内存计数+定期落库,重启从库恢复);
+- **计数**:`chat.receive.after_process`(OBSERVE)记录当前窗口内每用户消息数(内存计数+定期落库,重启从库恢复);日终结算对象 = 当日有消息的用户;
 - **触发(纯计数)**:
   - a) 日终结算:每日定时对当日活跃用户统一结算(每活跃用户 1 次/日);
   - b) 高活跃提前结算:窗口内该用户消息数 ≥ N(默认 20)提前结算并开新窗口;每用户每日上限 K 次(默认 3);
@@ -145,7 +145,7 @@ LLM 路径:统一经 ctx.llm.generate + 每能力可配模型(含 catsitate_cust
   - `@Tool("memo_write"/"memo_read")`:planner 自主记取;写入参数:内容、关联流/用户、`ttl_hours`(可选**单条有效期**,缺省用 default_ttl_hours;按内容需要延长——如"周四交作业"可设到周四,避免按统一时长提前失效);读取返回:当前流相关未过期备忘及**各自剩余有效时间**;工具描述声明内容 ≤80 字符、`ttl_hours ≤ max_ttl_hours` 约束,实现中校验,超限返回错误让 LLM 重写;
   - `@Command("/记一下", pattern=r"^/记一下\s+(?P<content>.+)$")`:用户显式让 bot 记备忘(使用默认 TTL);超长(>80 字符)直接提示用户精简;
 - 存储 sqlite `memo(id, content, stream_id, user_id, expires_at, created_at)`;默认有效期 24h、单条上限 168h(均可配);后台任务清理过期项;
-- 注入:**当前流相关 + 当前说话人相关**(user_id 维度,含用户在其它流留下的备忘)的活跃备忘,最近 N 条(默认 3),经注入框架合并追加:`[备忘] 用户说过:周四要交作业。`;
+- 注入:**当前流相关 + 当前说话人相关**(user_id 维度,含用户在其它流留下的备忘)的活跃备忘,每维度最近 3 条、合计 ≤ inject_max(默认 5),经注入框架合并追加:`[备忘] 用户说过:周四要交作业。`;
 
 ### 4.5 贴表情(`msg_react.py`)
 
@@ -155,8 +155,8 @@ LLM 路径:统一经 ctx.llm.generate + 每能力可配模型(含 catsitate_cust
 
 ### 4.6 戳一戳(`poke.py`)
 
-- **入站解析增强**:`chat.receive.before_process`(OBSERVE)读取通知消息 `additional_config.napcat_notice_payload`(适配器已完整保留原始载荷),补全拟人文本:「XXX 拍了拍你,说:"…"」(raw_info 动作文本 + 昵称解析);配置开关:`enhance_notice_text`(改写消息文本)/`inject_to_context`(注入上下文);
-- **主动戳工具**:`@Tool("poke_user", visibility="visible")`,参数:目标用户/流;前置校验:好感度等级 ≥ 门槛(默认"熟悉")+ 每用户冷却;调用 `ctx.api.call("adapter.napcat.message.send_poke", ...)`;
+- **入站解析增强**:`chat.receive.before_process`(OBSERVE)读取通知消息 `additional_config.napcat_notice_payload`(适配器已完整保留原始载荷),补全拟人文本:「XXX 拍了拍你,说:"…"」(raw_info 动作文本 + 昵称解析);配置开关:`enhance_notice_text`(改写消息文本)/`inject_to_context`(经 `ctx.maisaka.context.append` 写入当前流上下文,供后续 planner 请求可见);`enhance_notice_text` 能否改写消息文本列为 spike(若 before_process 仅观察无法改写,该开关退化为仅日志记录增强文本);
+- **主动戳工具**:`@Tool("poke_user", visibility="visible")`,参数:目标用户/流;前置校验:好感度等级 ≥ 门槛(默认"熟悉";同一用户跨流取最高等级)+ 每用户冷却(user_id 维度);调用 `ctx.api.call("adapter.napcat.message.send_poke", ...)`;
 - **被戳反应逻辑:不实现**(已剔除)。
 
 ### 4.7 reply 上下文补传与拦截(`reply_guard.py`)
@@ -166,7 +166,7 @@ LLM 路径:统一经 ctx.llm.generate + 每能力可配模型(含 catsitate_cust
 - **上下文补传(规则层,必选,零成本)**:
   - 事实依据:replyer 自带完整聊天历史+被回复消息块;`reply_reason`(planner 的 reasoning,主程序自动提取,`reply.py:303,361`)为空时 replyer 参考块完全缺位;planner 查到的记忆/人物信息(`query_memory`/`query_person_profile`/`fetch_history`/`view_forward_message`/`memo_read` 等上下文工具的结果)只有写入 `reply_reference` 才会进入 replyer,写不写全凭模型自觉;
   - 触发条件(确定性,零误伤):本轮 planner 调用过上述上下文工具(集合可配),**且**该 reply 调用的 `reply_reference` 为空,**且**其关联 reasoning(即主程序将提取为 `reply_reason` 的内容)为空;
-  - 动作:**自动补传**——把对应工具结果的文本摘要(截断)填入该 reply 调用的 `reply_reference` 参数;不改动其它工具调用;
+  - 动作:**自动补传**——把对应工具结果的文本摘要(截断,默认 400 字符)填入该 reply 调用的 `reply_reference` 参数;不改动其它工具调用;
   - 不重复主程序的重复回复提醒兜底。
 - **LLM 哨兵层(可选,配置开关默认关)**:`maisaka.replyer.after_response` 判定"本次回复是否与聊天上下文不符/是否不该回复",不符则撤回并闭环反馈 planner(corpus-callosum 式);prompt 结构 = `[哨兵指令][人设/等级背景(可选,稳定)][待判定回复+聊天上下文(变量)]`(§4.10 旁路规范);
 - 改写动作 = 修改/删除 `output_items` 中对应项(证据:`reasoning_engine` 在 after_response 之后才执行工具调用)。
@@ -174,14 +174,14 @@ LLM 路径:统一经 ctx.llm.generate + 每能力可配模型(含 catsitate_cust
 ### 4.8 图片重看(`image_relook.py`)
 
 - `@Tool("inspect_image", visibility="visible")`,参数:目标消息 ID(或 image_index)+ 具体问题;
-- 执行:`ctx.message.get_recent(include_binary_data=True)` 解析 image 段;仅 hash 时经 `ctx.db.get(model_name="Images", ...)` 补读原图;VLM(视觉模型配置项)回答具体问题,返回文本结果;prompt 结构 = `[任务指令(稳定)][图片+问题(变量)]`——图片 token 本身无前缀缓存意义,仅保证文本前缀稳定(§4.10 旁路规范);
+- 执行:`ctx.message.get_recent(include_binary_data=True)` 解析 image 段;仅 hash 时经 `ctx.db.get(model_name="Images", ...)` 补读原图;VLM(视觉模型配置项)回答具体问题,返回文本结果;prompt 结构 = `[任务指令(稳定)][图片+问题(变量)]`——图片 token 本身无前缀缓存意义,仅保证文本前缀稳定(§4.10 旁路规范);目标消息太旧、get_recent 取不到时返回错误并记录日志(不静默);
 - 不实现根目录启发式探测(参考插件该做法绕过 SDK 边界,我们不用);若 db 无法补图,报错暴露并记录日志。
 
 ### 4.9 LLM Provider(`llm_provider.py`)
 
 - `@LLMProvider(client_type="catsitate_custom", name="Catsitate 自定义端点", ...)`:仅实现 `response` 操作(embedding/audio 返回"不支持");处理器接收 `api_provider` 快照(用户在 model_config 配置的 base_url/key),以 OpenAI 兼容协议自行调用并返回统一格式;
 - manifest `llm_providers` 与装饰器声明一致;
-- 每个 LLM 能力配置节:`{enabled, model}`——`model` 填主程序 task 名/模型标识(留空=插件默认),或指向用户自定义的 `catsitate_custom` 端点;
+- 每个 LLM 能力配置节:`{enabled, model}`——`model` **留空 = 使用主程序默认模型**(调用时不指定 model);填主程序 task 名/模型标识 = 用该任务配置的模型;填 `catsitate_custom` = 走用户自定义端点;
 - 同文件提供**旁路请求组装辅助**:统一 `build_side_prompt(template_id, stable_ctx, variable_tail)` 渲染(模板固定+版本化、稳定段在前),§4.10 旁路规范的唯一实现落点。
 
 ### 4.10 Token 开销与缓存预算
@@ -231,7 +231,7 @@ LLM 路径:统一经 ctx.llm.generate + 每能力可配模型(含 catsitate_cust
 
 `PluginConfigBase+Field` 嵌套 section,WebUI 生成 schema,热重载支持:
 
-- `plugin`:enabled(总开关)、config_version
+- `plugin`:enabled(总开关)、config_version、llm_daily_call_warning_threshold(默认 50,旁路 LLM 每日调用告警阈值)
 - `inject`:enabled(注入管线无截断,长度在源头控制)
 - `time_aware`:enabled、city(默认"北京")、weather_refresh_minutes(默认 45)、holiday_online(默认开)
 - `favorability`:enabled、window_hours(默认 24)、early_settle_threshold(默认 20)、daily_max_judgments(默认 3)、level_rules(5 级准则文本)、note_max_chars(默认 40,结算落库时强制)、material_max_messages(默认 30,素材条数上限)、material_message_max_chars(默认 200,单条素材截断长度)、llm(`{model}`)
@@ -257,13 +257,13 @@ LLM 路径:统一经 ctx.llm.generate + 每能力可配模型(含 catsitate_cust
 - 材料构造器(私聊/群聊切片、按条数取最近 N 条、单条截断、时间正序)、窗口触发逻辑(计数/日终/上限);
 - 旁路 prompt 组装辅助(稳定段前置、模板版本化、素材正序);
 - 节日数据解析与回退链、天气码映射;
-- reply 规则校验器(通知/纯表情/参数缺失);
+- reply 补传触发规则(上下文工具调用检测、reply_reference/reasoning 双空判定、摘要截断);
 - sqlite 层与 JSON 快照读写;注入框架的片段缓存与截断优先级;备忘单条 TTL 参数校验与过期清理。
 
 **集成测试(真实环境)**:
 1. 插件目录放入 `MaiBot-dev/plugins/`(或插件市场安装),启动 docker compose 的 core 服务;
 2. WebUI 插件页启用 → 日志确认 on_load、组件注册成功;
-3. 逐项手动验证:命令(`/记一下`)、工具(planner 调 msg_react/poke_user/memo/inspect_image)、通知(戳一戳解析增强)、注入(日志中 `[环境]`/`[好感度]`/`[备忘]` 片段出现且位于请求尾部);
+3. 逐项手动验证:命令(`/记一下`)、工具(planner 调 msg_react/poke_user/memo/inspect_image)、通知(戳一戳解析增强)、注入(日志中 `[环境]`/`[好感度]`/`[备忘]` 片段出现且位于 system 之后、历史之前);
 4. 缓存验证:开启 debug 缓存统计,对比插件启用前后命中率,附基线报告;
 5. 热重载:修改配置后 WebUI 确认 on_config_update 生效。
 

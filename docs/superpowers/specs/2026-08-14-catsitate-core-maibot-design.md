@@ -142,9 +142,9 @@ LLM 路径:统一经 ctx.llm.generate + 每能力可配模型(含 catsitate_cust
 ### 4.4 短时备忘录(`memo.py`)
 
 - 双通道(各自配置开关):
-  - `@Tool("memo_write"/"memo_read")`:planner 自主记取(写入参数:内容、关联流/用户、有效期;读取:当前流相关未过期备忘);工具描述声明内容 ≤80 字符约束,实现中校验,超长返回错误让 LLM 重写;
-  - `@Command("/记一下", pattern=r"^/记一下\s+(?P<content>.+)$")`:用户显式让 bot 记备忘;超长(>80 字符)直接提示用户精简;
-- 存储 sqlite `memo(id, content, stream_id, user_id, expires_at, created_at)`;默认有效期 24h(可配);后台任务清理过期项;
+  - `@Tool("memo_write"/"memo_read")`:planner 自主记取;写入参数:内容、关联流/用户、`ttl_hours`(可选**单条有效期**,缺省用 default_ttl_hours;按内容需要延长——如"周四交作业"可设到周四,避免按统一时长提前失效);读取返回:当前流相关未过期备忘及**各自剩余有效时间**;工具描述声明内容 ≤80 字符、`ttl_hours ≤ max_ttl_hours` 约束,实现中校验,超限返回错误让 LLM 重写;
+  - `@Command("/记一下", pattern=r"^/记一下\s+(?P<content>.+)$")`:用户显式让 bot 记备忘(使用默认 TTL);超长(>80 字符)直接提示用户精简;
+- 存储 sqlite `memo(id, content, stream_id, user_id, expires_at, created_at)`;默认有效期 24h、单条上限 168h(均可配);后台任务清理过期项;
 - 注入:**当前流相关 + 当前说话人相关**(user_id 维度,含用户在其它流留下的备忘)的活跃备忘,最近 N 条(默认 3),经注入框架合并追加:`[备忘] 用户说过:周四要交作业。`;
 
 ### 4.5 贴表情(`msg_react.py`)
@@ -235,7 +235,7 @@ LLM 路径:统一经 ctx.llm.generate + 每能力可配模型(含 catsitate_cust
 - `inject`:enabled(注入管线无截断,长度在源头控制)
 - `time_aware`:enabled、city(默认"北京")、weather_refresh_minutes(默认 45)、holiday_online(默认开)
 - `favorability`:enabled、window_hours(默认 24)、early_settle_threshold(默认 20)、daily_max_judgments(默认 3)、level_rules(5 级准则文本)、note_max_chars(默认 40,结算落库时强制)、material_max_messages(默认 30,素材条数上限)、material_message_max_chars(默认 200,单条素材截断长度)、llm(`{model}`)
-- `memo`:enabled、tool_enabled、command_enabled、default_ttl_hours(默认 24)、entry_max_chars(默认 80,写入时强制)、inject_max(默认 5,合计条数)
+- `memo`:enabled、tool_enabled、command_enabled、default_ttl_hours(默认 24,单条缺省 TTL)、max_ttl_hours(默认 168,单条 TTL 上限)、entry_max_chars(默认 80,写入时强制)、inject_max(默认 5,合计条数)
 - `msg_react`:enabled、emoji_whitelist、per_stream_cooldown_seconds、llm
 - `poke`:enabled、enhance_notice_text、inject_to_context、poke_tool_enabled、min_level_for_poke(默认"熟悉")、cooldown_seconds
 - `reply_guard`:enabled、context_backfill_enabled、context_tools(可配工具名列表)、sentinel_enabled(默认 false)、sentinel_llm
@@ -258,7 +258,7 @@ LLM 路径:统一经 ctx.llm.generate + 每能力可配模型(含 catsitate_cust
 - 旁路 prompt 组装辅助(稳定段前置、模板版本化、素材正序);
 - 节日数据解析与回退链、天气码映射;
 - reply 规则校验器(通知/纯表情/参数缺失);
-- sqlite 层与 JSON 快照读写;注入框架的片段缓存与截断优先级。
+- sqlite 层与 JSON 快照读写;注入框架的片段缓存与截断优先级;备忘单条 TTL 参数校验与过期清理。
 
 **集成测试(真实环境)**:
 1. 插件目录放入 `MaiBot-dev/plugins/`(或插件市场安装),启动 docker compose 的 core 服务;

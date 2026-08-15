@@ -4010,6 +4010,7 @@ def test_full_assembly_smoke(tmp_path):
     for _ in range(20):
         engine.count_message("u1", "s1", now=lambda: NOW)
     assert engine.check_trigger("u1", "s1", now=lambda: NOW) == "early"
+    assert ("u1", "s1") in engine.iter_today_active(now=lambda: NOW)  # 结算前在活跃列表
     executor = SettleExecutor(engine, _fake_llm)
     history = [
         {"role": "user", "user_id": "u1", "stream_id": "s1", "text": f"消息{i}", "seq": i}
@@ -4018,6 +4019,7 @@ def test_full_assembly_smoke(tmp_path):
     result = asyncio.run(executor.settle("u1", "s1", history, kind="early"))
     assert result["status"] == "ok" and result["delta"] == 2
     assert "累计 2" in build_favorability_block(engine, "u1", "s1")  # 2 分仍是「陌生」级
+    assert ("u1", "s1") not in engine.iter_today_active(now=lambda: NOW)  # 结算 reset 后 count=0
 
     # 贴表情
     messages, _ = react.build_choose_prompt(["em_laugh", "em_hug"], "今天好累", "安慰")
@@ -4032,11 +4034,7 @@ def test_full_assembly_smoke(tmp_path):
     # reply 补传
     items = [{"tool_name": "reply", "arguments": {"reply_reference": ""}}]
     out = backfill_reply_items(items, {"memo_read": "备忘内容"}, cfg.reply_guard.context_tools, ["memo_read"], "")
-    assert out[0]["arguments"]["reply_reference"] == "备忘内容"
-
-    # 日终查询
-    active = engine.iter_today_active(now=lambda: NOW)
-    assert ("u1", "s1") in active
+    assert out[0]["arguments"]["reply_reference"] == "[memo_read] 备忘内容"  # 合并摘要含工具名前缀
 ```
 
 - [ ] **Step 2: 运行测试确认通过**

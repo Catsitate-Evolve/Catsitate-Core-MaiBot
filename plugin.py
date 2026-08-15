@@ -67,7 +67,9 @@ class CatsitatePlugin(MaiBotPlugin):
         self.fav_engine = BatchEngine(self.store, self.config.favorability)
         self.fav_executor = SettleExecutor(
             self.fav_engine,
-            lambda messages, model="": self._side_llm_call(messages, self.config.favorability.llm_model, "favorability"),
+            lambda messages, model="": self._side_llm_call(
+                messages, self.config.favorability.llm_model, "favorability", self.config.favorability.llm_timeout_ms
+            ),
         )
         self.assembler = InjectAssembler()
         for service in (self.memo, self.fav_engine):
@@ -189,7 +191,7 @@ class CatsitatePlugin(MaiBotPlugin):
             return reason
         target_text = await self._fetch_message_text(stream_id, message_id)
         messages, _ = self.react.build_choose_prompt(whitelist, target_text or f"消息 {message_id}", intent)
-        result = await self._side_llm_call(messages, self.config.msg_react.llm_model, "msg_react")
+        result = await self._side_llm_call(messages, self.config.msg_react.llm_model, "msg_react", self.config.msg_react.llm_timeout_ms)
         if not result.get("success"):
             return f"选表情 LLM 调用失败:{result.get('response', '')[:200]}"
         emoji, err = parse_choice_resp(str(result.get("response") or ""), whitelist)
@@ -254,7 +256,7 @@ class CatsitatePlugin(MaiBotPlugin):
             return msg
         seg = {**seg, "data": db_result["data"]}
         messages, _ = build_relook_prompt(question, seg)
-        result = await self._side_llm_call(messages, self.config.image_relook.llm_model, "image_relook")
+        result = await self._side_llm_call(messages, self.config.image_relook.llm_model, "image_relook", self.config.image_relook.llm_timeout_ms)
         if not result.get("success"):
             return f"图片重看 LLM 调用失败:{result.get('response', '')[:200]}"
         return str(result.get("response") or "")
@@ -381,7 +383,7 @@ class CatsitatePlugin(MaiBotPlugin):
         persona = self._persona_background()
         chat_context = await self._recent_context_text(str(kwargs.get("stream_id") or ""), limit=10)
         messages, _ = build_sentinel_prompt(persona, reply_text, chat_context)
-        result = await self._side_llm_call(messages, cfg.sentinel_model, "sentinel")
+        result = await self._side_llm_call(messages, cfg.sentinel_model, "sentinel", cfg.sentinel_timeout_ms)
         if not result.get("success"):
             self.ctx.logger.warning("哨兵层 LLM 调用失败,放行回复:%s", result.get("response", "")[:200])
             return {"action": "continue", "modified_kwargs": kwargs}
@@ -592,15 +594,17 @@ class CatsitatePlugin(MaiBotPlugin):
         finally:
             self._settling.discard(key)
 
-    async def _side_llm_call(self, messages: list[dict], model: str, module: str) -> dict:
+    async def _side_llm_call(
+        self, messages: list[dict], model: str, module: str, timeout_ms: int | None = None
+    ) -> dict:
         """旁路 LLM 统一出口(规格 §4.10):model 填主程序 task 名;用量按模块记账。
 
-        经 call_capability 直调,超时可配(plugin.llm_timeout_ms;留空=主程序默认 30s)。
+        经 call_capability 直调,超时由各能力配置节传入(留空=主程序默认 30s)。
         联调实测:utils 模型 31-53s 会触发默认超时,慢模型建议配置 120000。
         """
 
         result = await self.ctx.call_capability(
-            "llm.generate", timeout_ms=self.config.plugin.llm_timeout_ms, prompt=messages, model=model or ""
+            "llm.generate", timeout_ms=timeout_ms, prompt=messages, model=model or ""
         )
         if isinstance(result, dict):
             if "model" not in result and result.get("model_name"):

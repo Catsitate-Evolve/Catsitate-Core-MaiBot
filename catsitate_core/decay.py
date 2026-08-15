@@ -128,7 +128,7 @@ class DecayExecutor:
             except Exception as exc:  # noqa: BLE001
                 # 仅记异常类型,不插值 exc 本体:LLM API 错误可能含请求体/PII(安全复审)
                 logger.warning("好感度衰减判定失败(stream=%s): %s", stream_id, type(exc).__name__)
-                logger.debug("好感度衰减判定失败详情(stream=%s): %s", stream_id, exc)
+                
                 continue  # 显式日志后跳过(规格 §3.1 失败不得静默)
             if not isinstance(result, dict) or not result.get("success"):
                 continue

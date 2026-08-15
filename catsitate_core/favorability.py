@@ -232,9 +232,13 @@ class BatchEngine:
             selected[msg["seq"]] = msg
             # 紧邻上下文:同流前后各 1 条(群聊上下文判断 bot 是否回应 ta)
             pos = pos_by_seq[msg["seq"]]
-            for neighbor in (in_stream[pos - 1], in_stream[pos + 1] if pos + 1 < len(in_stream) else None):
-                if neighbor is not None:
-                    selected[neighbor["seq"]] = neighbor
+            neighbors: list[dict] = []
+            if pos > 0:
+                neighbors.append(in_stream[pos - 1])
+            if pos + 1 < len(in_stream):
+                neighbors.append(in_stream[pos + 1])
+            for neighbor in neighbors:
+                selected[neighbor["seq"]] = neighbor
         # bot 在该流的发言随附(与锚点消息同批次窗口内)
         for msg in in_stream:
             if msg["role"] == "bot":

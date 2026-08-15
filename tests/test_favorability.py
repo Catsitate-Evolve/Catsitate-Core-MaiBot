@@ -106,5 +106,22 @@ def test_apply_delta_level_and_note_truncation(tmp_path):
     assert engine.get_best_level_for_user("u1")["level"] == 0
 
 
+def test_material_anchor_at_stream_head_no_wraparound(tmp_path):
+    """锚点在流首时,前邻居不存在,不得因负索引回绕取流尾消息。"""
+
+    engine, _ = make_engine(tmp_path)
+    history = [
+        {"role": "user", "user_id": "u1", "stream_id": "g", "text": "我的消息", "seq": 0, "ts": "2026-08-14T10:00:00"},
+        {"role": "user", "user_id": "u2", "stream_id": "g", "text": "后文1", "seq": 1, "ts": "2026-08-14T10:00:01"},
+        {"role": "user", "user_id": "u2", "stream_id": "g", "text": "后文2", "seq": 2, "ts": "2026-08-14T10:00:02"},
+        {"role": "user", "user_id": "u2", "stream_id": "g", "text": "后文3", "seq": 3, "ts": "2026-08-14T10:00:03"},
+    ]
+    material = engine.build_material("u1", "g", history)
+    text = "\n".join(material)
+    assert "我的消息" in text
+    assert "后文1" in text  # 紧邻后文应选中
+    assert "后文3" not in text  # 流尾消息不得作为"前邻居"回绕选中
+
+
 def test_levels_order():
     assert LEVELS == ["陌生", "熟悉", "亲近", "挚友", "特别"]

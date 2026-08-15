@@ -96,6 +96,8 @@ class CatsitatePlugin(MaiBotPlugin):
         self._snapshot_cache: dict[str, dict] = {}  # 注入块文本 -> 快照 UserMessageItem
         self._env_cache: dict[str, str] = {}  # content_key -> 环境块文本
         self._env_fetched_at: datetime | None = None
+        self._settling: set[tuple[str, str]] = set()  # 结算并发防护键(最终审查 Important#1)
+        self._background_tasks: set[asyncio.Task] = set()  # 后台任务引用(最终审查 Important#2)
         self._scheduler = Scheduler(tick_seconds=60)
         self._scheduler.register("weather", max(self.config.time_aware.weather_refresh_minutes, 1) * 60, self._refresh_environment)
         self._scheduler.register("holiday", 24 * 3600, self._refresh_environment)
@@ -103,11 +105,15 @@ class CatsitatePlugin(MaiBotPlugin):
         self._scheduler.register("daily_settle", max(self.config.favorability.window_hours, 1) * 3600, self._daily_settle)
         self._scheduler.start()
         # 首次环境数据立即刷新一次,避免环境块空缺到首个定时点(45 分钟)
-        asyncio.create_task(self._refresh_environment())
+        self._spawn_background_task(self._refresh_environment())
         self.ctx.logger.info("catsitate_core 已加载:注入/备忘录/好感度/贴表情/戳一戳/reply补传/图片重看")
 
     async def on_unload(self) -> None:
         await self._scheduler.stop()
+        for task in list(self._background_tasks):
+            task.cancel()
+        if self._background_tasks:
+            await asyncio.gather(*self._background_tasks, return_exceptions=True)
         self.store.close()
 
     async def on_config_update(self, scope: str, config_data: dict[str, Any], version: str) -> None:
@@ -279,13 +285,13 @@ class CatsitatePlugin(MaiBotPlugin):
         recent = await self._fetch_recent(stream_id, limit=50)
         seg, err = find_image_segment(recent, message_id or None, image_index)
         if seg is None:
-            logger.warning("inspect_image 失败:%s(stream=%s,message_id=%s)", err, stream_id, message_id)
+            self.ctx.logger.warning("inspect_image 失败:%s(stream=%s,message_id=%s)", err, stream_id, message_id)
             return f"取图失败:{err}"
         # spike ④ 实测:get_recent 的 image 段只有 hash 无 data——经主程序图片库补读为主路径(规格 §4.8)
         db_result = await self.ctx.database.get("Images", hash=seg.get("hash"))
         if not db_result or not db_result.get("data"):
             msg = f"图片 {seg.get('file_name') or seg.get('hash')} 数据库补读失败"
-            logger.error(msg)
+            self.ctx.logger.error(msg)
             return msg
         seg = {**seg, "data": db_result["data"]}
         messages, _ = build_relook_prompt(question, seg)
@@ -312,7 +318,7 @@ class CatsitatePlugin(MaiBotPlugin):
     async def inject_blocks(self, **kwargs: Any) -> dict[str, Any]:
         """注入块前插 system 之后、历史之前(规格 §4.1);失败仅记录日志不阻塞。"""
 
-        if not self.config.plugin.enabled:
+        if not self.config.plugin.enabled or not self.config.inject.enabled:
             return {"action": "continue", "modified_kwargs": kwargs}
         try:
             blocks = self._build_inject_blocks(kwargs)
@@ -329,7 +335,7 @@ class CatsitatePlugin(MaiBotPlugin):
             new_kwargs = {**kwargs, self._MESSAGES_KEY: new_messages}
             return {"action": "continue", "modified_kwargs": new_kwargs}
         except Exception:
-            logger.exception("注入块构造失败,本轮跳过注入")
+            self.ctx.logger.exception("注入块构造失败,本轮跳过注入")
             return {"action": "continue", "modified_kwargs": kwargs}
 
     # ---------- Hook:入站(戳一戳解析 + 好感度计数) ----------
@@ -354,11 +360,11 @@ class CatsitatePlugin(MaiBotPlugin):
                     stream_id=stream_id, segments=[{"type": "text", "text": text}]
                 )
             except Exception:
-                logger.exception("戳一戳上下文注入失败(stream=%s)", stream_id)
+                self.ctx.logger.exception("戳一戳上下文注入失败(stream=%s)", stream_id)
         # enhance_notice_text 改写能力 spike ③ 结论 A 已确认(改 message.raw_message 段列表头部);
         # 此处为 OBSERVE 仅日志;改写路径留给后续按开关演进(见 spike-findings §3)
         if self.config.poke.enhance_notice_text:
-            logger.info("戳一戳解析增强:%s", text)
+            self.ctx.logger.info("戳一戳解析增强:%s", text)
 
     @HookHandler("chat.receive.after_process", name="catsitate_fav_count", mode=HookMode.OBSERVE)
     async def fav_count(self, **kwargs: Any) -> None:
@@ -377,7 +383,7 @@ class CatsitatePlugin(MaiBotPlugin):
         # 注意:check_trigger 内部会执行 count_message(+1),勿在此前重复计数(审查 ⚠️ 裁决)
         trigger = self.fav_engine.check_trigger(user_id, stream_id)
         if trigger == "early":
-            asyncio.create_task(self._settle_and_log(user_id, stream_id, kind="early"))
+            self._spawn_background_task(self._settle_and_log(user_id, stream_id, kind="early"))
 
     # ---------- Hook:reply 补传与哨兵 ----------
 
@@ -400,7 +406,7 @@ class CatsitatePlugin(MaiBotPlugin):
         if new_items is output_items:
             return {"action": "continue", "modified_kwargs": kwargs}
         new_kwargs = {**kwargs, self._OUTPUT_ITEMS_KEY: new_items}
-        logger.info("reply 补传:%s", [t.get("tool_name") for t in new_items if t.get("tool_name") == "reply"])
+        self.ctx.logger.info("reply 补传:%s", [t.get("tool_name") for t in new_items if t.get("tool_name") == "reply"])
         return {"action": "continue", "modified_kwargs": new_kwargs}
 
     @HookHandler("maisaka.replyer.after_response", name="catsitate_sentinel", mode=HookMode.BLOCKING, order=HookOrder.LATE)
@@ -418,12 +424,12 @@ class CatsitatePlugin(MaiBotPlugin):
         messages, _ = build_sentinel_prompt(persona, reply_text, chat_context)
         result = await self._side_llm_call(messages, cfg.sentinel_llm.model, "sentinel")
         if not result.get("success"):
-            logger.warning("哨兵层 LLM 调用失败,放行回复:%s", result.get("response", "")[:200])
+            self.ctx.logger.warning("哨兵层 LLM 调用失败,放行回复:%s", result.get("response", "")[:200])
             return {"action": "continue", "modified_kwargs": kwargs}
         should_send, reason = parse_sentinel_response(str(result.get("response") or ""))
         if should_send is None or should_send:
             return {"action": "continue", "modified_kwargs": kwargs}
-        logger.warning("哨兵层判定撤回回复:%s", reason)
+        self.ctx.logger.warning("哨兵层判定撤回回复:%s", reason)
         # 撤回动作(spike ④ 验证后实现:删除待发送项或调用撤回 API);当前先日志
         return {"action": "continue", "modified_kwargs": kwargs}
 
@@ -442,7 +448,24 @@ class CatsitatePlugin(MaiBotPlugin):
         for i, m in enumerate(messages):
             if m.get("item_type") == "SystemMessageItem" or m.get("role") == "system":
                 return i + 1
+        self.ctx.logger.warning("注入定位失败:items 中无 SystemMessageItem,已回退追加尾部(缓存纪律受损)")
         return len(messages)  # 无 system 时追加尾部(spike ② 回退语义)
+
+    def _spawn_background_task(self, coro: Any) -> asyncio.Task:
+        """启动后台任务并持有引用:done 回调里 discard;异常时经 ctx.logger.exception 上报。"""
+
+        task = asyncio.create_task(coro)
+        self._background_tasks.add(task)
+        task.add_done_callback(self._on_background_task_done)
+        return task
+
+    def _on_background_task_done(self, task: asyncio.Task) -> None:
+        self._background_tasks.discard(task)
+        if task.cancelled():
+            return
+        exc = task.exception()
+        if exc is not None:
+            self.ctx.logger.exception("后台任务异常:%s", exc)
 
     def _to_snapshot_item(self, text: str) -> dict:
         """渲染块 → 合法快照 UserMessageItem(spike ②:朴素 dict 被主程序拒绝)。
@@ -532,7 +555,7 @@ class CatsitatePlugin(MaiBotPlugin):
                     online = parse_holiday_cn(resp.json())
                 break
             except Exception:
-                logger.warning("holiday-cn 数据源 %s 获取失败,尝试下一个", url, exc_info=True)
+                self.ctx.logger.warning("holiday-cn 数据源 %s 获取失败,尝试下一个", url, exc_info=True)
         try:
             from holiday_calendar import get_holidays  # manifest 声明依赖(自动安装)
 
@@ -552,7 +575,7 @@ class CatsitatePlugin(MaiBotPlugin):
                 data = resp.json()
                 weather = {"temperature_2m": data["current"]["temperature_2m"], "weather_code": data["current"]["weather_code"]}
         except Exception:
-            logger.warning("天气获取失败,本轮环境块省略天气", exc_info=True)
+            self.ctx.logger.warning("天气获取失败,本轮环境块省略天气", exc_info=True)
         # 天气快照落库供二期 2.1 联动(规格 §4.2)
         if weather is not None:
             self.store.execute(
@@ -577,7 +600,7 @@ class CatsitatePlugin(MaiBotPlugin):
     async def _cleanup_memos(self) -> None:
         removed = self.memo.cleanup()
         if removed:
-            logger.info("备忘清理:%s 条过期", removed)
+            self.ctx.logger.info("备忘清理:%s 条过期", removed)
 
     async def _daily_settle(self) -> None:
         """日终兜底:对当日有消息且未日终结算的用户结算当前批次(不计提前上限,规格 §4.3)。"""
@@ -590,14 +613,25 @@ class CatsitatePlugin(MaiBotPlugin):
             await self._settle_and_log(user_id, stream_id, kind="daily")
 
     async def _settle_and_log(self, user_id: str, stream_id: str, kind: str) -> None:
-        history = await self._fetch_recent_for_history(stream_id, limit=200)
-        result = await self.fav_executor.settle(user_id, stream_id, history, kind=kind)
-        if result["status"] == "ok":
-            logger.info("好感度结算[%s] %s/%s:delta=%s note=%s", kind, user_id, stream_id, result["delta"], result["note"])
-        elif result["status"] == "carried_over":
-            logger.info("好感度日终顺延 %s/%s:%s", user_id, stream_id, result["reason"])
-        else:
-            logger.error("好感度结算失败[%s] %s/%s:%s", kind, user_id, stream_id, result.get("error"))
+        """结算并发防护(最终审查 Important#1):fav_count 与 _daily_settle 可能对同一批次
+        并发发起结算(LLM 秒级延迟窗口内),同一 (user_id, stream_id) 已在结算中直接跳过,防 delta 双计。"""
+
+        key = (user_id, stream_id)
+        if key in self._settling:
+            self.ctx.logger.info("好感度结算[%s] %s/%s 已在结算中,跳过本轮", kind, user_id, stream_id)
+            return
+        self._settling.add(key)
+        try:
+            history = await self._fetch_recent_for_history(stream_id, limit=200)
+            result = await self.fav_executor.settle(user_id, stream_id, history, kind=kind)
+            if result["status"] == "ok":
+                self.ctx.logger.info("好感度结算[%s] %s/%s:delta=%s note=%s", kind, user_id, stream_id, result["delta"], result["note"])
+            elif result["status"] == "carried_over":
+                self.ctx.logger.info("好感度日终顺延 %s/%s:%s", user_id, stream_id, result["reason"])
+            else:
+                self.ctx.logger.error("好感度结算失败[%s] %s/%s:%s", kind, user_id, stream_id, result.get("error"))
+        finally:
+            self._settling.discard(key)
 
     async def _side_llm_call(self, messages: list[dict], model: str, module: str) -> dict:
         """旁路 LLM 统一出口(规格 §4.10):留空 model 用主程序默认模型;用量按模块记账。"""
@@ -626,7 +660,7 @@ class CatsitatePlugin(MaiBotPlugin):
         )
         total = int(rows[0][0] or 0)
         if total == self.config.plugin.llm_daily_call_warning_threshold:
-            logger.warning("旁路 LLM 当日调用次数已达阈值 %s,请注意用量", total)
+            self.ctx.logger.warning("旁路 LLM 当日调用次数已达阈值 %s,请注意用量", total)
 
     async def _fetch_recent(self, stream_id: str, limit: int) -> list[dict]:
         """取近期消息。spike ④ 实测:返回 list;include_binary_data 透传不产生二进制(image 段仅 hash)。"""
@@ -638,8 +672,9 @@ class CatsitatePlugin(MaiBotPlugin):
         """取近期消息并归一化为 build_material 所需形状 {role, user_id, stream_id, text, seq, ts}。
 
         spike ④ 实测:消息 dict 键含 message_id/timestamp/platform/message_info/raw_message/
-        is_*/session_id/processed_plain_text;user 在 message_info.user_info;bot 消息无 is_from_bot 类字段,
-        以 user_id 是否等于 bot 账号判断(spike 未覆盖,以实机联调为准)。
+        is_*/session_id/processed_plain_text;user 在 message_info.user_info。
+        role 硬编码说明:bot 消息识别需实机联调确认(bot 账号 id 字段未在 spike 覆盖),
+        当前全部按 user 处理,群聊 bot 随附分支暂不生效(最终审查 Minor#6)。
         """
 
         raw = await self._fetch_recent(stream_id, limit)
@@ -654,7 +689,7 @@ class CatsitatePlugin(MaiBotPlugin):
             msg_info = m.get("message_info") or {}
             user_info = msg_info.get("user_info") or {}
             history.append({
-                "role": "user",
+                "role": "user",  # bot 账号 id 字段未覆盖,识别待实机联调;当前一律按 user 处理
                 "user_id": str(user_info.get("user_id") or user_info.get("sender_id") or ""),
                 "stream_id": stream_id,
                 "text": text,

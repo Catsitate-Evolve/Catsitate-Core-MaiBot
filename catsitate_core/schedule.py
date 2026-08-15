@@ -224,6 +224,20 @@ def threshold_met(level_name: str, threshold_level: str) -> bool:
     return LEVEL_INDEX.get(level_name, 0) >= LEVEL_INDEX.get(threshold_level, 99)
 
 
+def build_proactive_intent(window: dict, stream: dict, day_overview: str) -> str:
+    """主动发言指示 prompt(trigger 的 intent):日程事实 + 目标流好感度,话术交主程序。"""
+
+    plan = "是" if window.get("plan_speak") else "否"
+    topic = f",主题:{window.get('topic')}" if window.get("topic") else ""
+    return (
+        f"现在是你的日程「{window.get('activity') or '自由时间'}」时间(计划发言:{plan}{topic})。"
+        f"全天概览:{day_overview}。"
+        f"对方(流 {stream.get('stream_id')},用户 {stream.get('user_id')})与你的关系:等级「{stream.get('level_name', '陌生')}」"
+        f",注记:{stream.get('note') or '无'}。"
+        "请结合日程与你们的关系,自然决定是否主动发起聊天;想说话就用自己的方式说,不想说就保持沉默。"
+    )
+
+
 ACTIVITY_WINDOW_LIMIT = 8
 _EDIT_LIMIT_REASON = "今天的日程已经排得满满当当了,再排下去会累坏的,明天再安排吧。"
 

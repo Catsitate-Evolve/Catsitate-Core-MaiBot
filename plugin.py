@@ -24,7 +24,7 @@ from maibot_sdk.types import HookMode, HookOrder, ToolParameterInfo
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 
 from catsitate_core.config import CatsitateConfig
-from catsitate_core.favorability import BatchEngine, SettleExecutor, build_favorability_block
+from catsitate_core.favorability import LEVELS, LEVEL_INDEX, BatchEngine, SettleExecutor, build_favorability_block
 from catsitate_core.image_relook import build_relook_prompt, find_image_segment
 from catsitate_core.inject import InjectAssembler, InjectionBlock
 from catsitate_core.llm_provider import build_side_prompt
@@ -37,7 +37,15 @@ from catsitate_core.reply_guard import (
     parse_sentinel_response,
 )
 from catsitate_core.decay import last_bot_interaction_time
-from catsitate_core.schedule import current_window
+from catsitate_core.schedule import (
+    DEFAULT_TEMPLATE_SCHEDULE,
+    _materialize_template,
+    apply_schedule_edit,
+    build_proactive_intent,
+    current_window,
+    next_window,
+    threshold_met,
+)
 from catsitate_core.services.scheduler import Scheduler
 from catsitate_core.sleep import is_goodnight_utterance, parse_sleep_confirm_response
 from catsitate_core.storage import JsonSnapshot, SQLiteStore
@@ -137,6 +145,12 @@ class CatsitatePlugin(MaiBotPlugin):
         self._scheduler.register("daily_settle", max(self.config.favorability.window_hours, 1) * 3600, self._daily_settle)
         self._scheduler.register("daily_decay", 24 * 3600, self._daily_decay)  # 每日一次(与日终结算同 tick)
         self._scheduler.register("sleep_tick", 60, self._sleep_tick)
+        self._schedule_generated: bool = False  # 当天日程是否为 LLM 生成(模板撑场为 False)
+        self._schedule_tick_fired: dict[str, str] = {}  # day -> 已触发窗口 mark(day|start)
+        self._greet_sent: dict[str, str] = {}  # day|user_id -> day(2.3 每用户每日一次)
+        self._remind_fired: dict[str, str] = {}  # remind:<id> -> 触发时刻
+        self._scheduler.register("schedule_tick", 60, self._schedule_tick)
+        self._scheduler.register("remind_fallback", 300, self._remind_fallback_tick)
         self._scheduler.start()
         # 首次环境数据立即刷新一次,避免环境块空缺到首个定时点(45 分钟)
         self._spawn_background_task(self._refresh_environment())
@@ -211,6 +225,41 @@ class CatsitatePlugin(MaiBotPlugin):
             return "当前没有未过期的备忘。"
         lines = [f"- {e['content']}(剩余 {e['remaining_hours']:.1f} 小时)" for e in entries]
         return "\n".join(lines)
+
+    @Tool(
+        "update_schedule",
+        description="增/删/改 bot 自己今天的日程安排(活动窗口)。活动最多 8 个;睡眠窗口不可删除、时间修改受最短/最长睡眠约束。",
+        brief_description="修改今日日程",
+        parameters=[
+            ToolParameterInfo(name="action", param_type="string", description="add(新增活动)/update(修改窗口)/delete(删除活动窗口)", required=True),
+            ToolParameterInfo(name="window_index", param_type="integer", description="update/delete 时的窗口序号(从 0 开始)", required=False),
+            ToolParameterInfo(name="window", param_type="string", description='活动窗口 JSON:{"kind":"daily"或"greeting","start":"YYYY-MM-DDTHH:MM","end":"...","activity":"活动描述","plan_speak":true/false,"topic":"主题"}', required=False),
+        ],
+        visibility="visible",
+    )
+    async def update_schedule(self, action: str = "", window_index: int = 0, window: str = "", **kwargs: Any) -> str:
+        del kwargs
+        if not self.config.plugin.enabled or not self.config.schedule.enabled:
+            return "日程模块未启用。"
+        if not self._schedule_data:
+            return "今天还没有日程,等睡前一并安排吧。"
+        new_window = None
+        if window:
+            try:
+                new_window = json.loads(window)
+            except json.JSONDecodeError:
+                return "window 参数不是合法 JSON。"
+        data, err, history = apply_schedule_edit(
+            self._schedule_data, action, window_index if action in ("update", "delete") else None, new_window,
+            self._schedule_edit_history,
+            min_sleep=self.config.sleep.min_sleep_minutes, max_sleep=self.config.sleep.max_sleep_minutes,
+        )
+        if err:
+            return err
+        self._schedule_data = data
+        self._schedule_edit_history = history
+        self._persist_schedule()
+        return "日程已更新。"
 
     @Tool(
         "msg_react",
@@ -580,6 +629,22 @@ class CatsitatePlugin(MaiBotPlugin):
             env = self._environment_block(stream_id)
             if env:
                 blocks.append(InjectionBlock("environment", env[0], env[1]))
+        if cfg.schedule.enabled and cfg.time_aware.enabled:
+            now_iso = datetime.now().strftime("%Y-%m-%dT%H:%M")
+            win = current_window(self._schedule_data, now_iso)
+            if win and win.get("kind") != "sleep":
+                line = f"[日程] {win.get('activity') or '自由时间'}"
+                mark = f"{datetime.now().strftime('%Y-%m-%d')}|{win.get('start')}"
+                if mark in self._schedule_tick_fired:
+                    line += "(该窗口已过)"
+                nxt = next_window(self._schedule_data, now_iso)
+                if nxt:
+                    label = "睡觉" if nxt.get("kind") == "sleep" else (nxt.get("activity") or "自由时间")
+                    line += f";接下来:{label}"
+                due_today = [e for e in self.memo.due_on(datetime.now().strftime("%Y-%m-%d"))]
+                if due_today:
+                    line += ";" + ";".join(f"备忘:{e['content']}" for e in due_today[:3])
+                blocks.append(InjectionBlock("schedule", f"sch:{win.get('start')}|{'fired' if mark in self._schedule_tick_fired else ''}", line))
         if cfg.inject.memo_enabled and cfg.memo.enabled:
             # 当前流维度 + 当前说话人维度各取 3 条,按 id 去重后合计 ≤ inject_max(规格 §4.4)
             by_stream = self.memo.read(stream_id, "", limit=3)
@@ -859,9 +924,255 @@ class CatsitatePlugin(MaiBotPlugin):
         self.ctx.logger.info("睡醒回顾已生成: %s", path)
 
     async def _generate_tomorrow_schedule(self) -> None:
-        """次日日程生成钩子占位(Task 11 实现):入睡时触发生成次日日程。"""
+        """入睡确认:生成次日日程(睡眠期间唯一 LLM 调用);失败用默认模板并告警。"""
 
-        self.ctx.logger.info("次日日程生成钩子触发(占位实现,Task 11 覆盖)")
+        now = datetime.now()
+        target = (now + timedelta(days=1)).strftime("%Y-%m-%d")
+        due = [f"{e['content']}({e['remind_at'][11:16]})" for e in self.memo.due_on(target)]
+        try:
+            data, err = await self.schedule_gen.generate(
+                persona=await self._persona(), today_review=self._today_review_text(),
+                weather_text=self._weather_text(), fav_summary=self._fav_summary_text(),
+                due_memos=due, target_date=target,
+            )
+        except Exception:
+            self.ctx.logger.exception("次日日程生成异常,使用默认作息模板")
+            data, err = _materialize_template(DEFAULT_TEMPLATE_SCHEDULE, target), "异常"
+        if err:
+            self.ctx.logger.warning("次日日程生成:%s(模板兜底)", err)
+        self._schedule_data = data
+        self._schedule_generated = True
+        self._schedule_edit_history = []
+        self._persist_schedule()
+        self.ctx.logger.info("次日日程已生成:%s", json.dumps(data, ensure_ascii=False)[:200])
+
+    # ---------- 日程窗口 trigger(trigger 模式:插件不 send,只指示主程序) ----------
+
+    async def _schedule_tick(self) -> None:
+        if not self.config.plugin.enabled or not self.config.schedule.enabled:
+            return
+        if self.sleep.is_sleeping():
+            return  # 绝对静默,跳过窗口执行
+        now = datetime.now()
+        day = now.strftime("%Y-%m-%d")
+        self._prune_day_keys(day)
+        if not self._schedule_data or self._schedule_data.get("date") != day:
+            self._schedule_data = _materialize_template(DEFAULT_TEMPLATE_SCHEDULE, day)  # 首日模板撑场(非生成)
+            self._schedule_generated = False
+        win = current_window(self._schedule_data, now.strftime("%Y-%m-%dT%H:%M"))
+        if not win or win.get("kind") == "sleep":
+            return
+        mark = f"{day}|{win.get('start')}"
+        if self._schedule_tick_fired.get(day) == mark:
+            return  # 同窗口只触发一次
+        if self._speak_counts.get(day, 0) >= self.config.schedule.daily_speak_limit:
+            return
+        # greeting 窗口:先 2.3 后 2.1(每窗口最多一次)
+        if win.get("kind") == "greeting" and await self._try_private_greet(day, win):
+            self._schedule_tick_fired[day] = mark
+            return
+        await self._window_trigger(day, win)
+        self._schedule_tick_fired[day] = mark
+
+    async def _window_trigger(self, day: str, win: dict) -> None:
+        """2.1 窗口 trigger:门槛过滤 → 活跃流排序取前 n → 每流 trigger(计 1)。"""
+
+        threshold = self.config.schedule.greet_threshold_level if win.get("kind") == "greeting" else self.config.schedule.speak_threshold_level
+        candidates = await self._active_streams_over(threshold, day)
+        if not candidates:
+            return
+        overview = self._day_overview_text(win)
+        limit = max(1, self.config.schedule.speak_max_streams_per_window)
+        for target in candidates[:limit]:
+            if self._speak_counts.get(day, 0) >= self.config.schedule.daily_speak_limit:
+                return
+            intent = build_proactive_intent(win, target, overview)
+            try:
+                await self.ctx.maisaka.proactive.trigger(
+                    stream_id=target["stream_id"], intent=intent,
+                    reason=f"日程窗口:{win.get('activity')}", priority="",
+                )
+            except Exception:
+                self.ctx.logger.exception("主动任务触发失败(stream=%s)", target["stream_id"])
+                continue
+            self._speak_counts[day] = self._speak_counts.get(day, 0) + 1
+            self.ctx.logger.info("主动触发[%s] -> %s:%s", day, target["stream_id"], (win.get("activity") or "")[:40])
+
+    async def _active_streams_over(self, threshold: str, day: str) -> list[dict]:
+        """候选流:batch_counter.last_bump 近 24h 的活跃流,经等级门槛过滤,按(等级,最近活动)降序。
+
+        私聊流 user_id 取流信息 user_id,群聊流取最近非 bot 说话人(复用 _resolve_speaker 近似);
+        无当前说话人的流跳过(空 user_id 无法作 trigger 目标)。"""
+
+        del day  # 活跃判定仅用 last_bump 近 24h(签名保持 brief 约定)
+        cutoff = (datetime.now() - timedelta(hours=24)).strftime("%Y-%m-%dT%H:%M")
+        rows = self.store.query(
+            "SELECT stream_id, MAX(last_bump) FROM batch_counter WHERE last_bump >= ? GROUP BY stream_id",
+            (cutoff,),
+        )
+        candidates = []
+        for stream_id, last_bump in rows:
+            user_id = await self._resolve_speaker(stream_id)
+            if not user_id:
+                continue  # 无当前说话人则跳过
+            row = self.fav_engine.get_level(user_id, stream_id)
+            level_name = LEVELS[row["level"]] if row else "陌生"
+            if not threshold_met(level_name, threshold):
+                continue
+            candidates.append({
+                "stream_id": stream_id,
+                "user_id": user_id,
+                "level_name": level_name,
+                "note": row["note"] if row else "",
+                "_level": LEVEL_INDEX[level_name],
+                "_recent": last_bump or "",
+            })
+        candidates.sort(key=lambda c: (c["_level"], c["_recent"]), reverse=True)
+        return [{k: c[k] for k in ("stream_id", "user_id", "level_name", "note")} for c in candidates]
+
+    async def _try_private_greet(self, day: str, win: dict) -> bool:
+        """2.3 主动私聊:挚友级私聊流 trigger 问候语境指示;发送成功返回 True(本窗口不再走 2.1)。"""
+
+        if self._speak_counts.get(day, 0) >= self.config.schedule.daily_speak_limit:
+            return False
+        target = None
+        for stream_id, info in self._stream_cache.items():
+            if str(info.get("is_group_session") or "").lower().startswith(("true", "1")):
+                continue
+            user_id = str(info.get("user_id") or "")
+            if not user_id or self._greet_sent.get(f"{day}|{user_id}"):
+                continue
+            row = self.fav_engine.get_level(user_id, stream_id)
+            level_name = LEVELS[row["level"]] if row else "陌生"
+            if threshold_met(level_name, self.config.schedule.private_threshold_level):
+                target = (user_id, stream_id, level_name, row["note"] if row else "")
+                break
+        if target is None:
+            return False
+        user_id, stream_id, level_name, note = target
+        intent = (
+            f"现在是你的日程「{win.get('activity')}」时间,{user_id} 是你{level_name}级的好友(注记:{note or '无'})。"
+            "想问候就用自己的方式轻轻说一句,不想说就保持沉默。"
+        )
+        try:
+            await self.ctx.maisaka.proactive.trigger(
+                stream_id=stream_id, intent=intent,
+                reason=f"日程问候窗口:{win.get('activity')}", priority="",
+            )
+        except Exception:
+            self.ctx.logger.exception("主动私聊触发失败(user=%s)", user_id)
+            return False
+        self._greet_sent[f"{day}|{user_id}"] = day
+        self._speak_counts[day] = self._speak_counts.get(day, 0) + 1
+        self.ctx.logger.info("主动私聊触发[%s] -> %s", day, user_id)
+        return True
+
+    async def _remind_fallback_tick(self) -> None:
+        """备忘提醒独立兜底:无生成日程(模板撑场)时到点注入备忘归属流;睡眠中不执行。"""
+
+        if not self.config.plugin.enabled or self.config.memo.enabled is False:
+            return
+        if self.sleep.is_sleeping():
+            return
+        if self._schedule_data and self._schedule_generated and self._schedule_data.get("date") == datetime.now().strftime("%Y-%m-%d"):
+            return  # 有当天生成的有效日程 → 提醒走日程收录,不重复兜底
+        now = datetime.now().strftime("%Y-%m-%dT%H:%M")
+        due = [e for e in self.memo.due_on(datetime.now().strftime("%Y-%m-%d")) if e["remind_at"][:16] <= now and e["stream_id"]]
+        for entry in due:
+            key = f"remind:{entry['id']}"
+            if key in self._remind_fired:
+                continue
+            self._remind_fired[key] = now
+            try:
+                await self.ctx.maisaka.context.append(
+                    stream_id=entry["stream_id"],
+                    segments=[{"type": "text", "text": f"[备忘提醒] {entry['content']}"}],
+                )
+            except Exception:
+                self.ctx.logger.exception("备忘提醒注入失败(stream=%s)", entry["stream_id"])
+
+    # ---------- 日程辅助 ----------
+
+    def _day_overview_text(self, win: dict) -> str:
+        """全天概览:『今天:活动1→活动2→…』(睡眠窗口记为 睡觉;win 为当前窗口,仅作上下文)。"""
+
+        del win
+        parts = []
+        for w in (self._schedule_data.get("windows") or []):
+            if w.get("kind") == "sleep":
+                parts.append("睡觉")
+            else:
+                parts.append(w.get("activity") or "自由时间")
+        return "今天:" + "→".join(parts)
+
+    def _weather_text(self) -> str:
+        """当前天气文本:读 weather_snapshot 快照(环境刷新落库);无则 '无数据'。"""
+
+        rows = self.store.query(
+            "SELECT data FROM weather_snapshot WHERE id = 1 ORDER BY fetched_at DESC LIMIT 1"
+        )
+        if not rows:
+            return "无数据"
+        try:
+            data = json.loads(rows[0][0])
+            return f"温度 {data.get('temperature_2m')}°C(天气码 {data.get('weather_code')})"
+        except (json.JSONDecodeError, TypeError):
+            return "无数据"
+
+    def _fav_summary_text(self) -> str:
+        """重要用户好感度汇总:各用户跨流最高等级『u:等级(分数)』,按等级降序。"""
+
+        rows = self.store.query(
+            "SELECT user_id, MAX(level), MAX(score) FROM favorability GROUP BY user_id ORDER BY MAX(level) DESC, MAX(score) DESC"
+        )
+        if not rows:
+            return "无"
+        return ";".join(f"{r[0]}:{LEVELS[r[1]]}({r[2]}分)" for r in rows)
+
+    def _today_review_text(self) -> str:
+        """今日回顾:睡醒回顾报告最新一篇的摘要(文件读取);无则 '无'。"""
+
+        report_dir = Path("/MaiMBot/data/plugins/catsitate.core/sleep_review/reports")
+        try:
+            files = sorted(report_dir.glob("sleep_review_*.md"))
+        except OSError:
+            return "无"
+        if not files:
+            return "无"
+        try:
+            return files[-1].read_text(encoding="utf-8")[:200]
+        except OSError:
+            return "无"
+
+    def _persist_schedule(self) -> None:
+        """日程落盘:data_dir/schedule.json(含修改历史与生成标记)。"""
+
+        path = self.ctx.paths.data_dir / "schedule.json"
+        try:
+            path.write_text(json.dumps({
+                "data": self._schedule_data,
+                "edit_history": self._schedule_edit_history,
+                "generated": self._schedule_generated,
+                "saved_at": datetime.now().strftime("%Y-%m-%dT%H:%M:%S"),
+            }, ensure_ascii=False, indent=2), encoding="utf-8")
+        except OSError:
+            self.ctx.logger.exception("日程落盘失败")
+
+    def _prune_day_keys(self, day: str) -> None:
+        """日键清理:只保留当天的状态条目(缓存纪律,防跨天无限增长)。"""
+
+        for key in list(self._schedule_tick_fired):
+            if key != day:
+                del self._schedule_tick_fired[key]
+        for key in list(self._speak_counts):
+            if key != day:
+                del self._speak_counts[key]
+        for key in list(self._greet_sent):
+            if not key.startswith(f"{day}|"):
+                del self._greet_sent[key]
+        for key, value in list(self._remind_fired.items()):
+            if not str(value).startswith(day):
+                del self._remind_fired[key]
 
     async def _settle_and_log(self, user_id: str, stream_id: str, kind: str) -> None:
         """结算并发防护(最终审查 Important#1):fav_count 与 _daily_settle 可能对同一批次

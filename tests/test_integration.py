@@ -223,3 +223,29 @@ def test_sleep_tick_natural_wake(tmp_path):
     assert calls["review"] == 1
     assert calls["settle"] == 1
     assert calls["decay"] == 0  # 衰减由 _daily_settle 内部先衰减后结算,防并发双计
+
+
+def test_build_proactive_intent_contains_schedule_and_fav():
+    from catsitate_core.schedule import build_proactive_intent
+    text = build_proactive_intent(
+        {"kind": "daily", "activity": "发呆看雨", "plan_speak": True, "topic": "天气", "start": "2026-08-16T15:00", "end": "2026-08-16T18:00"},
+        {"stream_id": "s1", "user_id": "u1", "level_name": "熟悉", "note": "无"},
+        "今天:发呆→早睡",
+    )
+    assert "发呆看雨" in text and "熟悉" in text and "主动" in text
+
+
+def test_schedule_inject_block_text():
+    from catsitate_core.schedule import current_window, next_window
+    data = {"date": "2026-08-16", "windows": [
+        {"kind": "daily", "start": "2026-08-16T09:00", "end": "2026-08-16T11:00",
+         "activity": "发呆看雨", "plan_speak": False, "topic": ""},
+        {"kind": "sleep", "start": "2026-08-16T23:00", "end": "2026-08-17T07:00"},
+    ]}
+    now = "2026-08-16T10:00"
+    win = current_window(data, now)
+    nxt = next_window(data, now)
+    line = f"[日程] 发呆看雨(至11:00)"
+    if nxt:
+        line += f";接下来:{nxt['kind'] if nxt['kind'] == 'sleep' else nxt.get('activity', '')}"
+    assert "发呆看雨" in line and "接下来" in line

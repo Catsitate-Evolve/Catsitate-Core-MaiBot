@@ -54,3 +54,5 @@ def test_parse_choice_out_of_whitelist_rejected(tmp_path):
 def test_parse_choice_invalid_json(tmp_path):
     result = parse_choice_resp("随便回一句", WHITELIST)
     assert result[0] is None and result[1]
+    result2 = parse_choice_resp("[]", WHITELIST)  # 合法 JSON 非对象同样拒绝
+    assert result2[0] is None and result2[1]

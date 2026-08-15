@@ -25,6 +25,8 @@ def parse_choice_resp(response: str, whitelist: list[str]) -> tuple[str | None, 
         data = json.loads(cleaned)
     except (json.JSONDecodeError, TypeError):
         return None, "LLM 未返回合法 JSON"
+    if not isinstance(data, dict):
+        return None, "LLM 返回非对象 JSON"
     emoji = data.get("emoji_id")
     if not isinstance(emoji, str):
         return None, "LLM 未给出 emoji_id 字段"

@@ -2258,6 +2258,8 @@ def test_parse_choice_out_of_whitelist_rejected(tmp_path):
 def test_parse_choice_invalid_json(tmp_path):
     result = parse_choice_resp("随便回一句", WHITELIST)
     assert result[0] is None and result[1]
+    result2 = parse_choice_resp("[]", WHITELIST)  # 合法 JSON 非对象同样拒绝
+    assert result2[0] is None and result2[1]
 ```
 
 - [ ] **Step 2: 运行测试确认失败**
@@ -2295,6 +2297,8 @@ def parse_choice_resp(response: str, whitelist: list[str]) -> tuple[str | None, 
         data = json.loads(cleaned)
     except (json.JSONDecodeError, TypeError):
         return None, "LLM 未返回合法 JSON"
+    if not isinstance(data, dict):
+        return None, "LLM 返回非对象 JSON"
     emoji = data.get("emoji_id")
     if not isinstance(emoji, str):
         return None, "LLM 未给出 emoji_id 字段"
@@ -2652,6 +2656,8 @@ def test_parse_sentinel_response():
 def test_parse_sentinel_response_invalid():
     ok, reason = parse_sentinel_response("无法判断")
     assert ok is None and reason
+    ok2, reason2 = parse_sentinel_response("[]")  # 合法 JSON 非对象同样拒绝
+    assert ok2 is None and reason2
 ```
 
 - [ ] **Step 2: 运行测试确认失败**
@@ -2753,6 +2759,8 @@ def parse_sentinel_response(response: str) -> tuple[bool | None, str]:
         data = json.loads(cleaned)
     except (json.JSONDecodeError, TypeError):
         return None, "哨兵判定 JSON 解析失败"
+    if not isinstance(data, dict):
+        return None, "哨兵判定返回非对象 JSON"
     if not isinstance(data.get("should_send"), bool):
         return None, "哨兵判定缺少 should_send"
     return data["should_send"], str(data.get("reason") or "")

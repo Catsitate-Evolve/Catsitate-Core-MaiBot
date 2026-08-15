@@ -13,6 +13,7 @@ Catsitate 的 MaiBot 核心人格行为插件。仓库地址:https://github.com/
 
 - 单元测试:`cd plugins/catsitate_core_maibot && python3 -m pytest tests/ -v`(不依赖 MaiBot)
 - 集成冒烟:同目录 `python3 -m pytest tests/test_integration.py -v`
+- 依赖:若未安装 pytest-asyncio(async 用例会被静默跳过),先执行 `python3 -m pip install --break-system-packages pytest-asyncio`
 - 实机验收:按 `docs/acceptance-checklist.md` 逐项勾选
 
 ## 缓存与用量观测

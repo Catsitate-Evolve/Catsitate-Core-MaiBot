@@ -2617,7 +2617,7 @@ def test_should_backfill_no_context_tool_called():
 def test_merge_tool_results_sorted_and_truncated():
     results = {"memo_read": "备忘甲", "query_memory": "记忆乙"}
     merged = merge_tool_results(results)
-    assert merged.index("query_memory") < merged.index("memo_read")  # 工具名排序
+    assert merged.index("memo_read") < merged.index("query_memory")  # 工具名升序
     long_results = {f"tool{i}": "x" * 100 for i in range(10)}
     assert len(merge_tool_results(long_results, max_chars=400)) <= 400
 
@@ -2629,7 +2629,7 @@ def test_backfill_reply_items_only_targets_reply():
         {"tool_name": "reply", "arguments": {"reply_reference": "已有引用"}},
     ]
     out = backfill_reply_items(items, {"memo_read": "备忘内容"}, CTX_TOOLS, ["memo_read"], "")
-    assert out[0]["arguments"]["reply_reference"] == "备忘内容"
+    assert out[0]["arguments"]["reply_reference"] == "[memo_read] 备忘内容"  # 合并摘要含工具名前缀
     assert "reply_reference" not in out[1]["arguments"]  # 其它工具不动
     assert out[2]["arguments"]["reply_reference"] == "已有引用"  # 已有引用不动
 

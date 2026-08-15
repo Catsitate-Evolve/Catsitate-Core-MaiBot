@@ -46,7 +46,8 @@ class SpikePlugin(MaiBotPlugin):
                         if isinstance(part, dict) and part.get("type") == "text":
                             user_texts.append(str(part.get("text"))[:50])
             if user_texts:
-                probe_text += f" | last_user_texts={user_texts[-2:]}"
+                real = [t for t in user_texts if not t.startswith("<system-reminder") and not t.startswith("时间:") and "spike" not in t]
+                probe_text += f" | last_user_texts={real[-2:]}"
             probe = {
                 "item_type": "UserMessageItem",
                 "meta": {"item_id": "spike-probe-1", "logical_turn_id": None, "timestamp": datetime.now().isoformat()},

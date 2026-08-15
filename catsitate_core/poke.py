@@ -6,7 +6,6 @@ from datetime import datetime
 from typing import Callable
 
 from .config import PokeSection
-from .favorability import LEVELS
 from .storage import JsonSnapshot
 
 _ISO = "%Y-%m-%dT%H:%M:%S"
@@ -54,16 +53,11 @@ class PokeEngine:
     def can_poke(
         self,
         user_id: str,
-        best_level_row: dict | None,
         now: Callable[[], datetime] | None = None,
     ) -> tuple[bool, str]:
-        """主动戳前置校验:跨流最高等级 ≥ 门槛 且 每用户冷却通过。"""
+        """主动戳前置校验:仅每用户冷却(用户已取消好感度等级门槛)。"""
 
         now_fn = now or datetime.now
-        level = best_level_row["level"] if best_level_row else 0
-        min_level = LEVELS.index(self.config.min_level_for_poke)
-        if level < min_level:
-            return False, f"好感度「{LEVELS[level]}」低于门槛「{self.config.min_level_for_poke}」"
         data = self.snapshot.load()
         last_str = data.get(user_id)
         if last_str:

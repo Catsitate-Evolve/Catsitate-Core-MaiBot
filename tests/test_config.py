@@ -25,7 +25,6 @@ def test_config_defaults():
     assert cfg.memo.entry_max_chars == 80
     assert cfg.memo.inject_max == 5
     assert cfg.msg_react.per_stream_cooldown_seconds == 30
-    assert cfg.poke.min_level_for_poke == "熟悉"
     assert cfg.poke.cooldown_seconds == 600
     assert cfg.reply_guard.sentinel_enabled is False
     assert "memo_read" in cfg.reply_guard.context_tools

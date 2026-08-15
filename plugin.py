@@ -217,8 +217,7 @@ class CatsitatePlugin(MaiBotPlugin):
         del kwargs
         if not self.config.plugin.enabled or not self.config.poke.poke_tool_enabled:
             return "主动戳工具未启用。"
-        best = self.fav_engine.get_best_level_for_user(user_id)
-        ok, reason = self.poke.can_poke(user_id, best)
+        ok, reason = self.poke.can_poke(user_id)
         if not ok:
             return reason
         api_result = await self.ctx.api.call("adapter.napcat.message.send_poke", user_id=user_id, stream_id=stream_id)

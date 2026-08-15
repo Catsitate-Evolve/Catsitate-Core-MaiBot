@@ -82,9 +82,9 @@ def test_full_assembly_smoke(tmp_path):
     choice, err = parse_choice_resp('{"emoji_id": "em_laugh"}', ["em_laugh", "em_hug"])
     assert choice == "em_laugh" and err == ""
 
-    # 主动戳校验(结算后 2 分仍是"陌生",门槛"熟悉"应拒绝)
-    ok, reason = poke.can_poke("u1", engine.get_best_level_for_user("u1"), now=lambda: NOW)
-    assert ok is False and "熟悉" in reason
+    # 主动戳校验(已取消等级门槛,仅冷却)
+    ok, reason = poke.can_poke("u1", now=lambda: NOW)
+    assert ok is True and reason == ""
 
     # reply 补传
     items = [{"tool_name": "reply", "arguments": {"reply_reference": ""}}]

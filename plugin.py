@@ -679,6 +679,9 @@ class CatsitatePlugin(MaiBotPlugin):
                 "seq": i,
                 "ts": self._normalize_ts(m.get("timestamp")),
             })
+        if bot_id:
+            bot_n = sum(1 for h in history if h["role"] == "bot")
+            self.ctx.logger.info("结算取数: 共 %d 条,其中 bot 发言 %d 条(bot_user_id=%s)", len(history), bot_n, bot_id)
         return history
 
     @staticmethod

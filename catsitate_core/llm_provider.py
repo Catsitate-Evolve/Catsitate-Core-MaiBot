@@ -64,6 +64,16 @@ SIDE_TEMPLATES: dict[str, dict] = {
             "不要输出其它内容。"
         ),
     },
+    "speak": {
+        "version": 1,
+        "system": (
+            "你是发言决策助手。根据「bot 人设」、当前窗口活动、全天概览、当前天气与候选流列表,"
+            "决定 bot 是否主动发言;若发言,从候选流列表中选择一个作为发言目标(单流)。\n"
+            '严格输出 JSON:{"speak": true/false, "stream_index": 候选流序号(不发言可为 0), "text": "发言文本(不发言为空)"}。\n'
+            "speak 为 false 表示不发言,此时 text 必须为空;speak 为 true 时 stream_index 必须指向候选流列表中的序号。"
+            "不要输出其它内容。"
+        ),
+    },
 }
 
 

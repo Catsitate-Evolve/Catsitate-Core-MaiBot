@@ -65,14 +65,14 @@ class SpikePlugin(MaiBotPlugin):
                 info += f"|receive.{key}={type(val).__name__}(keys={list(val.keys())[:12]})"
                 break
         _RECEIVE_INFO.append(info)
-        # 验证改写能力:改写 message.raw_message 加前缀,看下游是否可见
+        # 验证改写能力:raw_message 是段列表,头部插入 text 段加前缀,看下游是否可见
         msg = kwargs.get("message")
         if isinstance(msg, dict) and "raw_message" in msg:
-            raw = str(msg.get("raw_message") or "")
-            if not raw.startswith("[spike改写]"):
-                _RECEIVE_INFO.append(f"receive_raw(前40)={raw[:40]}")
+            raw = msg.get("raw_message")
+            if isinstance(raw, list) and not any(isinstance(s, dict) and s.get("text") == "[spike改写]" for s in raw):
+                _RECEIVE_INFO.append(f"receive_raw(前60)={str(raw)[:60]}")
                 modified = dict(kwargs)
-                modified["message"] = {**msg, "raw_message": "[spike改写]" + raw}
+                modified["message"] = {**msg, "raw_message": [{"type": "text", "text": "[spike改写]"}] + raw}
                 return {"action": "continue", "modified_kwargs": modified}
         return {"action": "continue", "modified_kwargs": kwargs}
 

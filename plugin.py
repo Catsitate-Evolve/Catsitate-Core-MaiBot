@@ -156,13 +156,15 @@ class CatsitatePlugin(MaiBotPlugin):
             ToolParameterInfo(name="stream_id", param_type="string", description="关联聊天流,默认当前流", required=False),
             ToolParameterInfo(name="user_id", param_type="string", description="关联用户,默认当前说话人", required=False),
             ToolParameterInfo(name="ttl_hours", param_type="number", description="单条有效期小时数,缺省用默认", required=False),
+            ToolParameterInfo(name="remind_at", param_type="string",
+                              description="可选提醒时间,ISO 格式如 2026-08-16T19:00;仅日程联动用", required=False),
         ],
         visibility="visible",
     )
     async def memo_write(self, content: str = "", stream_id: str = "", user_id: str = "", ttl_hours: float | None = None, **kwargs: Any) -> str:
         if not self.config.plugin.enabled or not self.config.memo.tool_enabled:
             return "备忘录工具未启用。"
-        ok, msg = self.memo.write(content, stream_id or str(kwargs.get("stream_id") or ""), user_id or str(kwargs.get("user_id") or ""), ttl_hours)
+        ok, msg = self.memo.write(content, stream_id or str(kwargs.get("stream_id") or ""), user_id or str(kwargs.get("user_id") or ""), ttl_hours, remind_at=str(kwargs.get("remind_at") or ""))
         return msg if ok else f"备忘写入失败:{msg}"
 
     @Tool(

@@ -31,13 +31,19 @@ class MemoService:
             )
             """
         )
+        cols = [r[1] for r in self.store.query("PRAGMA table_info(memo)")]
+        if "remind_at" not in cols:
+            self.store.execute("ALTER TABLE memo ADD COLUMN remind_at TEXT NOT NULL DEFAULT ''")
 
+    # 保持一期位置参数签名(stream_id/user_id/ttl_hours 位置必填),仅追加 remind_at 位置参数——
+    # 一期调用方(memo_write 工具/命令)无需改动
     def write(
         self,
         content: str,
         stream_id: str,
         user_id: str,
         ttl_hours: float | None,
+        remind_at: str = "",
         now: Callable[[], datetime] | None = None,
     ) -> tuple[bool, str]:
         """写入备忘。失败返回 (False, 原因) 供工具/命令展示给用户。"""
@@ -57,10 +63,24 @@ class MemoService:
         current = now_fn()
         expires = current + timedelta(hours=ttl_hours)
         self.store.execute(
-            "INSERT INTO memo (content, stream_id, user_id, expires_at, created_at) VALUES (?, ?, ?, ?, ?)",
-            (text, stream_id or "", user_id or "", expires.strftime(_ISO), current.strftime(_ISO)),
+            "INSERT INTO memo (content, stream_id, user_id, expires_at, created_at, remind_at) VALUES (?, ?, ?, ?, ?, ?)",
+            (text, stream_id or "", user_id or "", expires.strftime(_ISO), current.strftime(_ISO), str(remind_at or "")),
         )
         return True, f"已记下({ttl_hours:.0f} 小时内有效)"
+
+    def due_on(self, day: str, *, now: Callable[[], datetime] | None = None) -> list[dict]:
+        """某自然日(YYYY-MM-DD)到期的备忘(未过期),按到期时刻升序。"""
+
+        now_fn = now or datetime.now
+        rows = self.store.query(
+            "SELECT id, content, stream_id, user_id, remind_at FROM memo "
+            "WHERE remind_at LIKE ? AND expires_at > ? ORDER BY remind_at ASC",
+            (f"{day}%", now_fn().strftime(_ISO)),
+        )
+        return [
+            {"id": r[0], "content": r[1], "stream_id": r[2], "user_id": r[3], "remind_at": r[4]}
+            for r in rows
+        ]
 
     def read(
         self,

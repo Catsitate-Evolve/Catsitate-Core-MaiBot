@@ -64,3 +64,17 @@ def test_cleanup_removes_expired(tmp_path):
     removed = svc.cleanup(now=lambda: NOW + timedelta(hours=2))
     assert removed == 1
     assert svc.read("s", "u", 5, now=lambda: NOW + timedelta(hours=2)) == []
+
+
+def test_memo_remind_at_write_and_due(tmp_path):
+    svc, _ = make_service(tmp_path)
+    svc.write("周四交作业", stream_id="s1", user_id="u1", remind_at="2026-08-16T19:00:00", ttl_hours=None, now=lambda: NOW)
+    due = svc.due_on("2026-08-16", now=lambda: NOW)
+    assert [e["content"] for e in due] == ["周四交作业"]
+    assert svc.due_on("2026-08-17", now=lambda: NOW) == []
+
+
+def test_memo_remind_at_optional_default_empty(tmp_path):
+    svc, _ = make_service(tmp_path)
+    svc.write("普通备忘", stream_id="s1", user_id="u1", ttl_hours=None, now=lambda: NOW)
+    assert svc.due_on("2099-01-01", now=lambda: NOW) == []

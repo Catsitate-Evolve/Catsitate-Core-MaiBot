@@ -334,7 +334,7 @@ class SettleExecutor:
         if kind == "daily" and len([m for m in material if "(用户)" in m]) < self.engine.config.daily_settle_min:
             return {"status": "carried_over", "reason": f"用户消息不足 {self.engine.config.daily_settle_min} 条,顺延"}
         # 稳定段 = 判定指令(system 模板)+ 5 级规则(配置,stable_ctx);变量尾 = 批次素材
-        level_rules = self.engine.config.level_rules.splitlines()
+        level_rules = self.engine.config.level_rules_list()
         messages, _cache_key = build_side_prompt("favorability", level_rules, material)
         try:
             result = await self.llm_call(messages, model)
@@ -356,19 +356,6 @@ class SettleExecutor:
         return {"status": "ok", "delta": delta, "note": parsed["note"], "judge_id": judge_id}
 
 
-_RULE_RE = re.compile(r"(陌生|熟悉|亲近|挚友|特别)\(([^)]*)\)")
-
-
-def parse_level_rules(text: str) -> dict[str, str]:
-    """把 level_rules 配置文本解析为 {等级名: 规则}。
-
-    格式约定:「陌生(仅按普通网友对待,保持礼貌与距离)、熟悉(认识一段时间,可自然闲聊)…」;
-    解析失败(等级缺失)由调用方按空处理并告警,不回退全量注入。
-    """
-
-    return {m.group(1): m.group(2).strip() for m in _RULE_RE.finditer(text or "")}
-
-
 def build_favorability_block(
     engine: BatchEngine, user_id: str, stream_id: str, include_rule: bool = False
 ) -> str:
@@ -387,7 +374,7 @@ def build_favorability_block(
         note = row["note"]
     lines: list[str] = []
     if include_rule:
-        rule = parse_level_rules(engine.config.level_rules).get(level_name)
+        rule = engine.config.level_rule_by_name(level_name)
         if rule:
             lines.append(f"[好感度] 规则「{level_name}」:{rule}。")
     body = f"[好感度] {user_id}:等级「{level_name}」(累计 {score})"

@@ -47,18 +47,39 @@ class FavorabilitySection(PluginConfigBase):
     __ui_label__ = "好感度"
     __ui_order__ = 3
 
+    def level_rules_list(self) -> list[str]:
+        """5 级规则按等级序列化为「等级名(规则)」行列表(结算判定全表用)。"""
+
+        return [
+            f"陌生({self.level_rule_stranger})",
+            f"熟悉({self.level_rule_familiar})",
+            f"亲近({self.level_rule_close})",
+            f"挚友({self.level_rule_best_friend})",
+            f"特别({self.level_rule_special})",
+        ]
+
+    def level_rule_by_name(self, name: str) -> str:
+        """按等级名取单条规则(注入用)。"""
+
+        return {
+            "陌生": self.level_rule_stranger,
+            "熟悉": self.level_rule_familiar,
+            "亲近": self.level_rule_close,
+            "挚友": self.level_rule_best_friend,
+            "特别": self.level_rule_special,
+        }.get(name, "")
+
+
     enabled: bool = _f(True, "好感度模块开关", label="好感度模块开关")
     window_hours: int = _f(24, "日终结算周期(小时)", label="日终结算周期(小时)")
     early_settle_threshold: int = _f(20, "提前结算消息数阈值", label="提前结算消息数阈值")
     daily_max_early_settle: int = _f(3, "每用户每日提前结算上限", label="每日提前结算上限")
     daily_settle_min: int = _f(3, "日终结算最小消息数(不足顺延)", label="日终结算最小消息数")
-    level_rules: str = _f(
-        "与用户的关系分五级:陌生(仅按普通网友对待,保持礼貌与距离)、"
-        "熟悉(认识一段时间,可自然闲聊)、亲近(关系较好,可主动关心)、"
-        "挚友(非常信任,可分享心事)、特别(最重要的人,格外在意其感受)。",
-        "5 级行为准则文本,格式「等级名(规则)、等级名(规则)…」,结算判定用全表、注入按等级取单条", label="5 级行为准则",
-        rows=8,
-    )
+    level_rule_stranger: str = _f("仅按普通网友对待,保持礼貌与距离", "陌生级行为准则", label="陌生级规则")
+    level_rule_familiar: str = _f("认识一段时间,可自然闲聊", "熟悉级行为准则", label="熟悉级规则")
+    level_rule_close: str = _f("关系较好,可主动关心", "亲近级行为准则", label="亲近级规则")
+    level_rule_best_friend: str = _f("非常信任,可分享心事", "挚友级行为准则", label="挚友级规则")
+    level_rule_special: str = _f("最重要的人,格外在意其感受", "特别级行为准则", label="特别级规则")
     note_max_chars: int = _f(40, "关系注记最大字符数(结算落库时强制)", label="关系注记最大字符数")
     material_max_messages: int = _f(30, "结算素材锚定的用户消息条数", label="素材锚定消息条数")
     material_message_max_chars: int = _f(200, "单条素材截断长度", label="单条素材截断长度")

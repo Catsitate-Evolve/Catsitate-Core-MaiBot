@@ -34,4 +34,5 @@ def test_default_config_dump():
     cfg = CatsitateConfig()
     data = cfg.model_dump(mode="json")
     assert data["plugin"]["config_version"] == "1.0.0"
-    assert data["favorability"]["level_rules"]
+    assert data["favorability"]["level_rule_familiar"] == "认识一段时间,可自然闲聊"
+    assert len(data["favorability"]) >= 5

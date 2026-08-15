@@ -139,15 +139,13 @@ def test_favorability_block_default_stranger(tmp_path):
     assert "注记" not in text
 
 
-def test_parse_level_rules_extracts_five_levels():
-    from catsitate_core.favorability import parse_level_rules
-    rules = parse_level_rules(
-        "与用户的关系分五级:陌生(仅按普通网友对待,保持礼貌与距离)、"
-        "熟悉(认识一段时间,可自然闲聊)、亲近(关系较好,可主动关心)、"
-        "挚友(非常信任,可分享心事)、特别(最重要的人,格外在意其感受)。"
-    )
-    assert set(rules) == {"陌生", "熟悉", "亲近", "挚友", "特别"}
-    assert "可自然闲聊" in rules["熟悉"]
+def test_level_rules_list_five_levels():
+    from catsitate_core.config import FavorabilitySection
+    cfg = FavorabilitySection()
+    rules = cfg.level_rules_list()
+    assert len(rules) == 5
+    assert any("熟悉" in r and "可自然闲聊" in r for r in rules)
+    assert cfg.level_rule_by_name("亲近") == "关系较好,可主动关心"
 
 
 def test_favorability_block_include_rule_single_level(tmp_path):

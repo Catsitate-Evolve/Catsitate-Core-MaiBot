@@ -2,7 +2,50 @@
 
 from __future__ import annotations
 
+import base64
+
 from .llm_provider import build_side_prompt
+
+_PNG_MAGIC = b"\x89PNG\r\n\x1a\n"
+_JPEG_MAGIC = b"\xff\xd8\xff"
+_GIF_MAGICS = (b"GIF87a", b"GIF89a")
+_WEBP_MAGIC = b"WEBP"
+
+
+def _mime_from_bytes(head: bytes) -> str:
+    """按字节魔数嗅探图片 MIME 类型;无法识别时兜底 png。
+
+    最终审查 Important#3:硬编码 data:image/png 会让 jpeg/gif/webp 图片被错误声明为 png,
+    改为按头部魔数选择:PNG/JPEG/GIF(87a/89a)/WEBP(RIFF....WEBP),兜底 png。
+    """
+
+    if head.startswith(_PNG_MAGIC):
+        return "png"
+    if head.startswith(_JPEG_MAGIC):
+        return "jpeg"
+    if head.startswith(_GIF_MAGICS):
+        return "gif"
+    # WEBP 头 12 字节:RIFF + 4 字节长度 + WEBP
+    if len(head) >= 12 and head[:4] == b"RIFF" and head[8:12] == _WEBP_MAGIC:
+        return "webp"
+    return "png"
+
+
+def _mime_from_data(data: str | bytes) -> str:
+    """data 为 str(base64)或 bytes(按现状:补图后 data 为 str base64)。
+
+    str 先 base64 解码前 16 字符(→12 字节)再嗅探,足够覆盖含 WEBP 在内的全部魔数;
+    非法 base64 解码失败时兜底 png。
+    """
+
+    if isinstance(data, bytes):
+        head = data
+    else:
+        try:
+            head = base64.b64decode(str(data)[:16])
+        except Exception:  # noqa: BLE001 非法 base64 一律兜底 png
+            return "png"
+    return _mime_from_bytes(head[:12])
 
 
 def describe_segment(seg: dict) -> str:
@@ -57,8 +100,9 @@ def build_relook_prompt(question: str, image_segment: dict) -> tuple[list[dict],
     messages, cache_key = build_side_prompt("image_relook", [], tail)
     if data:
         # 图片块追加到 user 消息内容之后(图片 token 无前缀缓存意义,§4.10)
+        # MIME 按字节魔数嗅探,不再硬编码 png(最终审查 Important#3)
         messages[-1]["content"] = [
             {"type": "text", "text": tail[0]},
-            {"type": "image_url", "image_url": {"url": f"data:image/png;base64,{data}"}},
+            {"type": "image_url", "image_url": {"url": f"data:image/{_mime_from_data(data)};base64,{data}"}},
         ]
     return messages, cache_key

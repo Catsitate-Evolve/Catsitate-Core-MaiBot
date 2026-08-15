@@ -56,3 +56,9 @@ def test_parse_choice_invalid_json(tmp_path):
     assert result[0] is None and result[1]
     result2 = parse_choice_resp("[]", WHITELIST)  # 合法 JSON 非对象同样拒绝
     assert result2[0] is None and result2[1]
+
+
+def test_parse_choice_bare_braces(tmp_path):
+    # 无围栏时前后杂文本中提取第一段裸花括号(与 parse_judge_response 兜底一致)
+    result = parse_choice_resp('好的,我选:\n{"emoji_id": "em_ok"}\n就这样', WHITELIST)
+    assert result == ("em_ok", "")

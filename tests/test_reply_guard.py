@@ -71,3 +71,9 @@ def test_parse_sentinel_response_invalid():
     assert ok is None and reason
     ok2, reason2 = parse_sentinel_response("[]")  # 合法 JSON 非对象同样拒绝
     assert ok2 is None and reason2
+
+
+def test_parse_sentinel_bare_braces():
+    # 无围栏时提取第一段裸花括号(与 parse_judge_response 兜底一致)
+    ok, reason = parse_sentinel_response('判定结果:\n{"should_send": false, "reason": "与上下文不符"}')
+    assert ok is False and reason == "与上下文不符"

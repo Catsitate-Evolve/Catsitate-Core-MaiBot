@@ -21,6 +21,10 @@ def parse_choice_resp(response: str, whitelist: list[str]) -> tuple[str | None, 
     fence = re.search(r"```(?:json)?\s*(\{.*?\})\s*```", cleaned, re.DOTALL)
     if fence:
         cleaned = fence.group(1)
+    else:
+        brace = re.search(r"\{.*\}", cleaned, re.DOTALL)
+        if brace:
+            cleaned = brace.group(0)
     try:
         data = json.loads(cleaned)
     except (json.JSONDecodeError, TypeError):

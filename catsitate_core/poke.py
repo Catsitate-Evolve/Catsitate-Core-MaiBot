@@ -33,8 +33,12 @@ class PokeEngine:
             return None
         return {"text": text, "user_id": str(user_id)}
 
-    def enhance_notice_text(self, payload: dict) -> str | None:
-        """把 raw_info 渲染为拟人文本:「小猫 拍了拍你,说:"该睡了"」。"""
+    def enhance_notice_text(self, payload: dict, fallback_nickname: str = "") -> str | None:
+        """把 raw_info 渲染为拟人文本:「小猫 拍了拍你,说:"该睡了"」。
+
+        fallback_nickname: 从消息上下文(message_info.user_info.user_nickname)解析的昵称,
+        raw_info.nm 实测为空串时兜底用。
+        """
 
         raw = payload.get("raw_info")
         if not isinstance(raw, list) or not raw:
@@ -42,8 +46,11 @@ class PokeEngine:
         first = raw[0]
         if not isinstance(first, dict):
             return None
-        # 实测 raw_info 字段为 nm(昵称,可能为空串)/uid/col/type;顶层 user_id 为发起者
-        nickname = str(first.get("nm") or first.get("nickname") or first.get("user_id") or payload.get("user_id") or "有人")
+        # 实测 raw_info 字段为 nm(昵称,常为空串)/uid/col/type;顶层 user_id 为发起者
+        nickname = str(
+            first.get("nm") or first.get("nickname") or fallback_nickname
+            or first.get("user_id") or payload.get("user_id") or "有人"
+        )
         action = str(first.get("action") or "拍了拍")
         target = str(first.get("target") or "你")
         remark = first.get("remark")

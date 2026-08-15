@@ -37,18 +37,18 @@ def test_build_choose_prompt_stable_prefix_first(tmp_path):
     # 稳定段(指令 system + 表情表)在前、变量(消息+意图)在后
     assert messages[0]["role"] == "system"
     assert "可选表情" in messages[1]["content"]
-    assert "0 惊讶" in messages[1]["content"]  # 表情表在稳定段
+    assert "5 大哭" in messages[1]["content"]  # 表情表在稳定段
     assert "今天好累" in messages[-2]["content"]
     assert "想安慰对方" in messages[-1]["content"]
     assert cache_key
 
 
 def test_parse_choice_valid():
-    assert parse_choice_resp('{"emoji_id": "1"}') == ("1", "")
+    assert parse_choice_resp('{"emoji_id": "5"}') == ("5", "")
 
 
 def test_parse_choice_out_of_table_rejected(tmp_path):
-    result = parse_choice_resp('{"emoji_id": "999999"}')
+    result = parse_choice_resp('{"emoji_id": "0"}')  # 0 惊讶不在精选表内
     assert result[0] is None and result[1]
 
 
@@ -61,5 +61,5 @@ def test_parse_choice_invalid_json(tmp_path):
 
 def test_parse_choice_bare_braces(tmp_path):
     # 无围栏时前后杂文本中提取第一段裸花括号(与 parse_judge_response 兜底一致)
-    result = parse_choice_resp('好的,我选:\n{"emoji_id": "1"}\n就这样')
-    assert result == ("1", "")
+    result = parse_choice_resp('好的,我选:\n{"emoji_id": "13"}\n就这样')
+    assert result == ("13", "")

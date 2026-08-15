@@ -328,7 +328,10 @@ class CatsitatePlugin(MaiBotPlugin):
         payload = self._notice_payload(msg)
         if payload is None:
             return
-        text = self.poke.enhance_notice_text(payload)
+        # 昵称兜底:消息上下文的 user_nickname(raw_info.nm 实测为空串)
+        user_info = ((msg.get("message_info") or {}).get("user_info")) or {}
+        fallback_nickname = str(user_info.get("user_nickname") or user_info.get("nickname") or "")
+        text = self.poke.enhance_notice_text(payload, fallback_nickname=fallback_nickname)
         if text is None:
             return
         self.ctx.logger.info("戳一戳 payload 观测: %s", str(payload)[:300])

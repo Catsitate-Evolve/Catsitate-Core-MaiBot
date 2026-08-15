@@ -38,6 +38,15 @@ class SpikePlugin(MaiBotPlugin):
             logger.info("[spike] items 类型=%s 长度=%s 首项=%s", type(items).__name__, len(items), json.dumps(items[0], ensure_ascii=False, default=str)[:300])
             # 快照格式的合法 UserMessageItem(item_type/meta/parts,无 role 字段)
             probe_text = "[spike] 注入探针消息" + (f" | {'; '.join(_RECEIVE_INFO[-2:])}" if _RECEIVE_INFO else "")
+            # 把进入 LLM 的最近用户消息文本带出,验证 receive 改写是否到达主链路
+            user_texts: list[str] = []
+            for it in items:
+                if isinstance(it, dict) and it.get("item_type") == "UserMessageItem":
+                    for part in it.get("parts") or []:
+                        if isinstance(part, dict) and part.get("type") == "text":
+                            user_texts.append(str(part.get("text"))[:50])
+            if user_texts:
+                probe_text += f" | last_user_texts={user_texts[-2:]}"
             probe = {
                 "item_type": "UserMessageItem",
                 "meta": {"item_id": "spike-probe-1", "logical_turn_id": None, "timestamp": datetime.now().isoformat()},

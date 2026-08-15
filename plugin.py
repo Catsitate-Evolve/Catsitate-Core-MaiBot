@@ -299,20 +299,26 @@ class CatsitatePlugin(MaiBotPlugin):
         """注入块前插 system 之后、历史之前(规格 §4.1);失败仅记录日志不阻塞。"""
 
         if not self.config.plugin.enabled or not self.config.inject.enabled:
+            self.ctx.logger.debug("注入 hook 跳过:开关关闭")
             return {"action": "continue", "modified_kwargs": kwargs}
+        self.ctx.logger.debug("注入 hook 触发: keys=%s", sorted(str(k) for k in kwargs.keys()))
         try:
             blocks = self._build_inject_blocks(kwargs)
+            self.ctx.logger.debug("注入块构造: %s", [b.module for b in blocks])
             messages = self._messages_from_kwargs(kwargs)
             if messages is None:
+                self.ctx.logger.debug("注入跳过: messages 取不到")
                 return {"action": "continue", "modified_kwargs": kwargs}
             rendered = self.assembler.render(blocks)
             if not rendered:
+                self.ctx.logger.debug("注入跳过: render 结果为空(blocks=%d)", len(blocks))
                 return {"action": "continue", "modified_kwargs": kwargs}
             # spike ② 实测:items 须为合法快照格式,朴素 dict 会被主程序拒绝——render 输出转快照后插入
             rendered = [self._to_snapshot_item(m["content"]) for m in rendered]
             insert_at = self._system_tail_index(messages)
             new_messages = messages[:insert_at] + rendered + messages[insert_at:]
             new_kwargs = {**kwargs, self._MESSAGES_KEY: new_messages}
+            self.ctx.logger.debug("注入完成: 插入 %d 条(system 尾 %d/总 %d)", len(rendered), insert_at, len(messages))
             return {"action": "continue", "modified_kwargs": new_kwargs}
         except Exception:
             self.ctx.logger.exception("注入块构造失败,本轮跳过注入")
@@ -390,7 +396,7 @@ class CatsitatePlugin(MaiBotPlugin):
     # ---------- 内部辅助 ----------
 
     # spike ②/③/④ 结论的字段名集中于此,不符仅改此处
-    _MESSAGES_KEY = "messages"
+    _MESSAGES_KEY = "items"  # 主程序 planner.before_request payload 键(spike ② 快照格式)
     _OUTPUT_ITEMS_KEY = "output_items"
 
     def _messages_from_kwargs(self, kwargs: dict[str, Any]) -> list[dict] | None:

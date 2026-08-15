@@ -130,38 +130,13 @@ def test_generator_llm_failure_uses_template(tmp_path):
     assert data.get("windows")  # 兜底默认模板
 
 
-from catsitate_core.schedule import build_speak_prompt, parse_speak_response, threshold_met
+from catsitate_core.schedule import threshold_met
 
 
 def test_threshold_met():
     assert threshold_met("熟悉", "熟悉") is True
     assert threshold_met("亲近", "熟悉") is True  # 等级高于门槛
     assert threshold_met("陌生", "熟悉") is False
-
-
-def test_parse_speak_response():
-    data, err = parse_speak_response('{"speak": true, "stream_index": 0, "text": "今天天气不错"}', candidate_count=2)
-    assert err == "" and data == {"speak": True, "stream_index": 0, "text": "今天天气不错"}
-    data2, err2 = parse_speak_response('{"speak": false, "text": ""}', candidate_count=0)
-    assert err2 == "" and data2["speak"] is False
-    assert parse_speak_response("没想好", candidate_count=0)[0] is None
-    # stream_index 越界拒绝
-    assert parse_speak_response('{"speak": true, "stream_index": 5, "text": "x"}', candidate_count=2)[0] is None
-
-
-def test_build_speak_prompt_window_content_first():
-    messages, key = build_speak_prompt(
-        persona="猫耳少女",
-        window={"kind": "daily", "activity": "发呆看雨", "plan_speak": False, "topic": ""},
-        day_overview="今天:散步→发呆→早睡,整体懒散",
-        weather_text="雷暴,30°C",
-        candidates=[{"stream_id": "s1", "user_id": "u1", "level_name": "熟悉", "note": "无"}],
-    )
-    assert messages[0]["role"] == "system"
-    assert any("发呆看雨" in m["content"] for m in messages)
-    assert any("散步→发呆→早睡" in m["content"] for m in messages)
-    assert any("候选流列表" in m["content"] for m in messages)
-    assert key
 
 
 from catsitate_core.schedule import ACTIVITY_WINDOW_LIMIT, apply_schedule_edit

@@ -51,7 +51,7 @@ def test_phase2_sections_defaults():
     assert cfg.schedule.speak_threshold_level == "熟悉"
     assert cfg.schedule.greet_threshold_level == "亲近"
     assert cfg.schedule.private_threshold_level == "挚友"
-    assert cfg.schedule.speak_llm_model == "memory"
+    assert cfg.schedule.speak_max_streams_per_window == 1
     assert cfg.schedule.daily_speak_limit == 5
     assert cfg.favorability.decay_enabled is True
     assert cfg.favorability.decay_after_days == 7

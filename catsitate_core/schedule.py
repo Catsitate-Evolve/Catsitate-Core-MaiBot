@@ -224,55 +224,6 @@ def threshold_met(level_name: str, threshold_level: str) -> bool:
     return LEVEL_INDEX.get(level_name, 0) >= LEVEL_INDEX.get(threshold_level, 99)
 
 
-def build_speak_prompt(
-    persona: str, window: dict, day_overview: str, weather_text: str,
-    candidates: list[dict],
-) -> tuple[list[dict], str]:
-    """执行判定 prompt:稳定段=system 模板+人设;变量尾=窗口活动/全天概览/天气/候选流列表。
-
-    候选流由调用方过滤(门槛+活跃),LLM 从中选择发言目标(单流,spec §3.3)。"""
-
-    stable = [f"bot 人设:{persona}"] if persona.strip() else []
-    cand_text = "\n".join(
-        f"[{i}] 流 {c['stream_id']} 用户 {c['user_id']} 等级 {c['level_name']} 注记:{c.get('note') or '无'}"
-        for i, c in enumerate(candidates)
-    )
-    tail = [
-        f"当前窗口活动:{window.get('activity') or '自由时间'}(计划发言:{'是' if window.get('plan_speak') else '否'}"
-        f"{',主题:' + str(window.get('topic')) if window.get('topic') else ''})",
-        f"全天概览:{day_overview}",
-        f"当前天气:{weather_text or '无数据'}",
-        f"候选流列表(只选一个,发言目标):\n{cand_text}",
-    ]
-    return build_side_prompt("speak", stable, tail)
-
-
-def parse_speak_response(text: str, candidate_count: int = 0) -> tuple[dict | None, str]:
-    """解析执行判定 JSON:{"speak": bool, "stream_index": 候选流序号, "text": "发言文本(不发言为空)"}。"""
-
-    cleaned = text.strip()
-    fence = re.search(r"```(?:json)?\s*(\{.*?\})\s*```", cleaned, re.DOTALL)
-    if fence:
-        cleaned = fence.group(1)
-    else:
-        brace = re.search(r"\{.*\}", cleaned, re.DOTALL)
-        if brace:
-            cleaned = brace.group(0)
-    try:
-        data = json.loads(cleaned)
-    except (json.JSONDecodeError, TypeError):
-        return None, "发言判定 JSON 解析失败"
-    if not isinstance(data, dict) or not isinstance(data.get("speak"), bool):
-        return None, "speak 字段缺失或类型错误"
-    text_out = data.get("text")
-    if not isinstance(text_out, str):
-        return None, "text 字段缺失"
-    idx = data.get("stream_index")
-    if data["speak"] and (not isinstance(idx, int) or not (0 <= idx < candidate_count)):
-        return None, f"stream_index 非法: {idx}"
-    return {"speak": data["speak"], "stream_index": idx, "text": text_out}, ""
-
-
 ACTIVITY_WINDOW_LIMIT = 8
 _EDIT_LIMIT_REASON = "今天的日程已经排得满满当当了,再排下去会累坏的,明天再安排吧。"
 

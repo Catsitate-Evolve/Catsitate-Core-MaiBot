@@ -59,14 +59,15 @@
 - **生成 prompt 输入**:人设 + 今天执行情况回顾(实际睡了多久/活动执行与否)+ 明天天气/节日 + 重要用户好感度概况 + ****日程对应日**到期的备忘录提醒(remind_at)** + 睡眠约束(min/max)。模板 `catsitate_schedule_generate.prompt`。
 - **生成结果校验**(与工具修改共用同一套规则):恰好 1 个睡眠窗口、活动窗口 1~8 个、窗口不重叠(允许空白时间)、睡眠时长在 [min, max]、kind ∈ {greeting, daily}。校验失败重生成(次数 `max_regenerate` 可配置,默认 1),仍失败按确定性规则钳制修复(重叠顺延、睡眠时长钳边界、多余窗口裁到上限)。
 - **注入**:「日程块」独立注入块,插在环境块之后、备忘块之前;内容 = **当前活动 + 下一活动预览** + 该窗口备忘提醒(如 `[日程] 午后:发呆看雨(至16:00);接下来:买菜`;空白时间显示「自由时间」);窗口切换才变化(半天级稳定,缓存友好)。
-- **执行**:每窗口触发时经 `maisaka.proactive.trigger` 主动发言;发言内容由**执行时 LLM 判定**(单次调用,同时输出「是否发言 + 发言文本」,不发言文本为空):
-  - **输入**:人设 + **当前窗口活动全文 + 全天窗口概览一行**(如「今天:散步→发呆→早睡,整体懒散」)+ 当前天气 + 目标流好感度等级/注记;
-  - **plan_speak 仅作先验**:生成时的计划只是倾向,执行 LLM 拥有最终决定权——计划发言可反悔,计划不发言也可因活动内容即兴分享;
-- 受好感度门槛约束(等级不足不发言、不调 LLM):**按窗口 `kind` 事前判定**——greeting 窗口用 `greet_threshold_level`(默认亲近,早晚安门槛更高),daily 窗口用 `speak_threshold_level`(默认熟悉);检查在 LLM 调用前,零额外调用。模板 `catsitate_speak.prompt`。
-- **发送目标(单流)**:每次窗口只选一个「最值得说」的流(LLM 依据:目标流好感度等级/近期活跃度);**候选流 = 满足门槛的活跃流**(活跃流 = 该流近 24 小时内存在任何用户消息,以 batch_counter.last_bump 判定,确定性收集);其余流沉默;发送经 `send.text` 且 **`sync_to_maisaka_history=True`**(实机核查:默认 False 不进上下文,主动发言必须显式同步)。
-- **执行后状态**:窗口判定完成(发言或沉默)即更新日程块,追加执行状态(如 `[日程] 午后:发呆看雨(已过,沉默了)`);防同窗口重复触发,状态随窗口切换变化不伤缓存。
+- **执行(联调修正:主动发言交还主程序,插件只提供指示)**:每窗口触发时,插件:
+  1. **门槛过滤**:按窗口 `kind` 事前判定——greeting 窗口用 `greet_threshold_level`(默认亲近),daily 窗口用 `speak_threshold_level`(默认熟悉);等级不足的流不 trigger;
+  2. **候选流收集**:活跃流 = 该流近 24 小时内存在任何用户消息(batch_counter.last_bump 判定,确定性收集);
+  3. **排序取前 n**:按(好感度等级, 最近活动)排序,取前 `speak_max_streams_per_window`(默认 1)个流;
+  4. **trigger**:对每个选中流 `maisaka.proactive.trigger(stream_id, intent=指示 prompt)`——指示 prompt 由插件按模板构建:日程窗口活动/是否计划发言/主题/目标流等级注记,要求 bot 结合日程与好感度**自然发起主动发言**;**是否说话、说什么全部由主程序结合人设/记忆/上下文决定**;插件不 send.text、不生成话术(参考 idle_proactive_chat 观察者模式)。
+- **执行后状态**:窗口触发即更新日程块执行状态(无论主程序是否实际发言),防同窗口重复触发。
+- **计数**:每次 trigger 计 1(daily_speak_limit 约束),主程序沉默也计(触发即消耗)。
 - **可被工具修改**:`@Tool("update_schedule")`(visible):planner 可调用增/删/改当天日程——活动窗口可增删改(1~8 上限,含 kind 标注);**睡眠窗口不可删、时间可改(受 min/max 约束)**;**无频率上限**(联调决定);到达活动窗口上限时拒绝,返回拟人化理由(如「今天的日程已经排得满满当当了,再排下去会累坏的,明天再安排吧」——固定文案,非随机);修改落盘、立即反映到注入块,并记录**修改历史**(时间/改前/改后,存 schedule_state.json)。
-- **配置**(新 schedule 节):`enabled`、`max_regenerate`(默认 1)、`speak_threshold_level`(默认 熟悉)、`greet_threshold_level`(默认 亲近)、`private_threshold_level`(默认 挚友)、`speak_llm_model`(默认 memory)、`speak_llm_timeout_ms`、`schedule_llm_model`(默认 memory)、`schedule_llm_timeout_ms`、`daily_speak_limit`(默认 5,全天主动发言次数上限)。
+- **配置**(新 schedule 节):`enabled`、`max_regenerate`(默认 1)、`speak_threshold_level`(默认 熟悉)、`greet_threshold_level`(默认 亲近)、`private_threshold_level`(默认 挚友)、`speak_max_streams_per_window`(默认 1,每窗口最多 trigger 流数)、`schedule_llm_model`(默认 memory)、`schedule_llm_timeout_ms`、`daily_speak_limit`(默认 5,全天主动触发次数上限)。
 - **与睡眠交互**:睡眠期间窗口触发一律跳过、不补发;发言计入 `daily_speak_limit`;入睡确认生成次日日程是睡眠期间唯一允许的操作(生成动作本身,不打扰)。
 - **测试**:动态窗口校验(1 睡眠+1~8 活动/不重叠/空白允许)、入睡触发生成、校验失败重生成/钳制、窗口命中判断、工具增删改边界(上限拒绝文案/睡眠窗口不可删/时长约束)、门槛过滤、失败兜底模板。
 
@@ -81,10 +82,9 @@
 
 ### 3.5 主动私聊(2.3)
 
-- 仅在 **kind=greeting 的窗口**触发,执行顺序:**先 2.3 后 2.1,每窗口最多一次发言**(防双触发):greeting 窗口到达时,先检查是否存在好感度 ≥ `private_threshold_level`(默认挚友)且当日未问候过的**私聊流**用户——存在则经 LLM 生成私聊问候(`catsitate_greet.prompt`)并 `send.text`(`sync_to_maisaka_history=True`)发送(计 1 次);已发问候则该窗口跳过 2.1 执行判定;无挚友私聊候选时再走 2.1 执行判定(单流选择,群/私聊均可)。
-- **问候判定同样纳入日程内容**:prompt 含当前窗口活动全文 + 全天概览(如日程「下午很忙」则不强硬问候),与 2.1 执行判定同输入纪律。
-- 睡眠/静默期跳过;被拦截/失败显式日志。每流每日最多一次(与 `daily_speak_limit` 共享上限)。
-- **测试**:门槛过滤、每日一次限制、greeting 窗口双触发防护(2.3 已发则 2.1 跳过)、睡眠期跳过。
+- 仅在 **kind=greeting 的窗口**触发,执行顺序:**先 2.3 后 2.1**(防双触发):greeting 窗口到达时,先检查好感度 ≥ `private_threshold_level`(默认挚友)且当日未触发过的**私聊流**用户——存在则对其 trigger(问候语境指示 prompt,含日程活动与全天概览,问候话术由主程序生成),每流每日最多一次(计 1);已 trigger 则该窗口跳过 2.1;无挚友私聊候选时再走 2.1(候选流含群/私聊)。
+- 睡眠/静默期跳过;被拦截/失败显式日志。
+- **测试**:门槛过滤、每日一次限制、greeting 窗口双触发防护、睡眠期跳过。
 
 ## 4. 数据流与模块边界
 
@@ -93,7 +93,7 @@
 - `catsitate_core/schedule.py`(日程生成/校验/解析/窗口判定/工具修改校验)
 - `catsitate_core/memo.py` 增 remind_at 列与读写
 - `plugin.py` 接线:hook(receive 拦截、出站晚安判定)、scheduler 注册(衰减/窗口触发/静默入睡检查/提醒兜底)、tools(update_schedule)、注入块(日程块)
-- 旁路 prompt 模板:`catsitate_decay.prompt`、`catsitate_sleep_confirm.prompt`、`catsitate_schedule_generate.prompt`、`catsitate_speak.prompt`、`catsitate_greet.prompt`、`catsitate_sleep_review.prompt`(睡醒回顾摘要)进主程序 prompt 管理(一期机制)。
+- 旁路 prompt 模板:`catsitate_decay.prompt`、`catsitate_sleep_confirm.prompt`、`catsitate_schedule_generate.prompt`、`catsitate_sleep_review.prompt`(睡醒回顾摘要)进主程序 prompt 管理(一期机制)。主动发言不设旁路模板(表达权交主程序)。
 
 ## 5. 配置模型(新增节,中文 label)
 
@@ -114,7 +114,7 @@
 
 ## 8. 交付物
 
-1. 二期代码(5 模块 + plugin.py 接线 + 6 个 prompt 模板)
+1. 二期代码(5 模块 + plugin.py 接线 + 4 个 prompt 模板)
 2. tests/ 二期单测
 3. 验收清单二期条目
 4. CHANGELOG 更新

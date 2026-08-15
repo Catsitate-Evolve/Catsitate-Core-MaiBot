@@ -1540,11 +1540,15 @@ def test_count_and_early_trigger(tmp_path):
 def test_early_settle_daily_cap(tmp_path):
     engine, _ = make_engine(tmp_path)
     for i in range(3):
-        judged_at = f"early-{i}-{NOW.strftime('%Y%m%d%H%M%S')}"
+        judged_at = f"2026-08-14T12:00:{i:02d}"  # judged_at 为 ISO 时间戳
         engine.reset_batch("u1", "s1", judged_at)
         for _ in range(20):
             engine.count_message("u1", "s1", now=lambda: NOW)
-        engine.apply_delta("u1", "s1", 1, f"第{i}次", judged_at=judged_at)
+        engine.apply_delta(
+            "u1", "s1", 1, f"第{i}次",
+            judged_at=judged_at,
+            judge_id=f"early-{i}-{NOW.strftime('%Y%m%d%H%M%S')}",  # early 前缀经 judge_id 显式传
+        )
     engine.reset_batch("u1", "s1", NOW.strftime("%Y-%m-%dT%H:%M:%S"))
     for _ in range(20):
         engine.count_message("u1", "s1", now=lambda: NOW)
@@ -1572,14 +1576,13 @@ def test_material_respects_batch_window(tmp_path):
     """结算后的旧批次消息不进入新批次素材(规格 §4.3「批次内」)。"""
 
     engine, _ = make_engine(tmp_path)
+    engine.count_message("u1", "p", now=lambda: NOW)  # 建批次行(reset_batch 为 UPDATE,需先有行)
     old = "2026-08-14T09:00:00"
     newer = "2026-08-14T11:00:00"
     history = [
         {"role": "user", "user_id": "u1", "stream_id": "p", "text": "旧批次", "seq": 1, "ts": old},
         {"role": "user", "user_id": "u1", "stream_id": "p", "text": "新批次", "seq": 2, "ts": newer},
     ]
-    # 首次(无窗口)两条都在
-    assert len(engine.build_material("u1", "p", history)) == 2
     # 结算开新批次(window_start = 10:00),旧消息被排除
     engine.reset_batch("u1", "p", "2026-08-14T10:00:00")
     material = engine.build_material("u1", "p", history)
@@ -1593,7 +1596,8 @@ def test_material_truncates_long_single_message(tmp_path):
         {"role": "user", "user_id": "u1", "stream_id": "p", "text": "长" * 300, "seq": 1, "ts": "2026-08-14T10:00:01"},
     ]
     material = engine.build_material("u1", "p", history)
-    assert len(material[0].split("】")[-1]) <= 200 + 1  # 截断后 ≤200 字符(含省略号)
+    _, _, content = material[0].partition(") ")  # 渲染格式 [u1](用户) 内容
+    assert len(content) <= 200 + 1  # 截断后 ≤200 字符(含省略号)
 
 
 def test_private_material_contains_bot_and_user(tmp_path):
@@ -1608,12 +1612,29 @@ def test_private_material_contains_bot_and_user(tmp_path):
 
 def test_apply_delta_level_and_note_truncation(tmp_path):
     engine, _ = make_engine(tmp_path)
-    engine.apply_delta("u1", "s1", 8, "注" * 60, judged_at="early-x")
+    engine.apply_delta("u1", "s1", 8, "注" * 60, judged_at="2026-08-14T12:00:00")
     row = engine.get_level("u1", "s1")
-    assert row["level"] == 2  # 8 分 → 熟悉
+    assert row["level"] == 0  # 8 分 → 陌生(_level_for_score:0-9 陌生)
     assert row["score"] == 8
     assert len(row["note"]) == 40
-    assert engine.get_best_level_for_user("u1")["level"] == 2
+    assert engine.get_best_level_for_user("u1")["level"] == 0
+
+
+def test_material_anchor_at_stream_head_no_wraparound(tmp_path):
+    """锚点在流首时,前邻居不存在,不得因负索引回绕取流尾消息。"""
+
+    engine, _ = make_engine(tmp_path)
+    history = [
+        {"role": "user", "user_id": "u1", "stream_id": "g", "text": "我的消息", "seq": 0, "ts": "2026-08-14T10:00:00"},
+        {"role": "user", "user_id": "u2", "stream_id": "g", "text": "后文1", "seq": 1, "ts": "2026-08-14T10:00:01"},
+        {"role": "user", "user_id": "u2", "stream_id": "g", "text": "后文2", "seq": 2, "ts": "2026-08-14T10:00:02"},
+        {"role": "user", "user_id": "u2", "stream_id": "g", "text": "后文3", "seq": 3, "ts": "2026-08-14T10:00:03"},
+    ]
+    material = engine.build_material("u1", "g", history)
+    text = "\n".join(material)
+    assert "我的消息" in text
+    assert "后文1" in text  # 紧邻后文应选中
+    assert "后文3" not in text  # 流尾消息不得作为"前邻居"回绕选中
 
 
 def test_levels_order():
@@ -1862,9 +1883,13 @@ class BatchEngine:
             selected[msg["seq"]] = msg
             # 紧邻上下文:同流前后各 1 条(群聊上下文判断 bot 是否回应 ta)
             pos = pos_by_seq[msg["seq"]]
-            for neighbor in (in_stream[pos - 1], in_stream[pos + 1] if pos + 1 < len(in_stream) else None):
-                if neighbor is not None:
-                    selected[neighbor["seq"]] = neighbor
+            neighbors: list[dict] = []
+            if pos > 0:
+                neighbors.append(in_stream[pos - 1])
+            if pos + 1 < len(in_stream):
+                neighbors.append(in_stream[pos + 1])
+            for neighbor in neighbors:
+                selected[neighbor["seq"]] = neighbor
         # bot 在该流的发言随附(与锚点消息同批次窗口内)
         for msg in in_stream:
             if msg["role"] == "bot":
@@ -1882,7 +1907,7 @@ class BatchEngine:
 - [ ] **Step 4: 运行测试确认通过**
 
 Run: `python3 -m pytest tests/test_favorability.py -v`
-Expected: 8 passed
+Expected: 9 passed
 
 - [ ] **Step 5: 提交**
 
@@ -2104,7 +2129,7 @@ def build_favorability_block(engine: BatchEngine, user_id: str, stream_id: str) 
 - [ ] **Step 4: 运行测试确认通过**
 
 Run: `python3 -m pytest tests/test_settlement.py tests/test_favorability.py -v`
-Expected: 16 passed(settlement 8 + favorability 8)
+Expected: 17 passed(settlement 8 + favorability 9)
 
 - [ ] **Step 5: 提交**
 

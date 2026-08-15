@@ -326,17 +326,24 @@ class SettleExecutor:
         self.llm_call = llm_call
 
     async def settle(
-        self, user_id: str, stream_id: str, history: list[dict], kind: str, model: str = ""
+        self,
+        user_id: str,
+        stream_id: str,
+        history: list[dict],
+        kind: str,
+        model: str = "",
+        persona: str = "",
     ) -> dict:
-        """执行一次结算。kind: "early" 或 "daily"。"""
+        """执行一次结算。kind: "early" 或 "daily";persona 为 bot 人设背景(结合角色性格判定关系变化)。"""
 
         material = self.engine.build_material(user_id, stream_id, history)
         if kind == "daily" and len([m for m in material if "(用户)" in m]) < self.engine.config.daily_settle_min:
             return {"status": "carried_over", "reason": f"用户消息不足 {self.engine.config.daily_settle_min} 条,顺延"}
         # 稳定段 = 判定指令(system 模板)+ 5 级规则(配置,stable_ctx);变量尾 = 批次素材
         level_rules = self.engine.config.level_rules_list()
+        stable_ctx = ([f"bot 人设:{persona}"] if persona.strip() else []) + level_rules
         messages, _cache_key = build_side_prompt(
-            "favorability", level_rules, material,
+            "favorability", stable_ctx, material,
             replacements={"delta_max": str(max(1, self.engine.config.delta_max))},
         )
         try:

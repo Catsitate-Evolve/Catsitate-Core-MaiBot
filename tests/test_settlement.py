@@ -27,6 +27,32 @@ def make_executor(tmp_path, llm_result=None, daily_min=None):
     return SettleExecutor(engine, fake_llm), engine, calls
 
 
+def test_settle_includes_persona(tmp_path):
+    import asyncio
+    executor, engine, calls = make_executor(tmp_path)
+    history = [
+        {"role": "user", "user_id": "u1", "stream_id": "s1", "text": f"消息{i}", "seq": i, "ts": f"2026-08-14T11:{i:02d}:00"}
+        for i in range(10)
+    ]
+    result = asyncio.run(executor.settle("u1", "s1", history, kind="early", persona="猫耳少女,话少"))
+    assert result["status"] == "ok"
+    all_text = " ".join(m["content"] for m in calls[-1] if m.get("content"))
+    assert "bot 人设:猫耳少女,话少" in all_text
+
+
+def test_settle_without_persona_no_persona_line(tmp_path):
+    import asyncio
+    executor, engine, calls = make_executor(tmp_path)
+    history = [
+        {"role": "user", "user_id": "u1", "stream_id": "s1", "text": f"消息{i}", "seq": i, "ts": f"2026-08-14T11:{i:02d}:00"}
+        for i in range(10)
+    ]
+    result = asyncio.run(executor.settle("u1", "s1", history, kind="early"))
+    assert result["status"] == "ok"
+    all_text = " ".join(m["content"] for m in calls[-1] if m.get("content"))
+    assert "bot 人设" not in all_text
+
+
 def test_parse_judge_response_basic():
     assert parse_judge_response('{"delta": 2, "note": "不错"}') == {"delta": 2, "note": "不错"}
 

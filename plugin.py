@@ -640,7 +640,8 @@ class CatsitatePlugin(MaiBotPlugin):
         self._settling.add(key)
         try:
             history = await self._fetch_recent_for_history(stream_id, limit=200)
-            result = await self.fav_executor.settle(user_id, stream_id, history, kind=kind)
+            persona = await self._persona()
+            result = await self.fav_executor.settle(user_id, stream_id, history, kind=kind, persona=persona)
             if result["status"] == "ok":
                 self.ctx.logger.info("好感度结算[%s] %s/%s:delta=%s note=%s", kind, user_id, stream_id, result["delta"], result["note"])
             elif result["status"] == "carried_over":

@@ -1322,9 +1322,9 @@ def make_service(tmp_path):
 
 def test_write_and_read(tmp_path):
     svc, _ = make_service(tmp_path)
-    ok, msg = svc.write("周四要交作业", stream_id="s1", user_id="u1", ttl_hours=None, now=NOW)
+    ok, msg = svc.write("周四要交作业", stream_id="s1", user_id="u1", ttl_hours=None, now=lambda: NOW)
     assert ok, msg
-    rows = svc.read("s1", "u1", 5, now=NOW)
+    rows = svc.read("s1", "u1", 5, now=lambda: NOW)
     assert len(rows) == 1
     assert rows[0]["content"] == "周四要交作业"
     assert 23 < rows[0]["remaining_hours"] <= 24
@@ -1332,33 +1332,33 @@ def test_write_and_read(tmp_path):
 
 def test_write_too_long_rejected(tmp_path):
     svc, _ = make_service(tmp_path)
-    ok, msg = svc.write("长" * 81, stream_id="s", user_id="u", ttl_hours=None, now=NOW)
+    ok, msg = svc.write("长" * 81, stream_id="s", user_id="u", ttl_hours=None, now=lambda: NOW)
     assert not ok
     assert "80" in msg
-    assert svc.read("s", "u", 5, now=NOW) == []
+    assert svc.read("s", "u", 5, now=lambda: NOW) == []
 
 
 def test_write_ttl_over_max_rejected(tmp_path):
     svc, _ = make_service(tmp_path)
-    ok, msg = svc.write("内容", stream_id="s", user_id="u", ttl_hours=999, now=NOW)
+    ok, msg = svc.write("内容", stream_id="s", user_id="u", ttl_hours=999, now=lambda: NOW)
     assert not ok
     assert "168" in msg
 
 
 def test_read_by_user_across_streams(tmp_path):
     svc, _ = make_service(tmp_path)
-    svc.write("A", stream_id="s1", user_id="u1", ttl_hours=None, now=NOW)
-    svc.write("B", stream_id="s2", user_id="u1", ttl_hours=None, now=NOW)
-    rows = svc.read("s3", "u1", 5, now=NOW)
+    svc.write("A", stream_id="s1", user_id="u1", ttl_hours=None, now=lambda: NOW)
+    svc.write("B", stream_id="s2", user_id="u1", ttl_hours=None, now=lambda: NOW)
+    rows = svc.read("s3", "u1", 5, now=lambda: NOW)
     assert {r["content"] for r in rows} == {"A", "B"}
 
 
 def test_cleanup_removes_expired(tmp_path):
     svc, _ = make_service(tmp_path)
-    svc.write("过期", stream_id="s", user_id="u", ttl_hours=1, now=NOW)
-    removed = svc.cleanup(now=NOW + timedelta(hours=2))
+    svc.write("过期", stream_id="s", user_id="u", ttl_hours=1, now=lambda: NOW)
+    removed = svc.cleanup(now=lambda: NOW + timedelta(hours=2))
     assert removed == 1
-    assert svc.read("s", "u", 5, now=NOW + timedelta(hours=2)) == []
+    assert svc.read("s", "u", 5, now=lambda: NOW + timedelta(hours=2)) == []
 ```
 
 - [ ] **Step 2: 运行测试确认失败**

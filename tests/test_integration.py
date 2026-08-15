@@ -121,3 +121,105 @@ def test_phase2_engines_assemble(tmp_path):
         [], min_sleep=cfg.sleep.min_sleep_minutes, max_sleep=cfg.sleep.max_sleep_minutes,
     )
     assert err == ""
+
+
+def test_sleep_tick_natural_wake(tmp_path):
+    """自然醒行为验证(审查 Critical #1):wake_at 过后 _sleep_tick 必须经 _wake_up 唤醒。
+
+    23:00 入睡(wake_at 次日 07:00),tick 时刻推进到 07:00:05 后断言 state 已 awake、
+    睡醒回顾触发;并验证醒来补跑仅经 _daily_settle(内部先衰减后结算),
+    不再单独并发 spawn 衰减(审查 Important #2)。
+    """
+
+    import asyncio
+    from datetime import datetime
+
+    import plugin as plugin_mod
+    from catsitate_core.config import CatsitateConfig
+    from catsitate_core.sleep import SleepManager
+    from catsitate_core.storage import JsonSnapshot
+
+    class _FakeDateTime(datetime):
+        _current = datetime(2026, 8, 15, 23, 0, 0)
+
+        @classmethod
+        def now(cls, tz=None):
+            del tz
+            return cls._current
+
+    class _StubLogger:
+        def info(self, *a, **k):
+            pass
+
+        def warning(self, *a, **k):
+            pass
+
+        def exception(self, *a, **k):
+            pass
+
+        def error(self, *a, **k):
+            pass
+
+        def debug(self, *a, **k):
+            pass
+
+    class _StubCtx:
+        def __init__(self):
+            self.logger = _StubLogger()
+            self.config = type("_C", (), {"get": staticmethod(lambda key, default="": None)})()
+
+        async def call_capability(self, *a, **k):
+            return {"success": True, "response": "{}"}
+
+    p = plugin_mod.CatsitatePlugin()
+    p._ctx = _StubCtx()
+    p._plugin_config_instance = CatsitateConfig()
+    p.config.plugin.enabled = True
+    p.config.sleep.enabled = True
+    p.config.sleep.review_enabled = True
+    p._background_tasks = set()
+    p._schedule_data = {}
+    p._last_activity_ts = 0.0
+    p.sleep = SleepManager(JsonSnapshot(tmp_path / "sleep_state.json"), p.config.sleep)
+    p.sleep.enter_sleep(wake_at="2026-08-16T07:00:00", now=lambda: datetime(2026, 8, 15, 23, 0, 0))
+    calls = {"review": 0, "settle": 0, "decay": 0}
+
+    async def _fake_review():
+        calls["review"] += 1
+
+    async def _fake_settle():
+        calls["settle"] += 1
+
+    async def _fake_decay():
+        calls["decay"] += 1
+
+    p._write_sleep_review = _fake_review
+    p._daily_settle = _fake_settle
+    p._daily_decay = _fake_decay
+
+    def run_tick():
+        old = plugin_mod.datetime
+        plugin_mod.datetime = _FakeDateTime
+        try:
+            async def _tick_and_pump():
+                await p._sleep_tick()
+                await asyncio.sleep(0)
+                await asyncio.sleep(0)
+
+            asyncio.run(_tick_and_pump())
+        finally:
+            plugin_mod.datetime = old
+
+    # 睡眠中(未到 wake_at):不醒,state 保持 sleep
+    _FakeDateTime._current = datetime(2026, 8, 16, 6, 59, 59)
+    run_tick()
+    assert p.sleep.state.state == "sleep"
+    assert calls == {"review": 0, "settle": 0, "decay": 0}
+
+    # wake_at 过后(07:00:05):自然醒 → _wake_up → 回顾触发;补跑仅经 _daily_settle,不单独 spawn 衰减
+    _FakeDateTime._current = datetime(2026, 8, 16, 7, 0, 5)
+    run_tick()
+    assert p.sleep.state.state == "awake"
+    assert calls["review"] == 1
+    assert calls["settle"] == 1
+    assert calls["decay"] == 0  # 衰减由 _daily_settle 内部先衰减后结算,防并发双计

@@ -753,7 +753,9 @@ class CatsitatePlugin(MaiBotPlugin):
             return
         now = datetime.now()
         now_iso = now.strftime("%Y-%m-%dT%H:%M")
-        if self.sleep.is_sleeping(now=lambda: now):
+        # 注意:不能经 is_sleeping() 判断睡眠中——其语义含 now < wake_at,
+        # wake_at 过后直接返回 False 落入 else 分支,自然醒分支会成死代码(审查 Critical #1)
+        if self.sleep.state.state == "sleep":
             if now.strftime("%Y-%m-%dT%H:%M:%S") >= (self.sleep.state.wake_at or "9999"):
                 self.ctx.logger.info("自然醒来: %s", now.strftime("%Y-%m-%dT%H:%M:%S"))
                 await self._wake_up()
@@ -775,8 +777,7 @@ class CatsitatePlugin(MaiBotPlugin):
         self.sleep.wake()
         if self.config.sleep.review_enabled:
             self._spawn_background_task(self._write_sleep_review())
-        # 醒来补跑当日衰减与日终结算(睡眠期调度静默,醒来追平)
-        self._spawn_background_task(self._daily_decay())
+        # 醒来补跑当日结算(内部已先衰减后结算;勿再单独 spawn 衰减,防并发双计,审查 Important #2)
         self._spawn_background_task(self._daily_settle())
 
     async def _daily_decay(self) -> None:

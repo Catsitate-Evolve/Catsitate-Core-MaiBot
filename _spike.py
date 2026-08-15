@@ -4,7 +4,7 @@ import json
 import logging
 from datetime import datetime
 
-from maibot_sdk import HookHandler, MaiBotPlugin, Tool
+from maibot_sdk import Command, HookHandler, MaiBotPlugin, Tool
 from maibot_sdk.types import HookMode, HookOrder, ToolParameterInfo, ToolParamType
 
 logger = logging.getLogger("catsitate.spike")
@@ -92,17 +92,40 @@ class SpikePlugin(MaiBotPlugin):
         parameters=[],
     )
     async def handle_spike_probe(self, stream_id: str = "", **kwargs):
+        summary = await self._run_probe(stream_id)
+        return {"name": "spike_probe", "content": summary}
+
+    @Command("/spike_probe", description="spike 探针命令(绕过 LLM):验证 get_recent 二进制与 context.append", pattern=r"^/spike_probe\s*$", aliases=[])
+    async def spike_probe_cmd(self, **kwargs):
+        stream_id = str(kwargs.get("stream_id") or "")
+        summary = await self._run_probe(stream_id)
+        return f"spike_probe 执行结果:\n{summary}"
+
+    async def _run_probe(self, stream_id: str) -> str:
         try:
             result = await self.ctx.call_capability(
                 "message.get_recent", chat_id=stream_id, limit=5, include_binary_data=True
             )
             logger.info("[spike] get_recent(include_binary_data) 结果: %s", json.dumps(result, ensure_ascii=False, default=str)[:800])
+            # 概括返回结构:消息数、每条消息的段类型、image 段是否有 data
+            messages = result.get("messages") if isinstance(result, dict) else result
+            lines = [f"get_recent 返回类型={type(result).__name__}"]
+            if isinstance(messages, list):
+                lines.append(f"消息数={len(messages)}")
+                for msg in messages[-3:]:
+                    if not isinstance(msg, dict):
+                        lines.append(f"  非 dict 消息: {type(msg).__name__}")
+                        continue
+                    seg_types = [(s.get("type"), bool(s.get("data")), bool(s.get("hash"))) for s in (msg.get("segments") or []) if isinstance(s, dict)]
+                    lines.append(f"  msg {str(msg.get('message_id'))[:8]} 段={seg_types}")
+            else:
+                lines.append(f"messages 非列表: {str(result)[:200]}")
             append_result = await self.ctx.maisaka.context.append(stream_id, [{"type": "text", "text": "[spike] 注入上下文探针"}])
-            logger.info("[spike] maisaka.context.append 结果: %s", append_result)
-            return {"name": "spike_probe", "content": "spike 探针执行完毕,请查看日志"}
+            lines.append(f"append 返回={str(append_result)[:200]}")
+            return "\n".join(lines)
         except Exception as exc:  # noqa: BLE001
             logger.exception("[spike] 探针失败: %s", exc)
-            return {"name": "spike_probe", "content": f"spike 探针失败: {exc}"}
+            return f"spike 探针失败: {exc}"
 
 
 def create_plugin() -> SpikePlugin:

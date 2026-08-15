@@ -195,7 +195,14 @@ class CatsitateConfig(PluginConfigBase):
 ```python
 """Catsitate 核心人格行为插件 — 薄入口。"""
 
+import sys
+from pathlib import Path
+
 from maibot_sdk import MaiBotPlugin
+
+# spike ① 实测结论:加载器仅将 plugins 父目录临时加入 sys.path,插件目录本身不在,
+# 绝对导入 catsitate_core.* 会失败。在此自行注册插件目录(sys.path 修改限于插件进程内)。
+sys.path.insert(0, str(Path(__file__).resolve().parent))
 
 from catsitate_core.config import CatsitateConfig
 
@@ -3083,15 +3090,21 @@ class Scheduler:
 from __future__ import annotations
 
 from datetime import date, datetime, timedelta
+from pathlib import Path
 from typing import Any
 
 import asyncio
 import json
 import logging
+import sys
 
 import httpx
 from maibot_sdk import Command, HookHandler, LLMProvider, MaiBotPlugin, Tool
 from maibot_sdk.types import HookMode, HookOrder, ToolParameterInfo
+
+# spike ① 实测结论:加载器仅将 plugins 父目录临时加入 sys.path,插件目录本身不在,
+# 绝对导入 catsitate_core.* 会失败。在此自行注册插件目录(sys.path 修改限于插件进程内)。
+sys.path.insert(0, str(Path(__file__).resolve().parent))
 
 from catsitate_core.config import CatsitateConfig
 from catsitate_core.favorability import BatchEngine, SettleExecutor, build_favorability_block

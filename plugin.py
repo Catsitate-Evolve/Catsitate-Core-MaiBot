@@ -98,6 +98,7 @@ class CatsitatePlugin(MaiBotPlugin):
         self._snapshot_cache: dict[str, dict] = {}  # 注入块文本 -> 快照 UserMessageItem
         self._env_cache: dict[str, str] = {}  # content_key -> 环境块文本
         self._env_fetched_at: datetime | None = None
+        self._persona_cache: str | None = None  # bot 人设缓存(config.get 一次,bot 配置变更时失效)
         self._settling: set[tuple[str, str]] = set()  # 结算并发防护键(最终审查 Important#1)
         self._background_tasks: set[asyncio.Task] = set()  # 后台任务引用(最终审查 Important#2)
         self._scheduler = Scheduler(tick_seconds=60)
@@ -127,9 +128,10 @@ class CatsitatePlugin(MaiBotPlugin):
             self._snapshot_cache.clear()
             self.ctx.logger.info("catsitate_core 配置已刷新,派生缓存已重置")
         elif scope == "bot":
-            # personality 变化影响等级规则块注入(下次渲染自动生效)
+            # personality 变化影响等级规则块注入与哨兵人设(下次渲染自动生效)
             self.assembler.reset()
             self._snapshot_cache.clear()
+            self._persona_cache = None
 
     # ---------- 工具 ----------
 
@@ -358,8 +360,8 @@ class CatsitatePlugin(MaiBotPlugin):
         if not output_items:
             return {"action": "continue", "modified_kwargs": kwargs}
         called_tools = self._called_tools(kwargs)
-        reasoning = str(kwargs.get("reasoning") or "")
-        tool_results = self._context_tool_results(kwargs, cfg.context_tools, called_tools)
+        reasoning = self._reasoning_from_items(output_items)
+        tool_results = self._context_tool_results(output_items, cfg.context_tools, called_tools)
         if not tool_results:
             return {"action": "continue", "modified_kwargs": kwargs}
         new_items = backfill_reply_items(output_items, tool_results, cfg.context_tools, called_tools, reasoning)
@@ -376,11 +378,11 @@ class CatsitatePlugin(MaiBotPlugin):
         cfg = self.config.reply_guard
         if not self.config.plugin.enabled or not cfg.enabled or not cfg.sentinel_enabled:
             return {"action": "continue", "modified_kwargs": kwargs}
-        reply_text = str(kwargs.get("reply_text") or kwargs.get("text") or "")
+        reply_text = str(kwargs.get("response") or "")
         if not reply_text.strip():
             return {"action": "continue", "modified_kwargs": kwargs}
-        persona = self._persona_background()
-        chat_context = await self._recent_context_text(str(kwargs.get("stream_id") or ""), limit=10)
+        persona = await self._persona()
+        chat_context = await self._recent_context_text(str(kwargs.get("session_id") or ""), limit=10)
         messages, _ = build_sentinel_prompt(persona, reply_text, chat_context)
         result = await self._side_llm_call(messages, cfg.sentinel_model, "sentinel", cfg.sentinel_timeout_ms)
         if not result.get("success"):
@@ -388,8 +390,9 @@ class CatsitatePlugin(MaiBotPlugin):
             return {"action": "continue", "modified_kwargs": kwargs}
         should_send, reason = parse_sentinel_response(str(result.get("response") or ""))
         if should_send is None or should_send:
+            self.ctx.logger.info("哨兵判定:放行回复")
             return {"action": "continue", "modified_kwargs": kwargs}
-        self.ctx.logger.warning("哨兵层判定撤回回复:%s", reason)
+        self.ctx.logger.warning("哨兵判定:撤回回复:%s", reason)
         # 撤回动作(spike ④ 验证后实现:删除待发送项或调用撤回 API);当前先日志
         return {"action": "continue", "modified_kwargs": kwargs}
 
@@ -719,22 +722,60 @@ class CatsitatePlugin(MaiBotPlugin):
         return items if isinstance(items, list) else []
 
     def _called_tools(self, kwargs: dict[str, Any]) -> list[str]:
-        """本轮 planner 调用过的工具名(spike 结论;可能来自 tool_calls 回显)。"""
+        """本轮 planner 调用过的工具名:从 output_items 的 FunctionCallItem 提取(实机快照格式)。"""
 
-        calls = kwargs.get("tool_calls") or []
-        return [c.get("name") or c.get("tool_name") for c in calls if isinstance(c, dict)]
+        items = self._output_items(kwargs)
+        names: list[str] = []
+        for it in items:
+            if isinstance(it, dict) and it.get("item_type") == "FunctionCallItem":
+                tc = it.get("tool_call") or {}
+                name = str(tc.get("func_name") or "") if isinstance(tc, dict) else ""
+                if name:
+                    names.append(name)
+        return names
 
     def _context_tool_results(
-        self, kwargs: dict[str, Any], context_tools: list[str], called_tools: list[str]
+        self, output_items: list[dict], context_tools: list[str], called_tools: list[str]
     ) -> dict[str, str]:
-        """本轮**被调用过的**上下文工具的结果(规格 §4.7;spike 确认回显字段名)。"""
+        """本轮**被调用过的**上下文工具的结果:从 output_items 的 FunctionCallOutputItem 提取(实机快照格式)。"""
 
-        results = kwargs.get("tool_results") or {}
         wanted = set(context_tools) & set(called_tools)
-        return {name: str(results[name]) for name in wanted if name in results}
+        results: dict[str, str] = {}
+        for it in output_items:
+            if isinstance(it, dict) and it.get("item_type") == "FunctionCallOutputItem":
+                name = str(it.get("tool_name") or "")
+                if name in wanted:
+                    results[name] = str(it.get("output") or "")
+        return results
 
-    def _persona_background(self) -> str:
-        return str(self.ctx.maisaka.get_personality() or "猫耳少女") if hasattr(self.ctx, "maisaka") else "猫耳少女"
+    @staticmethod
+    def _reasoning_from_items(output_items: list[dict]) -> str:
+        """本轮 planner 推理文本:从 output_items 的 ReasoningItem 提取(实机快照格式)。"""
+
+        parts: list[str] = []
+        for it in output_items:
+            if isinstance(it, dict) and it.get("item_type") == "ReasoningItem":
+                for p in it.get("text_parts") or []:
+                    if isinstance(p, str):
+                        parts.append(p)
+        return "".join(parts)
+
+    async def _persona(self) -> str:
+        """bot 人设文本(经 config.get 读全局配置 personality.personality,带缓存)。
+
+        SDK MaisakaCapability 无 get_personality(联调实测),人设来自主程序 bot 全局配置;
+        读取失败或为空时兜底"猫耳少女",并显式告警(不静默)。
+        """
+
+        if self._persona_cache is not None:
+            return self._persona_cache
+        try:
+            value = await self.ctx.config.get("personality.personality", "")
+        except Exception:
+            self.ctx.logger.exception("读取 bot 人设失败,兜底默认人设")
+            value = ""
+        self._persona_cache = str(value or "").strip() or "猫耳少女"
+        return self._persona_cache
 
     async def _recent_context_text(self, stream_id: str, limit: int) -> str:
         raw = await self._fetch_recent(stream_id, limit)

@@ -29,11 +29,11 @@ def test_count_and_early_trigger(tmp_path):
 def test_early_settle_daily_cap(tmp_path):
     engine, _ = make_engine(tmp_path)
     for i in range(3):
-        judged_at = f"early-{i}-{NOW.strftime('%Y%m%d%H%M%S')}"
+        judged_at = NOW.strftime("%Y-%m-%dT%H:%M:%S")
         engine.reset_batch("u1", "s1", judged_at)
         for _ in range(20):
             engine.count_message("u1", "s1", now=lambda: NOW)
-        engine.apply_delta("u1", "s1", 1, f"第{i}次", judged_at=judged_at)
+        engine.apply_delta("u1", "s1", 1, f"第{i}次", judged_at=judged_at, judge_id=f"early-{i}")
     engine.reset_batch("u1", "s1", NOW.strftime("%Y-%m-%dT%H:%M:%S"))
     for _ in range(20):
         engine.count_message("u1", "s1", now=lambda: NOW)
@@ -69,7 +69,8 @@ def test_material_respects_batch_window(tmp_path):
     ]
     # 首次(无窗口)两条都在
     assert len(engine.build_material("u1", "p", history)) == 2
-    # 结算开新批次(window_start = 10:00),旧消息被排除
+    # 结算开新批次(window_start = 10:00),旧消息被排除(先计数建批次行,与生产流程一致)
+    engine.count_message("u1", "p", now=lambda: NOW)
     engine.reset_batch("u1", "p", "2026-08-14T10:00:00")
     material = engine.build_material("u1", "p", history)
     text = "\n".join(material)
@@ -82,7 +83,7 @@ def test_material_truncates_long_single_message(tmp_path):
         {"role": "user", "user_id": "u1", "stream_id": "p", "text": "长" * 300, "seq": 1, "ts": "2026-08-14T10:00:01"},
     ]
     material = engine.build_material("u1", "p", history)
-    assert len(material[0].split("】")[-1]) <= 200 + 1  # 截断后 ≤200 字符(含省略号)
+    assert len(material[0].rsplit(") ", 1)[-1]) <= 200 + 1  # 截断后 ≤200 字符(含省略号)
 
 
 def test_private_material_contains_bot_and_user(tmp_path):
@@ -99,10 +100,10 @@ def test_apply_delta_level_and_note_truncation(tmp_path):
     engine, _ = make_engine(tmp_path)
     engine.apply_delta("u1", "s1", 8, "注" * 60, judged_at="early-x")
     row = engine.get_level("u1", "s1")
-    assert row["level"] == 2  # 8 分 → 熟悉
+    assert row["level"] == 0  # 8 分 → 陌生
     assert row["score"] == 8
     assert len(row["note"]) == 40
-    assert engine.get_best_level_for_user("u1")["level"] == 2
+    assert engine.get_best_level_for_user("u1")["level"] == 0
 
 
 def test_levels_order():

@@ -2372,7 +2372,7 @@ git commit -m "feat: 贴表情引擎(白名单选表情 prompt/每流冷却护�
 **Interfaces:**
 - Consumes: `JsonSnapshot`(Task 3)、`PokeSection`(Task 1)。
 - Produces:
-  - `class PokeEngine:` — `__init__(snapshot: JsonSnapshot, config: PokeSection)`;`parse_notice(payload: dict) -> dict | None`(解析 `additional_config.napcat_notice_payload`,输出 `{"text": "XXX 拍了拍你,说:"…"", "user_id": str}`,结构不符返回 None + 原因字段,不静默——规格 §4.6);`enhance_notice_text(payload: dict) -> str | None`(纯渲染拟人文本,供 `enhance_notice_text`/`inject_to_context` 两开关共用);`can_poke(user_id: str, best_level_row: dict | None, now=None) -> tuple[bool, str]`(等级 ≥ `min_level_for_poke` 且冷却通过;best_level_row 为 BatchEngine.get_best_level_for_user 的结果,None = 从未判定,默认"陌生"=0 级,门槛"熟悉"=1 级,拒绝并给出中文原因);`mark_poked(user_id: str, now=None) -> None`(主动戳冷却记 JSON 快照,user_id 维度)。
+  - `class PokeEngine:` — `__init__(snapshot: JsonSnapshot, config: PokeSection)`;`parse_notice(payload: dict) -> dict | None`(解析 `additional_config.napcat_notice_payload`,输出 `{"text": "XXX 拍了拍你,说:"…"", "user_id": str}`,结构不符返回 None(调用方记日志),不静默——规格 §4.6);`enhance_notice_text(payload: dict) -> str | None`(纯渲染拟人文本,供 `enhance_notice_text`/`inject_to_context` 两开关共用);`can_poke(user_id: str, best_level_row: dict | None, now=None) -> tuple[bool, str]`(等级 ≥ `min_level_for_poke` 且冷却通过;best_level_row 为 BatchEngine.get_best_level_for_user 的结果,None = 从未判定,默认"陌生"=0 级,门槛"熟悉"=1 级,拒绝并给出中文原因);`mark_poked(user_id: str, now=None) -> None`(主动戳冷却记 JSON 快照,user_id 维度)。
   - 被戳反应逻辑**不实现**(规格已剔除)。
 
 - [ ] **Step 1: 编写失败测试**

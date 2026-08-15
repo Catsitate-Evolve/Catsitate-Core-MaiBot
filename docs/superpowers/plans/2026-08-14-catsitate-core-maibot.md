@@ -243,9 +243,9 @@ __version__ = "0.1.0"
   },
   "license": "GPL-v3.0-or-later",
   "urls": {
-    "repository": "https://github.com/hesitate-p/catsitate_core_maibot",
-    "homepage": "https://github.com/hesitate-p/catsitate_core_maibot",
-    "issues": "https://github.com/hesitate-p/catsitate_core_maibot/issues"
+    "repository": "https://github.com/Catsitate-Evolve/Catsitate-Core-MaiBot",
+    "homepage": "https://github.com/Catsitate-Evolve/Catsitate-Core-MaiBot",
+    "issues": "https://github.com/Catsitate-Evolve/Catsitate-Core-MaiBot/issues"
   },
   "changelog": "CHANGELOG.md",
   "host_application": {

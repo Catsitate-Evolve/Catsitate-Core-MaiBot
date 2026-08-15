@@ -10,7 +10,7 @@ def test_config_defaults():
     assert cfg.favorability.llm_timeout_ms is None
     assert cfg.reply_guard.sentinel_timeout_ms is None
     assert cfg.inject.enabled is True
-    assert cfg.time_aware.city == "北京"
+    assert cfg.time_aware.city == "珠海"
     assert cfg.time_aware.weather_refresh_minutes == 45
     assert cfg.favorability.window_hours == 24
     assert cfg.favorability.early_settle_threshold == 20
@@ -19,7 +19,7 @@ def test_config_defaults():
     assert cfg.favorability.note_max_chars == 40
     assert cfg.favorability.material_max_messages == 30
     assert cfg.favorability.material_message_max_chars == 200
-    assert cfg.favorability.llm_model == "utils"
+    assert cfg.favorability.llm_model == "memory"
     assert cfg.memo.default_ttl_hours == 24
     assert cfg.memo.max_ttl_hours == 168
     assert cfg.memo.entry_max_chars == 80

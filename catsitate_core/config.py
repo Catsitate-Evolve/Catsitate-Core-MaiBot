@@ -36,9 +36,9 @@ class TimeAwareSection(PluginConfigBase):
     __ui_order__ = 2
 
     enabled: bool = _f(True, "节日/天气感知开关", label="时间感知开关")
-    city: str = _f("北京", "城市名", label="城市名")
-    city_lat: float = _f(39.9042, "城市纬度(Open-Meteo)", label="城市纬度")
-    city_lon: float = _f(116.4074, "城市经度(Open-Meteo)", label="城市经度")
+    city: str = _f("珠海", "城市名", label="城市名")
+    city_lat: float = _f(22.279410, "城市纬度(Open-Meteo)", label="城市纬度")
+    city_lon: float = _f(113.528098, "城市经度(Open-Meteo)", label="城市经度")
     weather_refresh_minutes: int = _f(45, "天气后台刷新间隔(分钟)", label="天气刷新间隔(分钟)")
     holiday_online: bool = _f(True, "节日数据在线刷新开关", label="节日在线刷新")
 
@@ -68,8 +68,8 @@ class FavorabilitySection(PluginConfigBase):
         label="bot 账号 id",
     )
     llm_model: str = _f(
-        "utils",
-        "旁路模型:填主程序 model_task_config 的 task 名(默认 utils 轻量任务;可自定义填 planner/memory 等任意已配置 task)",
+        "memory",
+        "旁路模型:填主程序 model_task_config 的 task 名(默认 memory;可自定义填 planner/replyer 等任意已配置 task)",
         label="判定模型(task 名)",
     )
     llm_timeout_ms: int | None = _f(
@@ -99,8 +99,8 @@ class MsgReactSection(PluginConfigBase):
     enabled: bool = _f(True, "贴表情工具开关", label="贴表情工具开关")
     per_stream_cooldown_seconds: int = _f(30, "每流冷却秒数", label="每流冷却秒数")
     llm_model: str = _f(
-        "utils",
-        "旁路模型:填主程序 model_task_config 的 task 名(默认 utils 轻量任务;可自定义填 planner/memory 等任意已配置 task)",
+        "replyer",
+        "旁路模型:填主程序 model_task_config 的 task 名(默认 replyer;可自定义填 planner/memory 等任意已配置 task)",
         label="选表情模型(task 名)",
     )
     llm_timeout_ms: int | None = _f(
@@ -131,8 +131,8 @@ class ReplyGuardSection(PluginConfigBase):
     )
     sentinel_enabled: bool = _f(False, "LLM 哨兵层开关(默认关)", label="LLM 哨兵层开关")
     sentinel_model: str = _f(
-        "utils",
-        "哨兵旁路模型:填主程序 task 名(默认 utils;可自定义)",
+        "planner",
+        "哨兵旁路模型:填主程序 task 名(默认 planner;可自定义)",
         label="哨兵模型(task 名)",
     )
     sentinel_timeout_ms: int | None = _f(

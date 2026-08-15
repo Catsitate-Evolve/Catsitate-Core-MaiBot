@@ -75,6 +75,7 @@ class FavorabilitySection(PluginConfigBase):
     early_settle_threshold: int = _f(20, "提前结算消息数阈值", label="提前结算消息数阈值")
     daily_max_early_settle: int = _f(3, "每用户每日提前结算上限", label="每日提前结算上限")
     daily_settle_min: int = _f(3, "日终结算最小消息数(不足顺延)", label="日终结算最小消息数")
+    delta_max: int = _f(5, "单次结算好感度变化上限(±,判定结果钳制在此范围内)", label="单次变化上限")
     level_rule_stranger: str = _f("仅按普通网友对待,保持礼貌与距离", "陌生级行为准则", label="陌生级规则")
     level_rule_familiar: str = _f("认识一段时间,可自然闲聊", "熟悉级行为准则", label="熟悉级规则")
     level_rule_close: str = _f("关系较好,可主动关心", "亲近级行为准则", label="亲近级规则")

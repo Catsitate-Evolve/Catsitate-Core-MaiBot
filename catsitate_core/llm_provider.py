@@ -89,6 +89,12 @@ def load_side_system(template_id: str) -> tuple[str, str]:
     return builtin, _version_tag(template_id, builtin)
 
 
+def _replacements_tag(replacements: dict[str, str]) -> str:
+    """占位符替换值的稳定标签(参与缓存键,值变即失效)。"""
+
+    return hashlib.md5("|".join(f"{k}={v}" for k, v in sorted(replacements.items())).encode("utf-8")).hexdigest()[:8]
+
+
 def _version_tag(template_id: str, system_text: str) -> str:
     """模板版本标签:内置版本号 + 文本哈希(模板变更即缓存失效,§4.10)。"""
 
@@ -97,7 +103,8 @@ def _version_tag(template_id: str, system_text: str) -> str:
 
 
 def build_side_prompt(
-    template_id: str, stable_ctx: list[str], variable_tail: list[str]
+    template_id: str, stable_ctx: list[str], variable_tail: list[str],
+    replacements: dict[str, str] | None = None,
 ) -> tuple[list[dict], str]:
     """按稳定段前置纪律组装旁路 prompt(规格 §4.9 签名)。
 
@@ -105,6 +112,7 @@ def build_side_prompt(
         template_id: 模板 id(SIDE_TEMPLATES 键)。
         stable_ctx: 稳定上下文段列表(5 级规则/白名单/人设背景;内容稳定,配置变更才变)。
         variable_tail: 变量素材段列表(按序追加为 user 消息)。
+        replacements: system 模板中 {{key}} 占位符的替换映射(模板可含占位符,渲染后进缓存键)。
 
     Returns:
         (messages, cache_key): messages 为 OpenAI 兼容消息列表;cache_key 标识模板版本。
@@ -113,6 +121,10 @@ def build_side_prompt(
     if template_id not in SIDE_TEMPLATES:
         raise ValueError(f"未知旁路模板 id: {template_id}")
     system_text, cache_key = load_side_system(template_id)
+    if replacements:
+        for key, value in replacements.items():
+            system_text = system_text.replace("{{" + key + "}}", value)
+        cache_key = f"{cache_key}&{_replacements_tag(replacements)}"
     messages: list[dict] = [{"role": "system", "content": system_text}]
     messages += [{"role": "user", "content": part} for part in stable_ctx]
     messages += [{"role": "user", "content": part} for part in variable_tail]

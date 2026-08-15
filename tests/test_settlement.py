@@ -139,6 +139,21 @@ def test_favorability_block_default_stranger(tmp_path):
     assert "注记" not in text
 
 
+def test_delta_clamped_by_config(tmp_path):
+    import asyncio
+    from catsitate_core.config import FavorabilitySection
+    executor, engine, _ = make_executor(tmp_path)
+    engine.config = FavorabilitySection(delta_max=2)
+    executor.engine = engine
+    history = [
+        {"role": "user", "user_id": "u1", "stream_id": "s1", "text": f"消息{i}", "seq": i, "ts": f"2026-08-14T11:{i:02d}:00"}
+        for i in range(10)
+    ]
+    result = asyncio.run(executor.settle("u1", "s1", history, kind="early"))
+    assert result["status"] == "ok"
+    assert result["delta"] == 2  # fake LLM 返回 5,被 delta_max=2 钳制
+
+
 def test_level_rules_list_five_levels():
     from catsitate_core.config import FavorabilitySection
     cfg = FavorabilitySection()

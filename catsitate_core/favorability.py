@@ -335,7 +335,10 @@ class SettleExecutor:
             return {"status": "carried_over", "reason": f"用户消息不足 {self.engine.config.daily_settle_min} 条,顺延"}
         # 稳定段 = 判定指令(system 模板)+ 5 级规则(配置,stable_ctx);变量尾 = 批次素材
         level_rules = self.engine.config.level_rules_list()
-        messages, _cache_key = build_side_prompt("favorability", level_rules, material)
+        messages, _cache_key = build_side_prompt(
+            "favorability", level_rules, material,
+            replacements={"delta_max": str(max(1, self.engine.config.delta_max))},
+        )
         try:
             result = await self.llm_call(messages, model)
         except Exception as exc:  # noqa: BLE001
@@ -346,7 +349,8 @@ class SettleExecutor:
         parsed = parse_judge_response(str(result.get("response", "")))
         if parsed is None:
             return {"status": "failed", "error": "判定 JSON 解析失败"}
-        delta = max(-5, min(5, parsed["delta"]))
+        delta_limit = max(1, self.engine.config.delta_max)
+        delta = max(-delta_limit, min(delta_limit, parsed["delta"]))
         judged_at = datetime.now().strftime("%Y-%m-%dT%H:%M:%S")
         judge_id = f"{kind}-{judged_at}"
         self.engine.apply_delta(

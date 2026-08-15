@@ -205,22 +205,28 @@ class CatsitatePlugin(MaiBotPlugin):
 
     @Tool(
         "poke_user",
-        description="主动戳一戳目标用户(需好感度达到门槛且冷却通过)。",
+        description="主动戳一戳目标用户(仅冷却限制)。",
         brief_description="主动戳一戳",
         parameters=[
             ToolParameterInfo(name="user_id", param_type="string", description="目标用户 ID", required=True),
-            ToolParameterInfo(name="stream_id", param_type="string", description="目标聊天流", required=True),
+            ToolParameterInfo(name="group_id", param_type="string", description="群号(群聊必填,私聊留空)", required=False),
         ],
         visibility="visible",
     )
-    async def poke_user(self, user_id: str = "", stream_id: str = "", **kwargs: Any) -> str:
+    async def poke_user(self, user_id: str = "", group_id: str = "", **kwargs: Any) -> str:
         del kwargs
         if not self.config.plugin.enabled or not self.config.poke.poke_tool_enabled:
             return "主动戳工具未启用。"
         ok, reason = self.poke.can_poke(user_id)
         if not ok:
             return reason
-        api_result = await self.ctx.api.call("adapter.napcat.message.send_poke", user_id=user_id, stream_id=stream_id)
+        # 实测 API 签名:send_poke(user_id, group_id, target_id, qq_id)
+        api_result = await self.ctx.api.call(
+            "adapter.napcat.message.send_poke",
+            user_id=user_id,
+            group_id=group_id or None,
+            target_id=user_id,
+        )
         if not api_result.get("success"):
             return f"戳一戳 API 失败:{api_result}"
         self.poke.mark_poked(user_id)
@@ -247,13 +253,28 @@ class CatsitatePlugin(MaiBotPlugin):
         if seg is None:
             self.ctx.logger.warning("inspect_image 失败:%s(stream=%s,message_id=%s)", err, stream_id, message_id)
             return f"取图失败:{err}"
-        # spike ④ 实测:get_recent 的 image 段只有 hash 无 data——经主程序图片库补读为主路径(规格 §4.8)
-        db_result = await self.ctx.database.get("Images", hash=seg.get("hash"))
-        if not db_result or not db_result.get("data"):
-            msg = f"图片 {seg.get('file_name') or seg.get('hash')} 数据库补读失败"
+        # spike ④ 实测:image 段仅 hash 无 data;SDK 无 ctx.database 属性,直调 database.get 能力
+        # 拿 full_path(相对主程序根目录 /MaiMBot)后读文件补 base64(插件与主程序同容器共享文件系统)
+        db_result = await self.ctx.call_capability(
+            "database.get",
+            model_name="Images",
+            filters={"image_hash": str(seg.get("hash"))},
+            single_result=True,
+        )
+        if not isinstance(db_result, dict) or not db_result.get("full_path"):
+            msg = f"图片 {seg.get('file_name') or seg.get('hash')} 数据库补读失败:{db_result}"
             self.ctx.logger.error(msg)
             return msg
-        seg = {**seg, "data": db_result["data"]}
+        image_path = Path("/MaiMBot") / str(db_result["full_path"])
+        try:
+            image_bytes = image_path.read_bytes()
+        except OSError as exc:
+            msg = f"图片文件读取失败 {image_path}: {exc}"
+            self.ctx.logger.error(msg)
+            return msg
+        import base64
+
+        seg = {**seg, "data": base64.b64encode(image_bytes).decode("ascii")}
         messages, _ = build_relook_prompt(question, seg)
         result = await self._side_llm_call(messages, self.config.image_relook.llm_model, "image_relook", self.config.image_relook.llm_timeout_ms)
         if not result.get("success"):

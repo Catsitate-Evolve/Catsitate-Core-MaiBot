@@ -3018,7 +3018,7 @@ async def test_interval_semantics_independent():
 @pytest.mark.asyncio
 async def test_stop_cancels_loop():
     scheduler = Scheduler(tick_seconds=60)
-    task = asyncio.create_task(scheduler.run())
+    task = scheduler.start()  # start() 负责建循环任务并登记 _loop_task
     await asyncio.sleep(0.01)
     await scheduler.stop()
     with pytest.raises(asyncio.CancelledError):
@@ -3038,8 +3038,8 @@ def test_iter_today_active_and_daily_settle_check(tmp_path):
     assert engine.has_daily_settle_today("u1", "s1", now=lambda: NOW) is False
     engine.apply_delta(
         "u1", "s1", 1, "日终",
-        judged_at=dt.now().strftime("%Y-%m-%dT%H:%M:%S"),
-        judge_id=f"daily-{dt.now().strftime('%Y-%m-%dT%H:%M:%S')}",
+        judged_at=NOW.strftime("%Y-%m-%dT%H:%M:%S"),
+        judge_id=f"daily-{NOW.strftime('%Y-%m-%dT%H:%M:%S')}",  # 用 NOW,勿用真实 now(查询按 NOW 当日前缀)
     )
     assert engine.has_daily_settle_today("u1", "s1", now=lambda: NOW) is True
 ```
@@ -3079,12 +3079,14 @@ logger = logging.getLogger("catsitate.scheduler")
 class Scheduler:
     """60s tick 调度器:每 tick 检查各任务是否到达间隔,到期则执行。
 
+    基于 tick 计数(而非真实时间)判定到期:interval 换算为 tick 数
+    (ceil(interval / tick_seconds)),测试可直接驱动 _tick 与 _run_due_tasks。
     任务异常记录日志并隔离,不中断其它任务与主循环(错误完整暴露)。
     """
 
     def __init__(self, tick_seconds: int = 60) -> None:
         self.tick_seconds = tick_seconds
-        self._tasks: dict[str, tuple[int, float, Callable[[], Awaitable[None]]]] = {}
+        self._tasks: dict[str, tuple[int, int, Callable[[], Awaitable[None]]]] = {}
         self._running = False
         self._loop_task: asyncio.Task | None = None
         self._tick = 0  # 已推进的 tick 数(测试可手动驱动)
@@ -3099,7 +3101,7 @@ class Scheduler:
 
         if name in self._tasks:
             raise ValueError(f"调度任务重名: {name}")
-        self._tasks[name] = (interval_seconds, time.monotonic(), coro_factory)
+        self._tasks[name] = (interval_seconds, 0, coro_factory)
 
     def unregister(self, name: str) -> None:
         self._tasks.pop(name, None)
@@ -3107,11 +3109,11 @@ class Scheduler:
     async def _run_due_tasks(self) -> None:
         """执行所有到期任务(异常隔离)。"""
 
-        now = time.monotonic()
-        for name, (interval, last_run, factory) in list(self._tasks.items()):
-            if now - last_run < interval:
+        for name, (interval, last_run_tick, factory) in list(self._tasks.items()):
+            ticks_needed = max(1, -(-interval // self.tick_seconds))  # ceil
+            if self._tick - last_run_tick < ticks_needed:
                 continue
-            self._tasks[name] = (interval, now, factory)
+            self._tasks[name] = (interval, self._tick, factory)
             try:
                 await factory()
             except Exception:
@@ -3196,6 +3198,7 @@ from pathlib import Path
 from typing import Any
 
 import asyncio
+import hashlib
 import json
 import logging
 import sys
@@ -3279,6 +3282,7 @@ class CatsitatePlugin(MaiBotPlugin):
             """
         )
         self._env_cache: dict[str, str] = {}  # content_key -> 环境块文本
+        self._snapshot_cache: dict[str, dict] = {}  # 注入块文本 -> 快照格式 item(字节级复用)
         self._env_fetched_at: datetime | None = None
         self._scheduler = Scheduler(tick_seconds=60)
         self._scheduler.register("weather", max(self.config.time_aware.weather_refresh_minutes, 1) * 60, self._refresh_environment)
@@ -3299,11 +3303,13 @@ class CatsitatePlugin(MaiBotPlugin):
         if scope == "self":
             self.assembler.reset()
             self._env_cache.clear()
+            self._snapshot_cache.clear()
             self._env_fetched_at = None
             self.ctx.logger.info("catsitate_core 配置已刷新,派生缓存已重置")
         elif scope == "bot":
             # personality 变化影响等级规则块注入(下次渲染自动生效)
             self.assembler.reset()
+            self._snapshot_cache.clear()
 
     # ---------- LLM Provider:catsitate_custom ----------
 
@@ -3504,8 +3510,11 @@ class CatsitatePlugin(MaiBotPlugin):
             rendered = self.assembler.render(blocks)
             if not rendered:
                 return {"action": "continue", "modified_kwargs": kwargs}
+            # spike ② 实测:items 为快照格式,朴素 {"role","content"} 会被主程序拒绝;
+            # 转换为合法 UserMessageItem;同文本返回同对象(timestamp 与文本绑定),跨请求字节级稳定
+            snapshot_items = [self._to_snapshot_item(m["content"]) for m in rendered]
             insert_at = self._system_tail_index(messages)
-            new_messages = messages[:insert_at] + rendered + messages[insert_at:]
+            new_messages = messages[:insert_at] + snapshot_items + messages[insert_at:]
             new_kwargs = {**kwargs, self._MESSAGES_KEY: new_messages}
             return {"action": "continue", "modified_kwargs": new_kwargs}
         except Exception:
@@ -3617,12 +3626,34 @@ class CatsitatePlugin(MaiBotPlugin):
         return kwargs.get(self._MESSAGES_KEY)
 
     def _system_tail_index(self, messages: list[dict]) -> int:
-        """注入点 = system 消息之后(spike ② 确认的插入语义)。"""
+        """注入点 = SystemMessageItem 之后(spike ② 实测:items 为快照格式,无 role 字段)。"""
 
         for i, m in enumerate(messages):
-            if m.get("role") == "system":
+            if isinstance(m, dict) and m.get("item_type") == "SystemMessageItem":
                 return i + 1
         return len(messages)  # 无 system 时追加尾部(spike ② 回退语义)
+
+    def _to_snapshot_item(self, text: str) -> dict:
+        """渲染块转合法快照格式 UserMessageItem。
+
+        同文本返回同一对象(timestamp 与文本绑定),跨请求字节级稳定(缓存纪律 §4.1);
+        item_id 由 sha256 文本摘要生成(勿用内置 hash(),其带随机种子)。
+        """
+
+        cached = self._snapshot_cache.get(text)
+        if cached is not None:
+            return cached
+        item = {
+            "item_type": "UserMessageItem",
+            "meta": {
+                "item_id": f"catsitate-inject-{hashlib.sha256(text.encode('utf-8')).hexdigest()[:16]}",
+                "logical_turn_id": None,
+                "timestamp": datetime.now().isoformat(),
+            },
+            "parts": [{"type": "text", "text": text}],
+        }
+        self._snapshot_cache[text] = item
+        return item
 
     def _build_inject_blocks(self, kwargs: dict[str, Any]) -> list[InjectionBlock]:
         cfg = self.config
@@ -3860,11 +3891,15 @@ class CatsitatePlugin(MaiBotPlugin):
         return str(self.ctx.maisaka.get_personality() or "猫耳少女") if hasattr(self.ctx, "maisaka") else "猫耳少女"
 
     async def _recent_context_text(self, stream_id: str, limit: int) -> str:
-        raw = await self._fetch_recent_with_binary(stream_id, limit)
+        raw = await self._fetch_recent(stream_id, limit)
         lines = []
         for m in raw:
-            text = "".join(s.get("text", "") for s in (m.get("segments") or []) if s.get("type") == "text")
-            lines.append(f"[{m.get('user_id')}] {text}")
+            if not isinstance(m, dict):
+                continue
+            text = str(m.get("processed_plain_text") or "")
+            if not text:
+                text = "".join(s.get("data", "") for s in (m.get("raw_message") or []) if isinstance(s, dict) and s.get("type") == "text")
+            lines.append(f"[{m.get('message_id')}] {text}")
         return "\n".join(lines)
 
 

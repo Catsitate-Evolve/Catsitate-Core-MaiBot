@@ -6,6 +6,8 @@ import json
 import re
 from datetime import datetime, timedelta
 
+from .llm_provider import build_side_prompt
+
 _ISO = "%Y-%m-%dT%H:%M"
 
 DEFAULT_TEMPLATE_SCHEDULE: dict = {
@@ -135,3 +137,81 @@ def next_window(data: dict, now_iso: str) -> dict | None:
         if s > now:
             upcoming.append((s, w))
     return min(upcoming, key=lambda x: x[0])[1] if upcoming else None
+
+
+def _materialize_template(template: dict, date_str: str) -> dict:
+    """默认作息模板补全日期(睡眠窗口 end 跨午夜 +1 天)。"""
+
+    from datetime import datetime as _dt
+    day = _dt.strptime(date_str, "%Y-%m-%d")
+    out = {"date": date_str, "windows": []}
+    for w in template["windows"]:
+        w = dict(w)
+        w["start"] = f"{date_str}T{w['start']}"
+        w["end"] = f"{date_str}T{w['end']}"
+        if w["end"] <= w["start"]:
+            w["end"] = (day + timedelta(days=1)).strftime("%Y-%m-%d") + w["end"][10:]
+        out["windows"].append(w)
+    return out
+
+
+def build_schedule_generate_prompt(
+    persona: str, today_review: str, weather_text: str, fav_summary: str,
+    due_memos: list[str], min_sleep: int, max_sleep: int, target_date: str,
+) -> tuple[list[dict], str]:
+    """日程生成 prompt:稳定段=system 模板+人设;变量尾=回顾/天气/好感度/备忘/约束/目标日。"""
+
+    stable = [f"bot 人设:{persona}"] if persona.strip() else []
+    tail = [
+        f"今天回顾:{today_review or '无'}",
+        f"明天天气/节日:{weather_text or '无数据'}",
+        f"重要用户好感度:{fav_summary or '无'}",
+        f"到期备忘:{'; '.join(due_memos) if due_memos else '无'}",
+        f"睡眠约束:最短 {min_sleep} 分钟,最长 {max_sleep} 分钟",
+        f"生成目标日:{target_date}",
+    ]
+    return build_side_prompt("schedule_generate", stable, tail)
+
+
+class ScheduleGenerator:
+    """日程生成:LLM 生成 → 校验 → 重生成(N 次)→ 钳制修复;LLM 失败用默认模板并返回显式错误。"""
+
+    def __init__(self, llm_call, config_schedule, config_sleep) -> None:
+        self.llm_call = llm_call
+        self.cfg = config_schedule
+        self.sleep_cfg = config_sleep
+
+    async def generate(
+        self, *, persona: str, today_review: str, weather_text: str,
+        fav_summary: str, due_memos: list[str], target_date: str = "",
+    ) -> tuple[dict, str]:
+        if not target_date:
+            target_date = datetime.now().strftime("%Y-%m-%d")
+        messages, _ = build_schedule_generate_prompt(
+            persona, today_review, weather_text, fav_summary, due_memos,
+            self.sleep_cfg.min_sleep_minutes, self.sleep_cfg.max_sleep_minutes, target_date,
+        )
+        attempts = max(1, self.cfg.max_regenerate) + 1
+        last_err = ""
+        data = None
+        for _ in range(attempts):
+            try:
+                result = await self.llm_call(messages, self.cfg.schedule_llm_model)
+            except Exception as exc:  # noqa: BLE001
+                return _materialize_template(DEFAULT_TEMPLATE_SCHEDULE, target_date), f"日程生成 LLM 异常: {exc}"
+            if not isinstance(result, dict) or not result.get("success"):
+                return _materialize_template(DEFAULT_TEMPLATE_SCHEDULE, target_date), f"日程生成 LLM 失败: {str(result)[:200]}"
+            data, parse_err = schedule_from_json(str(result.get("response") or ""))
+            if data is None:
+                last_err = parse_err
+                continue
+            checked, verr = validate_schedule(data, min_sleep=self.sleep_cfg.min_sleep_minutes, max_sleep=self.sleep_cfg.max_sleep_minutes)
+            if checked is not None:
+                return checked, ""
+            last_err = verr
+        # 重生成耗尽 → 确定性钳制修复
+        try:
+            return fix_schedule(data if data is not None else _materialize_template(DEFAULT_TEMPLATE_SCHEDULE, target_date),
+                                min_sleep=self.sleep_cfg.min_sleep_minutes, max_sleep=self.sleep_cfg.max_sleep_minutes), ""
+        except Exception as exc:  # noqa: BLE001
+            return _materialize_template(DEFAULT_TEMPLATE_SCHEDULE, target_date), f"日程钳制修复异常: {exc}"

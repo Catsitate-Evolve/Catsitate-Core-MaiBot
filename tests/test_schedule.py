@@ -65,3 +65,66 @@ def test_current_and_next_window():
     nxt = next_window(data, "2026-08-16T09:30")
     assert nxt and nxt["kind"] == "sleep"
     assert current_window(data, "2026-08-16T06:00") is None  # 空白时间=自由时间
+
+
+from catsitate_core.schedule import ScheduleGenerator, build_schedule_generate_prompt
+
+
+def test_build_generate_prompt_stable_first():
+    messages, key = build_schedule_generate_prompt(
+        persona="猫耳少女", today_review="睡了8小时", weather_text="多云",
+        fav_summary="无", due_memos=["周四交作业(19:00)"], min_sleep=240, max_sleep=660,
+        target_date="2026-08-16",
+    )
+    assert messages[0]["role"] == "system"
+    assert key
+    assert any("周四交作业" in m["content"] for m in messages)
+
+
+def test_generator_valid_output(tmp_path):
+    import asyncio
+    from catsitate_core.config import ScheduleSection, SleepSection
+    from catsitate_core.schedule import validate_schedule
+    good = {"date": "2026-08-16", "windows": [
+        {"kind": "sleep", "start": "2026-08-16T23:00", "end": "2026-08-17T07:00"},
+        {"kind": "daily", "start": "2026-08-16T09:00", "end": "2026-08-16T11:00",
+         "activity": "写代码", "plan_speak": False, "topic": ""},
+    ]}
+    import json as _json
+    async def fake_llm(messages, model=""):
+        return {"success": True, "response": _json.dumps(good, ensure_ascii=False), "model": model}
+    gen = ScheduleGenerator(fake_llm, ScheduleSection(), SleepSection())
+    data, err = asyncio.run(gen.generate(persona="猫耳少女", today_review="", weather_text="", fav_summary="", due_memos=[]))
+    assert err == "" and data == good
+
+
+def test_generator_retry_then_fix(tmp_path):
+    import asyncio, json as _json
+    from catsitate_core.config import ScheduleSection, SleepSection
+    bad = {"date": "2026-08-16", "windows": [
+        {"kind": "sleep", "start": "2026-08-16T23:00", "end": "2026-08-17T02:00"},  # 3h < 240min? 3h=180 < 240 非法
+        {"kind": "daily", "start": "2026-08-16T09:00", "end": "2026-08-16T11:00",
+         "activity": "写代码", "plan_speak": False, "topic": ""},
+    ]}
+    count = {"n": 0}
+    async def fake_llm(messages, model=""):
+        count["n"] += 1
+        return {"success": True, "response": _json.dumps(bad, ensure_ascii=False), "model": model}
+    gen = ScheduleGenerator(fake_llm, ScheduleSection(max_regenerate=1), SleepSection())
+    data, err = asyncio.run(gen.generate(persona="猫耳少女", today_review="", weather_text="", fav_summary="", due_memos=[]))
+    assert count["n"] == 2  # 首次 + 重生成 1 次
+    # 仍失败 → 钳制修复(睡眠钳到最短 240)
+    assert err == ""
+    fixed, verr = validate_schedule(data, min_sleep=240, max_sleep=660)
+    assert fixed is not None and verr == ""
+
+
+def test_generator_llm_failure_uses_template(tmp_path):
+    import asyncio
+    from catsitate_core.config import ScheduleSection, SleepSection
+    async def fake_llm(messages, model=""):
+        raise RuntimeError("boom")
+    gen = ScheduleGenerator(fake_llm, ScheduleSection(), SleepSection())
+    data, err = asyncio.run(gen.generate(persona="", today_review="", weather_text="", fav_summary="", due_memos=[]))
+    assert err != ""  # 显式失败信息(调用方记录日志)
+    assert data.get("windows")  # 兜底默认模板

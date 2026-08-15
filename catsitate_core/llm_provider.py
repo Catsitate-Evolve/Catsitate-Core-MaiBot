@@ -74,6 +74,21 @@ SIDE_TEMPLATES: dict[str, dict] = {
             "不要输出其它内容。"
         ),
     },
+    "sleep_confirm": {
+        "version": 1,
+        "system": (
+            "你是入睡判定助手。判断「待判定晚安短句」是否是 bot 自己发出的入睡表达。\n"
+            '严格输出 JSON:{"result": "SLEEP" 或 "NOT_SLEEP" 或 "UNSURE"}。\n'
+            "SLEEP=明确自我入睡表达(如「我睡了」「晚安」);NOT_SLEEP=明显不是入睡;UNSURE=拿不准。不要输出其它内容。"
+        ),
+    },
+    "sleep_review": {
+        "version": 1,
+        "system": (
+            "你是睡眠回顾摘要助手。根据睡眠期间某聊天流被拦截的消息列表,输出不超过 100 字的简要总结"
+            "(谁说了什么、是否重要、bot 醒来是否需要知道)。不要输出其它内容。"
+        ),
+    },
 }
 
 

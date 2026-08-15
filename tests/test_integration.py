@@ -89,3 +89,35 @@ def test_full_assembly_smoke(tmp_path):
     items = [{"tool_name": "reply", "arguments": {"reply_reference": ""}}]
     out = backfill_reply_items(items, {"memo_read": "备忘内容"}, cfg.reply_guard.context_tools, ["memo_read"], "")
     assert out[0]["arguments"]["reply_reference"] == "[memo_read] 备忘内容"
+
+
+def test_phase2_engines_assemble(tmp_path):
+    from catsitate_core.config import CatsitateConfig
+    from catsitate_core.decay import DecayExecutor
+    from catsitate_core.favorability import BatchEngine
+    from catsitate_core.schedule import ScheduleGenerator, apply_schedule_edit
+    from catsitate_core.sleep import SleepManager
+    from catsitate_core.storage import JsonSnapshot, SQLiteStore
+    cfg = CatsitateConfig()
+    store = SQLiteStore(tmp_path / "catsitate.db")
+    BatchEngine(store, cfg.favorability).ensure_schema()
+
+    async def fake_llm(messages, model=""):
+        return {"success": True, "response": "{}", "model": model}
+
+    decay = DecayExecutor(store, cfg.favorability, fake_llm)
+    sleep_mgr = SleepManager(JsonSnapshot(tmp_path / "sleep_state.json"), cfg.sleep)
+    gen = ScheduleGenerator(fake_llm, cfg.schedule, cfg.sleep)
+    assert decay and sleep_mgr and gen
+    # 工具修改冒烟
+    data, err, hist = apply_schedule_edit(
+        {"date": "2026-08-16", "windows": [
+            {"kind": "sleep", "start": "2026-08-16T23:00", "end": "2026-08-17T07:00"},
+            {"kind": "daily", "start": "2026-08-16T09:00", "end": "2026-08-16T11:00",
+             "activity": "a", "plan_speak": False, "topic": ""}]},
+        "add", None,
+        {"kind": "daily", "start": "2026-08-16T14:00", "end": "2026-08-16T16:00",
+         "activity": "b", "plan_speak": False, "topic": ""},
+        [], min_sleep=cfg.sleep.min_sleep_minutes, max_sleep=cfg.sleep.max_sleep_minutes,
+    )
+    assert err == ""

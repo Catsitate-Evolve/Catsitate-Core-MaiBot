@@ -27,6 +27,7 @@ from catsitate_core.config import CatsitateConfig
 from catsitate_core.favorability import BatchEngine, SettleExecutor, build_favorability_block
 from catsitate_core.image_relook import build_relook_prompt, find_image_segment
 from catsitate_core.inject import InjectAssembler, InjectionBlock
+from catsitate_core.llm_provider import build_side_prompt
 from catsitate_core.memo import MemoService
 from catsitate_core.msg_react import MsgReactEngine, parse_choice_resp
 from catsitate_core.poke import PokeEngine
@@ -35,7 +36,10 @@ from catsitate_core.reply_guard import (
     build_sentinel_prompt,
     parse_sentinel_response,
 )
+from catsitate_core.decay import last_bot_interaction_time
+from catsitate_core.schedule import current_window
 from catsitate_core.services.scheduler import Scheduler
+from catsitate_core.sleep import is_goodnight_utterance, parse_sleep_confirm_response
 from catsitate_core.storage import JsonSnapshot, SQLiteStore
 from catsitate_core.time_aware import (
     build_environment_text,
@@ -72,6 +76,29 @@ class CatsitatePlugin(MaiBotPlugin):
             ),
         )
         self.assembler = InjectAssembler()
+        from catsitate_core.decay import DecayExecutor
+        from catsitate_core.sleep import SleepManager
+        from catsitate_core.schedule import ScheduleGenerator
+
+        # llm_call 为 2 参调用契约,经 lambda 包装 _side_llm_call(与一期 SettleExecutor 装配同模式)
+        self.decay = DecayExecutor(
+            self.store, self.config.favorability,
+            lambda messages, model="": self._side_llm_call(
+                messages, self.config.favorability.decay_llm_model, "decay", self.config.favorability.decay_llm_timeout_ms
+            ),
+        )
+        self.sleep = SleepManager(JsonSnapshot(data_dir / "sleep_state.json"), self.config.sleep)
+        self.schedule_gen = ScheduleGenerator(
+            lambda messages, model="": self._side_llm_call(
+                messages, model or self.config.schedule.schedule_llm_model, "schedule_generate", self.config.schedule.schedule_llm_timeout_ms
+            ),
+            self.config.schedule, self.config.sleep,
+        )
+        self._schedule_data: dict = {}
+        self._schedule_edit_history: list[dict] = []
+        self._speak_counts: dict[str, int] = {}  # date -> 已发言次数
+        self._last_activity_ts: float = 0.0  # 静默入睡计时(入站/出站活动刷新)
+        self._sleep_review_buffer: list[dict] = []  # 睡眠期拦截消息缓冲(回顾报告素材)
         for service in (self.memo, self.fav_engine):
             service.ensure_schema()
         self.store.execute(
@@ -108,6 +135,8 @@ class CatsitatePlugin(MaiBotPlugin):
         self._scheduler.register("holiday", 24 * 3600, self._refresh_environment)
         self._scheduler.register("memo_cleanup", 3600, self._cleanup_memos)
         self._scheduler.register("daily_settle", max(self.config.favorability.window_hours, 1) * 3600, self._daily_settle)
+        self._scheduler.register("daily_decay", 24 * 3600, self._daily_decay)  # 每日一次(与日终结算同 tick)
+        self._scheduler.register("sleep_tick", 60, self._sleep_tick)
         self._scheduler.start()
         # 首次环境数据立即刷新一次,避免环境块空缺到首个定时点(45 分钟)
         self._spawn_background_task(self._refresh_environment())
@@ -343,6 +372,8 @@ class CatsitatePlugin(MaiBotPlugin):
 
     @HookHandler("chat.receive.after_process", name="catsitate_fav_count", mode=HookMode.OBSERVE)
     async def fav_count(self, **kwargs: Any) -> None:
+        if self.sleep.is_sleeping():
+            return  # 睡眠期消息不得计数(绝对静默)
         if not self.config.plugin.enabled or not self.config.favorability.enabled:
             return
         msg = kwargs.get("message")
@@ -362,6 +393,75 @@ class CatsitatePlugin(MaiBotPlugin):
         trigger = self.fav_engine.check_trigger(user_id, stream_id)
         if trigger == "early":
             self._spawn_background_task(self._settle_and_log(user_id, stream_id, kind="early"))
+
+    # ---------- Hook:睡眠拦截与晚安判定 ----------
+
+    @HookHandler("chat.receive.before_process", name="catsitate_sleep_gate", mode=HookMode.BLOCKING, order=HookOrder.EARLY)
+    async def sleep_gate(self, **kwargs: Any) -> dict[str, Any]:
+        """睡眠绝对静默:拦截一切入站消息(含命令),记录进回顾缓冲。"""
+
+        if not self.config.plugin.enabled or not self.config.sleep.enabled:
+            return {"action": "continue", "modified_kwargs": kwargs}
+        if not self.sleep.is_sleeping():
+            self._last_activity_ts = datetime.now().timestamp()
+            return {"action": "continue", "modified_kwargs": kwargs}
+        msg = kwargs.get("message")
+        if isinstance(msg, dict):
+            msg_info = msg.get("message_info") or {}
+            ui = msg_info.get("user_info") or {}
+            stream_id = str(msg.get("session_id") or "")
+            self._sleep_review_buffer.append({
+                "stream_id": stream_id,
+                "user_id": str(ui.get("user_id") or ""),
+                "nickname": str(ui.get("user_nickname") or ""),
+                "text": str(msg.get("processed_plain_text") or ""),
+                "ts": datetime.now().strftime("%Y-%m-%dT%H:%M:%S"),
+            })
+        return {"action": "abort", "modified_kwargs": kwargs}
+
+    @HookHandler("maisaka.replyer.after_response", name="catsitate_goodnight", mode=HookMode.BLOCKING, order=HookOrder.LATE)
+    async def goodnight_check(self, **kwargs: Any) -> dict[str, Any]:
+        """晚安短句判定(可入睡时间内):SLEEP → 入睡并触发生成次日日程。"""
+
+        if not self.config.plugin.enabled or not self.config.sleep.enabled:
+            return {"action": "continue", "modified_kwargs": kwargs}
+        self._last_activity_ts = datetime.now().timestamp()  # 任何出站回复都算活动(静默入睡计时)
+        if self.sleep.is_sleeping() or not self._in_goodnight_window():
+            return {"action": "continue", "modified_kwargs": kwargs}
+        text = str(kwargs.get("response") or "")
+        if not is_goodnight_utterance(text):
+            return {"action": "continue", "modified_kwargs": kwargs}
+        # 短句为变量尾(stable_ctx 纪律);判定器为轻量任务,固定 memory(与一期 msg_react 默认一致)
+        messages, _ = build_side_prompt(
+            "sleep_confirm", [], [f"待判定晚安短句:{text}"]
+        )
+        result = await self._side_llm_call(messages, "memory", "sleep_confirm")
+        verdict, _ = parse_sleep_confirm_response(str(result.get("response") or ""))
+        if verdict == "SLEEP":
+            await self._enter_sleep()
+        return {"action": "continue", "modified_kwargs": kwargs}
+
+    def _in_goodnight_window(self) -> bool:
+        """可入睡时间:睡前语境活动期间(活动窗口 kind=greeting 且 activity 含睡眠关键词)。"""
+
+        win = current_window(self._schedule_data, datetime.now().strftime("%Y-%m-%dT%H:%M"))
+        return bool(win and win.get("kind") == "greeting" and any(k in str(win.get("activity") or "") for k in ("睡", "洗漱", "晚安", "休息", "就寝")))
+
+    async def _enter_sleep(self) -> None:
+        """入睡:计算 clamp 醒来时刻,状态落盘,触发生成次日日程(睡眠期间唯一 LLM 调用)。"""
+
+        now = datetime.now()
+        # 计划醒来时刻 = 日程中睡眠窗口的 end(与当前所处窗口无关)
+        sleep_win = next(
+            (w for w in (self._schedule_data.get("windows") or []) if w.get("kind") == "sleep"), None
+        )
+        planned_wake = sleep_win.get("end") if sleep_win else (now + timedelta(hours=8)).strftime("%Y-%m-%dT%H:%M")
+        if len(planned_wake) == 16:
+            planned_wake += ":00"  # SleepManager 统一秒格式 %Y-%m-%dT%H:%M:%S
+        wake_at = self.sleep.clamp_wake_time(now.strftime("%Y-%m-%dT%H:%M:%S"), planned_wake)
+        self.sleep.enter_sleep(now=lambda: now, wake_at=wake_at)
+        self.ctx.logger.info("已入睡:醒来 %s", wake_at)
+        self._spawn_background_task(self._generate_tomorrow_schedule())
 
     # ---------- Hook:reply 补传与哨兵 ----------
 
@@ -565,6 +665,8 @@ class CatsitatePlugin(MaiBotPlugin):
     async def _refresh_environment(self) -> None:
         """后台任务:拉取节日(在线→库→内置)与天气(Open-Meteo),刷新环境块缓存。"""
 
+        if self.sleep.is_sleeping():
+            return  # 睡眠期禁网络调用,下一 tick 自然重试
         if not self.config.plugin.enabled or not self.config.time_aware.enabled:
             return
         cfg = self.config.time_aware
@@ -636,12 +738,129 @@ class CatsitatePlugin(MaiBotPlugin):
     async def _daily_settle(self) -> None:
         """日终兜底:对当日有消息且未日终结算的用户结算当前批次(不计提前上限,规格 §4.3)。"""
 
+        if self.sleep.is_sleeping():
+            return  # 睡眠期调度静默,醒来补跑
+        await self._daily_decay()  # 先衰减后结算(同一 tick 调用顺序)
         if not self.config.plugin.enabled or not self.config.favorability.enabled:
             return
         for user_id, stream_id in self.fav_engine.iter_today_active():
             if self.fav_engine.has_daily_settle_today(user_id, stream_id):
                 continue
             await self._settle_and_log(user_id, stream_id, kind="daily")
+
+    async def _sleep_tick(self) -> None:
+        if not self.config.plugin.enabled or not self.config.sleep.enabled:
+            return
+        now = datetime.now()
+        now_iso = now.strftime("%Y-%m-%dT%H:%M")
+        if self.sleep.is_sleeping(now=lambda: now):
+            if now.strftime("%Y-%m-%dT%H:%M:%S") >= (self.sleep.state.wake_at or "9999"):
+                self.ctx.logger.info("自然醒来: %s", now.strftime("%Y-%m-%dT%H:%M:%S"))
+                await self._wake_up()
+            return
+        win = current_window(self._schedule_data, now_iso)
+        if not win:
+            return
+        if win.get("kind") == "sleep" and now_iso >= win.get("start"):
+            self.ctx.logger.info("睡眠窗口起点已到,兜底强制入睡")
+            await self._enter_sleep()
+            return
+        # 静默入睡:仅睡前语境活动期间,无任何活动满 N 分钟
+        if self.config.sleep.silent_sleep_enabled and self._in_goodnight_window():
+            if self._last_activity_ts and now.timestamp() - self._last_activity_ts >= self.config.sleep.silent_sleep_minutes * 60:
+                self.ctx.logger.info("静默入睡:安静 %d 分钟", self.config.sleep.silent_sleep_minutes)
+                await self._enter_sleep()
+
+    async def _wake_up(self) -> None:
+        self.sleep.wake()
+        if self.config.sleep.review_enabled:
+            self._spawn_background_task(self._write_sleep_review())
+        # 醒来补跑当日衰减与日终结算(睡眠期调度静默,醒来追平)
+        self._spawn_background_task(self._daily_decay())
+        self._spawn_background_task(self._daily_settle())
+
+    async def _daily_decay(self) -> None:
+        """自然衰减:先衰减后结算(与 _daily_settle 同 tick 调用顺序)。
+
+        计时基准(规格「判定后重置计时」):基准 = max(流内最近 bot 直接互动时间,
+        最近一次 decay 判定时间)——衰减判定本身即一次「想起」,7 天内不重复衰减。
+        """
+
+        if self.sleep.is_sleeping():
+            return
+        if not self.config.plugin.enabled or not self.config.favorability.decay_enabled:
+            return
+        try:
+            candidates = []
+            # 注意:不能用 iter_today_active(只含今日活跃流)——衰减对象恰是长期未互动者,
+            # 必须扫 favorability 全表 score>0 行
+            rows = self.store.query("SELECT user_id, stream_id FROM favorability WHERE score > 0")
+            for user_id, stream_id in rows:
+                row = self.fav_engine.get_level(user_id, stream_id)
+                if row is None or row["score"] <= 0:
+                    continue
+                recent = await self._fetch_recent(stream_id, 50)
+                is_group = "1" if recent and self._stream_is_group(stream_id) else "0"
+                interaction = last_bot_interaction_time(
+                    recent, user_id, str(self.config.favorability.bot_user_id or ""), stream_is_group=bool(is_group == "1")
+                )
+                # 最近一次衰减判定时间作为基准参与取 max
+                decay_rows = self.store.query(
+                    "SELECT judged_at FROM favorability_log WHERE user_id = ? AND stream_id = ? "
+                    "AND judge_id LIKE 'decay-%' ORDER BY judged_at DESC LIMIT 1",
+                    (user_id, stream_id),
+                )
+                decay_ts = decay_rows[0][0] if decay_rows else ""
+                candidates.append((user_id, stream_id, max(interaction or "", decay_ts), is_group))
+            results = await self.decay.scan_and_apply(candidates, persona=await self._persona())
+            for r in results:
+                self.ctx.logger.info("好感度衰减 %s/%s:delta=%s", r["user_id"], r["stream_id"], r["delta"])
+        except Exception:
+            self.ctx.logger.exception("衰减扫描异常,本轮跳过")
+
+    def _stream_is_group(self, stream_id: str) -> bool:
+        info = self._stream_cache.get(stream_id) or {}
+        return str(info.get("is_group_session") or "").lower().startswith(("true", "1"))
+
+    async def _write_sleep_review(self) -> None:
+        """睡醒回顾:拦截缓冲按流聚合,LLM 摘要,写单份聚合报告文件。"""
+
+        buffer, self._sleep_review_buffer = self._sleep_review_buffer, []
+        if not buffer:
+            return
+        report_dir = Path("/MaiMBot/data/plugins/catsitate.core/sleep_review/reports")
+        report_dir.mkdir(parents=True, exist_ok=True)
+        by_stream: dict[str, list[dict]] = {}
+        for item in buffer:
+            by_stream.setdefault(item["stream_id"], []).append(item)
+        sections: list[str] = []
+        for stream_id, msgs in by_stream.items():
+            preview = " | ".join(f"{m['nickname'] or m['user_id']}:{m['text'][:50]}" for m in msgs[:20])
+            messages, _ = build_side_prompt(
+                "sleep_review", [], [f"睡眠期间 {stream_id} 的消息(共 {len(msgs)} 条):\n{preview}"]
+            )
+            try:
+                result = await self._side_llm_call(messages, self.config.sleep.review_llm_model, "sleep_review", self.config.sleep.review_llm_timeout_ms)
+                summary = str(result.get("response") or "")[:200] if isinstance(result, dict) else ""
+            except Exception:
+                self.ctx.logger.exception("回顾摘要失败(流 %s)", stream_id)
+                summary = ""
+            sections.append(f"## 流 {stream_id}({len(msgs)} 条)\n{summary or '摘要生成失败'}")
+        # 睡眠期到期的备忘提醒静态附列(不占 LLM 额度,备忘不丢失原则)
+        sleep_day_due = [
+            e for e in self.memo.due_on(datetime.now().strftime("%Y-%m-%d"))
+            if e["remind_at"][:16] < datetime.now().strftime("%Y-%m-%dT%H:%M")
+        ]
+        if sleep_day_due:
+            sections.append("## 睡眠期到期的备忘提醒\n" + "\n".join(f"- {e['content']}({e['remind_at']})" for e in sleep_day_due))
+        path = report_dir / f"sleep_review_{datetime.now().strftime('%Y%m%d_%H%M%S')}.md"
+        path.write_text("\n\n".join(sections) or "(无内容)", encoding="utf-8")
+        self.ctx.logger.info("睡醒回顾已生成: %s", path)
+
+    async def _generate_tomorrow_schedule(self) -> None:
+        """次日日程生成钩子占位(Task 11 实现):入睡时触发生成次日日程。"""
+
+        self.ctx.logger.info("次日日程生成钩子触发(占位实现,Task 11 覆盖)")
 
     async def _settle_and_log(self, user_id: str, stream_id: str, kind: str) -> None:
         """结算并发防护(最终审查 Important#1):fav_count 与 _daily_settle 可能对同一批次

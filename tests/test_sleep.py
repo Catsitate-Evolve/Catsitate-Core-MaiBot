@@ -3,6 +3,7 @@ from datetime import datetime
 from catsitate_core.config import SleepSection
 from catsitate_core.sleep import SleepManager
 from catsitate_core.storage import JsonSnapshot
+from catsitate_core.sleep import is_goodnight_utterance, parse_sleep_confirm_response
 
 NOW = datetime(2026, 8, 15, 23, 30, 0)
 
@@ -47,3 +48,20 @@ def test_enter_and_persist(tmp_path):
     assert mgr2.is_sleeping(now=lambda: NOW) is True
     mgr2.wake(now=lambda: datetime(2026, 8, 16, 7, 1, 0))
     assert mgr2.is_sleeping(now=lambda: datetime(2026, 8, 16, 7, 1, 0)) is False
+
+
+def test_parse_sleep_confirm():
+    assert parse_sleep_confirm_response('{"result": "SLEEP"}')[0] == "SLEEP"
+    assert parse_sleep_confirm_response('{"result": "UNSURE"}')[0] == "UNSURE"
+    assert parse_sleep_confirm_response("不知道")[0] is None
+    assert parse_sleep_confirm_response('{"result": "WEIRD"}')[0] is None
+
+
+def test_goodnight_filter():
+    assert is_goodnight_utterance("我睡了") is True
+    assert is_goodnight_utterance("晚安") is True
+    assert is_goodnight_utterance("该睡了,大家晚安") is True
+    assert is_goodnight_utterance("@Hesitate_P 晚安") is False  # @ 不触发
+    assert is_goodnight_utterance("晚安,小明") is False  # 称呼他人不触发
+    assert is_goodnight_utterance("我今天睡了八个小时好舒服啊睡得真好") is False  # 超短句上限
+    assert is_goodnight_utterance("吃饭了") is False  # 无睡眠关键词

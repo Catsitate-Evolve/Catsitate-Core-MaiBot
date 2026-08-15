@@ -57,3 +57,52 @@ class SleepManager:
         min_wake = sleep_dt + timedelta(minutes=self.config.min_sleep_minutes)
         max_wake = sleep_dt + timedelta(minutes=self.config.max_sleep_minutes)
         return min(max(planned, min_wake), max_wake).strftime(_ISO)
+
+
+import re
+
+_GOODNIGHT_KEYWORDS = ("睡", "晚安", "安眠", "就寝")
+_CONFIRM_RESULTS = {"SLEEP", "NOT_SLEEP", "UNSURE"}
+
+
+def is_goodnight_utterance(text: str) -> bool:
+    """晚安短句过滤(防诱导):短句(≤12 字)、无 @、无引用、不称呼他人、含睡眠关键词。
+
+    参考 goodnight_sleep_manager:只接受短句、自我入睡;带 @/称呼别人/引用回复不触发。
+    """
+
+    t = (text or "").strip()
+    if not t or len(t) > 12:
+        return False
+    if "@" in t or "「" in t or "」" in t:
+        return False
+    if "你好" in t or "再见" in t:
+        return False
+    # 逗号/顿号仅允许群体收尾(「该睡了,大家晚安」);「晚安,小明」类称呼他人拒绝
+    if re.search(r"[,，、]", t) and not re.search(r"[,，、]\s*(大家|各位)", t):
+        return False
+    return any(k in t for k in _GOODNIGHT_KEYWORDS)
+
+
+def parse_sleep_confirm_response(text: str) -> tuple[str | None, str]:
+    """解析入睡判定 JSON:{"result": "SLEEP|NOT_SLEEP|UNSURE"}。"""
+
+    import json as _json
+    cleaned = text.strip()
+    fence = re.search(r"```(?:json)?\s*(\{.*?\})\s*```", cleaned, re.DOTALL)
+    if fence:
+        cleaned = fence.group(1)
+    else:
+        brace = re.search(r"\{.*\}", cleaned, re.DOTALL)
+        if brace:
+            cleaned = brace.group(0)
+    try:
+        data = _json.loads(cleaned)
+    except (_json.JSONDecodeError, TypeError):
+        return None, "入睡判定 JSON 解析失败"
+    if not isinstance(data, dict):
+        return None, "入睡判定非对象 JSON"
+    result = data.get("result")
+    if not isinstance(result, str) or result.upper() not in _CONFIRM_RESULTS:
+        return None, f"未知判定结果: {result!r}"
+    return result.upper(), ""

@@ -13,3 +13,14 @@
 - [x] 哨兵层:实机验证「哨兵判定:放行回复」+ llm_usage sentinel 记账;键名/人设读取已按主程序 payload 修复
 - [x] 旁路记账:`data/plugins/catsitate.core/catsitate.db` 中 `llm_usage` 表按模块分列调用数(实测 favorability/msg_react/image_relook 分列)
 - [x] 热重载:WebUI 修改配置后 `on_config_update` 生效(`配置已刷新,派生缓存已重置` 日志)
+
+## 二期(2026-08-15)
+
+- [ ] 衰减:将某用户 favorability.judged_at 改早 8 天,次日日志出现「好感度衰减 …delta=-N」
+- [ ] 睡眠:睡前语境活动期间 bot 发「晚安」→ 日志「已入睡」;睡眠中发消息 → 无回复无 planner 日志,被拦截
+- [ ] 睡醒回顾:醒来后 `data/plugins/catsitate.core/sleep_review/reports/` 出现报告文件
+- [ ] 日程:入睡后日志「次日日程已生成」;醒来 planner 请求含 `[日程]` 块(当前活动+接下来)
+- [ ] 主动发言:到达活动窗口且存在满足门槛的活跃流 → 日志「主动触发[date] -> stream:活动」
+- [ ] 2.3:挚友级私聊用户,greeting 窗口收到主动问候(日志「主动私聊触发[day] -> user」)
+- [ ] update_schedule:让 bot「把明天下午空出来」→ 工具调用日志 + 注入块变化
+- [ ] 备忘提醒:写一条 remind_at 为 5 分钟后的备忘 → 到点注入归属流(无日程时)

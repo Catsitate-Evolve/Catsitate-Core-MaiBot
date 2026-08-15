@@ -19,7 +19,7 @@
 - 插件不能创建主程序数据库新表;插件自己的数据存独立 sqlite(路径 `ctx.paths.data_dir`),轻量限频状态用 JSON 快照。
 - 错误原则:失败必须有日志痕迹,不静默兜底;`on_load` 配置校验失败报错拒绝加载。
 - SDK 已核实签名(2.8.0):`@Tool(name, description=, brief_description=, detailed_description=, parameters=[ToolParameterInfo(...)], visibility="visible", ...)`(visibility 走 metadata);`@Command(name, description=, pattern=, aliases=)`;`@HookHandler(hook, *, name=, mode=HookMode.BLOCKING/OBSERVE, order=HookOrder.EARLY/NORMAL/LATE, error_policy=ErrorPolicy.SKIP)`;BLOCKING hook 返回 `{"action": "continue"|"abort", "modified_kwargs": {...}}`(modified_kwargs 整体替换后续 kwargs,观察型返回被忽略);`@LLMProvider(client_type, *, name=, description=, version=)`;`@API(name, description=, version="1", public=False)`;`@EventHandler(name, description=, event_type=EventType.ON_MESSAGE, intercept_message=False, weight=0)`。**注意(SDK 2.8.0 已本地验证):`HookMode`/`HookOrder`/`ToolParameterInfo`/`ToolParamType`/`ErrorPolicy` 不在 maibot_sdk 顶层导出,须 `from maibot_sdk.types import ...` 导入。**
-- ctx 能力代理(2.8.0):`ctx.send.text(text, stream_id)`、`ctx.llm.generate(prompt: str|list[dict], model="", temperature=None, max_tokens=None) -> {"success","response","reasoning","model"}`、`ctx.api.call(api_name, *, version="", **kwargs)`、`ctx.chat.get_stream_by_user_id/get_stream_by_group_id/get_private_streams/get_group_streams`、`ctx.database.query/get/save/delete/count`(仅主程序既有表)、`ctx.maisaka.context.append(stream_id, segments: list[dict], *, visible_text="")`(已本地验证签名;文本消息传 `segments=[{"type": "text", "text": ...}]`)、`ctx.message.get_recent(chat_id, limit)`。**注意:`message.get_recent` 无 `include_binary_data` 参数——图片重看需 `ctx.call_capability("message.get_recent", chat_id=..., limit=..., include_binary_data=True)` 直接透传(Task 2 在真实环境核查)。**
+- ctx 能力代理(2.8.0):`ctx.send.text(text, stream_id)`、`ctx.llm.generate(prompt: str|list[dict], model="", temperature=None, max_tokens=None) -> {"success","response","reasoning","model"}`、`ctx.api.call(api_name, *, version="", **kwargs)`、`ctx.chat.get_stream_by_user_id/get_stream_by_group_id/get_private_streams/get_group_streams`、`ctx.database.query/get/save/delete/count`(仅主程序既有表)、`ctx.maisaka.context.append(stream_id, segments: list[dict], *, visible_text="")`(已实测生效,返回 `{success, index, ...}`;文本消息传 `segments=[{"type": "text", "text": ...}]`)、`ctx.message.get_recent(chat_id, limit)`。**spike ④ 实测:`call_capability("message.get_recent", chat_id=..., limit=..., include_binary_data=True)` 返回 list(非 dict),消息 dict 键含 message_id/timestamp/platform/message_info/raw_message(段列表,text 段 `{"type":"text","data":...}`)/is_*/session_id/processed_plain_text;image 段仅 hash 无 data(include_binary_data 不产生二进制)——图片重看必须经 `ctx.database.get(model_name="Images", hash=...)` 补图。**
 - 插件 data 目录:`ctx.paths.data_dir`(Host 解析为 `<data>/plugins/catsitate.core`)。
 - manifest `dependencies` 支持 `{"type": "python_package", "name": "holiday-calendar", "version_spec": ">=1.0.0"}`;另声明 `{"type": "python_package", "name": "lunar-python", "version_spec": ">=1.4.0"}`(农历节日/节气实时计算,规格 §4.2)。本地测试环境需 `python3 -m pip install --break-system-packages lunar-python`(本机已验证 1.4.8:2026 七夕=08-19、夏至=06-21、秋分=09-23、冬至=12-22、除夕=02-16、春节=02-17)。
 - 注入块顺序固定 `[等级规则块][环境块][备忘块][好感度块]`,前插 system 之后、历史之前;旁路 LLM prompt 一律稳定段在前、变量素材在后。
@@ -2698,7 +2698,7 @@ git commit -m "feat: reply 上下文补传(三条件触发/条目边界截断)�
 **Interfaces:**
 - Consumes: `build_side_prompt`(Task 4)、`ImageRelookSection`(Task 1)。
 - Produces:
-  - `def find_image_segment(messages: list[dict], target_message_id: str | None, image_index: int) -> tuple[dict | None, str]` — 在消息列表(`{message_id, segments: [{type, file_name, hash, data?}]}` 形状,以 spike 结论为准)中定位图片段:指定 message_id 时按 id 找,否则取倒数第 `image_index` 条含图消息;找不到返回 `(None, 原因)`,太旧/无图不静默。
+  - `def find_image_segment(messages: list[dict], target_message_id: str | None, image_index: int) -> tuple[dict | None, str]` — 在消息列表(`{message_id, raw_message: [{type, file_name?, hash, data?}]}` 形状;spike ④ 实测段键为 raw_message 且 image 段仅 hash 无 data)中定位图片段:指定 message_id 时按 id 找,否则取倒数第 `image_index` 条含图消息;找不到返回 `(None, 原因)`,太旧/无图不静默。
   - `def build_relook_prompt(question: str, image_segment: dict) -> tuple[list[dict], str]` — `build_side_prompt("image_relook", ...)`:任务指令稳定段在前;图片经 `{"type": "image_url", ...}`(base64 data)或文件引用作为 user 消息尾部;纯文本前缀稳定(§4.10)。
   - `def describe_segment(seg: dict) -> str` — 段描述辅助(文件名/类型/hash 摘要),用于无图时的报错文本。
 
@@ -2717,9 +2717,9 @@ TXT = {"type": "text", "text": "看图"}
 
 def make_messages():
     return [
-        {"message_id": "m1", "segments": [IMG, TXT]},
-        {"message_id": "m2", "segments": [TXT]},
-        {"message_id": "m3", "segments": [IMG]},
+        {"message_id": "m1", "raw_message": [IMG, TXT]},
+        {"message_id": "m2", "raw_message": [TXT]},
+        {"message_id": "m3", "raw_message": [IMG]},
     ]
 
 
@@ -2741,7 +2741,7 @@ def test_find_missing_reports_error():
 
 
 def test_find_no_image_messages():
-    seg, err = find_image_segment([{"message_id": "m2", "segments": [TXT]}], None, 1)
+    seg, err = find_image_segment([{"message_id": "m2", "raw_message": [TXT]}], None, 1)
     assert seg is None and err
 
 
@@ -2781,26 +2781,26 @@ def describe_segment(seg: dict) -> str:
 def find_image_segment(
     messages: list[dict], target_message_id: str | None, image_index: int
 ) -> tuple[dict | None, str]:
-    """定位图片段:指定 message_id 按 id 找,否则取倒数第 image_index 条含图消息。"""
+    """定位图片段:指定 message_id 按 id 找,否则取倒数第 image_index 条含图消息(spike ④:段在 raw_message)。"""
 
     if target_message_id is not None:
         for msg in messages:
             if msg.get("message_id") == target_message_id:
-                for seg in msg.get("segments") or []:
+                for seg in msg.get("raw_message") or []:
                     if isinstance(seg, dict) and seg.get("type") == "image":
                         return seg, ""
                 return None, f"消息 {target_message_id} 无图片段"
         return None, f"未找到消息 {target_message_id}(可能太旧已被丢弃)"
     image_msgs = [
         msg for msg in messages
-        if any(isinstance(s, dict) and s.get("type") == "image" for s in (msg.get("segments") or []))
+        if any(isinstance(s, dict) and s.get("type") == "image" for s in (msg.get("raw_message") or []))
     ]
     if not image_msgs:
         return None, "近期消息中没有图片(目标太旧时 get_recent 取不到,属预期错误)"
     if image_index < 1 or image_index > len(image_msgs):
         return None, f"image_index={image_index} 超出范围(共 {len(image_msgs)} 条含图消息)"
     target = image_msgs[-image_index]
-    for seg in target.get("segments") or []:
+    for seg in target.get("raw_message") or []:
         if isinstance(seg, dict) and seg.get("type") == "image":
             return seg, ""
     return None, f"消息 {target.get('message_id')} 无图片段"
@@ -3365,19 +3365,18 @@ class CatsitatePlugin(MaiBotPlugin):
         if not self.config.plugin.enabled or not self.config.image_relook.enabled:
             return "图片重看工具未启用。"
         stream_id = str(kwargs.get("stream_id") or "")
-        recent = await self._fetch_recent_with_binary(stream_id, limit=50)
+        recent = await self._fetch_recent(stream_id, limit=50)
         seg, err = find_image_segment(recent, message_id or None, image_index)
         if seg is None:
             logger.warning("inspect_image 失败:%s(stream=%s,message_id=%s)", err, stream_id, message_id)
             return f"取图失败:{err}"
-        if not seg.get("data"):
-            # 仅 hash 时经主程序图片库补读(规格 §4.8)
-            db_result = await self.ctx.database.get("Images", hash=seg.get("hash"))
-            if not db_result or not db_result.get("data"):
-                msg = f"图片 {seg.get('file_name') or seg.get('hash')} 无二进制且数据库补读失败"
-                logger.error(msg)
-                return msg
-            seg = {**seg, "data": db_result["data"]}
+        # spike ④ 实测:get_recent 的 image 段只有 hash 无 data——经主程序图片库补读为主路径(规格 §4.8)
+        db_result = await self.ctx.database.get("Images", hash=seg.get("hash"))
+        if not db_result or not db_result.get("data"):
+            msg = f"图片 {seg.get('file_name') or seg.get('hash')} 数据库补读失败"
+            logger.error(msg)
+            return msg
+        seg = {**seg, "data": db_result["data"]}
         messages, _ = build_relook_prompt(question, seg)
         result = await self._side_llm_call(messages, self.config.image_relook.llm.model, "image_relook")
         if not result.get("success"):
@@ -3424,23 +3423,27 @@ class CatsitatePlugin(MaiBotPlugin):
 
     @HookHandler("chat.receive.before_process", name="catsitate_poke_notice", mode=HookMode.OBSERVE)
     async def poke_notice(self, **kwargs: Any) -> None:
+        """spike ③ 实测:receive hook kwargs = ['hook_name', 'message'];通知载荷在 message.message_info.additional_config。"""
+
         if not self.config.plugin.enabled or not self.config.poke.enabled:
             return
-        payload = self._notice_payload(kwargs)
+        msg = kwargs.get("message")
+        payload = self._notice_payload(msg)
         if payload is None:
             return
         text = self.poke.enhance_notice_text(payload)
         if text is None:
             return
         if self.config.poke.inject_to_context:
-            stream_id = str(kwargs.get("stream_id") or "")
+            stream_id = str(msg.get("session_id") or "")
             try:
                 await self.ctx.maisaka.context.append(
                     stream_id=stream_id, segments=[{"type": "text", "text": text}]
                 )
             except Exception:
                 logger.exception("戳一戳上下文注入失败(stream=%s)", stream_id)
-        # enhance_notice_text 能否改写消息文本以 spike ③ 结论为准;不能则仅日志(开关关闭则不做任何增强)
+        # enhance_notice_text 改写能力 spike ③ 结论 A 已确认(改 message.raw_message 段列表头部);
+        # 此处为 OBSERVE 仅日志;改写路径留给后续按开关演进(见 spike-findings §3)
         if self.config.poke.enhance_notice_text:
             logger.info("戳一戳解析增强:%s", text)
 
@@ -3448,8 +3451,14 @@ class CatsitatePlugin(MaiBotPlugin):
     async def fav_count(self, **kwargs: Any) -> None:
         if not self.config.plugin.enabled or not self.config.favorability.enabled:
             return
-        user_id = str(kwargs.get("user_id") or "")
-        stream_id = str(kwargs.get("stream_id") or "")
+        msg = kwargs.get("message")
+        if not isinstance(msg, dict):
+            return
+        # spike ③ 实测:user/stream 在 message 内(user_info 与 session_id;user_id 字段名以实机联调为准)
+        msg_info = msg.get("message_info") or {}
+        user_info = msg_info.get("user_info") or {}
+        user_id = str(user_info.get("user_id") or user_info.get("sender_id") or "")
+        stream_id = str(msg.get("session_id") or "")
         if not user_id or not stream_id:
             return
         self.fav_engine.count_message(user_id, stream_id)
@@ -3683,41 +3692,55 @@ class CatsitatePlugin(MaiBotPlugin):
         if total == self.config.plugin.llm_daily_call_warning_threshold:
             logger.warning("旁路 LLM 当日调用次数已达阈值 %s,请注意用量", total)
 
-    async def _fetch_recent_with_binary(self, stream_id: str, limit: int) -> list[dict]:
-        """取近期消息(含图片二进制),SDK 无参透传缺口经 call_capability 绕过(spike ②)。"""
+    async def _fetch_recent(self, stream_id: str, limit: int) -> list[dict]:
+        """取近期消息。spike ④ 实测:返回 list;include_binary_data 透传不产生二进制(image 段仅 hash)。"""
 
         result = await self.ctx.call_capability("message.get_recent", chat_id=stream_id, limit=limit, include_binary_data=True)
-        return result.get("messages") or []
+        return result if isinstance(result, list) else []
 
     async def _fetch_recent_for_history(self, stream_id: str, limit: int) -> list[dict]:
         """取近期消息并归一化为 build_material 所需形状 {role, user_id, stream_id, text, seq, ts}。
 
-        消息时间戳字段名以 spike 结论为准(timestamp/ts),集中在 _msg_ts 辅助里改。
+        spike ④ 实测:消息 dict 键含 message_id/timestamp/platform/message_info/raw_message/
+        is_*/session_id/processed_plain_text;user 在 message_info.user_info;bot 消息无 is_from_bot 类字段,
+        以 user_id 是否等于 bot 账号判断(spike 未覆盖,以实机联调为准)。
         """
 
-        raw = await self._fetch_recent_with_binary(stream_id, limit)
+        raw = await self._fetch_recent(stream_id, limit)
         history: list[dict] = []
         for i, m in enumerate(raw):
-            text = "".join(s.get("text", "") for s in (m.get("segments") or []) if s.get("type") == "text")
+            if not isinstance(m, dict):
+                continue
+            text = str(m.get("processed_plain_text") or "")
+            if not text:
+                # 兜底:从 raw_message 段拼文本(text 段 data 直接是字符串,spike ③)
+                text = "".join(s.get("data", "") for s in (m.get("raw_message") or []) if isinstance(s, dict) and s.get("type") == "text")
+            msg_info = m.get("message_info") or {}
+            user_info = msg_info.get("user_info") or {}
             history.append({
-                "role": "user" if str(m.get("user_id") or "") != str(m.get("bot_id") or "") else "bot",
-                "user_id": str(m.get("user_id") or ""),
+                "role": "user",
+                "user_id": str(user_info.get("user_id") or user_info.get("sender_id") or ""),
                 "stream_id": stream_id,
                 "text": text,
                 "seq": i,
-                "ts": str(m.get("timestamp") or m.get("ts") or ""),
+                "ts": str(m.get("timestamp") or ""),
             })
         return history
 
     async def _fetch_message_text(self, stream_id: str, message_id: str) -> str:
-        raw = await self._fetch_recent_with_binary(stream_id, 50)
+        raw = await self._fetch_recent(stream_id, 50)
         for m in raw:
-            if m.get("message_id") == message_id:
-                return "".join(s.get("text", "") for s in (m.get("segments") or []) if s.get("type") == "text")
+            if isinstance(m, dict) and m.get("message_id") == message_id:
+                return str(m.get("processed_plain_text") or "")
         return ""
 
-    def _notice_payload(self, kwargs: dict[str, Any]) -> dict | None:
-        additional = kwargs.get("additional_config") or {}
+    def _notice_payload(self, message: Any) -> dict | None:
+        """spike ③ 实测:receive hook 的 message.message_info.additional_config 含 napcat_notice_payload。"""
+
+        if not isinstance(message, dict):
+            return None
+        msg_info = message.get("message_info") or {}
+        additional = msg_info.get("additional_config") or {}
         payload = additional.get("napcat_notice_payload")
         return payload if isinstance(payload, dict) else None
 

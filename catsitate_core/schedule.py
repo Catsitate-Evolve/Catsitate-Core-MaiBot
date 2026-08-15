@@ -271,3 +271,52 @@ def parse_speak_response(text: str, candidate_count: int = 0) -> tuple[dict | No
     if data["speak"] and (not isinstance(idx, int) or not (0 <= idx < candidate_count)):
         return None, f"stream_index 非法: {idx}"
     return {"speak": data["speak"], "stream_index": idx, "text": text_out}, ""
+
+
+ACTIVITY_WINDOW_LIMIT = 8
+_EDIT_LIMIT_REASON = "今天的日程已经排得满满当当了,再排下去会累坏的,明天再安排吧。"
+
+
+def apply_schedule_edit(
+    data: dict, action: str, window_index: int | None, new_window: dict | None,
+    history: list[dict], *, min_sleep: int, max_sleep: int,
+) -> tuple[dict, str, list[dict]]:
+    """update_schedule 工具修改:add/update/delete;返回 (日程, 错误或"", 修改历史)。
+
+    约束:活动窗口 1~8(超限返回拟人化拒绝文案);睡眠窗口不可删;时间修改
+    受 [min_sleep, max_sleep] 校验;修改历史记录 {time, action, before, after}。
+    """
+
+    windows = [dict(w) for w in (data.get("windows") or [])]
+    before = json.dumps(data, ensure_ascii=False)
+    err = ""
+    if action == "add":
+        if not isinstance(new_window, dict) or new_window.get("kind") == "sleep":
+            return data, "新增仅支持活动窗口", history
+        if sum(1 for w in windows if w.get("kind") != "sleep") >= ACTIVITY_WINDOW_LIMIT:
+            return data, _EDIT_LIMIT_REASON, history
+        windows.append(dict(new_window))
+    elif action == "update":
+        if window_index is None or not (0 <= window_index < len(windows)) or not isinstance(new_window, dict):
+            return data, "窗口序号非法", history
+        if windows[window_index].get("kind") == "sleep" and new_window.get("kind") != "sleep":
+            return data, "睡眠窗口不可变更为活动窗口", history
+        windows[window_index] = dict(new_window)
+    elif action == "delete":
+        if window_index is None or not (0 <= window_index < len(windows)):
+            return data, "窗口序号非法", history
+        if windows[window_index].get("kind") == "sleep":
+            return data, "睡眠窗口不可删除", history
+        windows.pop(window_index)
+    else:
+        return data, f"未知操作: {action}", history
+    candidate = {"date": data.get("date", ""), "windows": windows}
+    checked, verr = validate_schedule(candidate, min_sleep=min_sleep, max_sleep=max_sleep)
+    if checked is None:
+        return data, verr, history
+    history.append({
+        "time": datetime.now().strftime("%Y-%m-%dT%H:%M:%S"),
+        "action": action, "before": before,
+        "after": json.dumps(checked, ensure_ascii=False),
+    })
+    return checked, "", history

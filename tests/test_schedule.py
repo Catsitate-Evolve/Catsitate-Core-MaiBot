@@ -162,3 +162,50 @@ def test_build_speak_prompt_window_content_first():
     assert any("散步→发呆→早睡" in m["content"] for m in messages)
     assert any("候选流列表" in m["content"] for m in messages)
     assert key
+
+
+from catsitate_core.schedule import ACTIVITY_WINDOW_LIMIT, apply_schedule_edit
+
+BASE = {"date": "2026-08-16", "windows": [
+    {"kind": "sleep", "start": "2026-08-16T23:00", "end": "2026-08-17T07:00"},
+    {"kind": "daily", "start": "2026-08-16T09:00", "end": "2026-08-16T11:00",
+     "activity": "写代码", "plan_speak": False, "topic": "", "speak_kind": "daily"},
+]}
+
+
+def test_edit_add_activity():
+    data, err, hist = apply_schedule_edit(
+        dict(BASE), "add", None,
+        {"kind": "daily", "start": "2026-08-16T14:00", "end": "2026-08-16T16:00",
+         "activity": "买菜", "plan_speak": False, "topic": ""},
+        [], min_sleep=240, max_sleep=660,
+    )
+    assert err == "" and len(data["windows"]) == 3 and hist
+
+
+def test_edit_add_over_limit_rejected_with_reason():
+    data = _copy.deepcopy(BASE)  # 深拷贝:dict(BASE) 浅拷贝会污染共享 BASE["windows"] 列表
+    for i in range(7):
+        data["windows"].append({"kind": "daily", "start": f"2026-08-16T1{i}:00", "end": f"2026-08-16T1{i}:30",
+                                "activity": f"活动{i}", "plan_speak": False, "topic": ""})
+    out, err, _ = apply_schedule_edit(
+        data, "add", None,
+        {"kind": "daily", "start": "2026-08-16T18:00", "end": "2026-08-16T19:00",
+         "activity": "x", "plan_speak": False, "topic": ""},
+        [], min_sleep=240, max_sleep=660,
+    )
+    assert err == "今天的日程已经排得满满当当了,再排下去会累坏的,明天再安排吧。"
+
+
+def test_edit_cannot_delete_sleep():
+    out, err, _ = apply_schedule_edit(dict(BASE), "delete", 0, None, [], min_sleep=240, max_sleep=660)
+    assert "睡眠窗口不可删除" in err and out == BASE
+
+
+def test_edit_sleep_time_respects_min_max():
+    out, err, _ = apply_schedule_edit(
+        dict(BASE), "update", 0,
+        {"kind": "sleep", "start": "2026-08-16T23:00", "end": "2026-08-17T01:00"},
+        [], min_sleep=240, max_sleep=660,
+    )
+    assert "最短" in err  # 2h < 240min 拒绝

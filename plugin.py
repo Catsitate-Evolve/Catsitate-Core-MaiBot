@@ -313,6 +313,7 @@ class CatsitatePlugin(MaiBotPlugin):
         text = self.poke.enhance_notice_text(payload)
         if text is None:
             return
+        self.ctx.logger.info("戳一戳 payload 观测: %s", str(payload)[:300])
         if self.config.poke.inject_to_context:
             stream_id = str(msg.get("session_id") or "")
             try:

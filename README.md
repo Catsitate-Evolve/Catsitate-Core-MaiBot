@@ -10,20 +10,12 @@ Catsitate 的 MaiBot 核心人格行为插件。仓库地址:https://github.com/
 
 ## 主程序配置(模型 task 分配)
 
-插件旁路 LLM 请求(好感度结算/选表情/哨兵/图片重看)统一经主程序 `model_task_config` 路由,推荐在 MaiBot `model_config.toml` 为插件分配专用 task:
+插件旁路 LLM 请求(好感度结算/选表情/哨兵/图片重看)统一经主程序 `model_task_config` 路由。
+主程序 task 集合固定(replyer/planner/memory/mid_memory/utils/learner/expression_use,WebUI「功能分配」页可见),**不能新增自定义 task**。
 
-```toml
-[model_task_config.catsitate] # 插件旁路任务
-model_list = ["deepseek-v4-flash"]
-max_tokens = 4096
-temperature = 0.3
-selection_strategy = "sequential"
-slow_threshold = 30
-hard_timeout = 120
-```
-
-然后把插件配置中各能力的 `llm_model` 填 `catsitate`(留空 = 主程序默认,取首个可用 task,不推荐)。
-注意:`llm_model` 填的是 **task 名**(节名),填模型标识会报「未找到名为 … 的模型配置」。
+- 插件各能力 `llm_model` 默认填 `utils`(主程序轻量小任务,契合旁路判定),可自定义改填任意已配置 task 名(如 `planner`/`memory`);
+- `llm_model` 填的是 **task 名**(节名),填模型标识会报「未找到名为 … 的模型配置」;
+- 留空 = 主程序默认(取首个可用 task,不可控,不推荐)。
 
 ## 测试
 
@@ -40,6 +32,6 @@ hard_timeout = 120
 
 ## 配置要点
 
-- 每个 LLM 能力的 `llm_model` 留空 = 主程序默认(首个可用 task);填 task 名(如 `catsitate`) = 该任务模型
+- 每个 LLM 能力的 `llm_model` 默认 `utils`(主程序轻量任务);可自定义填任意已配置 task 名
 - 注入四块(`level_rule`/`environment`/`memo`/`favorability`)各自有开关,可独立关闭
 - 哨兵层默认关(`reply_guard.sentinel_enabled`),开启后每句回复多一次旁路判定

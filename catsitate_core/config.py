@@ -55,7 +55,7 @@ class FavorabilitySection(PluginConfigBase):
     note_max_chars: int = Field(default=40, description="关系注记最大字符数(结算落库时强制)")
     material_max_messages: int = Field(default=30, description="结算素材锚定的用户消息条数")
     material_message_max_chars: int = Field(default=200, description="单条素材截断长度")
-    llm_model: str = Field(default="", description="旁路模型:填主程序 model_task_config 的 task 名(推荐为插件配专用 task,如 catsitate);留空=主程序默认(首个可用 task)")
+    llm_model: str = Field(default="utils", description="旁路模型:填主程序 model_task_config 的 task 名(默认 utils 轻量任务;可自定义填 planner/memory 等任意已配置 task)")
 
 
 class MemoSection(PluginConfigBase):
@@ -78,7 +78,7 @@ class MsgReactSection(PluginConfigBase):
     enabled: bool = Field(default=True, description="贴表情工具开关")
     emoji_whitelist: list[str] = Field(default_factory=list, description="表情包白名单(emoji_id)")
     per_stream_cooldown_seconds: int = Field(default=30, description="每流冷却秒数")
-    llm_model: str = Field(default="", description="旁路模型:填主程序 model_task_config 的 task 名(推荐为插件配专用 task,如 catsitate);留空=主程序默认(首个可用 task)")
+    llm_model: str = Field(default="utils", description="旁路模型:填主程序 model_task_config 的 task 名(默认 utils 轻量任务;可自定义填 planner/memory 等任意已配置 task)")
 
 
 class PokeSection(PluginConfigBase):
@@ -104,7 +104,7 @@ class ReplyGuardSection(PluginConfigBase):
         description="视为上下文工具的工具名列表",
     )
     sentinel_enabled: bool = Field(default=False, description="LLM 哨兵层开关(默认关)")
-    sentinel_model: str = Field(default="", description="哨兵旁路模型:填主程序 task 名(推荐专用 catsitate task);留空=主程序默认")
+    sentinel_model: str = Field(default="utils", description="哨兵旁路模型:填主程序 task 名(默认 utils;可自定义)")
 
 
 class ImageRelookSection(PluginConfigBase):
@@ -112,7 +112,7 @@ class ImageRelookSection(PluginConfigBase):
     __ui_order__ = 8
 
     enabled: bool = Field(default=True, description="图片重看工具开关")
-    llm_model: str = Field(default="", description="旁路模型:填主程序 model_task_config 的 task 名(推荐为插件配专用 task,如 catsitate);留空=主程序默认(首个可用 task)")
+    llm_model: str = Field(default="utils", description="旁路模型:填主程序 model_task_config 的 task 名(默认 utils 轻量任务;可自定义填 planner/memory 等任意已配置 task)")
 
 
 class CatsitateConfig(PluginConfigBase):

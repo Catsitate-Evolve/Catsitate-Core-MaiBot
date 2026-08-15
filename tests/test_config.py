@@ -1,0 +1,36 @@
+"""配置模型默认值测试(与规格 §6 一致)。"""
+
+from catsitate_core.config import CatsitateConfig
+
+
+def test_config_defaults():
+    cfg = CatsitateConfig()
+    assert cfg.plugin.enabled is False
+    assert cfg.plugin.llm_daily_call_warning_threshold == 50
+    assert cfg.inject.enabled is True
+    assert cfg.time_aware.city == "北京"
+    assert cfg.time_aware.weather_refresh_minutes == 45
+    assert cfg.favorability.window_hours == 24
+    assert cfg.favorability.early_settle_threshold == 20
+    assert cfg.favorability.daily_max_early_settle == 3
+    assert cfg.favorability.daily_settle_min == 3
+    assert cfg.favorability.note_max_chars == 40
+    assert cfg.favorability.material_max_messages == 30
+    assert cfg.favorability.material_message_max_chars == 200
+    assert cfg.favorability.llm.model == ""
+    assert cfg.memo.default_ttl_hours == 24
+    assert cfg.memo.max_ttl_hours == 168
+    assert cfg.memo.entry_max_chars == 80
+    assert cfg.memo.inject_max == 5
+    assert cfg.msg_react.per_stream_cooldown_seconds == 30
+    assert cfg.poke.min_level_for_poke == "熟悉"
+    assert cfg.poke.cooldown_seconds == 600
+    assert cfg.reply_guard.sentinel_enabled is False
+    assert "memo_read" in cfg.reply_guard.context_tools
+
+
+def test_default_config_dump():
+    cfg = CatsitateConfig()
+    data = cfg.model_dump(mode="json")
+    assert data["plugin"]["config_version"] == "1.0.0"
+    assert data["favorability"]["level_rules"]

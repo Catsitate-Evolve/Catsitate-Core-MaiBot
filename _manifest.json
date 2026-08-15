@@ -1,0 +1,64 @@
+{
+  "manifest_version": 2,
+  "version": "0.1.0",
+  "name": "Catsitate 核心人格插件",
+  "description": "Catsitate 的注入框架、时间节日天气感知、好感度、备忘录、贴表情、戳一戳、reply 补传、图片重看",
+  "author": {
+    "name": "hesitate-p",
+    "url": "https://github.com/hesitate-p"
+  },
+  "license": "GPL-v3.0-or-later",
+  "urls": {
+    "repository": "https://github.com/hesitate-p/catsitate_core_maibot",
+    "homepage": "https://github.com/hesitate-p/catsitate_core_maibot",
+    "issues": "https://github.com/hesitate-p/catsitate_core_maibot/issues"
+  },
+  "changelog": "CHANGELOG.md",
+  "host_application": {
+    "min_version": "1.2.0",
+    "max_version": "1.2.99"
+  },
+  "sdk": {
+    "min_version": "2.7.1",
+    "max_version": "2.99.99"
+  },
+  "dependencies": [
+    {
+      "type": "python_package",
+      "name": "holiday-calendar",
+      "version_spec": ">=1.0.0"
+    },
+    {
+      "type": "python_package",
+      "name": "lunar-python",
+      "version_spec": ">=1.4.0"
+    }
+  ],
+  "capabilities": [
+    "send.text",
+    "message.get_recent",
+    "llm.generate",
+    "api.call",
+    "chat.get_private_streams",
+    "chat.get_group_streams",
+    "chat.get_stream_by_user_id",
+    "maisaka.context.append",
+    "database.query",
+    "database.get",
+    "config.get"
+  ],
+  "llm_providers": [
+    {
+      "client_type": "catsitate_custom",
+      "name": "Catsitate 自定义端点",
+      "description": "OpenAI 兼容自定义端点(用户在 model_config 配置 base_url/key)",
+      "version": "1.0.0"
+    }
+  ],
+  "i18n": {
+    "default_locale": "zh-CN",
+    "locales_path": "_locales",
+    "supported_locales": ["zh-CN"]
+  },
+  "id": "catsitate.core"
+}

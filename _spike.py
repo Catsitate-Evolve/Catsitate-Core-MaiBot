@@ -113,10 +113,15 @@ class SpikePlugin(MaiBotPlugin):
                     if not isinstance(msg, dict):
                         lines.append(f"  非 dict 消息: {type(msg).__name__}")
                         continue
-                    seg_types = [(s.get("type"), bool(s.get("data")), bool(s.get("hash"))) for s in (msg.get("segments") or []) if isinstance(s, dict)]
-                    lines.append(f"  msg {str(msg.get('message_id'))[:8]} 段={seg_types}")
+                    lines.append(f"  msg keys={list(msg.keys())[:15]}")
+                    # 尝试常见段键,打印段类型与二进制存在性
+                    for seg_key in ("segments", "content", "message_segments", "raw_message"):
+                        segs = msg.get(seg_key)
+                        if isinstance(segs, list) and segs:
+                            summary = [(s.get("type"), bool(s.get("data")), bool(s.get("hash")), bool(s.get("image_base64"))) if isinstance(s, dict) else type(s).__name__ for s in segs[:4]]
+                            lines.append(f"    {seg_key}={summary}")
             else:
-                lines.append(f"messages 非列表: {str(result)[:200]}")
+                lines.append(f"messages 非列表: {str(result)[:300]}")
             append_result = await self.ctx.maisaka.context.append(stream_id, [{"type": "text", "text": "[spike] 注入上下文探针"}])
             lines.append(f"append 返回={str(append_result)[:200]}")
             return "\n".join(lines)

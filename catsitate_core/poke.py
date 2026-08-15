@@ -51,12 +51,16 @@ class PokeEngine:
             first.get("nm") or first.get("nickname") or fallback_nickname
             or first.get("user_id") or payload.get("user_id") or "有人"
         )
-        action = str(first.get("action") or "拍了拍")
-        target = str(first.get("target") or "你")
-        remark = first.get("remark")
+        user_id = str(first.get("user_id") or first.get("uid") or payload.get("user_id") or "")
+        who = f"{nickname}({user_id})" if user_id else nickname
+        target_id = str(payload.get("target_id") or "")
+        self_id = str(payload.get("self_id") or "")
+        # 目标昵称 payload 无来源:目标为 bot 自身时用「你」,其余用 qq 号
+        target = "你" if target_id and target_id == self_id else (f"({target_id})" if target_id else "")
+        remark = first.get("remark") or first.get("msg") or ""
         if remark:
-            return f'{nickname} {action}{target},说:"{remark}"'
-        return f"{nickname} {action}{target}"
+            return f'{who} 戳了 {target},说:"{remark}"'
+        return f"{who} 戳了 {target}"
 
     def can_poke(
         self,

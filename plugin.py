@@ -318,23 +318,38 @@ class CatsitatePlugin(MaiBotPlugin):
 
     # ---------- Hook:入站(戳一戳解析 + 好感度计数) ----------
 
-    @HookHandler("chat.receive.before_process", name="catsitate_poke_notice", mode=HookMode.OBSERVE)
-    async def poke_notice(self, **kwargs: Any) -> None:
-        """spike ③ 实测:receive hook kwargs = ['hook_name', 'message'];通知载荷在 message.message_info.additional_config。"""
+    @HookHandler("chat.receive.before_process", name="catsitate_poke_notice", mode=HookMode.BLOCKING, order=HookOrder.EARLY)
+    async def poke_notice(self, **kwargs: Any) -> dict[str, Any]:
+        """spike ③ 实测:receive hook kwargs = ['hook_name', 'message'];通知载荷在 message.message_info.additional_config。
+
+        enhance_notice_text 开关 = 改写消息文本(spike ③ 结论 A:改 raw_message 段列表头部,
+        下游 processed_plain_text 可见);inject_to_context 开关 = 拟人文本写入当前流上下文。
+        """
 
         if not self.config.plugin.enabled or not self.config.poke.enabled:
-            return
+            return {"action": "continue", "modified_kwargs": kwargs}
         msg = kwargs.get("message")
         payload = self._notice_payload(msg)
         if payload is None:
-            return
+            return {"action": "continue", "modified_kwargs": kwargs}
         # 昵称兜底:消息上下文的 user_nickname(raw_info.nm 实测为空串)
         user_info = ((msg.get("message_info") or {}).get("user_info")) or {}
         fallback_nickname = str(user_info.get("user_nickname") or user_info.get("nickname") or "")
         text = self.poke.enhance_notice_text(payload, fallback_nickname=fallback_nickname)
         if text is None:
-            return
-        self.ctx.logger.info("戳一戳 payload 观测: %s", str(payload)[:300])
+            return {"action": "continue", "modified_kwargs": kwargs}
+        self.ctx.logger.info("戳一戳解析增强:%s", text)
+        modified_kwargs = kwargs
+        if self.config.poke.enhance_notice_text:
+            # spike ③ 结论 A:段列表头部插 text 段(data 直接是字符串)
+            raw_message = msg.get("raw_message")
+            if isinstance(raw_message, list) and not any(
+                isinstance(s, dict) and s.get("type") == "text" and str(s.get("data") or "").startswith("[戳一戳]")
+                for s in raw_message
+            ):
+                modified = dict(kwargs)
+                modified["message"] = {**msg, "raw_message": [{"type": "text", "data": f"[戳一戳] {text}"}] + raw_message}
+                modified_kwargs = modified
         if self.config.poke.inject_to_context:
             stream_id = str(msg.get("session_id") or "")
             try:
@@ -343,10 +358,7 @@ class CatsitatePlugin(MaiBotPlugin):
                 )
             except Exception:
                 self.ctx.logger.exception("戳一戳上下文注入失败(stream=%s)", stream_id)
-        # enhance_notice_text 改写能力 spike ③ 结论 A 已确认(改 message.raw_message 段列表头部);
-        # 此处为 OBSERVE 仅日志;改写路径留给后续按开关演进(见 spike-findings §3)
-        if self.config.poke.enhance_notice_text:
-            self.ctx.logger.info("戳一戳解析增强:%s", text)
+        return {"action": "continue", "modified_kwargs": modified_kwargs}
 
     @HookHandler("chat.receive.after_process", name="catsitate_fav_count", mode=HookMode.OBSERVE)
     async def fav_count(self, **kwargs: Any) -> None:

@@ -2,6 +2,7 @@
 
 import json
 import logging
+from datetime import datetime
 
 from maibot_sdk import HookHandler, MaiBotPlugin, Tool
 from maibot_sdk.types import HookMode, HookOrder, ToolParameterInfo, ToolParamType
@@ -32,11 +33,16 @@ class SpikePlugin(MaiBotPlugin):
         items = kwargs.get("items")
         if items is not None:
             logger.info("[spike] items 类型=%s 长度=%s 首项=%s", type(items).__name__, len(items), json.dumps(items[0], ensure_ascii=False, default=str)[:300])
-            probe = {"role": "user", "content": "[spike] 注入探针消息"}
+            # 快照格式的合法 UserMessageItem(item_type/meta/parts,无 role 字段)
+            probe = {
+                "item_type": "UserMessageItem",
+                "meta": {"item_id": "spike-probe-1", "logical_turn_id": None, "timestamp": datetime.now().isoformat()},
+                "parts": [{"type": "text", "text": "[spike] 注入探针消息"}],
+            }
             modified = dict(kwargs)
             if isinstance(items, list):
-                # 找 system 索引,插其后
-                idx = next((i for i, it in enumerate(items) if isinstance(it, dict) and it.get("role") == "system"), -1)
+                # 找 system item 索引,插其后
+                idx = next((i for i, it in enumerate(items) if isinstance(it, dict) and it.get("item_type") == "SystemMessageItem"), -1)
                 modified["items"] = items[: idx + 1] + [probe] + items[idx + 1 :]
                 return {"action": "continue", "modified_kwargs": modified}
         return {"action": "continue", "modified_kwargs": kwargs}

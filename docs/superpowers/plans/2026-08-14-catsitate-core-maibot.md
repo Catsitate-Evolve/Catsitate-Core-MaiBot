@@ -1074,7 +1074,7 @@ def test_holiday_chain_online_first():
 
 def test_holiday_chain_falls_back_to_builtin():
     merged = holiday_chain(date(2026, 8, 14), None, True)
-    assert merged == FESTIVAL_TABLE
+    assert merged == {k: [v] for k, v in FESTIVAL_TABLE.items()}  # 返回值为 list[str](接口声明)
     merged2 = holiday_chain(date(2026, 8, 14), None, False)
     assert merged2 == {}
 

@@ -17,10 +17,10 @@ SIDE_TEMPLATES: dict[str, dict] = {
         ),
     },
     "msg_react": {
-        "version": 1,
+        "version": 2,
         "system": (
-            "你是表情包选择助手。从白名单中选择一个最贴合目标消息与意图的表情,"
-            '严格输出 JSON:{"emoji_id": "白名单中的 id"}。不要输出其它内容。'
+            "你是表情包选择助手。从可选表情表中选择一个最贴合目标消息与意图的表情,"
+            '严格输出 JSON:{"emoji_id": "表情表中的 id"}。不要输出其它内容。'
         ),
     },
     "sentinel": {

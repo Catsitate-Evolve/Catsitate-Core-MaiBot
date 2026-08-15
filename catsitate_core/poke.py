@@ -42,7 +42,8 @@ class PokeEngine:
         first = raw[0]
         if not isinstance(first, dict):
             return None
-        nickname = str(first.get("nickname") or first.get("user_id") or "有人")
+        # 实测 raw_info 字段为 nm(昵称,可能为空串)/uid/col/type;顶层 user_id 为发起者
+        nickname = str(first.get("nm") or first.get("nickname") or first.get("user_id") or payload.get("user_id") or "有人")
         action = str(first.get("action") or "拍了拍")
         target = str(first.get("target") or "你")
         remark = first.get("remark")

@@ -9,13 +9,14 @@ from typing import Callable
 
 from .config import MsgReactSection
 from .llm_provider import build_side_prompt
+from .qq_emoji import compact_emoji_table, load_emoji_table
 from .storage import JsonSnapshot
 
 _ISO = "%Y-%m-%dT%H:%M:%S"
 
 
-def parse_choice_resp(response: str, whitelist: list[str]) -> tuple[str | None, str]:
-    """从 LLM 文本提取所选表情 id;必须命中白名单,否则返回 (None, 原因)。"""
+def parse_choice_resp(response: str) -> tuple[str | None, str]:
+    """从 LLM 文本提取所选表情 id;必须命中内置 QQ 表情表,否则返回 (None, 原因)。"""
 
     cleaned = response.strip()
     fence = re.search(r"```(?:json)?\s*(\{.*?\})\s*```", cleaned, re.DOTALL)
@@ -34,8 +35,8 @@ def parse_choice_resp(response: str, whitelist: list[str]) -> tuple[str | None, 
     emoji = data.get("emoji_id")
     if not isinstance(emoji, str):
         return None, "LLM 未给出 emoji_id 字段"
-    if emoji not in whitelist:
-        return None, f"emoji_id {emoji!r} 不在白名单内"
+    if emoji not in load_emoji_table():
+        return None, f"emoji_id {emoji!r} 不在表情表内"
     return emoji, ""
 
 
@@ -70,12 +71,12 @@ class MsgReactEngine:
         self.snapshot.save(data)
 
     def build_choose_prompt(
-        self, whitelist: list[str], target_text: str, intent: str
+        self, target_text: str, intent: str
     ) -> tuple[list[dict], str]:
-        """组装选表情 prompt:白名单属稳定段,目标消息+意图为变量尾(§4.10)。"""
+        """组装选表情 prompt:内置 QQ 表情表属稳定段,目标消息+意图为变量尾(§4.10)。"""
 
         return build_side_prompt(
             "msg_react",
-            [f"白名单 emoji_id:{', '.join(whitelist)}"],
+            [f"可选表情(id 描述):{compact_emoji_table()}"],
             [f"目标消息:{target_text}", f"贴表情意图:{intent}"],
         )

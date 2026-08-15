@@ -183,22 +183,19 @@ class CatsitatePlugin(MaiBotPlugin):
         if not self.config.plugin.enabled or not self.config.msg_react.enabled:
             return "贴表情工具未启用。"
         stream_id = str(kwargs.get("stream_id") or "")
-        whitelist = self.config.msg_react.emoji_whitelist
-        if not whitelist:
-            return "表情白名单为空,请先在插件配置中填写 emoji_whitelist。"
         ok, reason = self.react.check_cooldown(stream_id)
         if not ok:
             return reason
         target_text = await self._fetch_message_text(stream_id, message_id)
-        messages, _ = self.react.build_choose_prompt(whitelist, target_text or f"消息 {message_id}", intent)
+        messages, _ = self.react.build_choose_prompt(target_text or f"消息 {message_id}", intent)
         result = await self._side_llm_call(messages, self.config.msg_react.llm_model, "msg_react", self.config.msg_react.llm_timeout_ms)
-        if not result.get("success"):
-            return f"选表情 LLM 调用失败:{result.get('response', '')[:200]}"
-        emoji, err = parse_choice_resp(str(result.get("response") or ""), whitelist)
+        if not isinstance(result, dict) or not result.get("success"):
+            return f"选表情 LLM 调用失败:{str(result)[:200]}"
+        emoji, err = parse_choice_resp(str(result.get("response") or ""))
         if emoji is None:
             return f"选表情失败:{err}"
         api_result = await self.ctx.api.call("adapter.napcat.message.set_msg_emoji_like", message_id=message_id, emoji_id=emoji)
-        if not api_result.get("success"):
+        if not self._api_ok(api_result):
             return f"贴表情 API 失败:{api_result}"
         self.react.mark_used(stream_id)
         return f"已贴表情 {emoji}"
@@ -227,7 +224,7 @@ class CatsitatePlugin(MaiBotPlugin):
             group_id=group_id or None,
             target_id=user_id,
         )
-        if not api_result.get("success"):
+        if not self._api_ok(api_result):
             return f"戳一戳 API 失败:{api_result}"
         self.poke.mark_poked(user_id)
         return "已戳。"
@@ -717,6 +714,14 @@ class CatsitatePlugin(MaiBotPlugin):
             if isinstance(m, dict) and m.get("message_id") == message_id:
                 return str(m.get("processed_plain_text") or "")
         return ""
+
+    @staticmethod
+    def _api_ok(result: Any) -> bool:
+        """napcat API 返回格式实测为 {'status': 'ok', ...}(非 success 字段)。"""
+
+        if isinstance(result, dict) and result.get("success"):
+            return True
+        return isinstance(result, dict) and str(result.get("status") or "").lower() in ("ok", "success")
 
     def _notice_payload(self, message: Any) -> dict | None:
         """spike ③ 实测:receive hook 的 message.message_info.additional_config 含 napcat_notice_payload。"""

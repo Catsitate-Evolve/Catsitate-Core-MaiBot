@@ -76,11 +76,11 @@ def test_full_assembly_smoke(tmp_path):
     assert ("u1", "s1") not in engine.iter_today_active(now=lambda: NOW)  # 结算 reset 后 count=0
     assert "累计 2" in build_favorability_block(engine, "u1", "s1")  # 2 分仍是「陌生」级
 
-    # 贴表情
-    messages, _ = react.build_choose_prompt(["em_laugh", "em_hug"], "今天好累", "安慰")
+    # 贴表情(内置 QQ 表情表)
+    messages, _ = react.build_choose_prompt("今天好累", "安慰")
     assert messages[0]["role"] == "system"
-    choice, err = parse_choice_resp('{"emoji_id": "em_laugh"}', ["em_laugh", "em_hug"])
-    assert choice == "em_laugh" and err == ""
+    choice, err = parse_choice_resp('{"emoji_id": "1"}')
+    assert choice == "1" and err == ""
 
     # 主动戳校验(已取消等级门槛,仅冷却)
     ok, reason = poke.can_poke("u1", now=lambda: NOW)

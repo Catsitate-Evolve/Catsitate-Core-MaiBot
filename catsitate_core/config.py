@@ -92,7 +92,6 @@ class MsgReactSection(PluginConfigBase):
     __ui_order__ = 5
 
     enabled: bool = _f(True, "贴表情工具开关", label="贴表情工具开关")
-    emoji_whitelist: list[str] = _f([], "表情包白名单(emoji_id)", label="表情包白名单")
     per_stream_cooldown_seconds: int = _f(30, "每流冷却秒数", label="每流冷却秒数")
     llm_model: str = _f(
         "utils",

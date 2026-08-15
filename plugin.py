@@ -496,7 +496,9 @@ class CatsitatePlugin(MaiBotPlugin):
         today = date.today()
         online = None
         sources = [
-            f"https://cdn.jsdelivr.net/npm/holiday-cn@latest/{today.year}.json",
+            # npm 包内不含年份 JSON(npm 源必然 404),必须用 jsDelivr 的 GitHub 仓库形式;
+            # gh 形式仅支持分支/commit/tag,不支持 @latest
+            f"https://cdn.jsdelivr.net/gh/NateScarlet/holiday-cn@master/{today.year}.json",
             f"https://raw.githubusercontent.com/NateScarlet/holiday-cn/master/{today.year}.json",
         ]
         if not cfg.holiday_online:

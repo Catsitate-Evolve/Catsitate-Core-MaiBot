@@ -45,7 +45,8 @@
     "maisaka.context.append",
     "database.query",
     "database.get",
-    "config.get"
+    "config.get",
+    "chat.get_all_streams"
   ],
   "i18n": {
     "default_locale": "zh-CN",

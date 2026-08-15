@@ -379,7 +379,7 @@ def build_favorability_block(
             lines.append(f"[好感度] 规则「{level_name}」:{rule}。")
     body = f"[好感度] {user_id}:等级「{level_name}」(累计 {score})"
     if note:
-        body += f",注记:{note}。"
+        body += f",注记:{note}" + ("" if note.rstrip()[-1] in "。.!！?？" else "。")
     else:
         body += "。"
     lines.append(body)

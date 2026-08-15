@@ -99,6 +99,8 @@ class CatsitatePlugin(MaiBotPlugin):
         self._env_cache: dict[str, str] = {}  # content_key -> 环境块文本
         self._env_fetched_at: datetime | None = None
         self._persona_cache: str | None = None  # bot 人设缓存(config.get 一次,bot 配置变更时失效)
+        self._stream_cache: dict[str, dict] = {}  # session_id -> 流信息(说话人解析,10 分钟 TTL)
+        self._stream_cache_at: float = 0.0
         self._settling: set[tuple[str, str]] = set()  # 结算并发防护键(最终审查 Important#1)
         self._background_tasks: set[asyncio.Task] = set()  # 后台任务引用(最终审查 Important#2)
         self._scheduler = Scheduler(tick_seconds=60)
@@ -305,7 +307,7 @@ class CatsitatePlugin(MaiBotPlugin):
             return {"action": "continue", "modified_kwargs": kwargs}
         self.ctx.logger.debug("注入 hook 触发: keys=%s", sorted(str(k) for k in kwargs.keys()))
         try:
-            blocks = self._build_inject_blocks(kwargs)
+            blocks = await self._build_inject_blocks(kwargs)
             self.ctx.logger.debug("注入块构造: %s", [b.module for b in blocks])
             messages = self._messages_from_kwargs(kwargs)
             if messages is None:
@@ -453,10 +455,12 @@ class CatsitatePlugin(MaiBotPlugin):
         self._snapshot_cache[text] = item
         return item
 
-    def _build_inject_blocks(self, kwargs: dict[str, Any]) -> list[InjectionBlock]:
+    async def _build_inject_blocks(self, kwargs: dict[str, Any]) -> list[InjectionBlock]:
         cfg = self.config
-        speaker = str(kwargs.get("user_id") or "")
-        stream_id = str(kwargs.get("stream_id") or "")
+        # planner.before_request payload 无 user_id/stream_id 键(实机确认):
+        # 流 = session_id;说话人 = 私聊流对端 / 群聊最近非 bot 消息发送者
+        stream_id = str(kwargs.get("session_id") or "")
+        speaker = await self._resolve_speaker(stream_id) if stream_id else ""
         blocks: list[InjectionBlock] = []
         if cfg.inject.environment_enabled and cfg.time_aware.enabled:
             env = self._environment_block(stream_id)
@@ -492,6 +496,47 @@ class CatsitatePlugin(MaiBotPlugin):
                     )
                 )
         return blocks
+
+    async def _resolve_speaker(self, stream_id: str) -> str:
+        """注入目标说话人:私聊=流对端用户;群聊=最近非 bot 消息发送者(无则回退流 user_id)。
+
+        流信息经 chat.get_all_streams 建缓存(10 分钟 TTL);群聊说话人每轮变化属设计预期。
+        """
+
+        now = datetime.now().timestamp()
+        streams = self._stream_cache
+        if not streams or now - self._stream_cache_at > 600:
+            try:
+                result = await self.ctx.chat.get_all_streams()
+                if isinstance(result, dict) and result.get("success"):
+                    raw = result.get("streams") or []
+                    streams = {
+                        str(st.get("session_id") or ""): st
+                        for st in raw if isinstance(st, dict) and st.get("session_id")
+                    }
+                    self._stream_cache = streams
+                    self._stream_cache_at = now
+            except Exception:
+                self.ctx.logger.exception("聊天流列表获取失败,说话人解析退化为最近消息")
+        info = streams.get(stream_id) or {}
+        if not str(info.get("is_group_session") or "").lower().startswith(("true", "1")):
+            uid = str(info.get("user_id") or "")
+            if uid:
+                return uid
+        bot_id = str(self.config.favorability.bot_user_id or "").strip()
+        try:
+            recent = await self._fetch_recent(stream_id, 3)
+        except Exception:
+            self.ctx.logger.exception("最近消息获取失败,说话人回退流信息")
+            recent = []
+        for m in recent:
+            if not isinstance(m, dict):
+                continue
+            ui = (m.get("message_info") or {}).get("user_info") or {}
+            uid = str(ui.get("user_id") or "")
+            if uid and uid != bot_id:
+                return uid
+        return str(info.get("user_id") or "")
 
     def _environment_block(self, stream_id: str) -> tuple[str, str] | None:
         """环境块:节日+天气;缓存 45 分钟(规格 §4.2)。"""

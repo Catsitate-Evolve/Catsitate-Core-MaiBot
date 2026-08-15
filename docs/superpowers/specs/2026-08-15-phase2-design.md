@@ -24,7 +24,10 @@
 
 ### 3.1 好感度自然衰减(每日调度,先衰减后结算)
 
-- **互动定义**:互动 = 流内最近 bot 消息时间(含回应与主动发言;bot 消息说明关系未冷)。距今 ≤ `decay_after_days` 视为有互动。群聊中用户发言但 bot 未回应不算互动;私聊同理。
+- **互动定义**(按流类型区分,群聊防误判):
+  - **私聊**:互动 = 流内任意 bot 消息时间(流内只有 bot 与用户两人,任何 bot 消息即回应);
+  - **群聊**:互动 = 流内最近一条 **quote 或 @ 了该用户** 的 bot 消息时间(bot 回应 A 不得重置 B 的计时;取流最近消息检查 bot 消息的 quote/@ 归属,消息归属按 message_info.user_info 与 reply_to 判定);若从未命中(该用户从未被 bot 直接回应),以该用户好感度行的 `judged_at`(上次结算时间)为计时基准;
+  - 距今 ≤ `decay_after_days` 视为有互动;用户发言但 bot 未直接回应不算互动(bot 主动发言不 quote 任何人时,群聊不重置任何人的计时,私聊重置)。
 - **触发**:每日调度(与日终结算同 tick,先衰减后结算):扫描 `favorability` 表 score>0 的流,距 bot 最后回应 > `decay_after_days`(默认 7 天)者进入衰减判定。每流每日最多一次;判定后重置计时。
 - **LLM 判定衰减**:prompt = 人设 + 上次等级/分数/注记 + 未互动天数 → 输出 `{"delta": 整数(-decay_max 到 0), "note": "新注记(≤40 字)"}`;delta=0 表示关系稳定不减。模板 `catsitate_decay.prompt` 进主程序 prompt 管理,含 `{{decay_max}}` 占位符。
 - **落库**:`apply_delta` + `favorability_log`(judge_id=`decay-时间戳`);分数可降到 0,等级按分数自然降级,注记更新。

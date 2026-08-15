@@ -9,6 +9,9 @@ from maibot_sdk.types import HookMode, HookOrder, ToolParameterInfo, ToolParamTy
 
 logger = logging.getLogger("catsitate.spike")
 
+# 插件 logger 不桥接主进程日志,观测信息经探针文本 → LLM prompt → 主程序日志链路可视化
+_RECEIVE_INFO: list[str] = []
+
 
 class SpikePlugin(MaiBotPlugin):
     """Spike 验证插件。"""
@@ -34,10 +37,11 @@ class SpikePlugin(MaiBotPlugin):
         if items is not None:
             logger.info("[spike] items 类型=%s 长度=%s 首项=%s", type(items).__name__, len(items), json.dumps(items[0], ensure_ascii=False, default=str)[:300])
             # 快照格式的合法 UserMessageItem(item_type/meta/parts,无 role 字段)
+            probe_text = "[spike] 注入探针消息" + (f" | {'; '.join(_RECEIVE_INFO[-2:])}" if _RECEIVE_INFO else "")
             probe = {
                 "item_type": "UserMessageItem",
                 "meta": {"item_id": "spike-probe-1", "logical_turn_id": None, "timestamp": datetime.now().isoformat()},
-                "parts": [{"type": "text", "text": "[spike] 注入探针消息"}],
+                "parts": [{"type": "text", "text": probe_text}],
             }
             modified = dict(kwargs)
             if isinstance(items, list):
@@ -55,6 +59,12 @@ class SpikePlugin(MaiBotPlugin):
     )
     async def spike_receive_before(self, **kwargs):
         logger.info("[spike] receive.before_process kwargs keys: %s", list(kwargs.keys()))
+        info = f"receive_keys={list(kwargs.keys())}"
+        for key, val in kwargs.items():
+            if isinstance(val, dict) and ("user_id" in val or "segments" in val or "message_id" in val):
+                info += f"|receive.{key}={type(val).__name__}(keys={list(val.keys())[:12]})"
+                break
+        _RECEIVE_INFO.append(info)
         return {"action": "continue", "modified_kwargs": kwargs}
 
     @Tool(

@@ -49,17 +49,16 @@ def test_full_assembly_smoke(tmp_path):
     env_text = build_environment_text(date(2026, 8, 14), "北京", {"temperature_2m": 29.0, "weather_code": 0}, ["七夕"], [])
     assert "[环境]" in env_text and "北京" in env_text
 
-    # 注入渲染(四块顺序)
+    # 注入渲染(三块顺序:环境/备忘/好感度;等级规则按等级并入好感度块)
     blocks = [
-        InjectionBlock("level_rule", "rules", "[好感度规则] 规则文本"),
         InjectionBlock("environment", "env", env_text),
         InjectionBlock("memo", "memo:1", "[备忘] 周四交作业"),
-        InjectionBlock("favorability", "fav:u1", build_favorability_block(engine, "u1", "s1")),
+        InjectionBlock("favorability", "fav:u1", build_favorability_block(engine, "u1", "s1", include_rule=True)),
     ]
     rendered = assembler.render(blocks)
-    assert [m["role"] for m in rendered] == ["user"] * 4
-    assert rendered[0]["content"].startswith("[好感度规则]")
-    assert rendered[1]["content"].startswith("[环境]")
+    assert [m["role"] for m in rendered] == ["user"] * 3
+    assert rendered[0]["content"].startswith("[环境]")
+    assert "规则「陌生」" in rendered[2]["content"]
 
     # 好感度:计数→提前触发→结算(fake LLM)
     for _ in range(20):

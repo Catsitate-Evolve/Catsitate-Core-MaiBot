@@ -139,6 +139,36 @@ def test_favorability_block_default_stranger(tmp_path):
     assert "注记" not in text
 
 
+def test_parse_level_rules_extracts_five_levels():
+    from catsitate_core.favorability import parse_level_rules
+    rules = parse_level_rules(
+        "与用户的关系分五级:陌生(仅按普通网友对待,保持礼貌与距离)、"
+        "熟悉(认识一段时间,可自然闲聊)、亲近(关系较好,可主动关心)、"
+        "挚友(非常信任,可分享心事)、特别(最重要的人,格外在意其感受)。"
+    )
+    assert set(rules) == {"陌生", "熟悉", "亲近", "挚友", "特别"}
+    assert "可自然闲聊" in rules["熟悉"]
+
+
+def test_favorability_block_include_rule_single_level(tmp_path):
+    executor, engine, _ = make_executor(tmp_path)
+    from datetime import datetime as dt
+    engine.apply_delta("u1", "s1", 42, "最近主动关心过你", judged_at=dt.now().strftime("%Y-%m-%dT%H:%M:%S"))
+    text = build_favorability_block(engine, "u1", "s1", include_rule=True)
+    lines = text.split("\n")
+    # 规则行在最前,且只含当前等级(亲近)一条;其余等级不出现
+    assert "规则「亲近」" in lines[0]
+    assert "可主动关心" in lines[0]
+    assert "仅按普通网友对待" not in text and "可分享心事" not in text
+    assert "[好感度] u1:等级「亲近」(累计 42)" in lines[1]
+
+
+def test_favorability_block_include_rule_stranger(tmp_path):
+    executor, engine, _ = make_executor(tmp_path)
+    text = build_favorability_block(engine, "newbie", "s1", include_rule=True)
+    assert "规则「陌生」" in text and "仅按普通网友对待" in text
+
+
 def test_iter_today_active_and_daily_settle_check(tmp_path):
     executor, engine, _ = make_executor(tmp_path)
     engine.count_message("u1", "s1", now=lambda: NOW)

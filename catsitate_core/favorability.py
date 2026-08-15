@@ -356,10 +356,44 @@ class SettleExecutor:
         return {"status": "ok", "delta": delta, "note": parsed["note"], "judge_id": judge_id}
 
 
-def build_favorability_block(engine: BatchEngine, user_id: str, stream_id: str) -> str:
-    """渲染好感度块文本(无记录=陌生,无注记)。"""
+_RULE_RE = re.compile(r"(陌生|熟悉|亲近|挚友|特别)\(([^)]*)\)")
+
+
+def parse_level_rules(text: str) -> dict[str, str]:
+    """把 level_rules 配置文本解析为 {等级名: 规则}。
+
+    格式约定:「陌生(仅按普通网友对待,保持礼貌与距离)、熟悉(认识一段时间,可自然闲聊)…」;
+    解析失败(等级缺失)由调用方按空处理并告警,不回退全量注入。
+    """
+
+    return {m.group(1): m.group(2).strip() for m in _RULE_RE.finditer(text or "")}
+
+
+def build_favorability_block(
+    engine: BatchEngine, user_id: str, stream_id: str, include_rule: bool = False
+) -> str:
+    """渲染好感度块文本(无记录=陌生,无注记)。
+
+    include_rule=True 时按当前等级注入对应一条规则,置于块最前(联调决定:
+    5 级全量注入改为按等级单条注入,保证缓存命中率与 token 经济性)。
+    """
 
     row = engine.get_level(user_id, stream_id)
     if row is None:
-        return f"[好感度] {user_id}:等级「陌生」(累计 0)。"
-    return f"[好感度] {user_id}:等级「{LEVELS[row['level']]}」(累计 {row['score']}),注记:{row['note']}。"
+        level_name, score, note = "陌生", 0, ""
+    else:
+        level_name = LEVELS[row["level"]]
+        score = row["score"]
+        note = row["note"]
+    lines: list[str] = []
+    if include_rule:
+        rule = parse_level_rules(engine.config.level_rules).get(level_name)
+        if rule:
+            lines.append(f"[好感度] 规则「{level_name}」:{rule}。")
+    body = f"[好感度] {user_id}:等级「{level_name}」(累计 {score})"
+    if note:
+        body += f",注记:{note}。"
+    else:
+        body += "。"
+    lines.append(body)
+    return "\n".join(lines)

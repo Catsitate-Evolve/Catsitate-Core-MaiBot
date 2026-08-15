@@ -458,9 +458,6 @@ class CatsitatePlugin(MaiBotPlugin):
         speaker = str(kwargs.get("user_id") or "")
         stream_id = str(kwargs.get("stream_id") or "")
         blocks: list[InjectionBlock] = []
-        if cfg.inject.level_rule_enabled:
-            rules = "\n".join(f"{i + 1}. {line}" for i, line in enumerate(cfg.favorability.level_rules.splitlines()))
-            blocks.append(InjectionBlock("level_rule", "rules", f"[好感度规则] {rules}"))
         if cfg.inject.environment_enabled and cfg.time_aware.enabled:
             env = self._environment_block(stream_id)
             if env:
@@ -483,7 +480,17 @@ class CatsitatePlugin(MaiBotPlugin):
         if cfg.inject.favorability_enabled and cfg.favorability.enabled:
             target = speaker or str(kwargs.get("peer_id") or "")
             if target:
-                blocks.append(InjectionBlock("favorability", f"fav:{target}", build_favorability_block(self.fav_engine, target, stream_id)))
+                blocks.append(
+                    InjectionBlock(
+                        "favorability",
+                        f"fav:{target}",
+                        # 联调决定:5 级规则全量注入改为按等级单条注入(等级规则块并入好感度块)
+                        build_favorability_block(
+                            self.fav_engine, target, stream_id,
+                            include_rule=cfg.inject.level_rule_enabled,
+                        ),
+                    )
+                )
         return blocks
 
     def _environment_block(self, stream_id: str) -> tuple[str, str] | None:

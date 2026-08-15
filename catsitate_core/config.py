@@ -25,7 +25,7 @@ class InjectSection(PluginConfigBase):
     __ui_order__ = 1
 
     enabled: bool = _f(True, "注入管线总开关(无截断,长度在源头控制)", label="注入管线总开关")
-    level_rule_enabled: bool = _f(True, "等级规则块注入开关", label="等级规则块注入")
+    level_rule_enabled: bool = _f(True, "好感度块内按等级注入规则开关", label="等级规则注入")
     environment_enabled: bool = _f(True, "环境块(节日/天气)注入开关", label="环境块注入")
     memo_enabled: bool = _f(True, "备忘块注入开关", label="备忘块注入")
     favorability_enabled: bool = _f(True, "好感度块注入开关", label="好感度块注入")
@@ -56,7 +56,7 @@ class FavorabilitySection(PluginConfigBase):
         "与用户的关系分五级:陌生(仅按普通网友对待,保持礼貌与距离)、"
         "熟悉(认识一段时间,可自然闲聊)、亲近(关系较好,可主动关心)、"
         "挚友(非常信任,可分享心事)、特别(最重要的人,格外在意其感受)。",
-        "5 级行为准则文本(注入等级规则块)", label="5 级行为准则",
+        "5 级行为准则文本,格式「等级名(规则)、等级名(规则)…」,结算判定用全表、注入按等级取单条", label="5 级行为准则",
         rows=8,
     )
     note_max_chars: int = _f(40, "关系注记最大字符数(结算落库时强制)", label="关系注记最大字符数")

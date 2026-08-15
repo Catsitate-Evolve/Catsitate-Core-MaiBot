@@ -643,7 +643,8 @@ class CatsitatePlugin(MaiBotPlugin):
                     line += f";接下来:{label}"
                 due_today = [
                     e for e in self.memo.due_on(datetime.now().strftime("%Y-%m-%d"))
-                    if str(e.get("stream_id") or "") == stream_id or str(e.get("user_id") or "") == speaker
+                    if str(e.get("user_id") or "") == speaker
+                    or (stream_id and str(e.get("stream_id") or "") == stream_id)
                 ]
                 if due_today:
                     line += ";" + ";".join(f"备忘:{e['content']}" for e in due_today[:3])

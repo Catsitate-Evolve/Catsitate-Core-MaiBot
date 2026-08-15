@@ -82,7 +82,7 @@ class SpikePlugin(MaiBotPlugin):
             if isinstance(raw, list) and not any(isinstance(s, dict) and s.get("text") == "[spike改写]" for s in raw):
                 _RECEIVE_INFO.append(f"receive_raw(前60)={str(raw)[:60]}")
                 modified = dict(kwargs)
-                modified["message"] = {**msg, "raw_message": [{"type": "text", "text": "[spike改写]"}] + raw}
+                modified["message"] = {**msg, "raw_message": [{"type": "text", "data": "[spike改写]"}] + raw}
                 return {"action": "continue", "modified_kwargs": modified}
         return {"action": "continue", "modified_kwargs": kwargs}
 

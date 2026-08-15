@@ -93,7 +93,7 @@
 - `catsitate_core/schedule.py`(日程生成/校验/解析/窗口判定/工具修改校验)
 - `catsitate_core/memo.py` 增 remind_at 列与读写
 - `plugin.py` 接线:hook(receive 拦截、出站晚安判定)、scheduler 注册(衰减/窗口触发/静默入睡检查/提醒兜底)、tools(update_schedule)、注入块(日程块)
-- 旁路 prompt 模板:`catsitate_decay.prompt`、`catsitate_sleep_confirm.prompt`、`catsitate_schedule_generate.prompt`、`catsitate_speak.prompt`、`catsitate_greet.prompt` 进主程序 prompt 管理(一期机制)。
+- 旁路 prompt 模板:`catsitate_decay.prompt`、`catsitate_sleep_confirm.prompt`、`catsitate_schedule_generate.prompt`、`catsitate_speak.prompt`、`catsitate_greet.prompt`、`catsitate_sleep_review.prompt`(睡醒回顾摘要)进主程序 prompt 管理(一期机制)。
 
 ## 5. 配置模型(新增节,中文 label)
 
@@ -114,7 +114,7 @@
 
 ## 8. 交付物
 
-1. 二期代码(5 模块 + plugin.py 接线 + 5 个 prompt 模板)
+1. 二期代码(5 模块 + plugin.py 接线 + 6 个 prompt 模板)
 2. tests/ 二期单测
 3. 验收清单二期条目
 4. CHANGELOG 更新

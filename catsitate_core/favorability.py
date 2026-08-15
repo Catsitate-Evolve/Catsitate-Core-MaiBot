@@ -280,6 +280,9 @@ def parse_judge_response(text: str) -> dict | None:
         data = json.loads(cleaned)
     except (json.JSONDecodeError, TypeError):
         return None
+    if not isinstance(data, dict):
+        # 合法 JSON 但非对象(如 "[]"/"42"/"\"str\"")同样视为解析失败,不得抛出
+        return None
     if not isinstance(data.get("delta"), int) or not isinstance(data.get("note"), str):
         return None
     return {"delta": data["delta"], "note": data["note"]}
@@ -307,8 +310,9 @@ class SettleExecutor:
             result = await self.llm_call(messages, model)
         except Exception as exc:  # noqa: BLE001
             return {"status": "failed", "error": f"LLM 调用异常: {exc}"}
-        if not result.get("success"):
-            return {"status": "failed", "error": f"LLM 返回失败: {result.get('response', '')[:200]}"}
+        if not isinstance(result, dict) or not result.get("success"):
+            detail = result.get("response", "")[:200] if isinstance(result, dict) else str(result)[:200]
+            return {"status": "failed", "error": f"LLM 返回失败: {detail}"}
         parsed = parse_judge_response(str(result.get("response", "")))
         if parsed is None:
             return {"status": "failed", "error": "判定 JSON 解析失败"}

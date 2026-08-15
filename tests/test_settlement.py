@@ -41,6 +41,12 @@ def test_parse_judge_response_invalid():
     assert parse_judge_response('{"delta": "x", "note": "y"}') is None
 
 
+def test_parse_judge_response_non_object_json():
+    assert parse_judge_response('"str"') is None
+    assert parse_judge_response("[]") is None
+    assert parse_judge_response("42") is None
+
+
 def test_daily_carry_over_when_below_min(tmp_path):
     import asyncio
     executor, engine, calls = make_executor(tmp_path, daily_min=3)
@@ -84,6 +90,37 @@ def test_settle_llm_failure_keeps_state(tmp_path):
     assert engine.get_level("u1", "s1") is None
     rows = engine.store.query("SELECT count FROM batch_counter WHERE user_id = 'u1' AND stream_id = 's1'")
     assert rows[0][0] == 20  # 失败不重置
+
+
+def test_settle_parse_failure_keeps_state(tmp_path):
+    import asyncio
+    executor, engine, calls = make_executor(tmp_path, llm_result={"success": True, "response": "不是JSON", "model": ""})
+    for _ in range(20):
+        engine.count_message("u1", "s1", now=lambda: NOW)
+    history = [
+        {"role": "user", "user_id": "u1", "stream_id": "s1", "text": "早", "seq": i}
+        for i in range(20)
+    ]
+    result = asyncio.run(executor.settle("u1", "s1", history, kind="early"))
+    assert result["status"] == "failed"
+    assert engine.get_level("u1", "s1") is None  # 不落库
+    rows = engine.store.query("SELECT count FROM batch_counter WHERE user_id = 'u1' AND stream_id = 's1'")
+    assert rows[0][0] == 20  # 不重置
+
+
+def test_settle_delta_clamped(tmp_path):
+    import asyncio
+    executor, engine, calls = make_executor(tmp_path, llm_result={"success": True, "response": '{"delta": 99, "note": "超出范围"}', "model": ""})
+    for _ in range(20):
+        engine.count_message("u1", "s1", now=lambda: NOW)
+    history = [
+        {"role": "user", "user_id": "u1", "stream_id": "s1", "text": "早", "seq": i}
+        for i in range(20)
+    ]
+    result = asyncio.run(executor.settle("u1", "s1", history, kind="early"))
+    assert result["status"] == "ok"
+    assert result["delta"] == 5  # 钳制到 +5
+    assert engine.get_level("u1", "s1")["score"] == 5
 
 
 def test_favorability_block_render(tmp_path):

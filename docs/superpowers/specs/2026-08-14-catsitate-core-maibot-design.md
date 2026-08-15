@@ -28,7 +28,7 @@ Catsitate 是部署在 MaiBot 上的 QQ 聊天机器人人设(伪三无猫耳少
 | 戳一戳 | 入站解析增强(补拟人渲染)+ 主动戳工具(好感度门槛);**被戳反应逻辑剔除** |
 | 贴表情 | 仅 `@Tool`,无概率旁路 |
 | 备忘录 | 双通道(工具+命令)各自开关;注入含当前流+当前说话人两个维度 |
-| 时间感知 | 主程序已注入当前时间;插件只做节日/节气(在线 holiday-cn → holiday-calendar 库 → 内置表;农历/节气内置预生成 2025–2030) |
+| 时间感知 | 主程序已注入当前时间;插件只做节日/节气(公历日期索引的节日数据:在线 holiday-cn → holiday-calendar 库 → 内置公历表;农历节日/节气:**lunar-python 库实时计算**,不内置预生成表) |
 | 天气 | Open-Meteo(免 key)+ 全局城市配置;注入上下文、落库供联动;失败静默跳过 |
 | 图片 | 信息流图片由主程序处理;插件只提供 2.4.6 深看工具 |
 | LLM 配置 | `@LLMProvider` 声明 `catsitate_custom`;每个 LLM 能力配置可选主程序模型或自定义端点 |
@@ -59,7 +59,7 @@ plugins/catsitate_core_maibot/          # 独立 git 仓库
     poke.py                             # 2.4.5 戳一戳(解析增强+主动戳工具)
     reply_guard.py                      # 2.4.3 reply 误调用拦截
     image_relook.py                     # 2.4.6 图片重看
-    llm_provider.py                     # @LLMProvider 声明(catsitate_custom)+ 旁路 LLM 请求组装辅助(稳定段前置)
+    llm_provider.py                     # 旁路 LLM 请求组装辅助(稳定段前置,@LLMProvider 声明在 plugin.py 接线层)
     services/
       __init__.py
       scheduler.py                      # 后台 asyncio 任务引擎(60s tick,各模块注册任务)
@@ -116,8 +116,8 @@ LLM 路径:统一经 ctx.llm.generate + 每能力可配模型(含 catsitate_cust
 
 ### 4.2 时间/节日/天气感知(`time_aware.py`)
 
-- **节日**:在线主源 holiday-cn(jsdelivr CDN,备 raw.githubusercontent),每日后台刷新一次,失败回退 holiday-calendar 库(manifest `python_package` 依赖自动安装),再失败用内置静态表(2025–2030);
-- **农历节日+节气**:内置预生成表(2025–2030),随插件发版更新;
+- **公历日期索引的节日数据**:在线主源 holiday-cn(jsdelivr CDN,备 raw.githubusercontent;含当年全部节假日,农历节日也按公历日期列出),每日后台刷新一次,失败回退 holiday-calendar 库(manifest `python_package` 依赖自动安装),再失败用内置公历静态表(元旦/劳动节/国庆节等固定节日);
+- **农历节日+节气**:`lunar-python` 库(manifest `python_package` 依赖自动安装)按日期实时计算(`Solar.fromYmd(...).getLunar().getFestivals()` 取农历节日、`.getJieQi()` 取当日节气),无需网络、无内置预生成表;与在线数据同日重复的节日名(如「七夕」vs「七夕节」)按名去重;
 - **天气**:Open-Meteo(免 key),全局城市配置(默认北京,含坐标),30–60 分钟后台刷新;天气码→中文映射表内置;天气快照落 sqlite(`weather_snapshot` 表)供二期 2.1 联动;
 - 注入片段示例:`[环境] 今天 8月14日 周五,北京:晴,29°C;明日:七夕。`(当天+临近 3 天节日/节气);
 - 拟人感:城市名出现在注入文本中,bot 表现出"生活在这个城市"的感知;天气失败时静默跳过该片段(日志记录)。
@@ -270,7 +270,7 @@ LLM 路径:统一经 ctx.llm.generate + 每能力可配模型(含 catsitate_cust
 
 ## 9. 一期交付物清单
 
-1. `plugin.py` + `_manifest.json`(能力声明、llm_providers、python_package 依赖 holiday-calendar)+ `README.md` + `CHANGELOG.md` + `.gitignore`(含 `/config.toml`);
+1. `plugin.py` + `_manifest.json`(能力声明、llm_providers、python_package 依赖 holiday-calendar 与 lunar-python)+ `README.md` + `CHANGELOG.md` + `.gitignore`(含 `/config.toml`);
 2. 上文全部一期模块实现(4.1–4.10);
 3. `tests/` 单元测试;
 4. 缓存命中率基线对比报告;
@@ -279,6 +279,6 @@ LLM 路径:统一经 ctx.llm.generate + 每能力可配模型(含 catsitate_cust
 ## 10. 风险与后续
 
 - 插件加载器是否支持子包(3.1 已列 spike 验证与降级方案);
-- `holiday-calendar` 自动安装依赖 Host 侧依赖流水线,安装失败时节日退化为内置表(日志可见);
+- `holiday-calendar`/`lunar-python` 自动安装依赖 Host 侧依赖流水线;holiday-calendar 安装失败时公历节日退化为内置表,lunar-python 安装失败时农历节日/节气缺失(均日志可见);
 - 三期 qzone 接口有风控/接口变更风险(方案已选,限流与失败暴露原则覆盖);
 - 主程序缓存瓶颈(若有)单独形成报告,经用户许可才动主程序。

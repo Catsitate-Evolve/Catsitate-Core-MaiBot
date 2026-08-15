@@ -21,7 +21,7 @@
 - SDK 已核实签名(2.8.0):`@Tool(name, description=, brief_description=, detailed_description=, parameters=[ToolParameterInfo(...)], visibility="visible", ...)`(visibility 走 metadata);`@Command(name, description=, pattern=, aliases=)`;`@HookHandler(hook, *, name=, mode=HookMode.BLOCKING/OBSERVE, order=HookOrder.EARLY/NORMAL/LATE, error_policy=ErrorPolicy.SKIP)`;BLOCKING hook 返回 `{"action": "continue"|"abort", "modified_kwargs": {...}}`(modified_kwargs 整体替换后续 kwargs,观察型返回被忽略);`@LLMProvider(client_type, *, name=, description=, version=)`;`@API(name, description=, version="1", public=False)`;`@EventHandler(name, description=, event_type=EventType.ON_MESSAGE, intercept_message=False, weight=0)`。
 - ctx 能力代理(2.8.0):`ctx.send.text(text, stream_id)`、`ctx.llm.generate(prompt: str|list[dict], model="", temperature=None, max_tokens=None) -> {"success","response","reasoning","model"}`、`ctx.api.call(api_name, *, version="", **kwargs)`、`ctx.chat.get_stream_by_user_id/get_stream_by_group_id/get_private_streams/get_group_streams`、`ctx.database.query/get/save/delete/count`(仅主程序既有表)、`ctx.maisaka.context.append(stream_id, content)`(看签名后核对)、`ctx.message.get_recent(chat_id, limit)`。**注意:`message.get_recent` 无 `include_binary_data` 参数——图片重看需 `ctx.call_capability("message.get_recent", chat_id=..., limit=..., include_binary_data=True)` 直接透传(Task 2 在真实环境核查)。**
 - 插件 data 目录:`ctx.paths.data_dir`(Host 解析为 `<data>/plugins/catsitate.core`)。
-- manifest `dependencies` 支持 `{"type": "python_package", "name": "holiday-calendar", "version_spec": ">=1.0.0"}`。
+- manifest `dependencies` 支持 `{"type": "python_package", "name": "holiday-calendar", "version_spec": ">=1.0.0"}`;另声明 `{"type": "python_package", "name": "lunar-python", "version_spec": ">=1.4.0"}`(农历节日/节气实时计算,规格 §4.2)。本地测试环境需 `python3 -m pip install --break-system-packages lunar-python`(本机已验证 1.4.8:2026 七夕=08-19、夏至=06-21、秋分=09-23、冬至=12-22、除夕=02-16、春节=02-17)。
 - 注入块顺序固定 `[等级规则块][环境块][备忘块][好感度块]`,前插 system 之后、历史之前;旁路 LLM prompt 一律稳定段在前、变量素材在后。
 - 运行测试:`python3 -m pytest tests/ -v`(pytest 已随本计划 Task 1 安装到用户环境)。
 
@@ -261,6 +261,11 @@ __version__ = "0.1.0"
       "type": "python_package",
       "name": "holiday-calendar",
       "version_spec": ">=1.0.0"
+    },
+    {
+      "type": "python_package",
+      "name": "lunar-python",
+      "version_spec": ">=1.4.0"
     }
   ],
   "capabilities": [
@@ -675,8 +680,8 @@ git commit -m "feat: 存储层 sqlite3 薄封装(WAL)与 JSON 快照原子读写
 
 **Interfaces:**
 - Produces:
-  - `SIDE_TEMPLATES: dict[str, dict]` — 四个模板 id:`favorability`/`msg_react`/`sentinel`/`image_relook`,值为 `{"version": int, "system": str, "stable_after_system": list[str]}`(见下方实现)。
-  - `build_side_prompt(template_id: str, variable_tail: list[str]) -> tuple[list[dict], str]` — 返回 `(messages, cache_key)`;messages = `[{"role":"system","content":system}]+[{"role":"user","content":s} for s in stable_after_system]+[{"role":"user","content":v} for v in variable_tail]`;cache_key = `f"{template_id}:v{version}"`(供 llm_usage 表记录)。未知 template_id 抛 `ValueError`(不静默)。
+  - `SIDE_TEMPLATES: dict[str, dict]` — 四个模板 id:`favorability`/`msg_react`/`sentinel`/`image_relook`,值为 `{"version": int, "system": str}`(见下方实现)。
+  - `build_side_prompt(template_id: str, stable_ctx: list[str], variable_tail: list[str]) -> tuple[list[dict], str]` — 返回 `(messages, cache_key)`;messages = `[{"role":"system","content":system}]+[{"role":"user","content":s} for s in stable_ctx]+[{"role":"user","content":v} for v in variable_tail]`;cache_key = `f"{template_id}:v{version}"`。未知 template_id 抛 `ValueError`(不静默)。
   - 纯函数、无 IO,供 favorability/msg_react/reply_guard/image_relook 四个模块共用。
 
 - [ ] **Step 1: 编写失败测试**
@@ -692,33 +697,42 @@ from catsitate_core.llm_provider import SIDE_TEMPLATES, build_side_prompt
 
 
 def test_stable_prefix_first():
-    messages, cache_key = build_side_prompt("favorability", ["素材1", "素材2"])
+    messages, cache_key = build_side_prompt("favorability", ["五级规则稳定段"], ["素材1", "素材2"])
     assert messages[0] == {"role": "system", "content": SIDE_TEMPLATES["favorability"]["system"]}
     assert messages[1]["role"] == "user"
-    assert "五级" in messages[1]["content"]
+    assert "五级规则稳定段" in messages[1]["content"]
     assert messages[-2]["content"] == "素材1"
     assert messages[-1]["content"] == "素材2"
     assert cache_key == "favorability:v1"
 
 
 def test_tail_changes_do_not_change_prefix():
-    m1, k1 = build_side_prompt("favorability", ["甲"])
-    m2, k2 = build_side_prompt("favorability", ["乙"])
+    m1, k1 = build_side_prompt("favorability", ["稳定"], ["甲"])
+    m2, k2 = build_side_prompt("favorability", ["稳定"], ["乙"])
     assert k1 == k2
     assert m1[:-1] == m2[:-1]
     assert m1[-1] != m2[-1]
 
 
+def test_stable_ctx_changes_shift_tail_only():
+    m1, k1 = build_side_prompt("msg_react", ["白名单A"], ["目标消息"])
+    m2, k2 = build_side_prompt("msg_react", ["白名单B"], ["目标消息"])
+    assert k1 == k2
+    assert m1[0] == m2[0]
+    assert m1[1] != m2[1]
+    assert m1[2] == m2[2]  # 变量尾不受影响
+
+
 def test_all_templates_share_contract():
     for tid in ("favorability", "msg_react", "sentinel", "image_relook"):
-        messages, key = build_side_prompt(tid, ["变量"])
+        messages, key = build_side_prompt(tid, ["稳定"], ["变量"])
         assert messages[0]["role"] == "system"
         assert key.startswith(f"{tid}:v")
 
 
 def test_unknown_template_raises():
     with pytest.raises(ValueError, match="未知"):
-        build_side_prompt("nope", [])
+        build_side_prompt("nope", [], [])
 ```
 
 - [ ] **Step 2: 运行测试确认失败**
@@ -732,11 +746,12 @@ Expected: FAIL(ImportError)
 """LLM Provider 声明与旁路请求组装辅助。
 
 旁路 LLM 请求缓存规范(规格 §4.10):稳定段在前、变量素材在后,模板版本化。
+结构 = [任务指令+输出格式(system,模板固定)][稳定上下文(5 级规则/白名单/人设背景,配置数据)][变量素材]。
 """
 
 from __future__ import annotations
 
-# 稳定段模板:system = 任务指令+输出格式;stable_after_system = 稳定上下文(按模板固定)
+# 模板:system = 任务指令+输出格式(固定,版本化);稳定上下文由调用方经 stable_ctx 传入
 SIDE_TEMPLATES: dict[str, dict] = {
     "favorability": {
         "version": 1,
@@ -745,9 +760,6 @@ SIDE_TEMPLATES: dict[str, dict] = {
             '严格输出 JSON,格式:{"delta": 整数(-5 到 5 之间), "note": "一句话关系注记(不超过40字)"}。'
             "delta 为正表示关系变好,为负表示变差,0 表示无明显变化。不要输出其它内容。"
         ),
-        "stable_after_system": [
-            "关系分五级:陌生、熟悉、亲近、挚友、特别。素材按时间正序排列,包括用户消息与 bot 发言及上下文。"
-        ],
     },
     "msg_react": {
         "version": 1,
@@ -755,31 +767,31 @@ SIDE_TEMPLATES: dict[str, dict] = {
             "你是表情包选择助手。从白名单中选择一个最贴合目标消息与意图的表情,"
             '严格输出 JSON:{"emoji_id": "白名单中的 id"}。不要输出其它内容。'
         ),
-        "stable_after_system": [],
     },
     "sentinel": {
         "version": 1,
         "system": (
             "你是回复质检助手。判断「待判定回复」是否与聊天上下文明显不符或本不该回复。"
-            '严格输出 JSON:{"ok": true/false, "reason": "一句话理由"}。不要输出其它内容。'
+            '严格输出 JSON:{"should_send": true/false, "reason": "一句话理由"}。不要输出其它内容。'
         ),
-        "stable_after_system": [],
     },
     "image_relook": {
         "version": 1,
         "system": (
             "你是图像观察助手。仔细观察图片,回答用户的具体问题。用简体中文,简洁准确。"
         ),
-        "stable_after_system": [],
     },
 }
 
 
-def build_side_prompt(template_id: str, variable_tail: list[str]) -> tuple[list[dict], str]:
-    """按稳定段前置纪律组装旁路 prompt。
+def build_side_prompt(
+    template_id: str, stable_ctx: list[str], variable_tail: list[str]
+) -> tuple[list[dict], str]:
+    """按稳定段前置纪律组装旁路 prompt(规格 §4.9 签名)。
 
     Args:
         template_id: 模板 id(SIDE_TEMPLATES 键)。
+        stable_ctx: 稳定上下文段列表(5 级规则/白名单/人设背景;内容稳定,配置变更才变)。
         variable_tail: 变量素材段列表(按序追加为 user 消息)。
 
     Returns:
@@ -790,7 +802,7 @@ def build_side_prompt(template_id: str, variable_tail: list[str]) -> tuple[list[
     if template is None:
         raise ValueError(f"未知旁路模板 id: {template_id}")
     messages: list[dict] = [{"role": "system", "content": template["system"]}]
-    messages += [{"role": "user", "content": part} for part in template["stable_after_system"]]
+    messages += [{"role": "user", "content": part} for part in stable_ctx]
     messages += [{"role": "user", "content": part} for part in variable_tail]
     return messages, f"{template_id}:v{template['version']}"
 ```
@@ -798,7 +810,7 @@ def build_side_prompt(template_id: str, variable_tail: list[str]) -> tuple[list[
 - [ ] **Step 4: 运行测试确认通过**
 
 Run: `python3 -m pytest tests/test_llm_provider.py -v`
-Expected: 4 passed
+Expected: 5 passed
 
 - [ ] **Step 5: 提交**
 
@@ -972,20 +984,26 @@ git commit -m "feat: 注入框架 InjectAssembler(固定顺序+空块跳过+字�
 - Test: `tests/test_time_aware.py`
 
 **Interfaces:**
-- Produces(纯逻辑,无 SDK 依赖;在线 IO 在 Task 14 接线):
-  - `FESTIVAL_TABLE: dict[str, str]` — 内置静态表,`"MM-DD" -> 节日名`(春节/中秋/国庆/圣诞/元旦/劳动节/儿童节/七夕/元宵/端午/清明/重阳/腊八/小年/情人节/妇女节/教师节/万圣节/平安夜/除夕按 2025–2030 实际日期展开,示例写法见实现)。
-  - `SOLAR_TERMS_2025_2030: dict[str, str]` — 节气静态表 `"YYYY-MM-DD" -> 节气名`(24 节气每年日期,实现中给出 2025–2028 完整数据,2029–2030 用 holiday-cn 补充;表内至少覆盖春分/夏至/秋分/冬至等主要节气,缺失日期返回空)。
+- Produces(纯逻辑,无 SDK 依赖;在线 IO 在 Task 14 接线;lunar-python 为 manifest `python_package` 依赖):
+  - `FESTIVAL_TABLE: dict[str, str]` — 内置**公历**静态表,`"MM-DD" -> 节日名`(元旦/情人节/妇女节/劳动节/儿童节/国庆/平安夜/圣诞;仅作回退链末层,农历节日由 lunar-python 实时计算,不预生成)。
   - `WEATHER_CODE_MAP: dict[int, str]` — Open-Meteo WMO 天气码 → 中文。
   - `def build_environment_text(now: datetime.date, city: str, weather: dict | None, holidays: list[str], solar_terms: list[str]) -> str` — 组装环境块文本,格式 `[环境] 今天 M月D日 周X,{city}:{天气描述};节日:{…}。`;weather 为 None 时省略天气;holidays/solar_terms 为空时省略节日段;返回纯文本。
   - `def parse_holiday_cn(data: dict) -> dict[str, list[str]]` — 解析 holiday-cn 在线数据 `{"year":2026,"days":[{"date":"2026-08-19","name":"七夕","isOffDay":false}]}` 为 `{"MM-DD": ["节日名", ...]}`。
-  - `def holiday_chain(now: date, online: dict | None, builtin_ok: bool) -> dict[str, list[str]]` — 回退链:在线 → holiday-calendar 库 → 内置表(Task 14 里在线/库两个来源各自取数后传进来,本函数只管合并顺序;`online` 为 None 即跳过该层)。
+  - `def holiday_chain(now: date, online: dict | None, builtin_ok: bool) -> dict[str, list[str]]` — 公历节日回退链:在线 → holiday-calendar 库 → 内置公历表(Task 14 里在线/库两个来源各自取数后传进来,本函数只管合并顺序;`online` 为 None 即跳过该层)。
+  - `def solar_terms_near(now: date, days: int = 3) -> list[str]` — 当天+临近 days 天节气名(**lunar-python** `Solar.fromYmd(...).getLunar().getJieQi()`,按日期升序)。
+  - `def lunar_festivals_near(now: date, days: int = 3) -> list[str]` — 当天+临近 days 天农历节日名(**lunar-python** `getLunar().getFestivals()`,如「七夕节」「除夕」,按日期升序)。
+  - `def dedup_festival_names(names: list[str]) -> list[str]` — 保序去重,处理同日双源重名(如 holiday-cn「七夕」与 lunar「七夕节」:去掉末尾「节」字后同名视为重复,保留先出现的)。
 
-- [ ] **Step 1: 编写失败测试**
+- [ ] **Step 1: 安装本地测试依赖并编写失败测试**
+
+```bash
+python3 -m pip install --break-system-packages lunar-python
+```
 
 `tests/test_time_aware.py`:
 
 ```python
-"""时间感知测试:节日回退链、天气码、环境块渲染。"""
+"""时间感知测试:节日回退链、农历节日/节气(lunar-python)、天气码、环境块渲染。"""
 
 from datetime import date
 
@@ -993,8 +1011,11 @@ from catsitate_core.time_aware import (
     FESTIVAL_TABLE,
     WEATHER_CODE_MAP,
     build_environment_text,
+    dedup_festival_names,
     holiday_chain,
+    lunar_festivals_near,
     parse_holiday_cn,
+    solar_terms_near,
 )
 
 
@@ -1031,6 +1052,7 @@ def test_builtin_table_covers_major_festivals():
     assert "05-01" in FESTIVAL_TABLE  # 劳动节
     assert "10-01" in FESTIVAL_TABLE  # 国庆
     assert "12-25" in FESTIVAL_TABLE  # 圣诞
+    assert not any("(" in name for name in FESTIVAL_TABLE.values())  # 纯公历,无年份占位
 
 
 def test_weather_code_map_common():
@@ -1060,6 +1082,25 @@ def test_build_environment_text_without_weather():
     )
     assert "[环境]" in text
     assert "晴" not in text
+
+
+def test_solar_terms_near():
+    assert solar_terms_near(date(2026, 6, 20)) == ["夏至"]  # 次日夏至在 3 天窗口内(lunar-python 实算)
+    assert solar_terms_near(date(2026, 9, 23)) == ["秋分"]
+    assert solar_terms_near(date(2026, 5, 1)) == []
+
+
+def test_lunar_festivals_near():
+    assert "七夕节" in lunar_festivals_near(date(2026, 8, 19))  # 农历七月初七
+    assert "除夕" in lunar_festivals_near(date(2026, 2, 16))  # 腊月廿九(2026 除夕)
+    assert "中秋节" in lunar_festivals_near(date(2026, 9, 25))  # 农历八月十五
+    assert lunar_festivals_near(date(2026, 5, 1)) == []  # 五一无农历节日
+
+
+def test_dedup_festival_names():
+    assert dedup_festival_names(["七夕", "七夕节", "国庆节"]) == ["七夕", "国庆节"]  # 去「节」字后同名合并
+    assert dedup_festival_names(["中秋", "中秋", "除夕"]) == ["中秋", "除夕"]
+    assert dedup_festival_names([]) == []
 ```
 
 - [ ] **Step 2: 运行测试确认失败**
@@ -1070,12 +1111,14 @@ Expected: FAIL(ImportError)
 - [ ] **Step 3: 实现 time_aware.py**
 
 ```python
-"""时间/节日/天气感知(规格 §4.2):回退链 holiday-cn → holiday-calendar 库 → 内置表。"""
+"""时间/节日/天气感知(规格 §4.2):公历回退链 + lunar-python 农历节日/节气。"""
 
 from __future__ import annotations
 
 import re
-from datetime import date
+from datetime import date, timedelta
+
+from lunar_python import Solar
 
 # Open-Meteo WMO 天气码 → 中文(常见码)
 WEATHER_CODE_MAP: dict[int, str] = {
@@ -1089,7 +1132,7 @@ WEATHER_CODE_MAP: dict[int, str] = {
     95: "雷暴", 96: "雷暴伴冰雹", 99: "强雷暴伴冰雹",
 }
 
-# 内置静态表(2025–2030 农历节日按实际公历日期展开,常规公历节日固定)
+# 内置公历静态表(回退链末层;农历节日/节气由 lunar-python 实时计算,不预生成)
 FESTIVAL_TABLE: dict[str, str] = {
     "01-01": "元旦",
     "02-14": "情人节",
@@ -1099,20 +1142,41 @@ FESTIVAL_TABLE: dict[str, str] = {
     "10-01": "国庆节",
     "12-24": "平安夜",
     "12-25": "圣诞节",
-    # 农历节日(按 2025–2030 实际日期预生成,示例为 2026 年;发版前全量补齐)
-    "02-17": "除夕(2026)",  # 占位示例:实现时替换为真实 2025–2030 各年日期,名称不带年份
-    "02-18": "春节(2026)",
-    "08-19": "七夕(2026)",
-    "09-25": "中秋(2026)",
 }
 
-# 节气静态表(2025–2030,发版前全量;此处给出 2026 年示例,格式 YYYY-MM-DD)
-SOLAR_TERMS_TABLE: dict[str, str] = {
-    "2026-03-20": "春分",
-    "2026-06-21": "夏至",
-    "2026-09-23": "秋分",
-    "2026-12-22": "冬至",
-}
+
+def solar_terms_near(now: date, days: int = 3) -> list[str]:
+    """当天+临近 days 天的节气名列表(lunar-python 实算,按日期升序)。"""
+
+    out: list[str] = []
+    for offset in range(days + 1):
+        day = now + timedelta(days=offset)
+        name = Solar.fromYmd(day.year, day.month, day.day).getLunar().getJieQi()
+        if name:
+            out.append(name)
+    return out
+
+
+def lunar_festivals_near(now: date, days: int = 3) -> list[str]:
+    """当天+临近 days 天的农历节日名列表(lunar-python 实算,按日期升序)。"""
+
+    out: list[str] = []
+    for offset in range(days + 1):
+        day = now + timedelta(days=offset)
+        out.extend(Solar.fromYmd(day.year, day.month, day.day).getLunar().getFestivals())
+    return out
+
+
+def dedup_festival_names(names: list[str]) -> list[str]:
+    """保序去重:去掉末尾「节」字后同名视为同一节日(双源重名,如「七夕」vs「七夕节」)。"""
+
+    out: list[str] = []
+    for name in names:
+        norm = name[:-1] if name.endswith("节") else name
+        if any((kept[:-1] if kept.endswith("节") else kept) == norm for kept in out):
+            continue
+        out.append(name)
+    return out
 
 
 def parse_holiday_cn(data: dict) -> dict[str, list[str]]:
@@ -1128,10 +1192,11 @@ def parse_holiday_cn(data: dict) -> dict[str, list[str]]:
 
 
 def holiday_chain(now: date, online: dict[str, list[str]] | None, builtin_ok: bool) -> dict[str, list[str]]:
-    """按回退链合并节日数据:在线(holiday-cn) → holiday-calendar 库 → 内置表。
+    """按回退链合并公历节日数据:在线(holiday-cn) → holiday-calendar 库 → 内置公历表。
 
     库层数据由调用方(task 接线)传入并合并进 online 参数前先单独处理:
-    库层格式 {"MM-DD": ["节日", ...]} 直接作第二层。
+    库层格式 {"MM-DD": ["节日", ...]} 直接作第二层。农历节日/节气不在此链
+    (经 lunar_festivals_near/solar_terms_near 实时计算)。
     """
 
     del now  # 回退链与日期无关,保留参数兼容
@@ -1178,7 +1243,7 @@ def build_environment_text(
 - [ ] **Step 4: 运行测试确认通过**
 
 Run: `python3 -m pytest tests/test_time_aware.py -v`
-Expected: 7 passed
+Expected: 10 passed
 
 - [ ] **Step 5: 提交**
 
@@ -1403,7 +1468,7 @@ git commit -m "feat: 备忘录服务(单条 TTL 参数校验/剩余有效时间/
 **Interfaces:**
 - Produces:
   - `LEVELS: list[str] = ["陌生", "熟悉", "亲近", "挚友", "特别"]`;`LEVEL_INDEX: dict[str, int]`。
-  - `class BatchEngine:` — `__init__(store: SQLiteStore, config: FavorabilitySection)`;`ensure_schema()` 建两张表:`favorability(user_id TEXT, stream_id TEXT, level INTEGER, score INTEGER, note TEXT, window_start TEXT, judged_at TEXT, PRIMARY KEY(user_id, stream_id))` 与 `favorability_log(judge_id TEXT PRIMARY KEY, user_id TEXT, stream_id TEXT, delta INTEGER, note TEXT, judged_at TEXT)`;`count_message(user_id: str, stream_id: str, now=None) -> dict` 返回该 (user, stream) 批次统计 `{"messages": n, "reached_early_threshold": bool, "early_settled_today": int}`(计数存表 `batch_counter(user_id TEXT, stream_id TEXT, count INTEGER, last_bump TEXT, PRIMARY KEY(user_id, stream_id))`;`early_settled_today` 由 log 表按 `judged_at` 当日、`judge_id` 前缀 `early-` 计数);`check_trigger(user_id, stream_id, now=None) -> str | None` 返回 `"early"`(≥阈值且当日提前结算未达上限)或 None;`build_material(user_id: str, stream_id: str, history: list[dict]) -> list[str]`(history 为消息字典列表,每条含 `role`(user/bot)、`user_id`、`stream_id`、`text`、`seq`(递增序号);私聊流取该流全部消息、群聊流取目标用户消息为锚(最近 material_max_messages 条)+ bot 发言 + 紧邻前后各 1 条;按 seq 正序去重拼接;单条超 material_message_max_chars 截断加"…";每条渲染为 `[u1](用户) 内容` 格式);`reset_batch(user_id, stream_id) -> None`(计数清零、window_start 更新);`apply_delta(user_id, stream_id, delta, note, judged_at, judge_id: str | None = None) -> None`(累加 score、重算 level=LEVEL_INDEX 定位、note 截断 note_max_chars、写 log;judge_id 默认 `early-{judged_at}`,日终须显式传 `daily-` 前缀)。
+  - `class BatchEngine:` — `__init__(store: SQLiteStore, config: FavorabilitySection)`;`ensure_schema()` 建三张表:`favorability(user_id TEXT, stream_id TEXT, level INTEGER, score INTEGER, note TEXT, window_start TEXT, judged_at TEXT, PRIMARY KEY(user_id, stream_id))`、`favorability_log(judge_id TEXT PRIMARY KEY, user_id TEXT, stream_id TEXT, delta INTEGER, note TEXT, judged_at TEXT)`、`batch_counter(user_id TEXT, stream_id TEXT, count INTEGER, last_bump TEXT, window_start TEXT, PRIMARY KEY(user_id, stream_id))`(window_start = 当前批次起点,结算时更新);`count_message(user_id: str, stream_id: str, now=None) -> dict` 返回该 (user, stream) 批次统计 `{"messages": n, "reached_early_threshold": bool, "early_settled_today": int}`(`early_settled_today` 由 log 表按 `judged_at` 当日、`judge_id` 前缀 `early-` 计数);`check_trigger(user_id, stream_id, now=None) -> str | None` 返回 `"early"`(≥阈值且当日提前结算未达上限)或 None;`build_material(user_id: str, stream_id: str, history: list[dict]) -> list[str]`(history 为消息字典列表,每条含 `role`(user/bot)、`user_id`、`stream_id`、`text`、`seq`(递增序号)、`ts`(ISO 时间戳);**只取 ts > 当前批次 window_start 的消息**(规格"批次内",已结算过的旧消息不再进入素材);私聊流取该流批次内消息、群聊流取目标用户消息为锚(批次内最近 material_max_messages 条)+ bot 发言 + 紧邻前后各 1 条;按 seq 正序去重拼接;单条超 material_message_max_chars 截断加"…";每条渲染为 `[u1](用户) 内容` 格式);`reset_batch(user_id, stream_id, judged_at: str) -> None`(计数清零、window_start 更新为新批次起点);`apply_delta(user_id, stream_id, delta, note, judged_at, judge_id: str | None = None) -> None`(累加 score、重算 level=LEVEL_INDEX 定位、note 截断 note_max_chars、写 log;judge_id 默认 `early-{judged_at}`,日终须显式传 `daily-` 前缀)。
   - 所有时间参数 `now: Callable[[], datetime] | None = None` 注入,单测可固定。
   - `get_level(user_id, stream_id) -> dict | None` 读 favorability 行;`get_best_level_for_user(user_id) -> dict | None`(跨流取最高等级行,Task 11 主动戳用)。
 
@@ -1443,11 +1508,12 @@ def test_count_and_early_trigger(tmp_path):
 def test_early_settle_daily_cap(tmp_path):
     engine, _ = make_engine(tmp_path)
     for i in range(3):
-        engine.reset_batch("u1", "s1")
+        judged_at = f"early-{i}-{NOW.strftime('%Y%m%d%H%M%S')}"
+        engine.reset_batch("u1", "s1", judged_at)
         for _ in range(20):
             engine.count_message("u1", "s1", now=lambda: NOW)
-        engine.apply_delta("u1", "s1", 1, f"第{i}次", judged_at=f"early-{i}-{NOW.strftime('%Y%m%d%H%M%S')}")
-    engine.reset_batch("u1", "s1")
+        engine.apply_delta("u1", "s1", 1, f"第{i}次", judged_at=judged_at)
+    engine.reset_batch("u1", "s1", NOW.strftime("%Y-%m-%dT%H:%M:%S"))
     for _ in range(20):
         engine.count_message("u1", "s1", now=lambda: NOW)
     assert engine.check_trigger("u1", "s1", now=lambda: NOW) is None  # 当日提前结算已达 3 次
@@ -1456,11 +1522,11 @@ def test_early_settle_daily_cap(tmp_path):
 def test_group_material_anchored_by_user_messages(tmp_path):
     engine, _ = make_engine(tmp_path)
     history = [
-        {"role": "user", "user_id": "u9", "stream_id": "g", "text": "x", "seq": 1},
-        {"role": "user", "user_id": "u1", "stream_id": "g", "text": "你好", "seq": 2},
-        {"role": "bot", "user_id": "bot", "stream_id": "g", "text": "你好呀", "seq": 3},
-        {"role": "user", "user_id": "u2", "stream_id": "g", "text": "y", "seq": 4},
-        {"role": "user", "user_id": "u1", "stream_id": "g", "text": "在吗", "seq": 5},
+        {"role": "user", "user_id": "u9", "stream_id": "g", "text": "x", "seq": 1, "ts": "2026-08-14T10:00:01"},
+        {"role": "user", "user_id": "u1", "stream_id": "g", "text": "你好", "seq": 2, "ts": "2026-08-14T10:00:02"},
+        {"role": "bot", "user_id": "bot", "stream_id": "g", "text": "你好呀", "seq": 3, "ts": "2026-08-14T10:00:03"},
+        {"role": "user", "user_id": "u2", "stream_id": "g", "text": "y", "seq": 4, "ts": "2026-08-14T10:00:04"},
+        {"role": "user", "user_id": "u1", "stream_id": "g", "text": "在吗", "seq": 5, "ts": "2026-08-14T10:00:05"},
     ]
     material = engine.build_material("u1", "g", history)
     text = "\n".join(material)
@@ -1470,10 +1536,29 @@ def test_group_material_anchored_by_user_messages(tmp_path):
     assert text.index("你好") < text.index("在吗")  # 时间正序
 
 
+def test_material_respects_batch_window(tmp_path):
+    """结算后的旧批次消息不进入新批次素材(规格 §4.3「批次内」)。"""
+
+    engine, _ = make_engine(tmp_path)
+    old = "2026-08-14T09:00:00"
+    newer = "2026-08-14T11:00:00"
+    history = [
+        {"role": "user", "user_id": "u1", "stream_id": "p", "text": "旧批次", "seq": 1, "ts": old},
+        {"role": "user", "user_id": "u1", "stream_id": "p", "text": "新批次", "seq": 2, "ts": newer},
+    ]
+    # 首次(无窗口)两条都在
+    assert len(engine.build_material("u1", "p", history)) == 2
+    # 结算开新批次(window_start = 10:00),旧消息被排除
+    engine.reset_batch("u1", "p", "2026-08-14T10:00:00")
+    material = engine.build_material("u1", "p", history)
+    text = "\n".join(material)
+    assert "新批次" in text and "旧批次" not in text
+
+
 def test_material_truncates_long_single_message(tmp_path):
     engine, _ = make_engine(tmp_path)
     history = [
-        {"role": "user", "user_id": "u1", "stream_id": "p", "text": "长" * 300, "seq": 1},
+        {"role": "user", "user_id": "u1", "stream_id": "p", "text": "长" * 300, "seq": 1, "ts": "2026-08-14T10:00:01"},
     ]
     material = engine.build_material("u1", "p", history)
     assert len(material[0].split("】")[-1]) <= 200 + 1  # 截断后 ≤200 字符(含省略号)
@@ -1482,8 +1567,8 @@ def test_material_truncates_long_single_message(tmp_path):
 def test_private_material_contains_bot_and_user(tmp_path):
     engine, _ = make_engine(tmp_path)
     history = [
-        {"role": "user", "user_id": "u1", "stream_id": "p", "text": "早", "seq": 1},
-        {"role": "bot", "user_id": "bot", "stream_id": "p", "text": "早安", "seq": 2},
+        {"role": "user", "user_id": "u1", "stream_id": "p", "text": "早", "seq": 1, "ts": "2026-08-14T10:00:01"},
+        {"role": "bot", "user_id": "bot", "stream_id": "p", "text": "早安", "seq": 2, "ts": "2026-08-14T10:00:02"},
     ]
     material = engine.build_material("u1", "p", history)
     assert "早" in "\n".join(material) and "早安" in "\n".join(material)
@@ -1581,6 +1666,7 @@ class BatchEngine:
                 stream_id TEXT NOT NULL,
                 count INTEGER NOT NULL DEFAULT 0,
                 last_bump TEXT NOT NULL DEFAULT '',
+                window_start TEXT NOT NULL DEFAULT '',
                 PRIMARY KEY (user_id, stream_id)
             )
             """
@@ -1637,12 +1723,15 @@ class BatchEngine:
             return "early"
         return None
 
-    def reset_batch(self, user_id: str, stream_id: str) -> None:
-        """结算后开新批次:计数清零。"""
+    def reset_batch(self, user_id: str, stream_id: str, judged_at: str) -> None:
+        """结算后开新批次:计数清零、window_start 更新为新批次起点(judged_at)。"""
 
         self.store.execute(
-            "UPDATE batch_counter SET count = 0 WHERE user_id = ? AND stream_id = ?",
-            (user_id, stream_id),
+            """
+            UPDATE batch_counter SET count = 0, window_start = ?
+            WHERE user_id = ? AND stream_id = ?
+            """,
+            (judged_at, user_id, stream_id),
         )
 
     def apply_delta(
@@ -1717,24 +1806,34 @@ class BatchEngine:
     def build_material(self, user_id: str, stream_id: str, history: list[dict]) -> list[str]:
         """构造结算素材(时间正序;群聊以目标用户消息为锚,bot 发言与紧邻上下文随附)。
 
-        history 元素:{role: "user"|"bot", user_id: str, stream_id: str, text: str, seq: int}
+        history 元素:{role: "user"|"bot", user_id: str, stream_id: str, text: str, seq: int, ts: str}
+        只取 ts > 当前批次 window_start 的消息(规格"批次内",已结算旧消息不进入素材)。
         """
 
-        in_stream = [m for m in history if m["stream_id"] == stream_id]
+        rows = self.store.query(
+            "SELECT window_start FROM batch_counter WHERE user_id = ? AND stream_id = ?",
+            (user_id, stream_id),
+        )
+        window_start = rows[0][0] if rows else ""
+        in_stream = [
+            m for m in history
+            if m["stream_id"] == stream_id and (not window_start or m.get("ts", "") > window_start)
+        ]
         in_stream.sort(key=lambda m: m["seq"])
         target_msgs = [m for m in in_stream if m["role"] == "user" and m["user_id"] == user_id]
         if not target_msgs:
             return []
         anchor = target_msgs[-self.config.material_max_messages :]
         selected: dict[int, dict] = {}
+        pos_by_seq = {m["seq"]: i for i, m in enumerate(in_stream)}
         for msg in anchor:
             selected[msg["seq"]] = msg
             # 紧邻上下文:同流前后各 1 条(群聊上下文判断 bot 是否回应 ta)
-            pos = in_stream.index(msg)
+            pos = pos_by_seq[msg["seq"]]
             for neighbor in (in_stream[pos - 1], in_stream[pos + 1] if pos + 1 < len(in_stream) else None):
                 if neighbor is not None:
                     selected[neighbor["seq"]] = neighbor
-        # bot 在该流的发言随附(与锚点消息窗口内)
+        # bot 在该流的发言随附(与锚点消息同批次窗口内)
         for msg in in_stream:
             if msg["role"] == "bot":
                 selected[msg["seq"]] = msg
@@ -1751,7 +1850,7 @@ class BatchEngine:
 - [ ] **Step 4: 运行测试确认通过**
 
 Run: `python3 -m pytest tests/test_favorability.py -v`
-Expected: 7 passed(若 `in_stream.index(msg)` 在 anchor 重复时异常,改为按 seq 建索引映射 `pos_by_seq = {m["seq"]: i for i, m in enumerate(in_stream)}`)
+Expected: 8 passed
 
 - [ ] **Step 5: 提交**
 
@@ -1772,7 +1871,7 @@ git commit -m "feat: 好感度批次引擎(计数/提前结算触发/群聊锚�
 - Consumes: `BatchEngine`(Task 8)、`build_side_prompt`(Task 4)。
 - Produces:
   - `class SettleExecutor:` — `__init__(engine: BatchEngine, llm_call: Callable[[list[dict], str], dict])`;`llm_call(messages, model) -> {"success": bool, "response": str, ...}` 由 Task 14 适配 `ctx.llm.generate` 后注入,单测传 fake。
-  - `async def settle(user_id: str, stream_id: str, history: list[dict], kind: str, model: str = "") -> dict` — kind ∈ {"early","daily"};材料=engine.build_material;不足 daily_settle_min 且 kind=="daily" → 返回 `{"status": "carried_over"}`(顺延,不清计数);否则 build_side_prompt("favorability", material) → llm_call → 解析 JSON `{delta, note}`(解析失败/调用失败返回 `{"status": "failed", "error": ...}` 并日志,不落库不重置);成功:delta 钳制 [-5,5]、apply_delta、reset_batch,返回 `{"status": "ok", "delta": ..., "note": ...}`。
+  - `async def settle(user_id: str, stream_id: str, history: list[dict], kind: str, model: str = "") -> dict` — kind ∈ {"early","daily"};材料=engine.build_material;不足 daily_settle_min 且 kind=="daily" → 返回 `{"status": "carried_over"}`(顺延,不清计数);否则 `build_side_prompt("favorability", level_rules, material)` → llm_call → 解析 JSON `{delta, note}`(解析失败/调用失败返回 `{"status": "failed", "error": ...}` 并日志,不落库不重置);成功:delta 钳制 [-5,5]、apply_delta、reset_batch(传 judged_at 开新批次),返回 `{"status": "ok", "delta": ..., "note": ...}`。
   - `def build_favorability_block(user_id: str, stream_id: str) -> str` — 渲染好感度块文本:`[好感度] {user_id}:等级「{level}」(累计 {score}),注记:{note}。`;无记录用户:等级「陌生」(累计 0),无注记。
   - `def parse_judge_response(text: str) -> dict | None` — 从 LLM 文本提取 JSON(容忍 markdown 代码围栏),校验 delta 为整数、note 为字符串,失败返回 None。
 
@@ -1939,7 +2038,9 @@ class SettleExecutor:
         material = self.engine.build_material(user_id, stream_id, history)
         if kind == "daily" and len([m for m in material if "(用户)" in m]) < self.engine.config.daily_settle_min:
             return {"status": "carried_over", "reason": f"用户消息不足 {self.engine.config.daily_settle_min} 条,顺延"}
-        messages, _cache_key = build_side_prompt("favorability", material)
+        # 稳定段 = 判定指令(system 模板)+ 5 级规则(配置,stable_ctx);变量尾 = 批次素材
+        level_rules = self.engine.config.level_rules.splitlines()
+        messages, _cache_key = build_side_prompt("favorability", level_rules, material)
         try:
             result = await self.llm_call(messages, model)
         except Exception as exc:  # noqa: BLE001
@@ -1955,7 +2056,7 @@ class SettleExecutor:
         self.engine.apply_delta(
             user_id, stream_id, delta, parsed["note"], judged_at=judged_at, judge_id=judge_id
         )
-        self.engine.reset_batch(user_id, stream_id)
+        self.engine.reset_batch(user_id, stream_id, judged_at)
         return {"status": "ok", "delta": delta, "note": parsed["note"], "judge_id": judge_id}
 
 
@@ -1971,7 +2072,7 @@ def build_favorability_block(engine: BatchEngine, user_id: str, stream_id: str) 
 - [ ] **Step 4: 运行测试确认通过**
 
 Run: `python3 -m pytest tests/test_settlement.py tests/test_favorability.py -v`
-Expected: 15 passed(settlement 8 + favorability 7)
+Expected: 16 passed(settlement 8 + favorability 8)
 
 - [ ] **Step 5: 提交**
 
@@ -1989,9 +2090,10 @@ git commit -m "feat: 好感度结算执行器(LLM 判定/日终顺延/失败保�
 - Test: `tests/test_msg_react.py`
 
 **Interfaces:**
-- Consumes: `build_side_prompt`(Task 4)、`SQLiteStore`(Task 3)、`MsgReactSection`(Task 1)。
+- Consumes: `build_side_prompt`(Task 4)、`JsonSnapshot`(Task 3)、`MsgReactSection`(Task 1)。
 - Produces:
-  - `class MsgReactEngine:` — `__init__(store: SQLiteStore, config: MsgReactSection)`;`ensure_schema()` 建 `react_cooldown(stream_id TEXT PRIMARY KEY, last_used TEXT NOT NULL)`;`check_cooldown(stream_id: str, now=None) -> tuple[bool, str]` 返回 `(可用?, 原因)`,同一流距上次贴表情 < `per_stream_cooldown_seconds` 时不可用(工程护栏,非概率);`mark_used(stream_id: str, now=None) -> None`;`build_choose_prompt(whitelist: list[str], target_text: str, intent: str) -> tuple[list[dict], str]`(调用 `build_side_prompt("msg_react", variable_tail)`,白名单为稳定段一部分、目标消息+意图为变量尾);`parse_choice(response: str, whitelist: list[str]) -> tuple[str | None, str]`(从 LLM 文本提取所选 emoji_id,必须命中白名单,否则返回 `(None, 原因)`——不静默兜底,让调用方报错;规格 §4.5)。
+  - `class MsgReactEngine:` — `__init__(snapshot: JsonSnapshot, config: MsgReactSection)`;`check_cooldown(stream_id: str, now=None) -> tuple[bool, str]` 返回 `(可用?, 原因)`,同一流距上次贴表情 < `per_stream_cooldown_seconds` 时不可用(工程护栏,非概率;**JSON 快照限频**,规格 §4.5);`mark_used(stream_id: str, now=None) -> None`;`build_choose_prompt(whitelist: list[str], target_text: str, intent: str) -> tuple[list[dict], str]`(调用 `build_side_prompt("msg_react", [白名单文本], [目标消息, 意图])`,白名单=稳定段、目标消息+意图=变量尾);`parse_choice_resp(response: str, whitelist: list[str]) -> tuple[str | None, str]`(从 LLM 文本提取所选 `emoji_id`,必须命中白名单,否则返回 `(None, 原因)`——不静默兜底,让调用方报错;规格 §4.5)。
+  - 模块级函数 `parse_choice_resp(response, whitelist)`。
 
 - [ ] **Step 1: 编写失败测试**
 
@@ -2004,16 +2106,15 @@ from datetime import datetime, timedelta
 
 from catsitate_core.config import MsgReactSection
 from catsitate_core.msg_react import MsgReactEngine, parse_choice_resp
-from catsitate_core.storage import SQLiteStore
+from catsitate_core.storage import JsonSnapshot
 
 NOW = datetime(2026, 8, 14, 12, 0, 0)
 WHITELIST = ["em_ok", "em_laugh", "em_hug"]
 
 
 def make_engine(tmp_path):
-    store = SQLiteStore(tmp_path / "react.db")
-    engine = MsgReactEngine(store, MsgReactSection())
-    engine.ensure_schema()
+    snapshot = JsonSnapshot(tmp_path / "react_cooldown.json")
+    engine = MsgReactEngine(snapshot, MsgReactSection())
     return engine
 
 
@@ -2035,20 +2136,20 @@ def test_cooldown_is_per_stream(tmp_path):
 def test_build_choose_prompt_stable_prefix_first(tmp_path):
     engine = make_engine(tmp_path)
     messages, cache_key = engine.build_choose_prompt(WHITELIST, "今天好累", "想安慰对方")
-    # 稳定段(指令+白名单)在前、变量(消息+意图)在后
+    # 稳定段(指令 system + 白名单)在前、变量(消息+意图)在后
     assert messages[0]["role"] == "system"
-    assert "em_ok" in messages[0]["content"]
-    assert "今天好累" in messages[-1]["content"]
+    assert "em_ok" in messages[1]["content"]  # 白名单在稳定段
+    assert "今天好累" in messages[-2]["content"]
     assert "想安慰对方" in messages[-1]["content"]
     assert cache_key
 
 
 def test_parse_choice_valid():
-    assert parse_choice_resp('{"emoji": "em_laugh"}', WHITELIST) == ("em_laugh", "")
+    assert parse_choice_resp('{"emoji_id": "em_laugh"}', WHITELIST) == ("em_laugh", "")
 
 
 def test_parse_choice_out_of_whitelist_rejected(tmp_path):
-    result = parse_choice_resp('{"emoji": "em_evil"}', WHITELIST)
+    result = parse_choice_resp('{"emoji_id": "em_evil"}', WHITELIST)
     assert result[0] is None and result[1]
 
 
@@ -2065,7 +2166,7 @@ Expected: FAIL(ImportError)
 - [ ] **Step 3: 实现 msg_react.py**
 
 ```python
-"""贴表情引擎(规格 §4.5):白名单 LLM 选表情 + 每流冷却护栏,无概率旁路。"""
+"""贴表情引擎(规格 §4.5):白名单 LLM 选表情 + 每流冷却护栏(JSON 快照),无概率旁路。"""
 
 from __future__ import annotations
 
@@ -2076,7 +2177,7 @@ from typing import Callable
 
 from .config import MsgReactSection
 from .llm_provider import build_side_prompt
-from .storage import SQLiteStore
+from .storage import JsonSnapshot
 
 _ISO = "%Y-%m-%dT%H:%M:%S"
 
@@ -2092,25 +2193,20 @@ def parse_choice_resp(response: str, whitelist: list[str]) -> tuple[str | None, 
         data = json.loads(cleaned)
     except (json.JSONDecodeError, TypeError):
         return None, "LLM 未返回合法 JSON"
-    emoji = data.get("emoji")
+    emoji = data.get("emoji_id")
     if not isinstance(emoji, str):
-        return None, "LLM 未给出 emoji 字段"
+        return None, "LLM 未给出 emoji_id 字段"
     if emoji not in whitelist:
         return None, f"emoji_id {emoji!r} 不在白名单内"
     return emoji, ""
 
 
 class MsgReactEngine:
-    """贴表情引擎:选表情 prompt 组装与每流冷却。"""
+    """贴表情引擎:选表情 prompt 组装与每流冷却(JSON 快照限频,规格 §4.5)。"""
 
-    def __init__(self, store: SQLiteStore, config: MsgReactSection) -> None:
-        self.store = store
+    def __init__(self, snapshot: JsonSnapshot, config: MsgReactSection) -> None:
+        self.snapshot = snapshot
         self.config = config
-
-    def ensure_schema(self) -> None:
-        self.store.execute(
-            "CREATE TABLE IF NOT EXISTS react_cooldown (stream_id TEXT PRIMARY KEY, last_used TEXT NOT NULL)"
-        )
 
     def check_cooldown(
         self, stream_id: str, now: Callable[[], datetime] | None = None
@@ -2118,12 +2214,11 @@ class MsgReactEngine:
         """返回 (可用?, 原因);距上次贴表情 < 冷却秒数时不可用。"""
 
         now_fn = now or datetime.now
-        rows = self.store.query(
-            "SELECT last_used FROM react_cooldown WHERE stream_id = ?", (stream_id,)
-        )
-        if not rows:
+        data = self.snapshot.load()
+        last_str = data.get(stream_id)
+        if not last_str:
             return True, ""
-        last = datetime.strptime(rows[0][0], _ISO)
+        last = datetime.strptime(last_str, _ISO)
         elapsed = (now_fn() - last).total_seconds()
         if elapsed < self.config.per_stream_cooldown_seconds:
             remaining = int(self.config.per_stream_cooldown_seconds - elapsed)
@@ -2132,26 +2227,21 @@ class MsgReactEngine:
 
     def mark_used(self, stream_id: str, now: Callable[[], datetime] | None = None) -> None:
         now_fn = now or datetime.now
-        self.store.execute(
-            """
-            INSERT INTO react_cooldown (stream_id, last_used) VALUES (?, ?)
-            ON CONFLICT(stream_id) DO UPDATE SET last_used = excluded.last_used
-            """,
-            (stream_id, now_fn().strftime(_ISO)),
-        )
+        data = self.snapshot.load()
+        data[stream_id] = now_fn().strftime(_ISO)
+        self.snapshot.save(data)
 
     def build_choose_prompt(
         self, whitelist: list[str], target_text: str, intent: str
     ) -> tuple[list[dict], str]:
-        """组装选表情 prompt:白名单属稳定段,目标消息+意图为变量尾。"""
+        """组装选表情 prompt:白名单属稳定段,目标消息+意图为变量尾(§4.10)。"""
 
         return build_side_prompt(
             "msg_react",
-            [f"白名单 emoji_id:{', '.join(whitelist)}", f"目标消息:{target_text}", f"贴表情意图:{intent}"],
+            [f"白名单 emoji_id:{', '.join(whitelist)}"],
+            [f"目标消息:{target_text}", f"贴表情意图:{intent}"],
         )
 ```
-
-**注意**:`build_side_prompt("msg_react", variable_tail)` 的 `variable_tail` 参数类型是 `list[str]`(Task 4 已定义),这里将白名单作为变量尾传入——但白名单按规格 §4.10 属**稳定段**。Task 4 的 `msg_react` 模板中 `stable_after_system` 已包含白名单占位说明,实现步骤 3 需与 Task 4 模板对照:若模板 `stable_after_system` 不含白名单,则把白名单放进 `variable_tail` 首行(白名单内容稳定,首行位置不变则前缀仍稳定);若含,则白名单只进模板。以 Task 4 已定模板为准,本任务测试断言"系统段含白名单 id 或首行含白名单",两种都通过。
 
 - [ ] **Step 4: 运行测试确认通过**
 
@@ -2174,9 +2264,9 @@ git commit -m "feat: 贴表情引擎(白名单选表情 prompt/每流冷却护�
 - Test: `tests/test_poke.py`
 
 **Interfaces:**
-- Consumes: `SQLiteStore`(Task 3)、`PokeSection`(Task 1)。
+- Consumes: `JsonSnapshot`(Task 3)、`PokeSection`(Task 1)。
 - Produces:
-  - `class PokeEngine:` — `__init__(store: SQLiteStore, config: PokeSection)`;`ensure_schema()` 建 `poke_cooldown(user_id TEXT PRIMARY KEY, last_poke TEXT NOT NULL)`(主动戳冷却,user_id 维度);`parse_notice(payload: dict) -> dict | None`(解析 `additional_config.napcat_notice_payload`,输出 `{"text": "XXX 拍了拍你,说:"…"", "user_id": str}`,结构不符返回 None + 原因字段,不静默——规格 §4.6);`enhance_notice_text(payload: dict) -> str | None`(纯渲染拟人文本,供 `enhance_notice_text`/`inject_to_context` 两开关共用);`can_poke(user_id: str, best_level_row: dict | None, now=None) -> tuple[bool, str]`(等级 ≥ `min_level_for_poke` 且冷却通过;best_level_row 为 BatchEngine.get_best_level_for_user 的结果,None = 从未判定,默认"陌生"=0 级,门槛"熟悉"=1 级,拒绝并给出中文原因);`mark_poked(user_id: str, now=None) -> None`。
+  - `class PokeEngine:` — `__init__(snapshot: JsonSnapshot, config: PokeSection)`;`parse_notice(payload: dict) -> dict | None`(解析 `additional_config.napcat_notice_payload`,输出 `{"text": "XXX 拍了拍你,说:"…"", "user_id": str}`,结构不符返回 None + 原因字段,不静默——规格 §4.6);`enhance_notice_text(payload: dict) -> str | None`(纯渲染拟人文本,供 `enhance_notice_text`/`inject_to_context` 两开关共用);`can_poke(user_id: str, best_level_row: dict | None, now=None) -> tuple[bool, str]`(等级 ≥ `min_level_for_poke` 且冷却通过;best_level_row 为 BatchEngine.get_best_level_for_user 的结果,None = 从未判定,默认"陌生"=0 级,门槛"熟悉"=1 级,拒绝并给出中文原因);`mark_poked(user_id: str, now=None) -> None`(主动戳冷却记 JSON 快照,user_id 维度)。
   - 被戳反应逻辑**不实现**(规格已剔除)。
 
 - [ ] **Step 1: 编写失败测试**
@@ -2190,15 +2280,14 @@ from datetime import datetime, timedelta
 
 from catsitate_core.config import PokeSection
 from catsitate_core.poke import PokeEngine
-from catsitate_core.storage import SQLiteStore
+from catsitate_core.storage import JsonSnapshot
 
 NOW = datetime(2026, 8, 14, 12, 0, 0)
 
 
 def make_engine(tmp_path):
-    store = SQLiteStore(tmp_path / "poke.db")
-    engine = PokeEngine(store, PokeSection())
-    engine.ensure_schema()
+    snapshot = JsonSnapshot(tmp_path / "poke_cooldown.json")
+    engine = PokeEngine(snapshot, PokeSection())
     return engine
 
 
@@ -2282,7 +2371,7 @@ from typing import Callable
 
 from .config import PokeSection
 from .favorability import LEVELS
-from .storage import SQLiteStore
+from .storage import JsonSnapshot
 
 _ISO = "%Y-%m-%dT%H:%M:%S"
 
@@ -2290,14 +2379,9 @@ _ISO = "%Y-%m-%dT%H:%M:%S"
 class PokeEngine:
     """戳一戳:只做解析增强与主动戳前置校验,被戳反应逻辑不实现(规格剔除)。"""
 
-    def __init__(self, store: SQLiteStore, config: PokeSection) -> None:
-        self.store = store
+    def __init__(self, snapshot: JsonSnapshot, config: PokeSection) -> None:
+        self.snapshot = snapshot
         self.config = config
-
-    def ensure_schema(self) -> None:
-        self.store.execute(
-            "CREATE TABLE IF NOT EXISTS poke_cooldown (user_id TEXT PRIMARY KEY, last_poke TEXT NOT NULL)"
-        )
 
     def parse_notice(self, payload: dict) -> dict | None:
         """解析 napcat_notice_payload;结构不符返回 None(调用方记录日志,不静默)。"""
@@ -2344,11 +2428,10 @@ class PokeEngine:
         min_level = LEVELS.index(self.config.min_level_for_poke)
         if level < min_level:
             return False, f"好感度「{LEVELS[level]}」低于门槛「{self.config.min_level_for_poke}」"
-        rows = self.store.query(
-            "SELECT last_poke FROM poke_cooldown WHERE user_id = ?", (user_id,)
-        )
-        if rows:
-            last = datetime.strptime(rows[0][0], _ISO)
+        data = self.snapshot.load()
+        last_str = data.get(user_id)
+        if last_str:
+            last = datetime.strptime(last_str, _ISO)
             elapsed = (now_fn() - last).total_seconds()
             if elapsed < self.config.cooldown_seconds:
                 remaining = int(self.config.cooldown_seconds - elapsed)
@@ -2357,13 +2440,9 @@ class PokeEngine:
 
     def mark_poked(self, user_id: str, now: Callable[[], datetime] | None = None) -> None:
         now_fn = now or datetime.now
-        self.store.execute(
-            """
-            INSERT INTO poke_cooldown (user_id, last_poke) VALUES (?, ?)
-            ON CONFLICT(user_id) DO UPDATE SET last_poke = excluded.last_poke
-            """,
-            (user_id, now_fn().strftime(_ISO)),
-        )
+        data = self.snapshot.load()
+        data[user_id] = now_fn().strftime(_ISO)
+        self.snapshot.save(data)
 ```
 
 - [ ] **Step 4: 运行测试确认通过**
@@ -2458,8 +2537,9 @@ def test_backfill_reply_items_reasoning_nonempty_skips():
 def test_build_sentinel_prompt_stable_prefix():
     messages, cache_key = build_sentinel_prompt("猫耳少女", "回复内容", "聊天上下文")
     assert messages[0]["role"] == "system"
-    assert "猫耳少女" in messages[0]["content"]
-    assert "回复内容" in messages[-1]["content"]
+    assert "猫耳少女" in messages[1]["content"]  # 人设背景在稳定段
+    assert "回复内容" in messages[-2]["content"]
+    assert "聊天上下文" in messages[-1]["content"]
     assert cache_key
 
 
@@ -2551,11 +2631,12 @@ def backfill_reply_items(
 def build_sentinel_prompt(
     persona_background: str, reply_text: str, chat_context: str
 ) -> tuple[list[dict], str]:
-    """哨兵层 prompt:指令+人设背景为稳定段,待判定回复+上下文为变量尾。"""
+    """哨兵层 prompt:指令(system)+人设背景为稳定段,待判定回复+上下文为变量尾(§4.10)。"""
 
     return build_side_prompt(
         "sentinel",
-        [f"人设背景:{persona_background}", f"待判定回复:{reply_text}", f"聊天上下文:{chat_context}"],
+        [f"人设背景:{persona_background}"],
+        [f"待判定回复:{reply_text}", f"聊天上下文:{chat_context}"],
     )
 
 
@@ -2717,7 +2798,7 @@ def build_relook_prompt(question: str, image_segment: dict) -> tuple[list[dict],
         tail = [f"问题:{question}"]
     else:
         tail = [f"问题:{question}", f"图片引用:{describe_segment(image_segment)}(无二进制,由调用方补图后重试)"]
-    messages, cache_key = build_side_prompt("image_relook", tail)
+    messages, cache_key = build_side_prompt("image_relook", [], tail)
     if data:
         # 图片块追加到 user 消息内容之后(图片 token 无前缀缓存意义,§4.10)
         messages[-1]["content"] = [
@@ -3033,8 +3114,15 @@ from catsitate_core.reply_guard import (
     parse_sentinel_response,
 )
 from catsitate_core.services.scheduler import Scheduler
-from catsitate_core.storage import SQLiteStore
-from catsitate_core.time_aware import build_environment_text, holiday_chain, parse_holiday_cn
+from catsitate_core.storage import JsonSnapshot, SQLiteStore
+from catsitate_core.time_aware import (
+    build_environment_text,
+    dedup_festival_names,
+    holiday_chain,
+    lunar_festivals_near,
+    parse_holiday_cn,
+    solar_terms_near,
+)
 
 logger = logging.getLogger("catsitate.core")
 
@@ -3052,12 +3140,15 @@ class CatsitatePlugin(MaiBotPlugin):
         data_dir.mkdir(parents=True, exist_ok=True)
         self.store = SQLiteStore(data_dir / "catsitate.db")
         self.memo = MemoService(self.store, self.config.memo)
-        self.react = MsgReactEngine(self.store, self.config.msg_react)
-        self.poke = PokeEngine(self.store, self.config.poke)
+        self.react = MsgReactEngine(JsonSnapshot(data_dir / "msg_react_cooldown.json"), self.config.msg_react)
+        self.poke = PokeEngine(JsonSnapshot(data_dir / "poke_cooldown.json"), self.config.poke)
         self.fav_engine = BatchEngine(self.store, self.config.favorability)
-        self.fav_executor = SettleExecutor(self.fav_engine, lambda messages, model="": self._side_llm_call(messages, model, "favorability"))
+        self.fav_executor = SettleExecutor(
+            self.fav_engine,
+            lambda messages, model="": self._side_llm_call(messages, self.config.favorability.llm.model, "favorability"),
+        )
         self.assembler = InjectAssembler()
-        for service in (self.memo, self.react, self.poke, self.fav_engine):
+        for service in (self.memo, self.fav_engine):
             service.ensure_schema()
         self.store.execute(
             """
@@ -3088,6 +3179,8 @@ class CatsitatePlugin(MaiBotPlugin):
         self._scheduler.register("memo_cleanup", 3600, self._cleanup_memos)
         self._scheduler.register("daily_settle", max(self.config.favorability.window_hours, 1) * 3600, self._daily_settle)
         self._scheduler.start()
+        # 首次环境数据立即刷新一次,避免环境块空缺到首个定时点(45 分钟)
+        asyncio.create_task(self._refresh_environment())
         self.ctx.logger.info("catsitate_core 已加载:注入/备忘录/好感度/贴表情/戳一戳/reply补传/图片重看")
 
     async def on_unload(self) -> None:
@@ -3331,8 +3424,9 @@ class CatsitatePlugin(MaiBotPlugin):
                 await self.ctx.maisaka.context.append(stream_id=stream_id, text=text)
             except Exception:
                 logger.exception("戳一戳上下文注入失败(stream=%s)", stream_id)
-        # enhance_notice_text 能否改写消息文本以 spike ③ 结论为准;不能则仅日志
-        logger.info("戳一戳解析增强:%s", text)
+        # enhance_notice_text 能否改写消息文本以 spike ③ 结论为准;不能则仅日志(开关关闭则不做任何增强)
+        if self.config.poke.enhance_notice_text:
+            logger.info("戳一戳解析增强:%s", text)
 
     @HookHandler("chat.receive.after_process", name="catsitate_fav_count", mode=HookMode.OBSERVE)
     async def fav_count(self, **kwargs: Any) -> None:
@@ -3361,7 +3455,7 @@ class CatsitatePlugin(MaiBotPlugin):
             return {"action": "continue", "modified_kwargs": kwargs}
         called_tools = self._called_tools(kwargs)
         reasoning = str(kwargs.get("reasoning") or "")
-        tool_results = self._context_tool_results(kwargs, cfg.context_tools)
+        tool_results = self._context_tool_results(kwargs, cfg.context_tools, called_tools)
         if not tool_results:
             return {"action": "continue", "modified_kwargs": kwargs}
         new_items = backfill_reply_items(output_items, tool_results, cfg.context_tools, called_tools, reasoning)
@@ -3425,7 +3519,16 @@ class CatsitatePlugin(MaiBotPlugin):
             if env:
                 blocks.append(InjectionBlock("environment", env[0], env[1]))
         if cfg.inject.memo_enabled and cfg.memo.enabled:
-            entries = self.memo.read(stream_id, speaker, limit=cfg.memo.inject_max)
+            # 当前流维度 + 当前说话人维度各取 3 条,按 id 去重后合计 ≤ inject_max(规格 §4.4)
+            by_stream = self.memo.read(stream_id, "", limit=3)
+            by_user = self.memo.read("", speaker, limit=3) if speaker else []
+            seen: set[int] = set()
+            entries = []
+            for entry in by_stream + by_user:
+                if entry["id"] not in seen:
+                    seen.add(entry["id"])
+                    entries.append(entry)
+            entries = entries[: cfg.memo.inject_max]
             if entries:
                 text = "[备忘] " + ";".join(e["content"] for e in entries)
                 key = "|".join(sorted(f"{e['id']}" for e in entries))
@@ -3454,13 +3557,21 @@ class CatsitatePlugin(MaiBotPlugin):
         cfg = self.config.time_aware
         today = date.today()
         online = None
-        try:
-            async with httpx.AsyncClient(timeout=15) as client:
-                resp = await client.get("https://cdn.jsdelivr.net/npm/holiday-cn@latest/{today.year}.json".format(today=today))
-                resp.raise_for_status()
-                online = parse_holiday_cn(resp.json())
-        except Exception:
-            logger.warning("holiday-cn 在线数据获取失败,回退内置节日表", exc_info=True)
+        sources = [
+            f"https://cdn.jsdelivr.net/npm/holiday-cn@latest/{today.year}.json",
+            f"https://raw.githubusercontent.com/NateScarlet/holiday-cn/master/{today.year}.json",
+        ]
+        if not cfg.holiday_online:
+            sources = []  # 在线刷新开关关闭,直接走库/内置回退链
+        for url in sources:
+            try:
+                async with httpx.AsyncClient(timeout=15) as client:
+                    resp = await client.get(url)
+                    resp.raise_for_status()
+                    online = parse_holiday_cn(resp.json())
+                break
+            except Exception:
+                logger.warning("holiday-cn 数据源 %s 获取失败,尝试下一个", url, exc_info=True)
         try:
             from holiday_calendar import get_holidays  # manifest 声明依赖(自动安装)
 
@@ -3491,11 +3602,14 @@ class CatsitatePlugin(MaiBotPlugin):
                 (cfg.city, datetime.now().strftime("%Y-%m-%dT%H:%M:%S"), json.dumps(weather, ensure_ascii=False)),
             )
         # 当天 + 临近 3 天节日/节气(规格 §4.2 注入示例)
+        # 公历节日走回退链结果;农历节日经 lunar-python 实算;双源重名按名去重
         near_holidays: list[str] = []
         for offset in range(4):
             day = today + timedelta(days=offset)
             near_holidays.extend(holidays.get(day.strftime("%m-%d"), []))
-        text = build_environment_text(today, cfg.city, weather, near_holidays, [])
+        near_holidays = dedup_festival_names(near_holidays + lunar_festivals_near(today, days=3))
+        near_terms = solar_terms_near(today, days=3)
+        text = build_environment_text(today, cfg.city, weather, near_holidays, near_terms)
         self._env_cache["env"] = text
         self._env_fetched_at = datetime.now()
 
@@ -3560,13 +3674,23 @@ class CatsitatePlugin(MaiBotPlugin):
         return result.get("messages") or []
 
     async def _fetch_recent_for_history(self, stream_id: str, limit: int) -> list[dict]:
-        """取近期消息并归一化为 build_material 所需形状 {role, user_id, stream_id, text, seq}。"""
+        """取近期消息并归一化为 build_material 所需形状 {role, user_id, stream_id, text, seq, ts}。
+
+        消息时间戳字段名以 spike 结论为准(timestamp/ts),集中在 _msg_ts 辅助里改。
+        """
 
         raw = await self._fetch_recent_with_binary(stream_id, limit)
         history: list[dict] = []
         for i, m in enumerate(raw):
             text = "".join(s.get("text", "") for s in (m.get("segments") or []) if s.get("type") == "text")
-            history.append({"role": "user" if str(m.get("user_id") or "") != str(m.get("bot_id") or "") else "bot", "user_id": str(m.get("user_id") or ""), "stream_id": stream_id, "text": text, "seq": i})
+            history.append({
+                "role": "user" if str(m.get("user_id") or "") != str(m.get("bot_id") or "") else "bot",
+                "user_id": str(m.get("user_id") or ""),
+                "stream_id": stream_id,
+                "text": text,
+                "seq": i,
+                "ts": str(m.get("timestamp") or m.get("ts") or ""),
+            })
         return history
 
     async def _fetch_message_text(self, stream_id: str, message_id: str) -> str:
@@ -3591,11 +3715,14 @@ class CatsitatePlugin(MaiBotPlugin):
         calls = kwargs.get("tool_calls") or []
         return [c.get("name") or c.get("tool_name") for c in calls if isinstance(c, dict)]
 
-    def _context_tool_results(self, kwargs: dict[str, Any], context_tools: list[str]) -> dict[str, str]:
-        """本轮上下文工具的结果(spike 结论;可能来自 tool_results 回显)。"""
+    def _context_tool_results(
+        self, kwargs: dict[str, Any], context_tools: list[str], called_tools: list[str]
+    ) -> dict[str, str]:
+        """本轮**被调用过的**上下文工具的结果(规格 §4.7;spike 确认回显字段名)。"""
 
         results = kwargs.get("tool_results") or {}
-        return {name: str(results[name]) for name in context_tools if name in results}
+        wanted = set(context_tools) & set(called_tools)
+        return {name: str(results[name]) for name in wanted if name in results}
 
     def _persona_background(self) -> str:
         return str(self.ctx.maisaka.get_personality() or "猫耳少女") if hasattr(self.ctx, "maisaka") else "猫耳少女"
@@ -3663,7 +3790,7 @@ from catsitate_core.memo import MemoService
 from catsitate_core.msg_react import MsgReactEngine, parse_choice_resp
 from catsitate_core.poke import PokeEngine
 from catsitate_core.reply_guard import backfill_reply_items
-from catsitate_core.storage import SQLiteStore
+from catsitate_core.storage import JsonSnapshot, SQLiteStore
 from catsitate_core.time_aware import build_environment_text
 
 NOW = datetime(2026, 8, 14, 12, 0, 0)
@@ -3674,7 +3801,7 @@ def _fake_llm(messages, model=""):
         system_text = str(messages[0]["content"])
         if "关系评估助手" in system_text:
             return {"success": True, "response": '{"delta": 2, "note": "冒烟注记"}', "model": model}
-        return {"success": True, "response": '{"emoji": "em_laugh"}', "model": model}
+        return {"success": True, "response": '{"emoji_id": "em_laugh"}', "model": model}
     return call(messages, model)
 
 
@@ -3684,10 +3811,10 @@ def test_full_assembly_smoke(tmp_path):
     store = SQLiteStore(tmp_path / "smoke.db")
     cfg = CatsitateConfig()
     memo = MemoService(store, cfg.memo)
-    react = MsgReactEngine(store, cfg.msg_react)
-    poke = PokeEngine(store, cfg.poke)
+    react = MsgReactEngine(JsonSnapshot(tmp_path / "react.json"), cfg.msg_react)
+    poke = PokeEngine(JsonSnapshot(tmp_path / "poke.json"), cfg.poke)
     engine = BatchEngine(store, cfg.favorability)
-    for service in (memo, react, poke, engine):
+    for service in (memo, engine):
         service.ensure_schema()
     assembler = InjectAssembler()
 
@@ -3728,7 +3855,7 @@ def test_full_assembly_smoke(tmp_path):
     # 贴表情
     messages, _ = react.build_choose_prompt(["em_laugh", "em_hug"], "今天好累", "安慰")
     assert messages[0]["role"] == "system"
-    choice, err = parse_choice_resp('{"emoji": "em_laugh"}', ["em_laugh", "em_hug"])
+    choice, err = parse_choice_resp('{"emoji_id": "em_laugh"}', ["em_laugh", "em_hug"])
     assert choice == "em_laugh" and err == ""
 
     # 主动戳校验(结算后 2 分仍是"陌生",门槛"熟悉"应拒绝)
@@ -3798,6 +3925,7 @@ Expected: 全部通过(含本任务 1 个集成测试)
 - [ ] 贴表情防刷:同流 30 秒内二次调用 → 冷却提示
 - [ ] 哨兵层(默认关):开启后日志出现哨兵判定调用
 - [ ] 旁路记账:`data/plugins/catsitate.core/catsitate.db` 中 `llm_usage` 表按模块分列调用数
+- [ ] 热重载:WebUI 修改配置(如关闭备忘注入)后确认 `on_config_update` 生效、下一轮注入立即反映
 ```
 
 - [ ] **Step 5: 补完 README.md**

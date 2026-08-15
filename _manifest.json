@@ -47,14 +47,6 @@
     "database.get",
     "config.get"
   ],
-  "llm_providers": [
-    {
-      "client_type": "catsitate_custom",
-      "name": "Catsitate 自定义端点",
-      "description": "OpenAI 兼容自定义端点(用户在 model_config 配置 base_url/key)",
-      "version": "1.0.0"
-    }
-  ],
   "i18n": {
     "default_locale": "zh-CN",
     "locales_path": "_locales",

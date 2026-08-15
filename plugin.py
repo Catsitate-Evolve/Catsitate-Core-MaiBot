@@ -16,7 +16,7 @@ import logging
 import sys
 
 import httpx
-from maibot_sdk import Command, HookHandler, LLMProvider, MaiBotPlugin, Tool
+from maibot_sdk import Command, HookHandler, MaiBotPlugin, Tool
 from maibot_sdk.types import HookMode, HookOrder, ToolParameterInfo
 
 # spike ① 实测结论:加载器仅将 plugins 父目录临时加入 sys.path,插件目录本身不在,
@@ -128,47 +128,6 @@ class CatsitatePlugin(MaiBotPlugin):
             # personality 变化影响等级规则块注入(下次渲染自动生效)
             self.assembler.reset()
             self._snapshot_cache.clear()
-
-    # ---------- LLM Provider:catsitate_custom ----------
-
-    @LLMProvider(
-        "catsitate_custom",
-        name="Catsitate 自定义端点",
-        description="OpenAI 兼容自定义端点(用户在 model_config 配置 base_url/key)",
-        version="1.0.0",
-    )
-    async def catsitate_custom_llm(self, operation: str, request: dict[str, Any]) -> dict[str, Any]:
-        """转发到 provider 处理器;embedding/audio 不支持(规格 §4.9)。"""
-
-        if operation != "response":
-            raise NotImplementedError(f"catsitate_custom 不支持操作: {operation}")
-        provider = request.get("api_provider") or {}
-        base_url = str(provider.get("base_url") or "").rstrip("/")
-        if not base_url:
-            raise ValueError("catsitate_custom 缺少 api_provider.base_url(请在 model_config 配置)")
-        payload: dict[str, Any] = {
-            "model": request.get("model") or "",
-            "messages": request.get("messages") or [],
-        }
-        if request.get("temperature") is not None:
-            payload["temperature"] = request["temperature"]
-        if request.get("max_tokens") is not None:
-            payload["max_tokens"] = request["max_tokens"]
-        headers = {"Content-Type": "application/json"}
-        if provider.get("api_key"):
-            headers["Authorization"] = f"Bearer {provider['api_key']}"
-        async with httpx.AsyncClient(timeout=120) as client:
-            resp = await client.post(f"{base_url}/chat/completions", json=payload, headers=headers)
-            resp.raise_for_status()
-            data = resp.json()
-        choice = (data.get("choices") or [{}])[0]
-        message = choice.get("message") or {}
-        return {
-            "content": message.get("content") or "",
-            "reasoning_content": message.get("reasoning_content") or "",
-            "tool_calls": message.get("tool_calls"),
-            "usage": data.get("usage"),
-        }
 
     # ---------- 工具 ----------
 
@@ -694,9 +653,24 @@ class CatsitatePlugin(MaiBotPlugin):
                 "stream_id": stream_id,
                 "text": text,
                 "seq": i,
-                "ts": str(m.get("timestamp") or ""),
+                "ts": self._normalize_ts(m.get("timestamp")),
             })
         return history
+
+    @staticmethod
+    def _normalize_ts(raw_ts: Any) -> str:
+        """消息时间戳归一化为 ISO(与 batch_counter.window_start 同格式,保证批次过滤可比)。
+
+        实机实测:主程序序列化的 timestamp 为 epoch 浮点(字符串);直接与 ISO window_start
+        字符串比较恒 False,导致批次素材恒空(联调发现)。
+        """
+
+        if raw_ts is None:
+            return ""
+        try:
+            return datetime.fromtimestamp(float(raw_ts)).strftime("%Y-%m-%dT%H:%M:%S")
+        except (ValueError, TypeError, OSError):
+            return str(raw_ts)
 
     async def _fetch_message_text(self, stream_id: str, message_id: str) -> str:
         raw = await self._fetch_recent(stream_id, 50)

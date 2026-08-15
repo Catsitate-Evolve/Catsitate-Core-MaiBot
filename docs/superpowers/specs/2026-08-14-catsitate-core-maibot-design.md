@@ -31,7 +31,7 @@ Catsitate 是部署在 MaiBot 上的 QQ 聊天机器人人设(伪三无猫耳少
 | 时间感知 | 主程序已注入当前时间;插件只做节日/节气(公历日期索引的节日数据:在线 holiday-cn → holiday-calendar 库 → 内置公历表;农历节日/节气:**lunar-python 库实时计算**,不内置预生成表) |
 | 天气 | Open-Meteo(免 key)+ 全局城市配置;注入上下文、落库供联动;失败静默跳过 |
 | 图片 | 信息流图片由主程序处理;插件只提供 2.4.6 深看工具 |
-| LLM 配置 | `@LLMProvider` 声明 `catsitate_custom`;每个 LLM 能力配置可选主程序模型或自定义端点 |
+| LLM 配置 | 旁路 LLM 统一经 `ctx.llm.generate` + **主程序 task 名**路由(推荐在 model_config 为插件配专用 task,如 `catsitate`);每个 LLM 能力配置可选 task 名,留空=主程序默认 |
 | QQ空间(三期) | 虚拟聊天平台(`@MessageGateway`)+ 自研 qzone 接口,蓝本为原版 [internetsb/Maizone](https://github.com/internetsb/Maizone)(`maizone_refactored` 停更过久,仅参考) |
 | 交互语言 | 所有用户可见文本简体中文 |
 
@@ -82,7 +82,7 @@ chat 主链路 ──maisaka.planner.before_request──> inject.py(前插注�
     - favorability.py 日终结算/高活跃结算
     - memo.py 过期清理
 工具注册:msg_react / poke_user / memo_write / memo_read / inspect_image
-LLM 路径:统一经 ctx.llm.generate + 每能力可配模型(含 catsitate_custom provider);旁路请求统一经 llm_provider.py 组装辅助(稳定段前置)
+LLM 路径:统一经 ctx.llm.generate + 每能力可配 task 名(推荐专用 catsitate task);旁路请求统一经 llm_provider.py 组装辅助(稳定段前置)
 ```
 
 模块间通过内部接口调用(如天气/好感度数据都经 `storage.py` 读取),互不 import 实现细节;每个模块可独立启停(配置开关),关闭时其注入与后台任务均不生效。
@@ -135,7 +135,7 @@ LLM 路径:统一经 ctx.llm.generate + 每能力可配模型(含 catsitate_cust
   - 私聊:批次内对话切片(该流内用户消息+bot 消息,天然交替,归属明确);
   - 群聊:该用户全部消息 + bot 在该群全部发言 + 每条用户消息紧邻上下文(前后各 1–2 条),供 LLM 自行判断 bot 是否在回应 ta;
   - 素材按**条数**计上限:**以该用户消息为锚**取批次内最近 N 条用户消息(默认 30,可配),bot 发言与紧邻上下文随附(合计超出时单条截断兜底);**单条**消息超过长度上限(默认 200 字符,可配)截断该条(加省略标记),截断发生在单条尾部、消息边界之间,不产生跨条切断;所有消息素材**按时间正序拼接**(稳定增量);
-- **LLM 判定**:prompt 模板固定,结构 = `[判定指令+输出格式][5 级规则][批次素材]`(稳定段在前、素材在后,§4.10 旁路规范),输出 JSON `{delta: 整数(-5~+5), note: 一句话关系注记}`;模型可配(默认主程序任务,可选 `catsitate_custom`);失败跳过本轮并记录日志;结果落 sqlite `favorability` 表;
+- **LLM 判定**:prompt 模板固定,结构 = `[判定指令+输出格式][5 级规则][批次素材]`(稳定段在前、素材在后,§4.10 旁路规范),输出 JSON `{delta: 整数(-5~+5), note: 一句话关系注记}`;模型可配(默认主程序任务,推荐专用 `catsitate` task);失败跳过本轮并记录日志;结果落 sqlite `favorability` 表;
 - **注入(Q8 A+C,同一模块的三个组件拆两块)**:好感度模块共有三个注入组件——①5 级行为准则表(陌生/熟悉/亲近/挚友/特别)、②等级+分数、③关系注记。按更新频率拆成两块:规则表仅随配置变化 → 独立"等级规则块"(最稳,几乎永久命中);等级+分数+注记同为 per-user、说话人驱动 → 合并为"好感度块"(注记与等级同频,拆开无缓存收益)。好感度块内容:`[好感度] XXX:等级「熟悉」(累计 42),注记:最近主动关心过你。`;私聊=对端用户,群聊=当前消息发送者;等级/注记变化(结算)才更新该块;无结算记录的用户显示默认等级「陌生」、无注记(内容稳定统一,新说话人不引入波动);
 - **存储 schema**:`favorability(user_id TEXT, stream_id TEXT, level INTEGER, score INTEGER, note TEXT, window_start TEXT, judged_at TEXT, PRIMARY KEY(user_id, stream_id))`(`window_start` = 当前批次起点时间);判定日志表 `favorability_log(judge_id, user_id, stream_id, delta, note, judged_at)` 幂等防重;
 - 二期扩展:达标用户主动私聊(依赖 2.1 调度)。
@@ -175,14 +175,24 @@ LLM 路径:统一经 ctx.llm.generate + 每能力可配模型(含 catsitate_cust
 ### 4.8 图片重看(`image_relook.py`)
 
 - `@Tool("inspect_image", visibility="visible")`,参数:目标消息 ID(或 image_index)+ 具体问题;
-- 执行:`ctx.message.get_recent(include_binary_data=True)` 解析 image 段;仅 hash 时经 `ctx.db.get(model_name="Images", ...)` 补读原图;VLM(模型经 `llm.model` 配置,同 §4.9 统一节)回答具体问题,返回文本结果;prompt 结构 = `[任务指令(稳定)][图片+问题(变量)]`——图片 token 本身无前缀缓存意义,仅保证文本前缀稳定(§4.10 旁路规范);目标消息太旧、get_recent 取不到时返回错误并记录日志(不静默);
+- 执行:`ctx.message.get_recent(include_binary_data=True)` 解析 image 段;仅 hash 时经 `ctx.db.get(model_name="Images", ...)` 补读原图;VLM(模型经 `llm_model` 配置,同 §4.9 统一节)回答具体问题,返回文本结果;prompt 结构 = `[任务指令(稳定)][图片+问题(变量)]`——图片 token 本身无前缀缓存意义,仅保证文本前缀稳定(§4.10 旁路规范);目标消息太旧、get_recent 取不到时返回错误并记录日志(不静默);
 - 不实现根目录启发式探测(参考插件该做法绕过 SDK 边界,我们不用);若 db 无法补图,报错暴露并记录日志。
 
-### 4.9 LLM Provider(`llm_provider.py`)
+### 4.9 旁路 LLM 模型配置(`llm_provider.py`)
 
-- `@LLMProvider(client_type="catsitate_custom", name="Catsitate 自定义端点", ...)`:仅实现 `response` 操作(embedding/audio 返回"不支持");处理器接收 `api_provider` 快照(用户在 model_config 配置的 base_url/key),以 OpenAI 兼容协议自行调用并返回统一格式;
-- manifest `llm_providers` 与装饰器声明一致;
-- 每个 LLM 能力配置节:`{enabled, model}`——`model` **留空 = 使用主程序默认模型**(调用时不指定 model);填主程序 task 名/模型标识 = 用该任务配置的模型;填 `catsitate_custom` = 走用户自定义端点;
+- **模型路由**:旁路 LLM 统一经 `ctx.llm.generate(messages, model=task 名)`;`model` 参数实机验证为**主程序 task 名**(`model_task_config` 节名,填模型标识会报「未找到名为 … 的模型配置」);**留空 = 主程序默认**(resolve_task_name 取首个可用 task,不可控,不推荐);
+- **推荐配置**:用户在 MaiBot `model_config.toml` 为插件分配专用 task(README 有完整示例),例如:
+  ```toml
+  [model_task_config.catsitate] # 插件旁路任务(好感度结算/选表情/哨兵/图片重看)
+  model_list = ["deepseek-v4-flash"]
+  max_tokens = 4096
+  temperature = 0.3
+  selection_strategy = "sequential"
+  slow_threshold = 30
+  hard_timeout = 120
+  ```
+  然后把插件配置中各能力的 `llm_model` 填 `catsitate`;
+- 每个 LLM 能力配置字段:`llm_model: str`(task 名;留空=主程序默认)。注意:配置模型为**平铺字段**(WebUI 不支持嵌套 section,嵌套 PluginConfigBase 会渲染为 `[object Object]`,联调实测);
 - 同文件提供**旁路请求组装辅助**:统一 `build_side_prompt(template_id, stable_ctx, variable_tail)` 渲染(模板固定+版本化、稳定段在前),§4.10 旁路规范的唯一实现落点。
 
 ### 4.10 Token 开销与缓存预算
@@ -242,7 +252,7 @@ LLM 路径:统一经 ctx.llm.generate + 每能力可配模型(含 catsitate_cust
 - `reply_guard`:enabled、context_backfill_enabled、context_tools(可配工具名列表)、sentinel_enabled(默认 false)、sentinel_llm
 - `image_relook`:enabled、llm(`{model}`)
 
-所有 LLM 节结构统一:`{model: str(留空=默认)}`,支持选择主程序已配置模型或 `catsitate_custom` 端点。
+所有 LLM 节为平铺字段 `llm_model: str`(task 名;留空=主程序默认)。
 
 ## 7. 错误处理原则
 
@@ -270,7 +280,7 @@ LLM 路径:统一经 ctx.llm.generate + 每能力可配模型(含 catsitate_cust
 
 ## 9. 一期交付物清单
 
-1. `plugin.py` + `_manifest.json`(能力声明、llm_providers、python_package 依赖 holiday-calendar 与 lunar-python)+ `README.md` + `CHANGELOG.md` + `.gitignore`(含 `/config.toml`);
+1. `plugin.py` + `_manifest.json`(能力声明、python_package 依赖 holiday-calendar 与 lunar-python)+ `README.md` + `CHANGELOG.md` + `.gitignore`(含 `/config.toml`);
 2. 上文全部一期模块实现(4.1–4.10);
 3. `tests/` 单元测试;
 4. 缓存命中率基线对比报告;

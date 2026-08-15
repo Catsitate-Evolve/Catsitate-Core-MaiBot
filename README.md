@@ -6,8 +6,24 @@ Catsitate 的 MaiBot 核心人格行为插件。仓库地址:https://github.com/
 
 1. 把本目录放进 MaiBot 的 `plugins/` 并重启;WebUI「插件」页确认 `catsitate.core` 已加载
 2. 在插件配置页打开 `plugin.enabled = true`(总开关,默认关),按需调整各模块节
-3. 想用自定义 LLM 端点:在 MaiBot `model_config.toml` 的 `api_providers` 增加一条 `client_type = "catsitate_custom"`(base_url/key),再把对应能力的 `model` 填 `catsitate_custom`
-4. 表情白名单:`msg_react.emoji_whitelist` 填入 napcat 表情 id(留空则贴表情工具拒绝执行)
+3. 表情白名单:`msg_react.emoji_whitelist` 填入 napcat 表情 id(留空则贴表情工具拒绝执行)
+
+## 主程序配置(模型 task 分配)
+
+插件旁路 LLM 请求(好感度结算/选表情/哨兵/图片重看)统一经主程序 `model_task_config` 路由,推荐在 MaiBot `model_config.toml` 为插件分配专用 task:
+
+```toml
+[model_task_config.catsitate] # 插件旁路任务
+model_list = ["deepseek-v4-flash"]
+max_tokens = 4096
+temperature = 0.3
+selection_strategy = "sequential"
+slow_threshold = 30
+hard_timeout = 120
+```
+
+然后把插件配置中各能力的 `llm_model` 填 `catsitate`(留空 = 主程序默认,取首个可用 task,不推荐)。
+注意:`llm_model` 填的是 **task 名**(节名),填模型标识会报「未找到名为 … 的模型配置」。
 
 ## 测试
 
@@ -24,6 +40,6 @@ Catsitate 的 MaiBot 核心人格行为插件。仓库地址:https://github.com/
 
 ## 配置要点
 
-- 每个 LLM 能力的 `model` 留空 = 主程序默认模型;填 task 名 = 该任务模型;填 `catsitate_custom` = 自定义端点
+- 每个 LLM 能力的 `llm_model` 留空 = 主程序默认(首个可用 task);填 task 名(如 `catsitate`) = 该任务模型
 - 注入四块(`level_rule`/`environment`/`memo`/`favorability`)各自有开关,可独立关闭
 - 哨兵层默认关(`reply_guard.sentinel_enabled`),开启后每句回复多一次旁路判定

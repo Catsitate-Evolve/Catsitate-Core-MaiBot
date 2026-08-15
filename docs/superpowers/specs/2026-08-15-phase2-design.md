@@ -31,26 +31,28 @@
 ### 3.2 睡眠管理(全局状态机)
 
 - **状态**:`awake / sleep` 全局唯一;持久化 `sleep_state.json`(重启恢复,过期自动清理)。
+- **作息时间由日程 LLM 自主决定**(联调新增):睡前生成次日日程时,一并生成当晚 `sleep_at`(计划入睡时间)与次日 `wake_at`(计划醒来时间),写入日程 JSON;未生成日程(LLM 失败/禁用)时用配置默认值兜底。
 - **入睡机制**(参考 goodnight_sleep_manager,裁剪版):
-  - 允许入睡窗口(配置:开始时刻/结束时刻,如 22:00-06:00)内:
+  - 到达 `sleep_at` 后进入「可睡期」(至 `wake_at` 止):
     - bot 自发晚安短句(「我睡了」「晚安」等)出站时经 **AI 判定器** 判定 `SLEEP / NOT_SLEEP / UNSURE`(模板 `catsitate_sleep_confirm.prompt` 进主程序 prompt 管理;正则兜底),`SLEEP` → 入睡;
     - 用户催睡(自然语言,如「去睡觉」)正常走 planner,bot 回复的晚安短句同样经判定器确认后才入睡(防诱导:只接受短句、自我入睡;带 @/称呼他人/引用回复不触发);
-    - **到点强制入睡**:允许入睡窗口结束(如 06:00)仍在睡的判定条件里,若窗口内一直未自发入睡,则入睡窗口结束时自动入睡(确保作息兜底);
+    - **到点强制入睡兜底**:可睡期结束时仍未入睡 → 自动入睡(保证作息下限);
+  - **可用工具推迟睡眠**(联调新增):`update_schedule` 工具支持修改当晚 `sleep_at`/次日 `wake_at`(如用户挽留「再聊会」时 planner 可推迟入睡时间;推迟幅度受 `max_sleep_minutes` 等约束检查);
   - **静默入睡**(默认关,可配置):无任何入站/出站消息满 N 分钟自动入睡(不调 LLM);
-  - **唤醒**:到目标醒来时间自动醒;醒来浮动随机分钟(仅此处允许随机);睡眠中被 @ 时若 `wake_on_mention` 开启 → 立即唤醒(全局);
-  - **最短/最长睡眠**:不足最短睡眠分钟时不醒(顺延到最短),超过最长强制醒。
+  - **唤醒**:到 `wake_at` 自动醒;醒来浮动随机分钟(仅此处允许随机);睡眠中被 @ 时若 `wake_on_mention` 开启 → 立即唤醒(全局);
+  - **最短/最长睡眠**:不足最短睡眠分钟时不醒(顺延到最短),超过最长强制醒(约束 LLM 生成的 sleep_at/wake_at 与工具推迟范围)。
 - **睡眠期间表现(联调 Q5=A)**:新消息在 `chat.receive.before_process` BLOCKING 拦截(allow_abort,不进入 planner、不回复、不思考),**命令同样拦截**(联调 Q12=A);被拦截消息进入睡眠回顾记录。
 - **睡醒回顾**(默认开,可配置关):醒来时对睡眠期间被拦截消息生成**单份聚合报告文件**(`data/plugins/catsitate.core/sleep_review/reports/`),含每流消息数、摘要、重要消息(LLM 总结);不补发历史回复、不注入对话上下文(联调 Q10=参考 goodnight_sleep_manager)。
-- **配置**(新 sleep 节):`enabled`、`sleep_window_start`(默认 22:00)、`sleep_window_end`(默认 06:00)、`wakeup_time`(默认 08:00)、`min_sleep_minutes`(默认 240)、`max_sleep_minutes`(默认 660)、`wakeup_jitter_minutes`(默认 20)、`wake_on_mention`(默认 false)、`silent_sleep_enabled`(默认 false)、`silent_sleep_minutes`(默认 60)、`review_enabled`(默认 true)、`review_llm_model`(默认 memory)、`review_llm_timeout_ms`(默认 None)。
+- **配置**(新 sleep 节):`enabled`、`default_sleep_at`(默认 23:00,无日程时的入睡兜底)、`default_wake_at`(默认 08:00,无日程时的醒来兜底)、`min_sleep_minutes`(默认 240)、`max_sleep_minutes`(默认 660)、`wakeup_jitter_minutes`(默认 20)、`wake_on_mention`(默认 false)、`silent_sleep_enabled`(默认 false)、`silent_sleep_minutes`(默认 60)、`review_enabled`(默认 true)、`review_llm_model`(默认 memory)、`review_llm_timeout_ms`(默认 None)。
 - **测试**:入睡判定器解析、窗口边界(含跨午夜)、最短/最长睡眠、拦截 hook 行为、状态持久化、静默入睡计时。
 
 ### 3.3 日程(2.1:睡前生成 + 窗口执行 + 可被工具修改)
 
 - **生成**:睡前(允许入睡窗口前,如 21:30)LLM 生成次日日程;**固定 5 窗口框架**(早晨/上午/午后/傍晚/睡前),每窗口 = 活动描述(内部状态)+ 是否计划发言 + 发言主题。启动时若无有效日程则补生成当天。窗口时间段固定(不可配置,保证结构可测):早晨 06:00-09:00、上午 09:00-12:00、午后 12:00-18:00、傍晚 18:00-21:00、睡前 21:00-24:00。
-- **结构**:日程存储 JSON(`schedule_state.json`):`{date, generated_at, windows: [{name, time_range, activity, plan_speak, topic}]}`。
+- **结构**:日程存储 JSON(`schedule_state.json`):`{date, generated_at, sleep_at, wake_at, windows: [{name, time_range, activity, plan_speak, topic}]}`;`sleep_at`/`wake_at` 为当日计划入睡/醒来时间(睡眠模块读取,联调新增)。
 - **注入**:「日程块」作为独立注入块,插在环境块之后、备忘块之前;内容 = 当前窗口活动+主题(如 `[日程] 午后:发呆看雨,不想说话。`);窗口切换才变化(半天级稳定,缓存友好)。
 - **执行**:每窗口触发时(到窗口起点)经 `maisaka.proactive.trigger` 主动发言;发言内容由**执行时 LLM 判定**(联调 Q24=B):输入人设+日程窗口+当前天气+目标流好感度等级/注记 → 是否发言+发言文本(可为空=沉默);受好感度门槛约束(等级不足不发言,不调 LLM)。
-- **可被工具修改**:`@Tool("update_schedule")`(visible):planner 可调用以增改日程窗口(参数:窗口名/新活动/是否发言/主题;约束:窗口框架 5 个不变、内容长度上限);修改落盘并立即反映到注入块。
+- **可被工具修改**:`@Tool("update_schedule")`(visible):planner 可调用以增改日程窗口(参数:窗口名/新活动/是否发言/主题)或修改 `sleep_at`/`wake_at`(推迟睡眠等场景);约束:窗口框架 5 个不变、内容长度上限、睡眠时长在 min/max_sleep_minutes 内;修改落盘并立即反映到注入块与睡眠状态机。
 - **生成/执行模型**:`schedule_llm_model`(默认 memory)、`schedule_llm_timeout_ms`;执行发言判定另用 `speak_llm_model`(默认 memory)。
 - **配置**(新 schedule 节):`enabled`、`generate_time`(默认 21:30)、`speak_threshold_level`(默认 熟悉)、`greet_threshold_level`(默认 亲近)、`private_threshold_level`(默认 挚友)、`speak_llm_model`、`speak_llm_timeout_ms`、`schedule_llm_model`、`schedule_llm_timeout_ms`、`daily_speak_limit`(默认 5,全天主动发言次数上限)。
 - **与睡眠交互**:睡眠中窗口触发 → 跳过(醒来后不补发);发言计入 `daily_speak_limit`。

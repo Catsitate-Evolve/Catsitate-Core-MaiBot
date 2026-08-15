@@ -847,8 +847,7 @@ git commit -m "feat: 旁路 prompt 组装辅助 build_side_prompt(稳定段前�
 **Interfaces:**
 - Produces:
   - `class InjectionBlock:` — dataclass:`module: str`、`content_key: str`(决定缓存失效的语义键)、`text: str`。
-  - `class InjectAssembler:` — `__init__()`(无参数,内部用模块级 `BLOCK_ORDER = ("level_rule", "environment", "memo", "favorability")`);方法 `render(blocks: list[InjectionBlock]) -> list[dict]`:按 BLOCK_ORDER 排序(未出现的模块跳过),同一 (module, content_key, text) 与上一轮相同时**字节级复用上次渲染结果**(内部缓存),返回 `[{"role":"user","content":text}, ...]`;`reset() -> None` 清缓存。
-  - `SINGLE_BLOCK_TEMPLATE = "【{label}】{text}"` 块内标签由调用方在 text 里带(如 `[环境] ...`),框架只保证顺序与缓存复用。
+  - `class InjectAssembler:` — `__init__()`(无参数,内部用模块级 `BLOCK_ORDER = ("level_rule", "environment", "memo", "favorability")`);方法 `render(blocks: list[InjectionBlock]) -> list[dict]`:按 BLOCK_ORDER 排序(未出现的模块跳过),**每模块每轮仅允许一块,同模块重复块抛 `ValueError`(规格 §4.1「每块一条 user 消息」,不静默覆盖)**;同一 (module, content_key, text) 与上一轮相同时**字节级复用上次渲染结果**(内部缓存),返回 `[{"role":"user","content":text}, ...]`;`reset() -> None` 清缓存。块内标签由调用方在 text 里带(如 `[环境] ...`),框架只保证顺序与缓存复用。
 - 纯函数/纯对象,无 SDK 依赖。Task 14 的 before_request handler 调用它。
 
 - [ ] **Step 1: 编写失败测试**
@@ -857,6 +856,8 @@ git commit -m "feat: 旁路 prompt 组装辅助 build_side_prompt(稳定段前�
 
 ```python
 """注入框架测试:固定顺序、空块跳过、版本化复用。"""
+
+import pytest
 
 from catsitate_core.inject import InjectAssembler, InjectionBlock
 
@@ -879,6 +880,16 @@ def test_unknown_module_skipped():
     assembler = InjectAssembler()
     rendered = assembler.render([InjectionBlock(module="nope", content_key="x", text="y")])
     assert rendered == []
+
+
+def test_duplicate_module_raises():
+    assembler = InjectAssembler()
+    blocks = [
+        InjectionBlock(module="memo", content_key="a", text="[备忘] 甲"),
+        InjectionBlock(module="memo", content_key="b", text="[备忘] 乙"),
+    ]
+    with pytest.raises(ValueError, match="重复"):
+        assembler.render(blocks)
 
 
 def test_same_content_reuses_rendered_object():
@@ -959,8 +970,12 @@ class InjectAssembler:
 
         by_module: dict[str, InjectionBlock] = {}
         for block in blocks:
-            if block.module in BLOCK_ORDER:
-                by_module[block.module] = block
+            if block.module not in BLOCK_ORDER:
+                continue
+            if block.module in by_module:
+                # 规格 §4.1:每模块每轮仅一块,重复属调用方错误,显式暴露不静默覆盖
+                raise ValueError(f"注入块模块重复: {block.module}(每模块每轮仅允许一块)")
+            by_module[block.module] = block
         messages: list[dict] = []
         for module in BLOCK_ORDER:
             block = by_module.get(module)
@@ -983,7 +998,7 @@ class InjectAssembler:
 - [ ] **Step 4: 运行测试确认通过**
 
 Run: `python3 -m pytest tests/test_inject.py -v`
-Expected: 5 passed
+Expected: 6 passed
 
 - [ ] **Step 5: 提交**
 

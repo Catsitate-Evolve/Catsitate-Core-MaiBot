@@ -18,6 +18,35 @@ from catsitate_core.time_aware import build_environment_text
 NOW = datetime(2026, 8, 14, 12, 0, 0)
 
 
+class _StubLogger:
+    def info(self, *a, **k):
+        pass
+
+    def warning(self, *a, **k):
+        pass
+
+    def exception(self, *a, **k):
+        pass
+
+    def error(self, *a, **k):
+        pass
+
+    def debug(self, *a, **k):
+        pass
+
+
+class _StubPaths:
+    def __init__(self, data_dir):
+        self.data_dir = data_dir
+
+
+class _StubCtx:
+    def __init__(self, data_dir):
+        self.logger = _StubLogger()
+        self.paths = _StubPaths(data_dir)
+        self.config = type("_C", (), {"get": staticmethod(lambda key, default="": None)})()
+
+
 def _fake_llm(messages, model=""):
     async def call(messages, model=""):
         system_text = str(messages[0]["content"])
@@ -249,3 +278,164 @@ def test_schedule_inject_block_text():
     if nxt:
         line += f";接下来:{nxt['kind'] if nxt['kind'] == 'sleep' else nxt.get('activity', '')}"
     assert "发呆看雨" in line and "接下来" in line
+
+
+def test_generate_tomorrow_schedule_sets_generated_flag(tmp_path):
+    """I-2:模板兜底日 _schedule_generated=False(备忘提醒兜底保持开启);LLM 成功日 True。"""
+    import asyncio
+    from datetime import datetime, timedelta
+
+    import plugin as plugin_mod
+    from catsitate_core.config import CatsitateConfig
+    from catsitate_core.schedule import DEFAULT_TEMPLATE_SCHEDULE, _materialize_template
+
+    p = plugin_mod.CatsitatePlugin()
+    p._ctx = _StubCtx(tmp_path)
+    p._plugin_config_instance = CatsitateConfig()
+
+    async def _no_persona():
+        return ""
+    p._persona = _no_persona
+    p._today_review_text = lambda: "无"
+    p._weather_text = lambda: "无"
+    p._fav_summary_text = lambda: "无"
+    p.memo = type("_M", (), {"due_on": staticmethod(lambda day: [])})()
+    p._schedule_data = {}
+    p._schedule_edit_history = []
+    p._schedule_generated = False
+
+    class _FailingGen:
+        async def generate(self, **kw):
+            return _materialize_template(DEFAULT_TEMPLATE_SCHEDULE, kw["target_date"]), "测试错误"
+
+    p.schedule_gen = _FailingGen()
+    asyncio.run(p._generate_tomorrow_schedule())
+    assert p._schedule_generated is False  # 模板兜底日不视为生成日程
+
+    class _OkGen:
+        async def generate(self, **kw):
+            target = kw["target_date"]
+            nxt_day = (datetime.strptime(target, "%Y-%m-%d") + timedelta(days=1)).strftime("%Y-%m-%d")
+            return {"date": target, "windows": [
+                {"kind": "sleep", "start": f"{target}T23:00", "end": f"{nxt_day}T07:00"},
+                {"kind": "daily", "start": f"{target}T09:00", "end": f"{target}T11:00",
+                 "activity": "写代码", "plan_speak": False, "topic": ""},
+            ]}, ""
+
+    p.schedule_gen = _OkGen()
+    asyncio.run(p._generate_tomorrow_schedule())
+    assert p._schedule_generated is True
+
+
+def test_remind_fallback_tick_injects_when_schedule_not_generated(tmp_path):
+    """I-2:模板撑场日(_schedule_generated=False)到点提醒仍兜底注入;LLM 生成日不重复兜底。"""
+    import asyncio
+    from datetime import datetime
+
+    import plugin as plugin_mod
+    from catsitate_core.config import CatsitateConfig
+    from catsitate_core.schedule import DEFAULT_TEMPLATE_SCHEDULE, _materialize_template
+    from catsitate_core.sleep import SleepManager
+    from catsitate_core.storage import JsonSnapshot
+
+    appended: list[dict] = []
+
+    class _ContextStub:
+        def __init__(self, out):
+            self._out = out
+
+        async def append(self, **kw):
+            self._out.append(kw)
+
+    ctx = _StubCtx(tmp_path)
+    ctx.maisaka = type("_M", (), {"context": _ContextStub(appended)})()
+
+    p = plugin_mod.CatsitatePlugin()
+    p._ctx = ctx
+    p._plugin_config_instance = CatsitateConfig()
+    p.config.plugin.enabled = True
+    p.sleep = SleepManager(JsonSnapshot(tmp_path / "sleep_state.json"), p.config.sleep)
+    p._schedule_data = _materialize_template(DEFAULT_TEMPLATE_SCHEDULE, datetime.now().strftime("%Y-%m-%d"))
+    p._schedule_generated = False
+    p._remind_fired = {}
+    p.memo = type("_M", (), {"due_on": staticmethod(lambda day: [
+        {"id": 1, "content": "交作业", "stream_id": "s1", "user_id": "u1", "remind_at": "2000-01-01T00:00:00"},
+    ])})()
+    asyncio.run(p._remind_fallback_tick())
+    assert len(appended) == 1 and appended[0]["stream_id"] == "s1"
+    # LLM 生成日:提醒走日程收录,不重复兜底
+    p._schedule_generated = True
+    appended.clear()
+    asyncio.run(p._remind_fallback_tick())
+    assert appended == []
+
+
+def test_enter_sleep_idempotent_when_already_sleeping(tmp_path):
+    """I-3:已睡时 _enter_sleep 直接返回,不二次落盘、不二次 spawn 次日日程生成。"""
+    import asyncio
+    from datetime import datetime
+
+    import plugin as plugin_mod
+    from catsitate_core.config import CatsitateConfig
+    from catsitate_core.sleep import SleepManager
+    from catsitate_core.storage import JsonSnapshot
+
+    p = plugin_mod.CatsitatePlugin()
+    p._ctx = _StubCtx(tmp_path)
+    p._plugin_config_instance = CatsitateConfig()
+    p._background_tasks = set()
+    p._schedule_data = {}
+    p.sleep = SleepManager(JsonSnapshot(tmp_path / "sleep_state.json"), p.config.sleep)
+    p.sleep.enter_sleep(wake_at="2099-01-01T07:00:00", now=lambda: datetime(2026, 8, 15, 23, 0, 0))
+    calls = {"gen": 0}
+
+    async def _fake_gen():
+        calls["gen"] += 1
+    p._generate_tomorrow_schedule = _fake_gen
+
+    asyncio.run(p._enter_sleep())
+    assert calls["gen"] == 0  # 已睡幂等:不再 spawn
+    assert p.sleep.state.wake_at == "2099-01-01T07:00:00"  # 状态未被二次覆盖
+
+
+def test_restore_schedule_from_file_today_only(tmp_path):
+    """I-4:重启恢复——当日 schedule.json 恢复日程/历史/生成标记;过期删除、损坏忽略(告警)。"""
+    import json
+    from datetime import datetime
+
+    import plugin as plugin_mod
+    from catsitate_core.config import CatsitateConfig
+    from catsitate_core.schedule import DEFAULT_TEMPLATE_SCHEDULE, _materialize_template
+
+    p = plugin_mod.CatsitatePlugin()
+    p._ctx = _StubCtx(tmp_path)
+    p._plugin_config_instance = CatsitateConfig()
+    p._schedule_data = {}
+    p._schedule_edit_history = []
+    p._schedule_generated = False
+
+    today = datetime.now().strftime("%Y-%m-%d")
+    p._ctx.paths.data_dir.mkdir(parents=True, exist_ok=True)
+    (p._ctx.paths.data_dir / "schedule.json").write_text(json.dumps({
+        "data": _materialize_template(DEFAULT_TEMPLATE_SCHEDULE, today),
+        "edit_history": [{"time": "x", "action": "add", "before": "{}", "after": "{}"}],
+        "generated": True, "saved_at": "2026-08-15T10:00:00",
+    }, ensure_ascii=False), encoding="utf-8")
+    p._restore_schedule()
+    assert p._schedule_data.get("date") == today
+    assert p._schedule_generated is True
+    assert len(p._schedule_edit_history) == 1
+
+    # 过期文件:删除并忽略
+    stale = {"data": _materialize_template(DEFAULT_TEMPLATE_SCHEDULE, "2000-01-01"), "generated": True}
+    (p._ctx.paths.data_dir / "schedule.json").write_text(json.dumps(stale, ensure_ascii=False), encoding="utf-8")
+    p._schedule_data = {}
+    p._restore_schedule()
+    assert p._schedule_data == {}
+    assert not (p._ctx.paths.data_dir / "schedule.json").exists()  # 过期文件已删除
+
+    # 损坏文件:告警并忽略(不删除,保留现场)
+    (p._ctx.paths.data_dir / "schedule.json").write_text("{broken", encoding="utf-8")
+    p._restore_schedule()
+    assert p._schedule_data == {}
+    assert (p._ctx.paths.data_dir / "schedule.json").exists()

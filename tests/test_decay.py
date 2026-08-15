@@ -81,3 +81,26 @@ def test_scan_and_apply_applies_and_clamps(tmp_path):
     result = asyncio.run(ex.scan_and_apply([("u1", "s1", "2026-08-01T10:00:00", "0")], now=lambda: NOW))
     assert result and result[0]["delta"] == -3  # 钳制到 -decay_max
     assert engine.get_level("u1", "s1")["score"] == 39
+
+
+def test_scan_and_apply_judge_id_unique_per_user(tmp_path):
+    """M-5:同秒多用户衰减 judge_id 含 user/stream,INSERT OR IGNORE 不静默丢日志(重置计时 guard 有效)。"""
+    import asyncio
+    store = SQLiteStore(tmp_path / "d.db")
+    cfg = FavorabilitySection(decay_after_days=7, decay_max=3)
+    engine = BatchEngine(store, cfg)
+    engine.ensure_schema()
+    engine.apply_delta("u1", "s1", 42, "很好", judged_at="2026-08-01T12:00:00")
+    engine.apply_delta("u2", "s2", 42, "很好", judged_at="2026-08-01T12:00:00")
+
+    async def fake_llm(messages, model=""):
+        return {"success": True, "response": '{"delta": -2, "note": "生疏了"}', "model": model}
+
+    ex = DecayExecutor(store, cfg, fake_llm)
+    result = asyncio.run(ex.scan_and_apply(
+        [("u1", "s1", "2026-08-01T10:00:00", "0"), ("u2", "s2", "2026-08-01T10:00:00", "0")],
+        now=lambda: NOW,
+    ))
+    assert len(result) == 2  # 两条都判定成功(judge_id 无冲突)
+    rows = store.query("SELECT judge_id FROM favorability_log WHERE judge_id LIKE 'decay-%'")
+    assert len(rows) == 2 and len({r[0] for r in rows}) == 2  # 判定日志互不覆盖

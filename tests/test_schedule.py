@@ -130,6 +130,47 @@ def test_generator_llm_failure_uses_template(tmp_path):
     assert data.get("windows")  # 兜底默认模板
 
 
+def test_fix_schedule_zero_sleep_inserts_default_and_validates():
+    """I-1:0 个睡眠窗口 → 插入默认睡眠段,修复结果恰好 1 睡眠且校验通过。"""
+    data = {"date": "2026-08-16", "windows": [
+        {"kind": "daily", "start": "2026-08-16T09:00", "end": "2026-08-16T11:00",
+         "activity": "写代码", "plan_speak": False, "topic": ""},
+    ]}
+    fixed = fix_schedule(data, min_sleep=240, max_sleep=660)
+    sleeps = [w for w in fixed["windows"] if w.get("kind") == "sleep"]
+    assert len(sleeps) == 1 and sleeps[0]["start"] == "2026-08-16T23:00"
+    checked, verr = validate_schedule(fixed, min_sleep=240, max_sleep=660)
+    assert checked is not None and verr == ""
+
+
+def test_fix_schedule_multiple_sleep_keeps_exactly_one():
+    """I-1:2+ 个睡眠窗口 → 只保留第一个,修复后恰好 1 个且校验通过。"""
+    data = {"date": "2026-08-16", "windows": [
+        {"kind": "sleep", "start": "2026-08-16T23:00", "end": "2026-08-17T07:00"},
+        {"kind": "sleep", "start": "2026-08-16T12:00", "end": "2026-08-16T14:00"},
+        {"kind": "daily", "start": "2026-08-16T09:00", "end": "2026-08-16T11:00",
+         "activity": "写代码", "plan_speak": False, "topic": ""},
+    ]}
+    fixed = fix_schedule(data, min_sleep=240, max_sleep=660)
+    sleeps = [w for w in fixed["windows"] if w.get("kind") == "sleep"]
+    assert len(sleeps) == 1 and sleeps[0]["start"] == "2026-08-16T23:00"
+    checked, verr = validate_schedule(fixed, min_sleep=240, max_sleep=660)
+    assert checked is not None and verr == ""
+
+
+def test_generator_fix_still_invalid_returns_template_with_error():
+    """I-1 兜底链:钳制修复后仍无效(如活动窗口为 0)→ 默认模板 + 显式错误文案。"""
+    import asyncio
+    from catsitate_core.config import ScheduleSection, SleepSection
+    async def fake_llm(messages, model=""):
+        return {"success": True, "response": '{"date": "2026-08-16", "windows": []}', "model": model}
+    gen = ScheduleGenerator(fake_llm, ScheduleSection(max_regenerate=0), SleepSection())
+    data, err = asyncio.run(gen.generate(persona="", today_review="", weather_text="", fav_summary="", due_memos=[]))
+    assert "仍无效" in err  # 显式错误(调用方记录日志)
+    checked, verr = validate_schedule(data, min_sleep=240, max_sleep=660)
+    assert checked is not None and verr == ""  # 模板兜底必合法
+
+
 from catsitate_core.schedule import threshold_met
 
 

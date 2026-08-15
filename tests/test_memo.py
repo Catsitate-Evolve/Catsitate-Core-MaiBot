@@ -78,3 +78,16 @@ def test_memo_remind_at_optional_default_empty(tmp_path):
     svc, _ = make_service(tmp_path)
     svc.write("普通备忘", stream_id="s1", user_id="u1", ttl_hours=None, now=lambda: NOW)
     assert svc.due_on("2099-01-01", now=lambda: NOW) == []
+
+
+def test_memo_remind_at_invalid_format_rejected(tmp_path):
+    """M-10:remind_at 格式非法拒绝写入(显式中文错误),合法格式(可带秒)正常写入。"""
+    svc, _ = make_service(tmp_path)
+    ok, msg = svc.write("内容", stream_id="s1", user_id="u1", ttl_hours=None, remind_at="明天19点", now=lambda: NOW)
+    assert not ok and "提醒时间格式非法" in msg
+    ok, msg = svc.write("内容", stream_id="s1", user_id="u1", ttl_hours=None, remind_at="2026-08-16 19:00", now=lambda: NOW)
+    assert not ok and "提醒时间格式非法" in msg  # 空格分隔同样非法
+    assert svc.due_on("2099-01-01", now=lambda: NOW) == []  # 非法项未落库
+    ok, msg = svc.write("内容", stream_id="s1", user_id="u1", ttl_hours=None, remind_at="2026-08-16T19:00:00", now=lambda: NOW)
+    assert ok, msg
+    assert [e["content"] for e in svc.due_on("2026-08-16", now=lambda: NOW)] == ["内容"]

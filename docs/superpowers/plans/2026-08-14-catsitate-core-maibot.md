@@ -1987,7 +1987,9 @@ def test_daily_carry_over_when_below_min(tmp_path):
     result = asyncio.run(executor.settle("u1", "s1", history, kind="daily"))
     assert result["status"] == "carried_over"
     assert calls == []  # 未调用 LLM
-    assert engine.count_message("u1", "s1", now=lambda: NOW)["messages"] == 0  # 计数未被清零
+    # 直读计数(勿用有副作用的 count_message 读):顺延未产生/未清零计数
+    rows = engine.store.query("SELECT count FROM batch_counter WHERE user_id = 'u1' AND stream_id = 's1'")
+    assert not rows or rows[0][0] == 0
 
 
 def test_settle_ok_applies_delta_and_resets(tmp_path):
@@ -2003,7 +2005,8 @@ def test_settle_ok_applies_delta_and_resets(tmp_path):
     assert result["status"] == "ok"
     assert result["delta"] == 2
     assert engine.get_level("u1", "s1")["score"] == 2
-    assert engine.count_message("u1", "s1", now=lambda: NOW)["messages"] == 0
+    rows = engine.store.query("SELECT count FROM batch_counter WHERE user_id = 'u1' AND stream_id = 's1'")
+    assert rows[0][0] == 0  # 结算后计数清零
     assert calls and calls[0][0][0]["role"] == "system"  # 稳定段前置
 
 
@@ -2019,7 +2022,8 @@ def test_settle_llm_failure_keeps_state(tmp_path):
     result = asyncio.run(executor.settle("u1", "s1", history, kind="early"))
     assert result["status"] == "failed"
     assert engine.get_level("u1", "s1") is None
-    assert engine.count_message("u1", "s1", now=lambda: NOW)["messages"] == 20  # 未重置
+    rows = engine.store.query("SELECT count FROM batch_counter WHERE user_id = 'u1' AND stream_id = 's1'")
+    assert rows[0][0] == 20  # 失败未重置
 
 
 def test_favorability_block_render(tmp_path):

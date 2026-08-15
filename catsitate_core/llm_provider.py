@@ -6,7 +6,14 @@
 
 from __future__ import annotations
 
-# 模板:system = 任务指令+输出格式(固定,版本化);稳定上下文由调用方经 stable_ctx 传入
+import hashlib
+import logging
+from pathlib import Path
+
+logger = logging.getLogger(__name__)
+
+# 模板:system = 任务指令+输出格式(内置默认;可被主程序 prompt 管理覆盖);
+# 稳定上下文由调用方经 stable_ctx 传入
 SIDE_TEMPLATES: dict[str, dict] = {
     "favorability": {
         "version": 1,
@@ -39,6 +46,56 @@ SIDE_TEMPLATES: dict[str, dict] = {
 }
 
 
+_PROJECT_ROOT = Path("/MaiMBot")
+_TEMPLATE_LOCALE = "zh-CN"
+_template_cache: dict[str, tuple[float, str]] = {}  # template_id -> (mtime, 文本)
+
+
+def load_side_system(template_id: str) -> tuple[str, str]:
+    """读取旁路模板的 system 段文本(主程序 prompt 管理可覆盖)。
+
+    读取顺序:data/custom_prompts/<locale>/<name>.prompt(WebUI 编辑产物)
+    → prompts/<locale>/<name>.prompt(内置层)→ 插件内置默认。
+    文件缺失回退内置(正常路径);存在但读取异常时显式告警后回退(不静默)。
+
+    Returns:
+        (system_text, version_tag): version_tag 参与缓存键,模板变更即缓存失效。
+    """
+
+    name = f"catsitate_{template_id}"
+    candidates = [
+        _PROJECT_ROOT / "data" / "custom_prompts" / _TEMPLATE_LOCALE / f"{name}.prompt",
+        _PROJECT_ROOT / "prompts" / _TEMPLATE_LOCALE / f"{name}.prompt",
+    ]
+    for path in candidates:
+        try:
+            stat = path.stat()
+        except OSError:
+            continue  # 文件不存在 → 尝试下一层
+        cached = _template_cache.get(template_id)
+        if cached and cached[0] == stat.st_mtime:
+            return cached[1], _version_tag(template_id, cached[1])
+        try:
+            text = path.read_text(encoding="utf-8").strip()
+        except OSError:
+            logger.exception("旁路模板 %s 读取失败,回退内置模板", path)
+            break
+        if not text:
+            logger.warning("旁路模板 %s 为空,回退内置模板", path)
+            break
+        _template_cache[template_id] = (stat.st_mtime, text)
+        return text, _version_tag(template_id, text)
+    builtin = SIDE_TEMPLATES[template_id]["system"]
+    return builtin, _version_tag(template_id, builtin)
+
+
+def _version_tag(template_id: str, system_text: str) -> str:
+    """模板版本标签:内置版本号 + 文本哈希(模板变更即缓存失效,§4.10)。"""
+
+    digest = hashlib.md5(system_text.encode("utf-8")).hexdigest()[:8]
+    return f"{template_id}:v{SIDE_TEMPLATES[template_id]['version']}+{digest}"
+
+
 def build_side_prompt(
     template_id: str, stable_ctx: list[str], variable_tail: list[str]
 ) -> tuple[list[dict], str]:
@@ -53,10 +110,10 @@ def build_side_prompt(
         (messages, cache_key): messages 为 OpenAI 兼容消息列表;cache_key 标识模板版本。
     """
 
-    template = SIDE_TEMPLATES.get(template_id)
-    if template is None:
+    if template_id not in SIDE_TEMPLATES:
         raise ValueError(f"未知旁路模板 id: {template_id}")
-    messages: list[dict] = [{"role": "system", "content": template["system"]}]
+    system_text, cache_key = load_side_system(template_id)
+    messages: list[dict] = [{"role": "system", "content": system_text}]
     messages += [{"role": "user", "content": part} for part in stable_ctx]
     messages += [{"role": "user", "content": part} for part in variable_tail]
-    return messages, f"{template_id}:v{template['version']}"
+    return messages, cache_key

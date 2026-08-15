@@ -62,6 +62,11 @@ class FavorabilitySection(PluginConfigBase):
     note_max_chars: int = _f(40, "关系注记最大字符数(结算落库时强制)", label="关系注记最大字符数")
     material_max_messages: int = _f(30, "结算素材锚定的用户消息条数", label="素材锚定消息条数")
     material_message_max_chars: int = _f(200, "单条素材截断长度", label="单条素材截断长度")
+    bot_user_id: str = _f(
+        "",
+        "bot 自身账号 id(实机确认 napcat 账号,如 3545773341);结算素材中该 id 发言标记为 bot 随附;留空=不启用识别",
+        label="bot 账号 id",
+    )
     llm_model: str = _f(
         "utils",
         "旁路模型:填主程序 model_task_config 的 task 名(默认 utils 轻量任务;可自定义填 planner/memory 等任意已配置 task)",

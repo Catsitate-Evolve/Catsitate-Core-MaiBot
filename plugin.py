@@ -650,6 +650,7 @@ class CatsitatePlugin(MaiBotPlugin):
         """
 
         raw = await self._fetch_recent(stream_id, limit)
+        bot_id = str(self.config.favorability.bot_user_id or "").strip()
         history: list[dict] = []
         for i, m in enumerate(raw):
             if not isinstance(m, dict):
@@ -660,9 +661,13 @@ class CatsitatePlugin(MaiBotPlugin):
                 text = "".join(s.get("data", "") for s in (m.get("raw_message") or []) if isinstance(s, dict) and s.get("type") == "text")
             msg_info = m.get("message_info") or {}
             user_info = msg_info.get("user_info") or {}
+            user_id = str(user_info.get("user_id") or user_info.get("sender_id") or "")
+            # bot 发言识别:实机确认 napcat 账号后启用(user_id 与 bot_user_id 相等);
+            # 留空(未启用)时一律按 user 处理
+            role = "bot" if bot_id and user_id == bot_id else "user"
             history.append({
-                "role": "user",  # bot 账号 id 字段未覆盖,识别待实机联调;当前一律按 user 处理
-                "user_id": str(user_info.get("user_id") or user_info.get("sender_id") or ""),
+                "role": role,
+                "user_id": user_id,
                 "stream_id": stream_id,
                 "text": text,
                 "seq": i,

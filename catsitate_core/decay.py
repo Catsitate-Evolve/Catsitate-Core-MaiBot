@@ -3,12 +3,15 @@
 from __future__ import annotations
 
 import json
+import logging
 import re
 from datetime import datetime
 from typing import Awaitable, Callable
 
 from .favorability import BatchEngine
 from .llm_provider import build_side_prompt
+
+logger = logging.getLogger(__name__)
 
 LlMCall = Callable[[list[dict], str], Awaitable[dict]]
 _ISO = "%Y-%m-%dT%H:%M:%S"
@@ -123,7 +126,8 @@ class DecayExecutor:
             try:
                 result = await self.llm_call(messages, self.config.decay_llm_model)
             except Exception as exc:  # noqa: BLE001
-                continue  # 调用方记录日志(结果不含该流)
+                logger.warning("好感度衰减判定失败(stream=%s): %s", stream_id, exc)
+                continue  # 显式日志后跳过(规格 §3.1 失败不得静默)
             if not isinstance(result, dict) or not result.get("success"):
                 continue
             delta, note = parse_decay_response(str(result.get("response") or ""))
@@ -133,7 +137,8 @@ class DecayExecutor:
             delta = max(-limit, min(0, delta))
             judged_at = now_fn().strftime(_ISO)
             self.engine.apply_delta(
-                user_id, stream_id, delta, note, judged_at=judged_at, judge_id=f"decay-{judged_at}"
+                user_id, stream_id, delta, note, judged_at=judged_at,
+                judge_id=f"decay-{judged_at}-{user_id}-{stream_id}",  # 同秒多用户判重(审查 M-5)
             )
             results.append({"user_id": user_id, "stream_id": stream_id, "delta": delta, "note": note})
         return results

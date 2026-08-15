@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import re
 from datetime import datetime, timedelta
 from typing import Callable
 
@@ -9,6 +10,18 @@ from .config import MemoSection
 from .storage import SQLiteStore
 
 _ISO = "%Y-%m-%dT%H:%M:%S"
+_REMIND_AT_RE = re.compile(r"^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}(:\d{2})?$")
+
+
+def validate_remind_at(remind_at: str) -> str:
+    """提醒时间格式校验(LLM 生成输入,须显式拒绝):非法返回中文错误文本,合法返回空串。"""
+
+    remind_at = str(remind_at or "")
+    if not remind_at:
+        return ""
+    if not _REMIND_AT_RE.fullmatch(remind_at):
+        return f"提醒时间格式非法:应为 ISO 格式如 2026-08-16T19:00(收到:{remind_at})"
+    return ""
 
 
 class MemoService:
@@ -60,6 +73,9 @@ class MemoService:
             return False, "有效期必须大于 0 小时"
         if ttl_hours > self.config.max_ttl_hours:
             return False, f"有效期过长:单条上限 {self.config.max_ttl_hours} 小时"
+        remind_at = str(remind_at or "")
+        if err := validate_remind_at(remind_at):
+            return False, err  # 格式非法拒绝写入,防 due_on 永不匹配导致静默丢提醒(审查 M-10)
         current = now_fn()
         expires = current + timedelta(hours=ttl_hours)
         self.store.execute(

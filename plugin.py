@@ -28,7 +28,7 @@ from catsitate_core.favorability import LEVELS, LEVEL_INDEX, BatchEngine, Settle
 from catsitate_core.image_relook import build_relook_prompt, find_image_segment
 from catsitate_core.inject import InjectAssembler, InjectionBlock
 from catsitate_core.llm_provider import build_side_prompt
-from catsitate_core.memo import MemoService
+from catsitate_core.memo import MemoService, validate_remind_at
 from catsitate_core.msg_react import MsgReactEngine, parse_choice_resp
 from catsitate_core.poke import PokeEngine
 from catsitate_core.reply_guard import (
@@ -151,6 +151,7 @@ class CatsitatePlugin(MaiBotPlugin):
         self._remind_fired: dict[str, str] = {}  # remind:<id> -> 触发时刻
         self._scheduler.register("schedule_tick", 60, self._schedule_tick)
         self._scheduler.register("remind_fallback", 300, self._remind_fallback_tick)
+        self._restore_schedule()  # 重启恢复当日日程与编辑历史(审查 I-4)
         self._scheduler.start()
         # 首次环境数据立即刷新一次,避免环境块空缺到首个定时点(45 分钟)
         self._spawn_background_task(self._refresh_environment())
@@ -207,7 +208,10 @@ class CatsitatePlugin(MaiBotPlugin):
     async def memo_write(self, content: str = "", stream_id: str = "", user_id: str = "", ttl_hours: float | None = None, **kwargs: Any) -> str:
         if not self.config.plugin.enabled or not self.config.memo.tool_enabled:
             return "备忘录工具未启用。"
-        ok, msg = self.memo.write(content, stream_id or str(kwargs.get("stream_id") or ""), user_id or str(kwargs.get("user_id") or ""), ttl_hours, remind_at=str(kwargs.get("remind_at") or ""))
+        remind_at = str(kwargs.get("remind_at") or "")
+        if err := validate_remind_at(remind_at):
+            return err  # 非法提醒时间显式返回给 LLM(审查 M-10)
+        ok, msg = self.memo.write(content, stream_id or str(kwargs.get("stream_id") or ""), user_id or str(kwargs.get("user_id") or ""), ttl_hours, remind_at=remind_at)
         return msg if ok else f"备忘写入失败:{msg}"
 
     @Tool(
@@ -499,6 +503,8 @@ class CatsitatePlugin(MaiBotPlugin):
     async def _enter_sleep(self) -> None:
         """入睡:计算 clamp 醒来时刻,状态落盘,触发生成次日日程(睡眠期间唯一 LLM 调用)。"""
 
+        if self.sleep.is_sleeping():
+            return  # 已睡幂等:晚安判定 await 交错期间不得二次入睡/二次生成(审查 I-3)
         now = datetime.now()
         # 计划醒来时刻 = 日程中睡眠窗口的 end(与当前所处窗口无关)
         sleep_win = next(
@@ -634,8 +640,10 @@ class CatsitatePlugin(MaiBotPlugin):
             win = current_window(self._schedule_data, now_iso)
             if win and win.get("kind") != "sleep":
                 line = f"[日程] {win.get('activity') or '自由时间'}"
-                mark = f"{datetime.now().strftime('%Y-%m-%d')}|{win.get('start')}"
-                if mark in self._schedule_tick_fired:
+                day = datetime.now().strftime("%Y-%m-%d")
+                mark = f"{day}|{win.get('start')}"
+                fired = self._schedule_tick_fired.get(day) == mark
+                if fired:
                     line += "(该窗口已过)"
                 nxt = next_window(self._schedule_data, now_iso)
                 if nxt:
@@ -648,7 +656,7 @@ class CatsitatePlugin(MaiBotPlugin):
                 ]
                 if due_today:
                     line += ";" + ";".join(f"备忘:{e['content']}" for e in due_today[:3])
-                blocks.append(InjectionBlock("schedule", f"sch:{win.get('start')}|{'fired' if mark in self._schedule_tick_fired else ''}", line))
+                blocks.append(InjectionBlock("schedule", f"sch:{win.get('start')}|{'fired' if fired else ''}", line))
         if cfg.inject.memo_enabled and cfg.memo.enabled:
             # 当前流维度 + 当前说话人维度各取 3 条,按 id 去重后合计 ≤ inject_max(规格 §4.4)
             by_stream = self.memo.read(stream_id, "", limit=3)
@@ -898,7 +906,7 @@ class CatsitatePlugin(MaiBotPlugin):
         buffer, self._sleep_review_buffer = self._sleep_review_buffer, []
         if not buffer:
             return
-        report_dir = Path("/MaiMBot/data/plugins/catsitate.core/sleep_review/reports")
+        report_dir = self.ctx.paths.data_dir / "sleep_review" / "reports"
         report_dir.mkdir(parents=True, exist_ok=True)
         by_stream: dict[str, list[dict]] = {}
         for item in buffer:
@@ -945,7 +953,7 @@ class CatsitatePlugin(MaiBotPlugin):
         if err:
             self.ctx.logger.warning("次日日程生成:%s(模板兜底)", err)
         self._schedule_data = data
-        self._schedule_generated = True
+        self._schedule_generated = (not err)  # 模板兜底日不视为生成日程,备忘提醒兜底保持开启(审查 I-2)
         self._schedule_edit_history = []
         self._persist_schedule()
         self.ctx.logger.info("次日日程已生成:%s", json.dumps(data, ensure_ascii=False)[:200])
@@ -1086,7 +1094,6 @@ class CatsitatePlugin(MaiBotPlugin):
             key = f"remind:{entry['id']}"
             if key in self._remind_fired:
                 continue
-            self._remind_fired[key] = now
             try:
                 await self.ctx.maisaka.context.append(
                     stream_id=entry["stream_id"],
@@ -1094,6 +1101,8 @@ class CatsitatePlugin(MaiBotPlugin):
                 )
             except Exception:
                 self.ctx.logger.exception("备忘提醒注入失败(stream=%s)", entry["stream_id"])
+                continue  # 失败不标记:留重试机会(审查 M-9)
+            self._remind_fired[key] = now
 
     # ---------- 日程辅助 ----------
 
@@ -1136,7 +1145,7 @@ class CatsitatePlugin(MaiBotPlugin):
     def _today_review_text(self) -> str:
         """今日回顾:睡醒回顾报告最新一篇的摘要(文件读取);无则 '无'。"""
 
-        report_dir = Path("/MaiMBot/data/plugins/catsitate.core/sleep_review/reports")
+        report_dir = self.ctx.paths.data_dir / "sleep_review" / "reports"
         try:
             files = sorted(report_dir.glob("sleep_review_*.md"))
         except OSError:
@@ -1161,6 +1170,40 @@ class CatsitatePlugin(MaiBotPlugin):
             }, ensure_ascii=False, indent=2), encoding="utf-8")
         except OSError:
             self.ctx.logger.exception("日程落盘失败")
+
+    def _restore_schedule(self) -> None:
+        """重启恢复:仅当 schedule.json 的 date == 今天时恢复日程/编辑历史/生成标记(审查 I-4)。
+
+        过期文件删除并告警;损坏/结构非法文件告警并忽略(错误显式暴露,不静默)。
+        """
+
+        path = self.ctx.paths.data_dir / "schedule.json"
+        try:
+            raw = path.read_text(encoding="utf-8")
+        except FileNotFoundError:
+            return
+        except OSError:
+            self.ctx.logger.warning("schedule.json 读取失败,忽略恢复")
+            return
+        try:
+            data = json.loads(raw)
+        except (json.JSONDecodeError, TypeError):
+            self.ctx.logger.warning("schedule.json 损坏,忽略恢复(新日程将在入睡时重新生成)")
+            return
+        if not isinstance(data, dict) or not isinstance(data.get("data"), dict):
+            self.ctx.logger.warning("schedule.json 结构非法,忽略恢复")
+            return
+        if data["data"].get("date") != datetime.now().strftime("%Y-%m-%d"):
+            self.ctx.logger.warning("schedule.json 为过期日程(%s),删除并忽略恢复", data["data"].get("date"))
+            try:
+                path.unlink()
+            except OSError:
+                self.ctx.logger.exception("过期 schedule.json 删除失败")
+            return
+        self._schedule_data = data["data"]
+        self._schedule_edit_history = data["edit_history"] if isinstance(data.get("edit_history"), list) else []
+        self._schedule_generated = bool(data.get("generated"))
+        self.ctx.logger.info("已从 schedule.json 恢复当日日程(%s)", data["data"].get("date"))
 
     def _prune_day_keys(self, day: str) -> None:
         """日键清理:只保留当天的状态条目(缓存纪律,防跨天无限增长)。"""

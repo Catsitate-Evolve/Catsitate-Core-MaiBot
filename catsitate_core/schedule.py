@@ -65,12 +65,21 @@ def validate_schedule(data: dict, *, min_sleep: int, max_sleep: int) -> tuple[di
 
 
 def fix_schedule(data: dict, *, min_sleep: int, max_sleep: int) -> dict:
-    """确定性钳制修复(校验失败兜底):多余窗口裁到上限、重叠顺延、睡眠时长钳边界。"""
+    """确定性钳制修复(校验失败兜底):恰好 1 睡眠窗口、活动裁到上限、重叠顺延、睡眠时长钳边界。
+
+    0 个睡眠窗口 → 插入默认作息模板的睡眠段(按输入 date 补全时间);
+    2+ 个睡眠窗口 → 只保留第一个,丢弃其余。
+    """
 
     windows = [w for w in (data.get("windows") or []) if isinstance(w, dict)]
     sleep = [w for w in windows if w.get("kind") == "sleep"]
     acts = [w for w in windows if w.get("kind") != "sleep"]
-    keep = sleep[:1] + acts[:8] + sleep[1:]  # 恰好 1 睡眠 + 活动裁到 8
+    if not sleep:
+        template = _materialize_template(DEFAULT_TEMPLATE_SCHEDULE, data.get("date") or datetime.now().strftime("%Y-%m-%d"))
+        default_sleep = next((w for w in template["windows"] if w.get("kind") == "sleep"), None)
+        if default_sleep is not None:
+            sleep = [default_sleep]
+    keep = sleep[:1] + acts[:8]  # 恰好 1 睡眠 + 活动裁到 8
     # 睡眠时长钳制
     if sleep:
         s, e = _parse_t(sleep[0])
@@ -210,10 +219,16 @@ class ScheduleGenerator:
             if checked is not None:
                 return checked, ""
             last_err = verr
-        # 重生成耗尽 → 确定性钳制修复
+        # 重生成耗尽 → 确定性钳制修复;修复后仍无效 → 默认模板 + 显式错误(规格兜底链)
         try:
-            return fix_schedule(data if data is not None else _materialize_template(DEFAULT_TEMPLATE_SCHEDULE, target_date),
-                                min_sleep=self.sleep_cfg.min_sleep_minutes, max_sleep=self.sleep_cfg.max_sleep_minutes), ""
+            fixed = fix_schedule(
+                data if data is not None else _materialize_template(DEFAULT_TEMPLATE_SCHEDULE, target_date),
+                min_sleep=self.sleep_cfg.min_sleep_minutes, max_sleep=self.sleep_cfg.max_sleep_minutes,
+            )
+            checked, verr = validate_schedule(fixed, min_sleep=self.sleep_cfg.min_sleep_minutes, max_sleep=self.sleep_cfg.max_sleep_minutes)
+            if checked is not None:
+                return checked, ""
+            return _materialize_template(DEFAULT_TEMPLATE_SCHEDULE, target_date), f"日程钳制修复后仍无效: {last_err or verr}"
         except Exception as exc:  # noqa: BLE001
             return _materialize_template(DEFAULT_TEMPLATE_SCHEDULE, target_date), f"日程钳制修复异常: {exc}"
 

@@ -8,9 +8,9 @@ TXT = {"type": "text", "text": "看图"}
 
 def make_messages():
     return [
-        {"message_id": "m1", "segments": [IMG, TXT]},
-        {"message_id": "m2", "segments": [TXT]},
-        {"message_id": "m3", "segments": [IMG]},
+        {"message_id": "m1", "raw_message": [IMG, TXT]},
+        {"message_id": "m2", "raw_message": [TXT]},
+        {"message_id": "m3", "raw_message": [IMG]},
     ]
 
 
@@ -32,7 +32,7 @@ def test_find_missing_reports_error():
 
 
 def test_find_no_image_messages():
-    seg, err = find_image_segment([{"message_id": "m2", "segments": [TXT]}], None, 1)
+    seg, err = find_image_segment([{"message_id": "m2", "raw_message": [TXT]}], None, 1)
     assert seg is None and err
 
 

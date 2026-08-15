@@ -3,15 +3,6 @@
 from maibot_sdk import Field, PluginConfigBase
 
 
-class LLMSection(PluginConfigBase):
-    """LLM 能力统一配置节。"""
-
-    __ui_label__ = "LLM"
-
-    enabled: bool = Field(default=True, description="是否启用该 LLM 能力")
-    model: str = Field(default="", description="模型:留空=主程序默认模型;可填主程序 task 名或 catsitate_custom")
-
-
 class PluginSection(PluginConfigBase):
     __ui_label__ = "插件"
     __ui_order__ = 0
@@ -64,7 +55,7 @@ class FavorabilitySection(PluginConfigBase):
     note_max_chars: int = Field(default=40, description="关系注记最大字符数(结算落库时强制)")
     material_max_messages: int = Field(default=30, description="结算素材锚定的用户消息条数")
     material_message_max_chars: int = Field(default=200, description="单条素材截断长度")
-    llm: LLMSection = Field(default_factory=LLMSection)
+    llm_model: str = Field(default="", description="旁路模型:留空=主程序默认(首个可用 task);可填 task 名(如 planner/memory)或 catsitate_custom")
 
 
 class MemoSection(PluginConfigBase):
@@ -87,7 +78,7 @@ class MsgReactSection(PluginConfigBase):
     enabled: bool = Field(default=True, description="贴表情工具开关")
     emoji_whitelist: list[str] = Field(default_factory=list, description="表情包白名单(emoji_id)")
     per_stream_cooldown_seconds: int = Field(default=30, description="每流冷却秒数")
-    llm: LLMSection = Field(default_factory=LLMSection)
+    llm_model: str = Field(default="", description="旁路模型:留空=主程序默认(首个可用 task);可填 task 名(如 planner/memory)或 catsitate_custom")
 
 
 class PokeSection(PluginConfigBase):
@@ -113,7 +104,7 @@ class ReplyGuardSection(PluginConfigBase):
         description="视为上下文工具的工具名列表",
     )
     sentinel_enabled: bool = Field(default=False, description="LLM 哨兵层开关(默认关)")
-    sentinel_llm: LLMSection = Field(default_factory=LLMSection)
+    sentinel_model: str = Field(default="", description="哨兵旁路模型:留空=主程序默认;可填 task 名或 catsitate_custom")
 
 
 class ImageRelookSection(PluginConfigBase):
@@ -121,7 +112,7 @@ class ImageRelookSection(PluginConfigBase):
     __ui_order__ = 8
 
     enabled: bool = Field(default=True, description="图片重看工具开关")
-    llm: LLMSection = Field(default_factory=LLMSection)
+    llm_model: str = Field(default="", description="旁路模型:留空=主程序默认(首个可用 task);可填 task 名(如 planner/memory)或 catsitate_custom")
 
 
 class CatsitateConfig(PluginConfigBase):

@@ -67,7 +67,7 @@ class CatsitatePlugin(MaiBotPlugin):
         self.fav_engine = BatchEngine(self.store, self.config.favorability)
         self.fav_executor = SettleExecutor(
             self.fav_engine,
-            lambda messages, model="": self._side_llm_call(messages, self.config.favorability.llm.model, "favorability"),
+            lambda messages, model="": self._side_llm_call(messages, self.config.favorability.llm_model, "favorability"),
         )
         self.assembler = InjectAssembler()
         for service in (self.memo, self.fav_engine):
@@ -230,7 +230,7 @@ class CatsitatePlugin(MaiBotPlugin):
             return reason
         target_text = await self._fetch_message_text(stream_id, message_id)
         messages, _ = self.react.build_choose_prompt(whitelist, target_text or f"消息 {message_id}", intent)
-        result = await self._side_llm_call(messages, self.config.msg_react.llm.model, "msg_react")
+        result = await self._side_llm_call(messages, self.config.msg_react.llm_model, "msg_react")
         if not result.get("success"):
             return f"选表情 LLM 调用失败:{result.get('response', '')[:200]}"
         emoji, err = parse_choice_resp(str(result.get("response") or ""), whitelist)
@@ -295,7 +295,7 @@ class CatsitatePlugin(MaiBotPlugin):
             return msg
         seg = {**seg, "data": db_result["data"]}
         messages, _ = build_relook_prompt(question, seg)
-        result = await self._side_llm_call(messages, self.config.image_relook.llm.model, "image_relook")
+        result = await self._side_llm_call(messages, self.config.image_relook.llm_model, "image_relook")
         if not result.get("success"):
             return f"图片重看 LLM 调用失败:{result.get('response', '')[:200]}"
         return str(result.get("response") or "")
@@ -422,7 +422,7 @@ class CatsitatePlugin(MaiBotPlugin):
         persona = self._persona_background()
         chat_context = await self._recent_context_text(str(kwargs.get("stream_id") or ""), limit=10)
         messages, _ = build_sentinel_prompt(persona, reply_text, chat_context)
-        result = await self._side_llm_call(messages, cfg.sentinel_llm.model, "sentinel")
+        result = await self._side_llm_call(messages, cfg.sentinel_model, "sentinel")
         if not result.get("success"):
             self.ctx.logger.warning("哨兵层 LLM 调用失败,放行回复:%s", result.get("response", "")[:200])
             return {"action": "continue", "modified_kwargs": kwargs}

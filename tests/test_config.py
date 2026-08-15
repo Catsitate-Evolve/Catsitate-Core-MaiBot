@@ -17,7 +17,7 @@ def test_config_defaults():
     assert cfg.favorability.note_max_chars == 40
     assert cfg.favorability.material_max_messages == 30
     assert cfg.favorability.material_message_max_chars == 200
-    assert cfg.favorability.llm.model == ""
+    assert cfg.favorability.llm_model == ""
     assert cfg.memo.default_ttl_hours == 24
     assert cfg.memo.max_ttl_hours == 168
     assert cfg.memo.entry_max_chars == 80

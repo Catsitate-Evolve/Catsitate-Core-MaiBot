@@ -18,8 +18,8 @@
 - **摒弃单纯概率行为**:随机数只允许出现在工程护栏(冷却/限频/防刷);一切行为决策交给 LLM 或状态。
 - 插件不能创建主程序数据库新表;插件自己的数据存独立 sqlite(路径 `ctx.paths.data_dir`),轻量限频状态用 JSON 快照。
 - 错误原则:失败必须有日志痕迹,不静默兜底;`on_load` 配置校验失败报错拒绝加载。
-- SDK 已核实签名(2.8.0):`@Tool(name, description=, brief_description=, detailed_description=, parameters=[ToolParameterInfo(...)], visibility="visible", ...)`(visibility 走 metadata);`@Command(name, description=, pattern=, aliases=)`;`@HookHandler(hook, *, name=, mode=HookMode.BLOCKING/OBSERVE, order=HookOrder.EARLY/NORMAL/LATE, error_policy=ErrorPolicy.SKIP)`;BLOCKING hook 返回 `{"action": "continue"|"abort", "modified_kwargs": {...}}`(modified_kwargs 整体替换后续 kwargs,观察型返回被忽略);`@LLMProvider(client_type, *, name=, description=, version=)`;`@API(name, description=, version="1", public=False)`;`@EventHandler(name, description=, event_type=EventType.ON_MESSAGE, intercept_message=False, weight=0)`。
-- ctx 能力代理(2.8.0):`ctx.send.text(text, stream_id)`、`ctx.llm.generate(prompt: str|list[dict], model="", temperature=None, max_tokens=None) -> {"success","response","reasoning","model"}`、`ctx.api.call(api_name, *, version="", **kwargs)`、`ctx.chat.get_stream_by_user_id/get_stream_by_group_id/get_private_streams/get_group_streams`、`ctx.database.query/get/save/delete/count`(仅主程序既有表)、`ctx.maisaka.context.append(stream_id, content)`(看签名后核对)、`ctx.message.get_recent(chat_id, limit)`。**注意:`message.get_recent` 无 `include_binary_data` 参数——图片重看需 `ctx.call_capability("message.get_recent", chat_id=..., limit=..., include_binary_data=True)` 直接透传(Task 2 在真实环境核查)。**
+- SDK 已核实签名(2.8.0):`@Tool(name, description=, brief_description=, detailed_description=, parameters=[ToolParameterInfo(...)], visibility="visible", ...)`(visibility 走 metadata);`@Command(name, description=, pattern=, aliases=)`;`@HookHandler(hook, *, name=, mode=HookMode.BLOCKING/OBSERVE, order=HookOrder.EARLY/NORMAL/LATE, error_policy=ErrorPolicy.SKIP)`;BLOCKING hook 返回 `{"action": "continue"|"abort", "modified_kwargs": {...}}`(modified_kwargs 整体替换后续 kwargs,观察型返回被忽略);`@LLMProvider(client_type, *, name=, description=, version=)`;`@API(name, description=, version="1", public=False)`;`@EventHandler(name, description=, event_type=EventType.ON_MESSAGE, intercept_message=False, weight=0)`。**注意(SDK 2.8.0 已本地验证):`HookMode`/`HookOrder`/`ToolParameterInfo`/`ToolParamType`/`ErrorPolicy` 不在 maibot_sdk 顶层导出,须 `from maibot_sdk.types import ...` 导入。**
+- ctx 能力代理(2.8.0):`ctx.send.text(text, stream_id)`、`ctx.llm.generate(prompt: str|list[dict], model="", temperature=None, max_tokens=None) -> {"success","response","reasoning","model"}`、`ctx.api.call(api_name, *, version="", **kwargs)`、`ctx.chat.get_stream_by_user_id/get_stream_by_group_id/get_private_streams/get_group_streams`、`ctx.database.query/get/save/delete/count`(仅主程序既有表)、`ctx.maisaka.context.append(stream_id, segments: list[dict], *, visible_text="")`(已本地验证签名;文本消息传 `segments=[{"type": "text", "text": ...}]`)、`ctx.message.get_recent(chat_id, limit)`。**注意:`message.get_recent` 无 `include_binary_data` 参数——图片重看需 `ctx.call_capability("message.get_recent", chat_id=..., limit=..., include_binary_data=True)` 直接透传(Task 2 在真实环境核查)。**
 - 插件 data 目录:`ctx.paths.data_dir`(Host 解析为 `<data>/plugins/catsitate.core`)。
 - manifest `dependencies` 支持 `{"type": "python_package", "name": "holiday-calendar", "version_spec": ">=1.0.0"}`;另声明 `{"type": "python_package", "name": "lunar-python", "version_spec": ">=1.4.0"}`(农历节日/节气实时计算,规格 §4.2)。本地测试环境需 `python3 -m pip install --break-system-packages lunar-python`(本机已验证 1.4.8:2026 七夕=08-19、夏至=06-21、秋分=09-23、冬至=12-22、除夕=02-16、春节=02-17)。
 - 注入块顺序固定 `[等级规则块][环境块][备忘块][好感度块]`,前插 system 之后、历史之前;旁路 LLM prompt 一律稳定段在前、变量素材在后。
@@ -418,7 +418,8 @@ git commit -m "feat: 插件骨架与配置模型(空壳可加载,manifest 声明
 import json
 import logging
 
-from maibot_sdk import HookHandler, HookMode, HookOrder, MaiBotPlugin, Tool, ToolParameterInfo, ToolParamType
+from maibot_sdk import HookHandler, MaiBotPlugin, Tool
+from maibot_sdk.types import HookMode, HookOrder, ToolParameterInfo, ToolParamType
 
 logger = logging.getLogger("catsitate.spike")
 
@@ -467,7 +468,7 @@ class SpikePlugin(MaiBotPlugin):
                 "message.get_recent", chat_id=stream_id, limit=5, include_binary_data=True
             )
             logger.info("[spike] get_recent(include_binary_data) 结果: %s", json.dumps(result, ensure_ascii=False, default=str)[:800])
-            append_result = await self.ctx.maisaka.context.append(stream_id, "[spike] 注入上下文探针")
+            append_result = await self.ctx.maisaka.context.append(stream_id, [{"type": "text", "text": "[spike] 注入上下文探针"}])
             logger.info("[spike] maisaka.context.append 结果: %s", append_result)
             return {"name": "spike_probe", "content": "spike 探针执行完毕,请查看日志"}
         except Exception as exc:  # noqa: BLE001
@@ -3089,17 +3090,8 @@ import json
 import logging
 
 import httpx
-from maibot_sdk import (
-    Command,
-    HookHandler,
-    HookMode,
-    HookOrder,
-    LLMProvider,
-    LLMProviderBase,
-    MaiBotPlugin,
-    Tool,
-    ToolParameterInfo,
-)
+from maibot_sdk import Command, HookHandler, LLMProvider, MaiBotPlugin, Tool
+from maibot_sdk.types import HookMode, HookOrder, ToolParameterInfo
 
 from catsitate_core.config import CatsitateConfig
 from catsitate_core.favorability import BatchEngine, SettleExecutor, build_favorability_block
@@ -3421,7 +3413,9 @@ class CatsitatePlugin(MaiBotPlugin):
         if self.config.poke.inject_to_context:
             stream_id = str(kwargs.get("stream_id") or "")
             try:
-                await self.ctx.maisaka.context.append(stream_id=stream_id, text=text)
+                await self.ctx.maisaka.context.append(
+                    stream_id=stream_id, segments=[{"type": "text", "text": text}]
+                )
             except Exception:
                 logger.exception("戳一戳上下文注入失败(stream=%s)", stream_id)
         # enhance_notice_text 能否改写消息文本以 spike ③ 结论为准;不能则仅日志(开关关闭则不做任何增强)

@@ -3,7 +3,8 @@
 import json
 import logging
 
-from maibot_sdk import HookHandler, HookMode, HookOrder, MaiBotPlugin, Tool, ToolParameterInfo, ToolParamType
+from maibot_sdk import HookHandler, MaiBotPlugin, Tool
+from maibot_sdk.types import HookMode, HookOrder, ToolParameterInfo, ToolParamType
 
 logger = logging.getLogger("catsitate.spike")
 
@@ -52,7 +53,7 @@ class SpikePlugin(MaiBotPlugin):
                 "message.get_recent", chat_id=stream_id, limit=5, include_binary_data=True
             )
             logger.info("[spike] get_recent(include_binary_data) 结果: %s", json.dumps(result, ensure_ascii=False, default=str)[:800])
-            append_result = await self.ctx.maisaka.context.append(stream_id, "[spike] 注入上下文探针")
+            append_result = await self.ctx.maisaka.context.append(stream_id, [{"type": "text", "text": "[spike] 注入上下文探针"}])
             logger.info("[spike] maisaka.context.append 结果: %s", append_result)
             return {"name": "spike_probe", "content": "spike 探针执行完毕,请查看日志"}
         except Exception as exc:  # noqa: BLE001

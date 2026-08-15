@@ -36,3 +36,25 @@ def test_default_config_dump():
     assert data["plugin"]["config_version"] == "1.0.0"
     assert data["favorability"]["level_rule_familiar"] == "认识一段时间,可自然闲聊"
     assert len(data["favorability"]) >= 5
+
+
+def test_phase2_sections_defaults():
+    cfg = CatsitateConfig()
+    assert cfg.sleep.enabled is True
+    assert cfg.sleep.min_sleep_minutes == 240
+    assert cfg.sleep.max_sleep_minutes == 660
+    assert cfg.sleep.silent_sleep_enabled is False
+    assert cfg.sleep.silent_sleep_minutes == 60
+    assert cfg.sleep.review_enabled is True
+    assert cfg.schedule.enabled is True
+    assert cfg.schedule.max_regenerate == 1
+    assert cfg.schedule.speak_threshold_level == "熟悉"
+    assert cfg.schedule.greet_threshold_level == "亲近"
+    assert cfg.schedule.private_threshold_level == "挚友"
+    assert cfg.schedule.speak_llm_model == "memory"
+    assert cfg.schedule.daily_speak_limit == 5
+    assert cfg.favorability.decay_enabled is True
+    assert cfg.favorability.decay_after_days == 7
+    assert cfg.favorability.decay_max == 3
+    assert cfg.favorability.decay_llm_model == "memory"
+    assert cfg.favorability.decay_llm_timeout_ms is None

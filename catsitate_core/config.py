@@ -76,6 +76,11 @@ class FavorabilitySection(PluginConfigBase):
     daily_max_early_settle: int = _f(3, "每用户每日提前结算上限", label="每日提前结算上限")
     daily_settle_min: int = _f(3, "日终结算最小消息数(不足顺延)", label="日终结算最小消息数")
     delta_max: int = _f(5, "单次结算好感度变化上限(±,判定结果钳制在此范围内)", label="单次变化上限")
+    decay_enabled: bool = _f(True, "好感度自然衰减开关", label="自然衰减开关")
+    decay_after_days: int = _f(7, "未互动 N 天后开始衰减", label="衰减触发天数")
+    decay_max: int = _f(3, "单次衰减幅度上限(-decay_max 到 0)", label="单次衰减上限")
+    decay_llm_model: str = _f("memory", "衰减判定模型:填主程序 task 名", label="衰减模型(task 名)")
+    decay_llm_timeout_ms: int | None = _f(None, "衰减判定 LLM 超时(毫秒);留空=主程序默认", label="衰减调用超时(毫秒)")
     level_rule_stranger: str = _f("仅按普通网友对待,保持礼貌与距离", "陌生级行为准则", label="陌生级规则")
     level_rule_familiar: str = _f("认识一段时间,可自然闲聊", "熟悉级行为准则", label="熟悉级规则")
     level_rule_close: str = _f("关系较好,可主动关心", "亲近级行为准则", label="亲近级规则")
@@ -181,6 +186,36 @@ class ImageRelookSection(PluginConfigBase):
     )
 
 
+class SleepSection(PluginConfigBase):
+    __ui_label__ = "睡眠"
+    __ui_order__ = 9
+
+    enabled: bool = _f(True, "睡眠模块开关", label="睡眠模块开关")
+    min_sleep_minutes: int = _f(240, "最短睡眠分钟(不足顺延醒来)", label="最短睡眠分钟")
+    max_sleep_minutes: int = _f(660, "最长睡眠分钟(超过提前醒)", label="最长睡眠分钟")
+    silent_sleep_enabled: bool = _f(False, "静默入睡开关(仅睡前语境活动期间生效)", label="静默入睡开关")
+    silent_sleep_minutes: int = _f(60, "静默入睡:无消息满 N 分钟", label="静默入睡分钟")
+    review_enabled: bool = _f(True, "睡醒回顾开关(醒来生成聚合报告文件)", label="睡醒回顾开关")
+    review_llm_model: str = _f("memory", "回顾总结模型:填主程序 task 名", label="回顾模型(task 名)")
+    review_llm_timeout_ms: int | None = _f(None, "回顾 LLM 调用超时(毫秒);留空=主程序默认", label="回顾调用超时(毫秒)")
+
+
+class ScheduleSection(PluginConfigBase):
+    __ui_label__ = "日程"
+    __ui_order__ = 10
+
+    enabled: bool = _f(True, "日程模块开关", label="日程模块开关")
+    max_regenerate: int = _f(1, "生成校验失败重生成次数", label="重生成次数")
+    speak_threshold_level: str = _f("熟悉", "日常发言最低好感度等级(陌生/熟悉/亲近/挚友/特别)", label="日常发言等级门槛")
+    greet_threshold_level: str = _f("亲近", "早晚安问候最低好感度等级", label="早晚安等级门槛")
+    private_threshold_level: str = _f("挚友", "主动私聊最低好感度等级", label="主动私聊等级门槛")
+    speak_llm_model: str = _f("memory", "执行发言判定模型:填主程序 task 名", label="发言判定模型(task 名)")
+    speak_llm_timeout_ms: int | None = _f(None, "发言判定 LLM 超时(毫秒);留空=主程序默认", label="发言判定超时(毫秒)")
+    schedule_llm_model: str = _f("memory", "日程生成模型:填主程序 task 名", label="日程生成模型(task 名)")
+    schedule_llm_timeout_ms: int | None = _f(None, "日程生成 LLM 超时(毫秒);留空=主程序默认", label="日程生成超时(毫秒)")
+    daily_speak_limit: int = _f(5, "全天主动发言次数上限(每次发言计 1)", label="每日发言上限")
+
+
 class CatsitateConfig(PluginConfigBase):
     """Catsitate 插件顶层配置。"""
 
@@ -193,3 +228,5 @@ class CatsitateConfig(PluginConfigBase):
     poke: PokeSection = Field(default_factory=PokeSection)
     reply_guard: ReplyGuardSection = Field(default_factory=ReplyGuardSection)
     image_relook: ImageRelookSection = Field(default_factory=ImageRelookSection)
+    sleep: SleepSection = Field(default_factory=SleepSection)
+    schedule: ScheduleSection = Field(default_factory=ScheduleSection)

@@ -111,6 +111,10 @@ class CatsitatePlugin(MaiBotPlugin):
         self._scheduler.start()
         # 首次环境数据立即刷新一次,避免环境块空缺到首个定时点(45 分钟)
         self._spawn_background_task(self._refresh_environment())
+        try:
+            from lunar_python import Solar as _solar_probe  # noqa: F401
+        except ImportError:
+            self.ctx.logger.warning("lunar-python 未安装:农历节日/节气不可用(公历回退链不受影响)")
         self.ctx.logger.info("catsitate_core 已加载:注入/备忘录/好感度/贴表情/戳一戳/reply补传/图片重看")
 
     async def on_unload(self) -> None:
@@ -128,6 +132,11 @@ class CatsitatePlugin(MaiBotPlugin):
             self._env_cache.clear()
             self._env_fetched_at = None
             self._snapshot_cache.clear()
+            # 调度周期随配置热重载(审查 Minor#5):weather/daily_settle 间隔取新值重注册
+            self._scheduler.unregister("weather")
+            self._scheduler.register("weather", max(self.config.time_aware.weather_refresh_minutes, 1) * 60, self._refresh_environment)
+            self._scheduler.unregister("daily_settle")
+            self._scheduler.register("daily_settle", max(self.config.favorability.window_hours, 1) * 3600, self._daily_settle)
             self.ctx.logger.info("catsitate_core 配置已刷新,派生缓存已重置")
         elif scope == "bot":
             # personality 变化影响等级规则块注入与哨兵人设(下次渲染自动生效)
@@ -336,6 +345,9 @@ class CatsitatePlugin(MaiBotPlugin):
             return
         msg = kwargs.get("message")
         if not isinstance(msg, dict):
+            return
+        # 通知类消息(戳一戳等)不参与好感度计数(审查 Minor#7)
+        if msg.get("is_notify"):
             return
         # spike ③ 实测:user/stream 在 message 内(user_info 与 session_id;user_id 字段名以实机联调为准)
         msg_info = msg.get("message_info") or {}
@@ -753,6 +765,7 @@ class CatsitatePlugin(MaiBotPlugin):
         try:
             return datetime.fromtimestamp(float(raw_ts)).strftime("%Y-%m-%dT%H:%M:%S")
         except (ValueError, TypeError, OSError):
+            self.ctx.logger.warning("消息时间戳归一化失败,该消息将被窗口过滤排除: %r", raw_ts)
             return str(raw_ts)
 
     async def _fetch_message_text(self, stream_id: str, message_id: str) -> str:
@@ -828,6 +841,8 @@ class CatsitatePlugin(MaiBotPlugin):
             self.ctx.logger.exception("读取 bot 人设失败,兜底默认人设")
             value = ""
         self._persona_cache = str(value or "").strip() or "猫耳少女"
+        if self._persona_cache == "猫耳少女" and not str(value or "").strip():
+            self.ctx.logger.warning("bot 人设配置为空,哨兵/结算回退默认人设「猫耳少女」")
         return self._persona_cache
 
     async def _recent_context_text(self, stream_id: str, limit: int) -> str:

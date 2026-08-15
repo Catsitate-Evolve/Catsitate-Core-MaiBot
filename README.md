@@ -6,7 +6,7 @@ Catsitate 的 MaiBot 核心人格行为插件。仓库地址:https://github.com/
 
 1. 把本目录放进 MaiBot 的 `plugins/` 并重启;WebUI「插件」页确认 `catsitate.core` 已加载
 2. 在插件配置页打开 `plugin.enabled = true`(总开关,默认关),按需调整各模块节
-3. 表情白名单:`msg_react.emoji_whitelist` 填入 napcat 表情 id(留空则贴表情工具拒绝执行)
+3. 贴表情:内置 30 项精选 QQ 表情表(`catsitate_core/qq_emoji.py` 的 AVAILABLE_REACT_EMOJIS,联调决定替代可配置白名单),仅群聊可用
 
 ## 主程序配置(模型 task 分配)
 

@@ -5,7 +5,10 @@ from __future__ import annotations
 import re
 from datetime import date, timedelta
 
-from lunar_python import Solar
+try:
+    from lunar_python import Solar
+except ImportError:  # 依赖未安装:农历节日/节气缺失(环境块跳过该片段),显式告警不阻断(审查 Minor#6)
+    Solar = None
 
 # Open-Meteo WMO 天气码 → 中文(常见码)
 WEATHER_CODE_MAP: dict[int, str] = {
@@ -33,7 +36,10 @@ FESTIVAL_TABLE: dict[str, str] = {
 
 
 def solar_terms_near(now: date, days: int = 3) -> list[str]:
-    """当天+临近 days 天的节气名列表(lunar-python 实算,按日期升序)。"""
+    """当天+临近 days 天的节气名列表(lunar-python 实算,按日期升序);依赖缺失返回空。"""
+
+    if Solar is None:
+        return []
 
     out: list[str] = []
     for offset in range(days + 1):
@@ -45,7 +51,10 @@ def solar_terms_near(now: date, days: int = 3) -> list[str]:
 
 
 def lunar_festivals_near(now: date, days: int = 3) -> list[str]:
-    """当天+临近 days 天的农历节日名列表(lunar-python 实算,按日期升序)。"""
+    """当天+临近 days 天的农历节日名列表(lunar-python 实算,按日期升序);依赖缺失返回空。"""
+
+    if Solar is None:
+        return []
 
     out: list[str] = []
     for offset in range(days + 1):

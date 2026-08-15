@@ -337,7 +337,12 @@ class SettleExecutor:
         """执行一次结算。kind: "early" 或 "daily";persona 为 bot 人设背景(结合角色性格判定关系变化)。"""
 
         material = self.engine.build_material(user_id, stream_id, history)
-        if kind == "daily" and len([m for m in material if "(用户)" in m]) < self.engine.config.daily_settle_min:
+        # 素材为空(取不到消息/窗口过滤后无目标用户消息):不调 LLM,不落库(审查 M2)
+        if not material:
+            return {"status": "failed", "error": "素材为空,跳过结算"}
+        # 顺延口径 = 素材中目标用户本人的消息条数(审查 Minor#8,群聊邻居不计入)
+        target_count = sum(1 for m in material if f"[{user_id}]" in m)
+        if kind == "daily" and target_count < self.engine.config.daily_settle_min:
             return {"status": "carried_over", "reason": f"用户消息不足 {self.engine.config.daily_settle_min} 条,顺延"}
         # 稳定段 = 判定指令(system 模板)+ 5 级规则(配置,stable_ctx);变量尾 = 批次素材
         level_rules = self.engine.config.level_rules_list()

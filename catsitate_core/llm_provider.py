@@ -18,8 +18,8 @@ SIDE_TEMPLATES: dict[str, dict] = {
     "favorability": {
         "version": 1,
         "system": (
-            "你是一个关系评估助手。根据对话素材评估「用户与 bot」的关系变化。\n"
-            '严格输出 JSON,格式:{"delta": 整数(-5 到 5 之间), "note": "一句话关系注记(不超过40字)"}。'
+            "你是一个关系评估助手。结合「bot 人设」背景,根据对话素材评估「用户与 bot」的关系变化。\n"
+            '严格输出 JSON,格式:{"delta": 整数(-{{delta_max}} 到 {{delta_max}} 之间), "note": "一句话关系注记(不超过40字)"}。'
             "delta 为正表示关系变好,为负表示变差,0 表示无明显变化。不要输出其它内容。"
         ),
     },
@@ -49,6 +49,7 @@ SIDE_TEMPLATES: dict[str, dict] = {
 _PROJECT_ROOT = Path("/MaiMBot")
 _TEMPLATE_LOCALE = "zh-CN"
 _template_cache: dict[str, tuple[float, str]] = {}  # template_id -> (mtime, 文本)
+_missing_warned: dict[str, bool] = {}  # 模板缺失告警去重(每模板每进程一次)
 
 
 def load_side_system(template_id: str) -> tuple[str, str]:
@@ -71,7 +72,11 @@ def load_side_system(template_id: str) -> tuple[str, str]:
         try:
             stat = path.stat()
         except OSError:
-            continue  # 文件不存在 → 尝试下一层
+            # 文件不存在 → 尝试下一层;全部缺失时告警一次(审查 M3,禁止静默回退)
+            if path == candidates[-1] and not _missing_warned.get(template_id):
+                _missing_warned[template_id] = True
+                logger.warning("旁路模板 %s 未部署(已尝试 %s),使用内置默认模板;部署后自动恢复", name, candidates)
+            continue
         cached = _template_cache.get(template_id)
         if cached and cached[0] == stat.st_mtime:
             return cached[1], _version_tag(template_id, cached[1])

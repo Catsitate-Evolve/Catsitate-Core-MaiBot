@@ -7,7 +7,7 @@ from catsitate_core.msg_react import MsgReactEngine, parse_choice_resp
 from catsitate_core.storage import JsonSnapshot
 
 NOW = datetime(2026, 8, 14, 12, 0, 0)
-VALID_IDS = ["0", "1", "2"]  # 内置 QQ 表情表(0 惊讶 / 1 撇嘴 / 2 色)
+VALID_IDS = ["5", "13", "233"]  # 精选表情表内的 id(5 大哭 / 13 呲牙 / 233 笑哭)
 
 
 def make_engine(tmp_path):

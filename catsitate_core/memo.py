@@ -73,13 +73,27 @@ class MemoService:
 
         now_fn = now or datetime.now
         current = now_fn()
+        # 空维度 = 无此条件(非匹配空值行);双空无归属范围,直接返回空(审查 M1)
+        # 非空维度保持 OR 语义:流相关 ∪ 说话人相关(规格 §4.4)
+        conditions: list[str] = []
+        params: list = []
+        if stream_id:
+            conditions.append("stream_id = ?")
+            params.append(stream_id)
+        if user_id:
+            conditions.append("user_id = ?")
+            params.append(user_id)
+        if not conditions:
+            return []
+        where = " OR ".join(conditions)
+        params += [current.strftime(_ISO), limit]
         rows = self.store.query(
-            """
+            f"""
             SELECT id, content, stream_id, user_id, expires_at FROM memo
-            WHERE (stream_id = ? OR user_id = ?) AND expires_at > ?
+            WHERE {where} AND expires_at > ?
             ORDER BY created_at DESC, id DESC LIMIT ?
             """,
-            (stream_id or "", user_id or "", current.strftime(_ISO), limit),
+            params,
         )
         result: list[dict] = []
         for row in rows:

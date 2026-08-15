@@ -41,6 +41,15 @@ def test_write_ttl_over_max_rejected(tmp_path):
     assert "168" in msg
 
 
+def test_read_empty_both_dims_returns_empty(tmp_path):
+    svc, _ = make_service(tmp_path)
+    svc.write("无归属", stream_id="", user_id="", ttl_hours=None, now=lambda: NOW)
+    svc.write("A", stream_id="s1", user_id="u1", ttl_hours=None, now=lambda: NOW)
+    assert svc.read("", "", 5, now=lambda: NOW) == []
+    # 单维度非空时,另一维度为空不匹配空值行(审查 M1)
+    assert {r["content"] for r in svc.read("s1", "", 5, now=lambda: NOW)} == {"A"}
+
+
 def test_read_by_user_across_streams(tmp_path):
     svc, _ = make_service(tmp_path)
     svc.write("A", stream_id="s1", user_id="u1", ttl_hours=None, now=lambda: NOW)

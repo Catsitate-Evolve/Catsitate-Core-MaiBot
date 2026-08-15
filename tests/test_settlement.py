@@ -27,6 +27,18 @@ def make_executor(tmp_path, llm_result=None, daily_min=None):
     return SettleExecutor(engine, fake_llm), engine, calls
 
 
+def test_settle_empty_material_fails(tmp_path):
+    import asyncio
+    executor, engine, calls = make_executor(tmp_path)
+    # history 无目标用户消息 → build_material 返回空 → 不调 LLM 直接 failed
+    history = [
+        {"role": "user", "user_id": "other", "stream_id": "s1", "text": "别人的消息", "seq": 0, "ts": "2026-08-14T11:00:00"}
+    ]
+    result = asyncio.run(executor.settle("u1", "s1", history, kind="early"))
+    assert result["status"] == "failed" and "素材为空" in result["error"]
+    assert not calls  # 未调 LLM
+
+
 def test_settle_includes_persona(tmp_path):
     import asyncio
     executor, engine, calls = make_executor(tmp_path)
@@ -50,7 +62,7 @@ def test_settle_without_persona_no_persona_line(tmp_path):
     result = asyncio.run(executor.settle("u1", "s1", history, kind="early"))
     assert result["status"] == "ok"
     all_text = " ".join(m["content"] for m in calls[-1] if m.get("content"))
-    assert "bot 人设" not in all_text
+    assert "bot 人设:" not in all_text  # 无 persona 时不含人设背景行(system 模板自带「bot 人设」字样)
 
 
 def test_parse_judge_response_basic():

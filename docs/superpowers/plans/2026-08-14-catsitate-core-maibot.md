@@ -2007,7 +2007,7 @@ def test_settle_ok_applies_delta_and_resets(tmp_path):
     assert engine.get_level("u1", "s1")["score"] == 2
     rows = engine.store.query("SELECT count FROM batch_counter WHERE user_id = 'u1' AND stream_id = 's1'")
     assert rows[0][0] == 0  # 结算后计数清零
-    assert calls and calls[0][0][0]["role"] == "system"  # 稳定段前置
+    assert calls and calls[0][0]["role"] == "system"  # 稳定段前置(calls[0] 为 messages 列表)
 
 
 def test_settle_llm_failure_keeps_state(tmp_path):

@@ -1,5 +1,7 @@
 """注入框架测试:固定顺序、空块跳过、版本化复用。"""
 
+import pytest
+
 from catsitate_core.inject import InjectAssembler, InjectionBlock
 
 
@@ -21,6 +23,16 @@ def test_unknown_module_skipped():
     assembler = InjectAssembler()
     rendered = assembler.render([InjectionBlock(module="nope", content_key="x", text="y")])
     assert rendered == []
+
+
+def test_duplicate_module_raises():
+    assembler = InjectAssembler()
+    blocks = [
+        InjectionBlock(module="memo", content_key="a", text="[备忘] 甲"),
+        InjectionBlock(module="memo", content_key="b", text="[备忘] 乙"),
+    ]
+    with pytest.raises(ValueError, match="重复"):
+        assembler.render(blocks)
 
 
 def test_same_content_reuses_rendered_object():

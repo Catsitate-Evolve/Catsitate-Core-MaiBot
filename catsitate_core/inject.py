@@ -31,8 +31,12 @@ class InjectAssembler:
 
         by_module: dict[str, InjectionBlock] = {}
         for block in blocks:
-            if block.module in BLOCK_ORDER:
-                by_module[block.module] = block
+            if block.module not in BLOCK_ORDER:
+                continue
+            if block.module in by_module:
+                # 规格 §4.1:每模块每轮仅一块,重复属调用方错误,显式暴露不静默覆盖
+                raise ValueError(f"注入块模块重复: {block.module}(每模块每轮仅允许一块)")
+            by_module[block.module] = block
         messages: list[dict] = []
         for module in BLOCK_ORDER:
             block = by_module.get(module)

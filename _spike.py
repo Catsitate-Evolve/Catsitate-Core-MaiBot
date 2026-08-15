@@ -12,6 +12,15 @@ logger = logging.getLogger("catsitate.spike")
 class SpikePlugin(MaiBotPlugin):
     """Spike 验证插件。"""
 
+    async def on_load(self) -> None:
+        logger.info("[spike] SpikePlugin 已加载")
+
+    async def on_unload(self) -> None:
+        """卸载。"""
+
+    async def on_config_update(self, scope: str, config_data: dict, version: str) -> None:
+        """配置热更新。"""
+
     @HookHandler(
         "maisaka.planner.before_request",
         name="spike_before_request",

@@ -260,7 +260,7 @@ __version__ = "0.1.0"
     {
       "type": "python_package",
       "name": "holiday-calendar",
-      "version_spec": ">=1.0.0"
+      "version_spec": ">=0.1.0"
     },
     {
       "type": "python_package",

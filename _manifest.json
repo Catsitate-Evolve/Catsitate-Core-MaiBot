@@ -26,7 +26,7 @@
     {
       "type": "python_package",
       "name": "holiday-calendar",
-      "version_spec": ">=1.0.0"
+      "version_spec": ">=0.1.0"
     },
     {
       "type": "python_package",
@@ -58,7 +58,9 @@
   "i18n": {
     "default_locale": "zh-CN",
     "locales_path": "_locales",
-    "supported_locales": ["zh-CN"]
+    "supported_locales": [
+      "zh-CN"
+    ]
   },
   "id": "catsitate.core"
 }

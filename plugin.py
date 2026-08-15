@@ -629,7 +629,7 @@ class CatsitatePlugin(MaiBotPlugin):
             env = self._environment_block(stream_id)
             if env:
                 blocks.append(InjectionBlock("environment", env[0], env[1]))
-        if cfg.schedule.enabled and cfg.time_aware.enabled:
+        if cfg.schedule.enabled and cfg.time_aware.enabled and cfg.memo.enabled:
             now_iso = datetime.now().strftime("%Y-%m-%dT%H:%M")
             win = current_window(self._schedule_data, now_iso)
             if win and win.get("kind") != "sleep":
@@ -641,7 +641,10 @@ class CatsitatePlugin(MaiBotPlugin):
                 if nxt:
                     label = "睡觉" if nxt.get("kind") == "sleep" else (nxt.get("activity") or "自由时间")
                     line += f";接下来:{label}"
-                due_today = [e for e in self.memo.due_on(datetime.now().strftime("%Y-%m-%d"))]
+                due_today = [
+                    e for e in self.memo.due_on(datetime.now().strftime("%Y-%m-%d"))
+                    if str(e.get("stream_id") or "") == stream_id or str(e.get("user_id") or "") == speaker
+                ]
                 if due_today:
                     line += ";" + ";".join(f"备忘:{e['content']}" for e in due_today[:3])
                 blocks.append(InjectionBlock("schedule", f"sch:{win.get('start')}|{'fired' if mark in self._schedule_tick_fired else ''}", line))

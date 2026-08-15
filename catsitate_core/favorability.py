@@ -252,6 +252,36 @@ class BatchEngine:
             material.append(f"[{msg['user_id']}]({role_label}) {text}")
         return material
 
+    def iter_today_active(
+        self, now: Callable[[], datetime] | None = None
+    ) -> list[tuple[str, str]]:
+        """当日有消息且批次未清零的 (user_id, stream_id) 列表(日终兜底扫描对象)。"""
+
+        now_fn = now or datetime.now
+        day = now_fn().strftime("%Y-%m-%d")
+        rows = self.store.query(
+            "SELECT DISTINCT user_id, stream_id FROM batch_counter WHERE count > 0 AND last_bump LIKE ?",
+            (f"{day}%",),
+        )
+        return [(r[0], r[1]) for r in rows]
+
+    def has_daily_settle_today(
+        self, user_id: str, stream_id: str, now: Callable[[], datetime] | None = None
+    ) -> bool:
+        """当日是否已执行过日终结算(judge_id 前缀 daily-YYYY-MM-DD)。"""
+
+        now_fn = now or datetime.now
+        day = now_fn().strftime("%Y-%m-%d")
+        rows = self.store.query(
+            """
+            SELECT 1 FROM favorability_log
+            WHERE user_id = ? AND stream_id = ? AND judge_id LIKE ?
+            LIMIT 1
+            """,
+            (user_id, stream_id, f"daily-{day}%"),
+        )
+        return bool(rows)
+
 
 """好感度结算执行器与块渲染。"""
 

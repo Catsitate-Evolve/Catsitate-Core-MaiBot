@@ -137,3 +137,18 @@ def test_favorability_block_default_stranger(tmp_path):
     text = build_favorability_block(engine, "newbie", "s1")
     assert "等级「陌生」" in text
     assert "注记" not in text
+
+
+def test_iter_today_active_and_daily_settle_check(tmp_path):
+    executor, engine, _ = make_executor(tmp_path)
+    engine.count_message("u1", "s1", now=lambda: NOW)
+    engine.count_message("u2", "s1", now=lambda: NOW)
+    active = engine.iter_today_active(now=lambda: NOW)
+    assert ("u1", "s1") in active and ("u2", "s1") in active
+    assert engine.has_daily_settle_today("u1", "s1", now=lambda: NOW) is False
+    engine.apply_delta(
+        "u1", "s1", 1, "日终",
+        judged_at=NOW.strftime("%Y-%m-%dT%H:%M:%S"),
+        judge_id=f"daily-{NOW.strftime('%Y-%m-%dT%H:%M:%S')}",
+    )
+    assert engine.has_daily_settle_today("u1", "s1", now=lambda: NOW) is True

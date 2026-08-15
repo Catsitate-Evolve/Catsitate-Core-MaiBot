@@ -18,8 +18,8 @@
 | 1 | 子包导入 `catsitate_core.*` | **B:不支持**(加载器仅将 `plugins/` 父目录临时加入 sys.path,插件目录本身不在)→ 采用方案 C 解决 | `ModuleNotFoundError: No module named 'catsitate_core'`(加载失败日志);plugin.py 自注册 sys.path 后加载成功 | 2026-08-15 |
 | 2 | `maisaka.planner.before_request` items 前插 | **A:生效**(须用合法快照格式 item;朴素 dict 被拒) | 探针 UserMessageItem 出现在 LLM 请求 items 且 LLM reasoning 可见探针文本 | 2026-08-15 |
 | 3 | `chat.receive.before_process` 改写能力 | **A:生效**(BLOCKING 返回 modified_kwargs.message,主程序反序列化后下游可见) | `[所见] [Starry Lights]Hesitate_P:[spike改写] @Catsitate-dev 对` | 2026-08-15 |
-| 4 | `message.get_recent` 二进制传参 | 待验证 | — | — |
-| 5 | `ctx.maisaka.context.append` 准确签名 | 静态确认:`(stream_id, segments: list[dict], *, visible_text="")`;运行时待 ④ 同次验证 | 本机 SDK 源码 + 容器内 SDK 一致 | — |
+| 4 | `message.get_recent` 二进制传参 | **B:不支持二进制**(返回仅 hash;结构:list,段在 raw_message) | 命令探测返回:`raw_message=[('image', data=False, hash=True)]` | 2026-08-15 |
+| 5 | `ctx.maisaka.context.append` 准确签名 | **运行时确认**:`(stream_id, segments, *, visible_text=)` 生效,返回 `{success, index, stream_id, visible_text, source_kind}`,内容进入 LLM 上下文 | `append 返回={'success': True, 'index': 16, ...}` 且上下文出现 `ContextTextPart('[插件上下文消息]')` | 2026-08-15 |
 
 ---
 
@@ -87,24 +87,27 @@ at 段格式 `{"type": "at", "data": {"target_user_id": ...}}`。
 `inject_to_context` 用 `ctx.maisaka.context.append(stream_id, segments=[{"type": "text", "text": ...}])`
 (注意:maisaka 的 segments 与消息段格式不同,maisaka 用 `{"type": "text", "text": ...}`)。
 
-## 4. message.get_recent 二进制传参(待验证)
+## 4. message.get_recent 二进制传参:结论 B(不支持二进制)
 
-**观测步骤**:诱导 planner 调用 `spike_probe` 工具(如发送「调用 spike_probe 工具」),观察
-`spike_probe` 返回内容(工具执行结果进入聊天上下文,LLM 会引用):返回含图片二进制即为支持;
-仅 hash 则为不支持(图片重看改用 `ctx.database.get(model_name="Images")` 补图路径)。
+**实测**(`/spike_probe` 命令,经命令链绕过 LLM 触发):
 
-**结论分支**:
+- 返回 **list**(非 `{"messages": [...]}`),消息 dict 键:
+  `message_id / timestamp / platform / message_info / raw_message / is_mentioned / is_at /
+  is_emoji / is_picture / is_command / is_notify / session_id / processed_plain_text`(部分消息有 `reply_to`)。
+- 段在 **`raw_message`** 键下(与第 3 项消息段格式一致);文本消息有现成的 **`processed_plain_text`** 字段。
+- **image 段:`data=False, hash=True`** —— `include_binary_data=True` 透传**不产生二进制**,只返回 hash。
 
-- **结论 A(支持)**:Task 13/14 图片重看直读二进制;
-- **结论 B(不支持)**:Task 14 `inspect_image` 仅 hash 时经主程序图片库补读(计划已有路径)。
+**Task 13/14 图片重看修正**:必须走「仅 hash 时经主程序图片库补读」路径
+(`ctx.database.get(model_name="Images", hash=...)`,规格 §4.8 的备用路径成为**主路径**);
+`_fetch_recent_for_history` 文本提取改用 `processed_plain_text` 字段,段结构走 `raw_message`。
 
-**实测记录**:待验证。
-
-## 5. ctx.maisaka.context.append 签名(静态已确认)
+## 5. ctx.maisaka.context.append:运行时确认
 
 - 签名:`append(stream_id: str, segments: list[dict], *, visible_text: str = "", source_kind: str = "", message_id: str = "", **kwargs)`。
 - 文本消息:`segments=[{"type": "text", "text": "…"}]`(与第 3 项的消息段格式**不同**,勿混用)。
-- 运行时行为(返回值/上下文可见性)待 ④ 同次验证。
+- **实测返回**:`{'success': True, 'index': 16, 'stream_id': '…', 'visible_text': '[插件上下文消息]', 'source_kind': 'plugin:catsitate.spike'}`;
+  且上下文快照出现 `ContextTextPart(text='[插件上下文消息]')` —— append 内容进入后续 LLM 请求可见。
+- 注意:`visible_text` 缺省为 `[插件上下文消息]` 之类占位,显式传入拟人文本更优。
 
 ## 过程发现(计划缺陷修复记录)
 

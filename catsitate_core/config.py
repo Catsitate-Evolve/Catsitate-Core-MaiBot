@@ -10,6 +10,7 @@ class PluginSection(PluginConfigBase):
     enabled: bool = Field(default=False, description="插件总开关")
     config_version: str = Field(default="1.0.0", description="配置版本")
     llm_daily_call_warning_threshold: int = Field(default=50, description="旁路 LLM 每日调用告警阈值")
+    llm_timeout_ms: int | None = Field(default=None, description="旁路 LLM 调用超时(毫秒);留空=主程序默认(30s);慢模型可调到 120000")
 
 
 class InjectSection(PluginConfigBase):

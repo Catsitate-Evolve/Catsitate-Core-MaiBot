@@ -593,9 +593,18 @@ class CatsitatePlugin(MaiBotPlugin):
             self._settling.discard(key)
 
     async def _side_llm_call(self, messages: list[dict], model: str, module: str) -> dict:
-        """旁路 LLM 统一出口(规格 §4.10):留空 model 用主程序默认模型;用量按模块记账。"""
+        """旁路 LLM 统一出口(规格 §4.10):model 填主程序 task 名;用量按模块记账。
 
-        result = await self.ctx.llm.generate(messages, model=model or "")
+        经 call_capability 直调,超时可配(plugin.llm_timeout_ms;留空=主程序默认 30s)。
+        联调实测:utils 模型 31-53s 会触发默认超时,慢模型建议配置 120000。
+        """
+
+        result = await self.ctx.call_capability(
+            "llm.generate", timeout_ms=self.config.plugin.llm_timeout_ms, prompt=messages, model=model or ""
+        )
+        if isinstance(result, dict):
+            if "model" not in result and result.get("model_name"):
+                result = {**result, "model": result["model_name"]}
         self._record_llm_usage(module, result)
         return result
 
@@ -604,9 +613,14 @@ class CatsitatePlugin(MaiBotPlugin):
 
         day = datetime.now().strftime("%Y-%m-%d")
         tokens = 0
+        if not isinstance(result, dict):
+            return
         usage = result.get("usage")
         if isinstance(usage, dict):
             tokens = int(usage.get("total_tokens") or 0)
+        elif result.get("total_tokens"):
+            # capability payload 的 token 统计在顶层(联调实测)
+            tokens = int(result.get("total_tokens") or 0)
         self.store.execute(
             """
             INSERT INTO llm_usage (day, module, calls, tokens) VALUES (?, ?, 1, ?)

@@ -7,6 +7,7 @@ def test_config_defaults():
     cfg = CatsitateConfig()
     assert cfg.plugin.enabled is False
     assert cfg.plugin.llm_daily_call_warning_threshold == 50
+    assert cfg.plugin.llm_timeout_ms is None
     assert cfg.inject.enabled is True
     assert cfg.time_aware.city == "北京"
     assert cfg.time_aware.weather_refresh_minutes == 45

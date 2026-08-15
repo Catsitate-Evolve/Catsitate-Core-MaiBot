@@ -182,6 +182,8 @@ class CatsitatePlugin(MaiBotPlugin):
     async def msg_react(self, message_id: str = "", intent: str = "", **kwargs: Any) -> str:
         if not self.config.plugin.enabled or not self.config.msg_react.enabled:
             return "贴表情工具未启用。"
+        if not str(kwargs.get("group_id") or ""):
+            return "贴表情仅限群聊(QQ 私聊不支持贴表情)。"
         stream_id = str(kwargs.get("stream_id") or "")
         ok, reason = self.react.check_cooldown(stream_id)
         if not ok:
@@ -316,49 +318,7 @@ class CatsitatePlugin(MaiBotPlugin):
             self.ctx.logger.exception("注入块构造失败,本轮跳过注入")
             return {"action": "continue", "modified_kwargs": kwargs}
 
-    # ---------- Hook:入站(戳一戳解析 + 好感度计数) ----------
-
-    @HookHandler("chat.receive.before_process", name="catsitate_poke_notice", mode=HookMode.BLOCKING, order=HookOrder.EARLY)
-    async def poke_notice(self, **kwargs: Any) -> dict[str, Any]:
-        """spike ③ 实测:receive hook kwargs = ['hook_name', 'message'];通知载荷在 message.message_info.additional_config。
-
-        enhance_notice_text 开关 = 改写消息文本(spike ③ 结论 A:改 raw_message 段列表头部,
-        下游 processed_plain_text 可见);inject_to_context 开关 = 拟人文本写入当前流上下文。
-        """
-
-        if not self.config.plugin.enabled or not self.config.poke.enabled:
-            return {"action": "continue", "modified_kwargs": kwargs}
-        msg = kwargs.get("message")
-        payload = self._notice_payload(msg)
-        if payload is None:
-            return {"action": "continue", "modified_kwargs": kwargs}
-        # 昵称兜底:消息上下文的 user_nickname(raw_info.nm 实测为空串)
-        user_info = ((msg.get("message_info") or {}).get("user_info")) or {}
-        fallback_nickname = str(user_info.get("user_nickname") or user_info.get("nickname") or "")
-        text = self.poke.enhance_notice_text(payload, fallback_nickname=fallback_nickname)
-        if text is None:
-            return {"action": "continue", "modified_kwargs": kwargs}
-        self.ctx.logger.info("戳一戳解析增强:%s", text)
-        modified_kwargs = kwargs
-        if self.config.poke.enhance_notice_text:
-            # spike ③ 结论 A:段列表头部插 text 段(data 直接是字符串)
-            raw_message = msg.get("raw_message")
-            if isinstance(raw_message, list) and not any(
-                isinstance(s, dict) and s.get("type") == "text" and str(s.get("data") or "").startswith("[戳一戳]")
-                for s in raw_message
-            ):
-                modified = dict(kwargs)
-                modified["message"] = {**msg, "raw_message": [{"type": "text", "data": f"[戳一戳] {text}"}] + raw_message}
-                modified_kwargs = modified
-        if self.config.poke.inject_to_context:
-            stream_id = str(msg.get("session_id") or "")
-            try:
-                await self.ctx.maisaka.context.append(
-                    stream_id=stream_id, segments=[{"type": "text", "text": text}]
-                )
-            except Exception:
-                self.ctx.logger.exception("戳一戳上下文注入失败(stream=%s)", stream_id)
-        return {"action": "continue", "modified_kwargs": modified_kwargs}
+    # ---------- Hook:入站(好感度计数) ----------
 
     @HookHandler("chat.receive.after_process", name="catsitate_fav_count", mode=HookMode.OBSERVE)
     async def fav_count(self, **kwargs: Any) -> None:
@@ -737,16 +697,6 @@ class CatsitatePlugin(MaiBotPlugin):
         if isinstance(result, dict) and result.get("success"):
             return True
         return isinstance(result, dict) and str(result.get("status") or "").lower() in ("ok", "success")
-
-    def _notice_payload(self, message: Any) -> dict | None:
-        """spike ③ 实测:receive hook 的 message.message_info.additional_config 含 napcat_notice_payload。"""
-
-        if not isinstance(message, dict):
-            return None
-        msg_info = message.get("message_info") or {}
-        additional = msg_info.get("additional_config") or {}
-        payload = additional.get("napcat_notice_payload")
-        return payload if isinstance(payload, dict) else None
 
     def _output_items(self, kwargs: dict[str, Any]) -> list[dict]:
         items = kwargs.get(self._OUTPUT_ITEMS_KEY)

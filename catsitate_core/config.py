@@ -110,8 +110,6 @@ class PokeSection(PluginConfigBase):
     __ui_order__ = 6
 
     enabled: bool = _f(True, "戳一戳模块开关", label="戳一戳模块开关")
-    enhance_notice_text: bool = _f(True, "改写通知消息为拟人文本", label="通知拟人改写")
-    inject_to_context: bool = _f(True, "戳一戳事件注入当前流上下文", label="注入上下文")
     poke_tool_enabled: bool = _f(True, "主动戳工具开关", label="主动戳工具开关")
     cooldown_seconds: int = _f(600, "主动戳每用户冷却秒数", label="主动戳冷却秒数")
 

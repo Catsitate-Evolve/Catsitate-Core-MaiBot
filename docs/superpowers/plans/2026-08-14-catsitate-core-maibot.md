@@ -3501,7 +3501,7 @@ class CatsitatePlugin(MaiBotPlugin):
         stream_id = str(msg.get("session_id") or "")
         if not user_id or not stream_id:
             return
-        self.fav_engine.count_message(user_id, stream_id)
+        # 注意:check_trigger 内部会执行 count_message(+1),勿在此前重复计数(审查 ⚠️ 裁决)
         trigger = self.fav_engine.check_trigger(user_id, stream_id)
         if trigger == "early":
             asyncio.create_task(self._settle_and_log(user_id, stream_id, kind="early"))

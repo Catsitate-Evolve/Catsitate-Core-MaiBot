@@ -251,3 +251,81 @@ class BatchEngine:
                 text = text[: self.config.material_message_max_chars] + "…"
             material.append(f"[{msg['user_id']}]({role_label}) {text}")
         return material
+
+
+"""好感度结算执行器与块渲染。"""
+
+import json
+import re
+from datetime import datetime
+from typing import Awaitable, Callable
+
+from .llm_provider import build_side_prompt
+
+LlMCall = Callable[[list[dict], str], Awaitable[dict]]
+
+
+def parse_judge_response(text: str) -> dict | None:
+    """从 LLM 文本提取判定 JSON,容忍 markdown 代码围栏。"""
+
+    cleaned = text.strip()
+    fence = re.search(r"```(?:json)?\s*(\{.*?\})\s*```", cleaned, re.DOTALL)
+    if fence:
+        cleaned = fence.group(1)
+    else:
+        brace = re.search(r"\{.*\}", cleaned, re.DOTALL)
+        if brace:
+            cleaned = brace.group(0)
+    try:
+        data = json.loads(cleaned)
+    except (json.JSONDecodeError, TypeError):
+        return None
+    if not isinstance(data.get("delta"), int) or not isinstance(data.get("note"), str):
+        return None
+    return {"delta": data["delta"], "note": data["note"]}
+
+
+class SettleExecutor:
+    """结算执行:材料构造 → 旁路 LLM 判定 → 落库/顺延/失败保持。"""
+
+    def __init__(self, engine: BatchEngine, llm_call: LlMCall) -> None:
+        self.engine = engine
+        self.llm_call = llm_call
+
+    async def settle(
+        self, user_id: str, stream_id: str, history: list[dict], kind: str, model: str = ""
+    ) -> dict:
+        """执行一次结算。kind: "early" 或 "daily"。"""
+
+        material = self.engine.build_material(user_id, stream_id, history)
+        if kind == "daily" and len([m for m in material if "(用户)" in m]) < self.engine.config.daily_settle_min:
+            return {"status": "carried_over", "reason": f"用户消息不足 {self.engine.config.daily_settle_min} 条,顺延"}
+        # 稳定段 = 判定指令(system 模板)+ 5 级规则(配置,stable_ctx);变量尾 = 批次素材
+        level_rules = self.engine.config.level_rules.splitlines()
+        messages, _cache_key = build_side_prompt("favorability", level_rules, material)
+        try:
+            result = await self.llm_call(messages, model)
+        except Exception as exc:  # noqa: BLE001
+            return {"status": "failed", "error": f"LLM 调用异常: {exc}"}
+        if not result.get("success"):
+            return {"status": "failed", "error": f"LLM 返回失败: {result.get('response', '')[:200]}"}
+        parsed = parse_judge_response(str(result.get("response", "")))
+        if parsed is None:
+            return {"status": "failed", "error": "判定 JSON 解析失败"}
+        delta = max(-5, min(5, parsed["delta"]))
+        judged_at = datetime.now().strftime("%Y-%m-%dT%H:%M:%S")
+        judge_id = f"{kind}-{judged_at}"
+        self.engine.apply_delta(
+            user_id, stream_id, delta, parsed["note"], judged_at=judged_at, judge_id=judge_id
+        )
+        self.engine.reset_batch(user_id, stream_id, judged_at)
+        return {"status": "ok", "delta": delta, "note": parsed["note"], "judge_id": judge_id}
+
+
+def build_favorability_block(engine: BatchEngine, user_id: str, stream_id: str) -> str:
+    """渲染好感度块文本(无记录=陌生,无注记)。"""
+
+    row = engine.get_level(user_id, stream_id)
+    if row is None:
+        return f"[好感度] {user_id}:等级「陌生」(累计 0)。"
+    return f"[好感度] {user_id}:等级「{LEVELS[row['level']]}」(累计 {row['score']}),注记:{row['note']}。"

@@ -78,6 +78,7 @@ class CatsitatePlugin(MaiBotPlugin):
     _style_cache: str | None = None  # bot 行为风格缓存(同上)
     _debug_handler: logging.Handler | None = None  # debug 日志文件 handler(配置开关控制)
     _debug_prev_level: int = logging.NOTSET  # 开启前 logger 级别(关闭时恢复)
+    _llm_warned_day: str = ""  # 旁路 LLM 用量告警的已告警日期(跨越当天只告警一次)
 
     # ---------- 生命周期 ----------
 
@@ -328,7 +329,9 @@ class CatsitatePlugin(MaiBotPlugin):
         messages, _ = self.react.build_choose_prompt(target_text or f"消息 {message_id}", intent)
         result = await self._side_llm_call(messages, self.config.msg_react.llm_model, "msg_react", self.config.msg_react.llm_timeout_ms)
         if not isinstance(result, dict) or not result.get("success"):
-            return f"选表情 LLM 调用失败:{str(result)[:200]}"
+            # 不落响应原文(安全复审):仅记失败形态
+            detail = f"success={result.get('success')}" if isinstance(result, dict) else f"结果类型={type(result).__name__}"
+            return f"选表情 LLM 调用失败({detail})"
         emoji, err = parse_choice_resp(str(result.get("response") or ""))
         if emoji is None:
             return f"选表情失败:{err}"
@@ -419,7 +422,8 @@ class CatsitatePlugin(MaiBotPlugin):
             self.ctx.logger.warning(msg)
             return msg
         if not isinstance(result, dict) or not result.get("success"):
-            detail = result.get("response", "")[:200] if isinstance(result, dict) else str(result)[:200]
+            # 不落响应原文(安全复审):仅记失败形态
+            detail = f"success={result.get('success')}" if isinstance(result, dict) else f"结果类型={type(result).__name__}"
             msg = f"图片重看 LLM 调用失败:{detail}"
             self.ctx.logger.warning(msg)
             return msg
@@ -546,7 +550,8 @@ class CatsitatePlugin(MaiBotPlugin):
             self.ctx.logger.warning("晚安判定 LLM 调用异常(%s),本轮不入睡", type(exc).__name__)
             return {"action": "continue", "modified_kwargs": kwargs}
         if not isinstance(result, dict) or not result.get("success"):
-            detail = result.get("response", "")[:200] if isinstance(result, dict) else str(result)[:200]
+            # 不落响应原文(安全复审):仅记失败形态
+            detail = f"success={result.get('success')}" if isinstance(result, dict) else f"结果类型={type(result).__name__}"
             self.ctx.logger.warning("晚安判定 LLM 失败,本轮不入睡:%s", detail)
             return {"action": "continue", "modified_kwargs": kwargs}
         verdict, _ = parse_sleep_confirm_response(str(result.get("response") or ""))
@@ -1442,7 +1447,8 @@ class CatsitatePlugin(MaiBotPlugin):
             "SELECT SUM(calls) FROM llm_usage WHERE day = ?", (day,)
         )
         total = int(rows[0][0] or 0)
-        if total >= self.config.plugin.llm_daily_call_warning_threshold:
+        if total >= self.config.plugin.llm_daily_call_warning_threshold and self._llm_warned_day != day:
+            self._llm_warned_day = day  # 跨越阈值当天只告警一次(复核 Minor:防每次调用刷屏)
             self.ctx.logger.warning("旁路 LLM 当日调用次数已达或超过阈值 %s,请注意用量", total)
 
     async def _fetch_recent(self, stream_id: str, limit: int) -> list[dict]:

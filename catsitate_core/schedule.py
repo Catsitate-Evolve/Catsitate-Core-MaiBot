@@ -261,7 +261,12 @@ class ScheduleGenerator:
                 # 仅记异常类型,不插值 exc 本体:LLM API 错误可能含请求体/PII(安全复审)
                 return _materialize_template(DEFAULT_TEMPLATE_SCHEDULE, target_date), f"日程生成 LLM 异常: {type(exc).__name__}"
             if not isinstance(result, dict) or not result.get("success"):
-                return _materialize_template(DEFAULT_TEMPLATE_SCHEDULE, target_date), f"日程生成 LLM 失败: {str(result)[:200]}"
+                # 不落响应原文(安全复审):仅记失败形态
+                if isinstance(result, dict):
+                    detail = f"success={result.get('success')}"
+                else:
+                    detail = f"结果类型={type(result).__name__}"
+                return _materialize_template(DEFAULT_TEMPLATE_SCHEDULE, target_date), f"日程生成 LLM 失败({detail})"
             data, parse_err = schedule_from_json(str(result.get("response") or ""))
             if data is None:
                 last_err = parse_err

@@ -157,7 +157,7 @@ class BatchEngine:
         """结算结果落库:累加分数、重算等级、注记强制截断、写判定日志。
 
         返回状态:"ok" 或 "clamped_exclusive"(升「特别」但位被他人占据 → 钳 99 分/挚友)。
-        judge_id: 判定日志幂等键;None 时默认 early-{judged_at}(日终结算须显式传 daily- 前缀)。
+        judge_id: 判定日志幂等键;None 时默认 early-{judged_at}-{user_id}(日终结算须显式传 daily- 前缀)。
         """
 
         row = self.get_level(user_id)
@@ -363,15 +363,19 @@ class SettleExecutor:
             # 未触达 apply_delta,独占钳制状态恒 False(最终审查 M3 统一字段)
             return {"status": "failed", "error": f"LLM 调用异常: {type(exc).__name__}", "exclusive_clamped": False}
         if not isinstance(result, dict) or not result.get("success"):
-            detail = result.get("response", "")[:200] if isinstance(result, dict) else str(result)[:200]
-            return {"status": "failed", "error": f"LLM 返回失败: {detail}", "exclusive_clamped": False}
+            # 不落响应原文(LLM 响应可能含用户内容/PII,安全复审):仅记失败形态
+            if isinstance(result, dict):
+                reason = f"success={result.get('success')}"
+            else:
+                reason = f"结果类型={type(result).__name__}"
+            return {"status": "failed", "error": f"LLM 返回失败({reason})", "exclusive_clamped": False}
         parsed = parse_judge_response(str(result.get("response", "")))
         if parsed is None:
             return {"status": "failed", "error": "判定 JSON 解析失败", "exclusive_clamped": False}
         delta_limit = max(1, self.engine.config.delta_max)
         delta = max(-delta_limit, min(delta_limit, parsed["delta"]))
         judged_at = datetime.now().strftime("%Y-%m-%dT%H:%M:%S")
-        judge_id = f"{kind}-{judged_at}"
+        judge_id = f"{kind}-{judged_at}-{user_id}"  # 用户后缀:同秒多人结算不撞幂等键(复核 Important)
         status = self.engine.apply_delta(
             user_id, delta, parsed["note"], judged_at=judged_at, judge_id=judge_id
         )

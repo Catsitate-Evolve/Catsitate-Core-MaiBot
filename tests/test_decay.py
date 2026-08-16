@@ -60,7 +60,7 @@ def test_scan_and_apply_skips_recent_interaction(tmp_path):
     ex = DecayExecutor(store, cfg, fake_llm)
     import asyncio
     # 有互动(8-12 日 bot 消息),不衰减
-    result = asyncio.run(ex.scan_and_apply([("u1", "s1", "2026-08-12T10:00:00", "0")], now=lambda: NOW))
+    result = asyncio.run(ex.scan_and_apply([("u1", "2026-08-12T10:00:00")], now=lambda: NOW))
     assert result == [] and not calls
 
 
@@ -78,13 +78,13 @@ def test_scan_and_apply_applies_and_clamps(tmp_path):
 
     import asyncio
     ex = DecayExecutor(store, cfg, fake_llm)
-    result = asyncio.run(ex.scan_and_apply([("u1", "s1", "2026-08-01T10:00:00", "0")], now=lambda: NOW))
+    result = asyncio.run(ex.scan_and_apply([("u1", "2026-08-01T10:00:00")], now=lambda: NOW))
     assert result and result[0]["delta"] == -3  # 钳制到 -decay_max
     assert engine.get_level("u1")["score"] == 39
 
 
 def test_scan_and_apply_judge_id_unique_per_user(tmp_path):
-    """M-5:同秒多用户衰减 judge_id 含 user/stream,INSERT OR IGNORE 不静默丢日志(重置计时 guard 有效)。"""
+    """M-5:同秒多用户衰减 judge_id 含 user,INSERT OR IGNORE 不静默丢日志(重置计时 guard 有效)。"""
     import asyncio
     store = SQLiteStore(tmp_path / "d.db")
     cfg = FavorabilitySection(decay_after_days=7, decay_max=3)
@@ -98,9 +98,30 @@ def test_scan_and_apply_judge_id_unique_per_user(tmp_path):
 
     ex = DecayExecutor(store, cfg, fake_llm)
     result = asyncio.run(ex.scan_and_apply(
-        [("u1", "s1", "2026-08-01T10:00:00", "0"), ("u2", "s2", "2026-08-01T10:00:00", "0")],
+        [("u1", "2026-08-01T10:00:00"), ("u2", "2026-08-01T10:00:00")],
         now=lambda: NOW,
     ))
     assert len(result) == 2  # 两条都判定成功(judge_id 无冲突)
     rows = store.query("SELECT judge_id FROM favorability_log WHERE judge_id LIKE 'decay-%'")
     assert len(rows) == 2 and len({r[0] for r in rows}) == 2  # 判定日志互不覆盖
+
+
+def test_scan_and_apply_exclusive_clamped_passthrough(tmp_path):
+    """钳制状态透传:他人占据「特别」时,B 衰减(delta=0)不触发钳制,
+    仅透传 apply_delta 状态即可,断言调用不抛错且结果含 exclusive_clamped 标记。"""
+    import asyncio
+    store = SQLiteStore(tmp_path / "d.db")
+    cfg = FavorabilitySection(decay_after_days=7, decay_max=3)
+    engine = BatchEngine(store, cfg)
+    engine.ensure_schema()
+    # A 占「特别」(score>=100,独占位被占据);B 是待衰减老用户
+    engine.apply_delta("A", 100, "特别之选", judged_at="2026-08-01T12:00:00")
+    engine.apply_delta("B", 42, "很好", judged_at="2026-08-01T12:00:00")
+
+    async def fake_llm(messages, model=""):
+        return {"success": True, "response": '{"delta": 0, "note": "无变化"}', "model": model}
+
+    ex = DecayExecutor(store, cfg, fake_llm)
+    result = asyncio.run(ex.scan_and_apply([("B", "2026-08-01T10:00:00")], now=lambda: NOW))
+    assert result and result[0]["exclusive_clamped"] is False
+    assert engine.get_level("B")["score"] == 42  # delta=0 不落分

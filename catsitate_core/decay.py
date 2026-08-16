@@ -79,7 +79,7 @@ def last_bot_interaction_time(
 
 
 class DecayExecutor:
-    """衰减执行:候选流扫描 → 未互动天数判定 → LLM 判定 → apply_delta(judge_id=decay-时间戳)。"""
+    """衰减执行:候选用户扫描 → 未互动天数判定 → LLM 判定 → apply_delta(judge_id=decay-时间戳)。"""
 
     def __init__(self, store, config, llm_call: LlMCall) -> None:
         self.engine = BatchEngine(store, config)
@@ -88,16 +88,16 @@ class DecayExecutor:
 
     async def scan_and_apply(
         self,
-        candidates: list[tuple[str, str, str, str]],  # (user_id, stream_id, 互动时间 ISO 或 "", is_group "0"/"1")
+        candidates: list[tuple[str, str]],  # (user_id, 互动时间 ISO 或 "")
         now: Callable[[], datetime] | None = None,
         persona: str = "",
     ) -> list[dict]:
-        """对未互动超 decay_after_days 的流执行衰减判定;返回 [{"user_id","stream_id","delta","note"}]。"""
+        """对未互动超 decay_after_days 的用户执行衰减判定;返回 [{"user_id","delta","exclusive_clamped"}]。"""
 
         now_fn = now or datetime.now
         today = now_fn()
         results: list[dict] = []
-        for user_id, stream_id, interaction_ts, is_group in candidates:
+        for user_id, interaction_ts in candidates:
             if not interaction_ts:  # 从未直接互动:以 judged_at 为基准
                 row = self.engine.get_level(user_id)
                 if row is None:
@@ -127,11 +127,10 @@ class DecayExecutor:
                 result = await self.llm_call(messages, self.config.decay_llm_model)
             except Exception as exc:  # noqa: BLE001
                 # 仅记异常类型,不插值 exc 本体:LLM API 错误可能含请求体/PII(安全复审)
-                logger.warning("好感度衰减判定失败(stream=%s): %s", stream_id, type(exc).__name__)
-                
+                logger.warning("好感度衰减判定失败(user=%s): %s", user_id, type(exc).__name__)
                 continue  # 显式日志后跳过(规格 §3.1 失败不得静默)
             if not isinstance(result, dict) or not result.get("success"):
-                logger.warning("衰减判定 LLM 失败(stream=%s): %s", stream_id, str(result)[:120])
+                logger.warning("衰减判定 LLM 失败(user=%s): %s", user_id, str(result)[:120])
                 continue
             delta, note = parse_decay_response(str(result.get("response") or ""))
             if delta is None:
@@ -139,9 +138,10 @@ class DecayExecutor:
             limit = max(1, self.config.decay_max)
             delta = max(-limit, min(0, delta))
             judged_at = now_fn().strftime(_ISO)
-            self.engine.apply_delta(
+            status = self.engine.apply_delta(
                 user_id, delta, note, judged_at=judged_at,
-                judge_id=f"decay-{judged_at}-{user_id}-{stream_id}",  # 同秒多用户判重(审查 M-5)
+                judge_id=f"decay-{judged_at}-{user_id}",  # 同秒多用户判重(审查 M-5,按人)
             )
-            results.append({"user_id": user_id, "stream_id": stream_id, "delta": delta, "note": note})
+            results.append({"user_id": user_id, "delta": delta,
+                            "exclusive_clamped": status == "clamped_exclusive"})
         return results

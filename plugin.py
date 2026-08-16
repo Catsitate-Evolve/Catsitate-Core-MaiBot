@@ -912,9 +912,9 @@ class CatsitatePlugin(MaiBotPlugin):
         self._spawn_background_task(self._daily_settle())
 
     async def _daily_decay(self) -> None:
-        """自然衰减:先衰减后结算(与 _daily_settle 同 tick 调用顺序)。
+        """自然衰减(按人跨流):先衰减后结算(与 _daily_settle 同 tick 调用顺序)。
 
-        计时基准(规格「判定后重置计时」):基准 = max(流内最近 bot 直接互动时间,
+        计时基准(规格「判定后重置计时」):基准 = max(各活跃流内最近 bot 直接互动时间,
         最近一次 decay 判定时间)——衰减判定本身即一次「想起」,7 天内不重复衰减。
         """
 
@@ -925,38 +925,46 @@ class CatsitatePlugin(MaiBotPlugin):
         try:
             candidates = []
             # 注意:不能用 iter_today_active(只含今日活跃流)——衰减对象恰是长期未互动者,
-            # 必须扫 favorability 全表 score>0 行
-            rows = self.store.query("SELECT user_id, stream_id FROM favorability WHERE score > 0")
-            for user_id, stream_id in rows:
-                row = self.fav_engine.get_level(user_id, stream_id)
+            # 必须扫 favorability 全表 score>0 行(按人,行主键即 user_id)
+            rows = self.store.query("SELECT DISTINCT user_id FROM favorability WHERE score > 0")
+            for (user_id,) in rows:
+                row = self.fav_engine.get_level(user_id)
                 if row is None or row["score"] <= 0:
                     continue
-                await self._refresh_stream_cache()
-                if stream_id not in self._stream_cache:
-                    # 流已消亡(解散/移除):显式跳过该行,不误判为私聊,不拖垮整轮
-                    self.ctx.logger.warning("衰减候选流不存在(user=%s,stream=%s),跳过该行", user_id, stream_id)
-                    continue
-                try:
-                    recent = await self._fetch_recent(stream_id, 50)
-                except Exception:
-                    # 单行取消息失败(如 RPC 超时)只跳过该行,其余候选继续
-                    self.ctx.logger.warning("衰减候选取消息失败(user=%s,stream=%s),跳过该行", user_id, stream_id)
-                    continue
-                is_group = "1" if self._stream_is_group(stream_id) else "0"
-                interaction = last_bot_interaction_time(
-                    recent, user_id, str(self.config.favorability.bot_user_id or ""), stream_is_group=bool(is_group == "1")
-                )
-                # 最近一次衰减判定时间作为基准参与取 max
+                # 跨流取该人最近一次 bot 直接互动时间(经 batch_counter 活跃流账本定位流)
+                best: str = ""
+                stream_rows = self.store.query("SELECT DISTINCT stream_id FROM batch_counter WHERE user_id = ?", (user_id,))
+                for (stream_id,) in stream_rows:
+                    await self._refresh_stream_cache()
+                    if stream_id not in self._stream_cache:
+                        # 流已消亡(解散/移除):显式跳过该流,不误判为私聊,不拖垮整轮
+                        self.ctx.logger.warning("衰减候选流不存在(user=%s,stream=%s),跳过该流", user_id, stream_id)
+                        continue
+                    try:
+                        recent = await self._fetch_recent(stream_id, 50)
+                    except Exception:
+                        # 单流取消息失败(如 RPC 超时)只跳过该流,其余流继续
+                        self.ctx.logger.warning("衰减候选取消息失败(user=%s,stream=%s),跳过该流", user_id, stream_id)
+                        continue
+                    t = last_bot_interaction_time(
+                        recent, user_id, str(self.config.favorability.bot_user_id or ""),
+                        stream_is_group=self._stream_is_group(stream_id),
+                    )
+                    if t and (not best or t > best):
+                        best = t
+                # 最近一次衰减判定时间作为基准参与取 max(该人全局,跨流)
                 decay_rows = self.store.query(
-                    "SELECT judged_at FROM favorability_log WHERE user_id = ? AND stream_id = ? "
-                    "AND judge_id LIKE 'decay-%' ORDER BY judged_at DESC LIMIT 1",
-                    (user_id, stream_id),
+                    "SELECT judged_at FROM favorability_log WHERE user_id = ? AND judge_id LIKE 'decay-%' "
+                    "ORDER BY judged_at DESC LIMIT 1",
+                    (user_id,),
                 )
                 decay_ts = decay_rows[0][0] if decay_rows else ""
-                candidates.append((user_id, stream_id, max(interaction or "", decay_ts), is_group))
+                candidates.append((user_id, max(best or "", decay_ts)))
             results = await self.decay.scan_and_apply(candidates, persona=await self._persona())
             for r in results:
-                self.ctx.logger.info("好感度衰减 %s/%s:delta=%s", r["user_id"], r["stream_id"], r["delta"])
+                self.ctx.logger.info("好感度衰减 %s:delta=%s", r["user_id"], r["delta"])
+                if r.get("exclusive_clamped"):
+                    self.ctx.logger.warning("衰减升特别被独占钳制(user=%s)", r["user_id"])
         except Exception:
             self.ctx.logger.exception("衰减扫描异常,本轮跳过")
 

@@ -1,6 +1,6 @@
 # catsitate_core_maibot
 
-Catsitate 的 MaiBot 核心人格行为插件。仓库地址:https://github.com/Catsitate-Evolve/Catsitate-Core-MaiBot 。详细设计见 `docs/superpowers/specs/`。
+Catsitate 的 MaiBot 核心人格行为插件。仓库地址:https://github.com/Catsitate-Evolve/Catsitate-Core-MaiBot 。详细设计见 `docs/superpowers/specs/`;公测使用手册(功能详解/配置项全表/日志关键词/已知限制)见 `docs/plugin-manual.md`。
 
 ## 启用
 

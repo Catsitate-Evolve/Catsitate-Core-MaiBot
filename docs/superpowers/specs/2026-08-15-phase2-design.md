@@ -1,4 +1,4 @@
-# Catsitate 二期设计规格(自然衰减 / 睡眠 / 日程 / 主动私聊)
+# Catsitate 二期设计规格(自然衰减 / 睡眠 / 日程 / 主动问候)
 
 > 一期基线:docs/superpowers/specs/2026-08-14-catsitate-core-maibot-design.md(已验收,本规格只描述二期增量,不改一期行为)
 > 本规格经 grilling 九轮对齐(2026-08-15)。

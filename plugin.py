@@ -1480,6 +1480,8 @@ class CatsitatePlugin(MaiBotPlugin):
         senders: dict[str, str | None] = {}
         if is_group and target_user_id:
             senders, first_err = await self._resolve_quote_senders(raw, stream_id)
+            # warning 粒度为每次调用本函数至多一条;衰减路径为整轮至多一条(decay_quote_warned),
+            # 两处粒度差异系调用频率差异,勿视为不一致缺陷
             if first_err:
                 self.ctx.logger.warning("quote 发送者解析失败(stream=%s):%s", stream_id, first_err)
         history: list[dict] = []

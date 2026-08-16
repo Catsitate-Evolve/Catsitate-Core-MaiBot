@@ -660,6 +660,26 @@ def test_settle_and_log_per_user_aggregates_streams(tmp_path):
     assert len(fetched) == 2
 
 
+class _RaisingById(dict):
+    """message.get_by_id 桩:任何查找抛异常(模拟能力不可用)。"""
+
+    def get(self, key, default=None):
+        del key, default
+        raise RuntimeError("get_by_id 能力不可用")
+
+
+class _CountingById(dict):
+    """message.get_by_id 桩:记录 get 调用次数(断言同 id 去重只解析一次)。"""
+
+    def __init__(self, *a, **k):
+        super().__init__(*a, **k)
+        self.calls = 0
+
+    def get(self, key, default=None):
+        self.calls += 1
+        return super().get(key, default)
+
+
 def _make_history_plugin(tmp_path, logs, recent, by_id=None):
     """构造 _fetch_recent_for_history 测试用插件实例:真实 config + 收集日志 + capability 桩。"""
 
@@ -707,12 +727,6 @@ def test_fetch_recent_for_history_quote_resolve_failure_warns_once(tmp_path):
     """解析失败(能力抛异常)→ 该条未 addressed(False)且有 warning,每轮至多一条(不静默)。"""
 
     logs: list = []
-
-    class _RaisingById(dict):
-        def get(self, key, default=None):
-            del key, default
-            raise RuntimeError("get_by_id 能力不可用")
-
     recent = [
         {"message_id": "b1", "timestamp": "1755225600.0", "processed_plain_text": "回 u1",
          "message_info": {"user_info": {"user_id": "3545773341"}}, "reply_to": "m1"},
@@ -728,3 +742,84 @@ def test_fetch_recent_for_history_quote_resolve_failure_warns_once(tmp_path):
     assert len(warns) == 1  # 每轮至多一条告警
     args = warns[0][1]
     assert "quote 发送者解析失败(stream=%s):%s" in args[0] and args[1] == "g1"
+
+
+def test_daily_decay_quote_resolve_failure_warns_once(tmp_path):
+    """衰减路径告警粒度(修复轮 R1):两条群流各含一条带 reply_to 的 bot 消息,
+    get_by_id 桩均抛异常 → _daily_decay 整轮恰一条「quote 发送者解析失败」warning。"""
+
+    import plugin as plugin_mod
+    from catsitate_core.favorability import BatchEngine
+    from catsitate_core.storage import SQLiteStore
+
+    logs: list = []
+    p = _make_history_plugin(tmp_path, logs, [], _RaisingById())
+    p.config.plugin.enabled = True
+    p.config.favorability.decay_enabled = True
+    p.sleep = type("_S", (), {"is_sleeping": staticmethod(lambda: False)})()
+    p.store = SQLiteStore(tmp_path / "decay_quote.db")
+    p.fav_engine = BatchEngine(p.store, p.config.favorability)
+    p.fav_engine.ensure_schema()
+    p.fav_engine.apply_delta("u1", 42, "很好", judged_at="2026-08-01T12:00:00")
+    p.fav_engine.count_message("u1", "g1")  # batch_counter:u1 活跃于两条群流
+    p.fav_engine.count_message("u1", "g2")
+
+    async def _stub_refresh():
+        p._stream_cache = {
+            "g1": {"session_id": "g1", "is_group_session": True, "user_id": ""},
+            "g2": {"session_id": "g2", "is_group_session": True, "user_id": ""},
+        }
+    p._refresh_stream_cache = _stub_refresh
+
+    recent_by_stream = {
+        "g1": [{"message_id": "b1", "timestamp": "1755225600.0", "processed_plain_text": "回 u1",
+                "message_info": {"user_info": {"user_id": "3545773341"}}, "reply_to": "m1"}],
+        "g2": [{"message_id": "b2", "timestamp": "1755225660.0", "processed_plain_text": "回 u1",
+                "message_info": {"user_info": {"user_id": "3545773341"}}, "reply_to": "m2"}],
+    }
+
+    async def _fetch_stub(stream_id, limit):
+        del limit
+        return list(recent_by_stream[stream_id])
+
+    p._fetch_recent = _fetch_stub
+
+    class _DecayStub:
+        async def scan_and_apply(self, candidates, persona=""):
+            del candidates, persona
+            return []
+
+    p.decay = _DecayStub()
+
+    async def _no_persona():
+        return ""
+    p._persona = _no_persona
+
+    asyncio.run(p._daily_decay())
+    quote_warns = [(lv, a, k) for lv, a, k in logs
+                   if lv == "warning" and "quote 发送者解析失败" in a[0]]
+    assert len(quote_warns) == 1  # 整轮至多一条(两条群流均解析失败只报一条)
+
+
+def test_resolve_quote_senders_dedup_and_failure_passthrough(tmp_path):
+    """_resolve_quote_senders(修复轮 R1):同 reply_to id 去重只解析一次;
+    能力抛异常 → 该 id 记 None 且不抛异常(失败透传)。"""
+
+    logs: list = []
+    recent = [
+        {"message_id": "b1", "timestamp": "1755225600.0", "processed_plain_text": "x",
+         "message_info": {"user_info": {"user_id": "3545773341"}}, "reply_to": "m1"},
+        {"message_id": "b2", "timestamp": "1755225660.0", "processed_plain_text": "y",
+         "message_info": {"user_info": {"user_id": "3545773341"}}, "reply_to": "m1"},
+        {"message_id": "u3", "timestamp": "1755225720.0", "processed_plain_text": "用户消息",
+         "message_info": {"user_info": {"user_id": "u3"}}, "reply_to": "m1"},
+    ]
+    by_id = _CountingById({"m1": {"message": {"message_info": {"user_info": {"user_id": "u1"}}}}})
+    p = _make_history_plugin(tmp_path, logs, recent, by_id)
+    senders, first_err = asyncio.run(p._resolve_quote_senders(recent, "g1"))
+    assert senders == {"m1": "u1"} and first_err == ""
+    assert by_id.calls == 1  # 两条 bot 消息同 id 去重只解析一次;用户消息 reply_to 不参与
+    # 失败透传:能力抛异常 → 该 id 记 None 且不抛异常
+    p2 = _make_history_plugin(tmp_path, logs, recent, _RaisingById())
+    senders2, first_err2 = asyncio.run(p2._resolve_quote_senders(recent, "g1"))
+    assert senders2 == {"m1": None} and "能力调用异常" in first_err2

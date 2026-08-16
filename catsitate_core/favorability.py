@@ -10,6 +10,7 @@ from .storage import SQLiteStore
 
 LEVELS: list[str] = ["陌生", "熟悉", "亲近", "挚友", "特别"]
 LEVEL_INDEX: dict[str, int] = {name: i for i, name in enumerate(LEVELS)}
+EXCLUSIVE_LEVEL: int = 4  # LEVELS 下标:「特别」
 _ISO = "%Y-%m-%dT%H:%M:%S"
 
 
@@ -35,17 +36,21 @@ class BatchEngine:
         self.config = config
 
     def ensure_schema(self) -> None:
+        # 开发期裁定:检测旧形状(含 stream_id 列)直接重建,不做数据迁移
+        cols = {r[1] for r in self.store.query("PRAGMA table_info(favorability)")}
+        if "stream_id" in cols:
+            self.store.execute("DROP TABLE favorability")
+            self.store.execute("DROP TABLE favorability_log")
+            self.store.execute("DROP TABLE batch_counter")
         self.store.execute(
             """
             CREATE TABLE IF NOT EXISTS favorability (
-                user_id TEXT NOT NULL,
-                stream_id TEXT NOT NULL,
+                user_id TEXT PRIMARY KEY,
                 level INTEGER NOT NULL DEFAULT 0,
                 score INTEGER NOT NULL DEFAULT 0,
                 note TEXT NOT NULL DEFAULT '',
-                window_start TEXT NOT NULL,
-                judged_at TEXT NOT NULL,
-                PRIMARY KEY (user_id, stream_id)
+                window_start TEXT NOT NULL DEFAULT '',
+                judged_at TEXT NOT NULL DEFAULT ''
             )
             """
         )
@@ -54,7 +59,6 @@ class BatchEngine:
             CREATE TABLE IF NOT EXISTS favorability_log (
                 judge_id TEXT PRIMARY KEY,
                 user_id TEXT NOT NULL,
-                stream_id TEXT NOT NULL,
                 delta INTEGER NOT NULL,
                 note TEXT NOT NULL,
                 judged_at TEXT NOT NULL
@@ -100,10 +104,10 @@ class BatchEngine:
             self.store.query(
                 """
                 SELECT 1 FROM favorability_log
-                WHERE user_id = ? AND stream_id = ?
+                WHERE user_id = ?
                   AND judge_id LIKE 'early-%' AND judged_at LIKE ?
                 """,
-                (user_id, stream_id, f"{current.strftime('%Y-%m-%d')}%"),
+                (user_id, f"{current.strftime('%Y-%m-%d')}%"),
             )
         )
         return {
@@ -136,73 +140,74 @@ class BatchEngine:
             (judged_at, user_id, stream_id),
         )
 
+    def is_exclusive_holder(self, user_id: str) -> bool:
+        """「特别」之位是否被他人占据(全表最多 1 人,规格全局决策 #8)。"""
+
+        rows = self.store.query(
+            "SELECT 1 FROM favorability WHERE level >= ? AND user_id != ? LIMIT 1",
+            (EXCLUSIVE_LEVEL, user_id),
+        )
+        return bool(rows)
+
     def apply_delta(
         self,
         user_id: str,
-        stream_id: str,
         delta: int,
         note: str,
         judged_at: str,
         judge_id: str | None = None,
-    ) -> None:
+    ) -> str:
         """结算结果落库:累加分数、重算等级、注记强制截断、写判定日志。
 
+        返回状态:"ok" 或 "clamped_exclusive"(升「特别」但位被他人占据 → 钳 99 分/挚友)。
         judge_id: 判定日志幂等键;None 时默认 early-{judged_at}(日终结算须显式传 daily- 前缀)。
         """
 
-        row = self.get_level(user_id, stream_id)
+        row = self.get_level(user_id)
         score = (row["score"] if row else 0) + delta
         level = _level_for_score(score)
+        status = "ok"
+        if level >= EXCLUSIVE_LEVEL and self.is_exclusive_holder(user_id):
+            # 特别之位已被他人占据:钳制在 99 分(挚友),显式返回状态由调用方记录
+            score = 99
+            level = 3
+            status = "clamped_exclusive"
         trimmed_note = note.strip()[: self.config.note_max_chars]
         current = judged_at or datetime.now().strftime(_ISO)
         log_id = judge_id or f"early-{current}"
         self.store.execute(
             """
-            INSERT INTO favorability (user_id, stream_id, level, score, note, window_start, judged_at)
-            VALUES (?, ?, ?, ?, ?, ?, ?)
-            ON CONFLICT(user_id, stream_id) DO UPDATE SET
+            INSERT INTO favorability (user_id, level, score, note, window_start, judged_at)
+            VALUES (?, ?, ?, ?, ?, ?)
+            ON CONFLICT(user_id) DO UPDATE SET
                 level = excluded.level,
                 score = excluded.score,
                 note = excluded.note,
                 window_start = excluded.window_start,
                 judged_at = excluded.judged_at
             """,
-            (user_id, stream_id, level, score, trimmed_note, current, current),
+            (user_id, level, score, trimmed_note, current, current),
         )
         self.store.execute(
             """
-            INSERT OR IGNORE INTO favorability_log (judge_id, user_id, stream_id, delta, note, judged_at)
-            VALUES (?, ?, ?, ?, ?, ?)
+            INSERT OR IGNORE INTO favorability_log (judge_id, user_id, delta, note, judged_at)
+            VALUES (?, ?, ?, ?, ?)
             """,
-            (log_id, user_id, stream_id, delta, trimmed_note, current),
+            (log_id, user_id, delta, trimmed_note, current),
         )
+        return status
 
-    def get_level(self, user_id: str, stream_id: str) -> dict | None:
+    def get_level(self, user_id: str) -> dict | None:
         rows = self.store.query(
-            "SELECT user_id, stream_id, level, score, note, window_start, judged_at FROM favorability WHERE user_id = ? AND stream_id = ?",
-            (user_id, stream_id),
-        )
-        if not rows:
-            return None
-        r = rows[0]
-        return {
-            "user_id": r[0], "stream_id": r[1], "level": r[2], "score": r[3],
-            "note": r[4], "window_start": r[5], "judged_at": r[6],
-        }
-
-    def get_best_level_for_user(self, user_id: str) -> dict | None:
-        """跨流取最高等级(主动戳工具门槛用)。"""
-
-        rows = self.store.query(
-            "SELECT user_id, stream_id, level, score, note, window_start, judged_at FROM favorability WHERE user_id = ? ORDER BY level DESC, score DESC LIMIT 1",
+            "SELECT user_id, level, score, note, window_start, judged_at FROM favorability WHERE user_id = ?",
             (user_id,),
         )
         if not rows:
             return None
         r = rows[0]
         return {
-            "user_id": r[0], "stream_id": r[1], "level": r[2], "score": r[3],
-            "note": r[4], "window_start": r[5], "judged_at": r[6],
+            "user_id": r[0], "level": r[1], "score": r[2], "note": r[3],
+            "window_start": r[4], "judged_at": r[5],
         }
 
     def build_material(self, user_id: str, stream_id: str, history: list[dict]) -> list[str]:
@@ -266,19 +271,19 @@ class BatchEngine:
         return [(r[0], r[1]) for r in rows]
 
     def has_daily_settle_today(
-        self, user_id: str, stream_id: str, now: Callable[[], datetime] | None = None
+        self, user_id: str, now: Callable[[], datetime] | None = None
     ) -> bool:
-        """当日是否已执行过日终结算(judge_id 前缀 daily-YYYY-MM-DD)。"""
+        """当日是否已对该用户执行过日终结算(judge_id 前缀 daily-YYYY-MM-DD)。"""
 
         now_fn = now or datetime.now
         day = now_fn().strftime("%Y-%m-%d")
         rows = self.store.query(
             """
             SELECT 1 FROM favorability_log
-            WHERE user_id = ? AND stream_id = ? AND judge_id LIKE ?
+            WHERE user_id = ? AND judge_id LIKE ?
             LIMIT 1
             """,
-            (user_id, stream_id, f"daily-{day}%"),
+            (user_id, f"daily-{day}%"),
         )
         return bool(rows)
 
@@ -366,14 +371,14 @@ class SettleExecutor:
         judged_at = datetime.now().strftime("%Y-%m-%dT%H:%M:%S")
         judge_id = f"{kind}-{judged_at}"
         self.engine.apply_delta(
-            user_id, stream_id, delta, parsed["note"], judged_at=judged_at, judge_id=judge_id
+            user_id, delta, parsed["note"], judged_at=judged_at, judge_id=judge_id
         )
         self.engine.reset_batch(user_id, stream_id, judged_at)
         return {"status": "ok", "delta": delta, "note": parsed["note"], "judge_id": judge_id}
 
 
 def build_favorability_block(
-    engine: BatchEngine, user_id: str, stream_id: str, include_rule: bool = False
+    engine: BatchEngine, user_id: str, include_rule: bool = False
 ) -> str:
     """渲染好感度块文本(无记录=陌生,无注记)。
 
@@ -381,7 +386,7 @@ def build_favorability_block(
     5 级全量注入改为按等级单条注入,保证缓存命中率与 token 经济性)。
     """
 
-    row = engine.get_level(user_id, stream_id)
+    row = engine.get_level(user_id)
     if row is None:
         level_name, score, note = "陌生", 0, ""
     else:

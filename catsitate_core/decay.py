@@ -99,7 +99,7 @@ class DecayExecutor:
         results: list[dict] = []
         for user_id, stream_id, interaction_ts, is_group in candidates:
             if not interaction_ts:  # 从未直接互动:以 judged_at 为基准
-                row = self.engine.get_level(user_id, stream_id)
+                row = self.engine.get_level(user_id)
                 if row is None:
                     continue
                 interaction_ts = row.get("judged_at") or ""
@@ -112,7 +112,7 @@ class DecayExecutor:
             days = (today - last).days
             if days <= self.config.decay_after_days:
                 continue
-            row = self.engine.get_level(user_id, stream_id)
+            row = self.engine.get_level(user_id)
             if row is None or row["score"] <= 0:
                 continue
             stable_ctx = ([f"bot 人设:{persona}"] if persona.strip() else []) + [
@@ -140,7 +140,7 @@ class DecayExecutor:
             delta = max(-limit, min(0, delta))
             judged_at = now_fn().strftime(_ISO)
             self.engine.apply_delta(
-                user_id, stream_id, delta, note, judged_at=judged_at,
+                user_id, delta, note, judged_at=judged_at,
                 judge_id=f"decay-{judged_at}-{user_id}-{stream_id}",  # 同秒多用户判重(审查 M-5)
             )
             results.append({"user_id": user_id, "stream_id": stream_id, "delta": delta, "note": note})

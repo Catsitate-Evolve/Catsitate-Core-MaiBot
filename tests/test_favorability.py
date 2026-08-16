@@ -33,7 +33,7 @@ def test_early_settle_daily_cap(tmp_path):
         engine.reset_batch("u1", "s1", judged_at)
         for _ in range(20):
             engine.count_message("u1", "s1", now=lambda: NOW)
-        engine.apply_delta("u1", "s1", 1, f"第{i}次", judged_at=judged_at, judge_id=f"early-{i}")
+        engine.apply_delta("u1", 1, f"第{i}次", judged_at=judged_at, judge_id=f"early-{i}")
     engine.reset_batch("u1", "s1", NOW.strftime("%Y-%m-%dT%H:%M:%S"))
     for _ in range(20):
         engine.count_message("u1", "s1", now=lambda: NOW)
@@ -98,12 +98,45 @@ def test_private_material_contains_bot_and_user(tmp_path):
 
 def test_apply_delta_level_and_note_truncation(tmp_path):
     engine, _ = make_engine(tmp_path)
-    engine.apply_delta("u1", "s1", 8, "注" * 60, judged_at="early-x")
-    row = engine.get_level("u1", "s1")
+    engine.apply_delta("u1", 8, "注" * 60, judged_at="early-x")
+    row = engine.get_level("u1")
     assert row["level"] == 0  # 8 分 → 陌生
     assert row["score"] == 8
     assert len(row["note"]) == 40
-    assert engine.get_best_level_for_user("u1")["level"] == 0
+
+
+def test_schema_per_user_and_rebuild(tmp_path):
+    engine, _ = make_engine(tmp_path)
+    engine.ensure_schema()
+    engine.store.execute("INSERT INTO favorability (user_id, level, score, note, window_start, judged_at) "
+                         "VALUES ('111', 4, 100, '', '', '')")
+    engine.ensure_schema()  # 新形状幂等,不重建
+    row = engine.get_level("111")
+    assert row["score"] == 100
+    # 旧形状重建:手工插入含 stream_id 的旧表后再次 ensure_schema
+    engine.store.execute("DROP TABLE favorability")
+    engine.store.execute("CREATE TABLE favorability (user_id TEXT, stream_id TEXT, level INTEGER, score INTEGER, "
+                         "note TEXT, window_start TEXT, judged_at TEXT, PRIMARY KEY (user_id, stream_id))")
+    engine.ensure_schema()
+    assert engine.get_level("111") is None  # 旧表已重建,数据清空(开发期裁定)
+
+
+def test_exclusive_clamp(tmp_path):
+    engine, _ = make_engine(tmp_path)
+    engine.ensure_schema()
+    engine.apply_delta("A", 100, "唯一", "2026-08-16T12:00:00", judge_id="t1")
+    assert engine.get_level("A")["level"] == 4
+    status = engine.apply_delta("B", 100, "也想上位", "2026-08-16T12:01:00", judge_id="t2")
+    assert status == "clamped_exclusive"
+    b = engine.get_level("B")
+    assert b["score"] == 99 and b["level"] == 3
+    # 独占者本人继续加分不受限
+    assert engine.apply_delta("A", 5, "更近一步", "2026-08-16T12:02:00", judge_id="t3") == "ok"
+    # 独占者掉出后他人可升
+    assert engine.apply_delta("A", -10, "降温", "2026-08-16T12:03:00", judge_id="t4") == "ok"
+    assert engine.get_level("A")["level"] == 3
+    assert engine.apply_delta("B", 1, "补位", "2026-08-16T12:04:00", judge_id="t5") == "ok"
+    assert engine.get_level("B")["level"] == 4
 
 
 def test_material_anchor_at_stream_head_no_wraparound(tmp_path):

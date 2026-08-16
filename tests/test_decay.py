@@ -50,7 +50,7 @@ def test_scan_and_apply_skips_recent_interaction(tmp_path):
     cfg = FavorabilitySection(decay_after_days=7, decay_max=3)
     engine = BatchEngine(store, cfg)
     engine.ensure_schema()
-    engine.apply_delta("u1", "s1", 42, "很好", judged_at="2026-08-14T12:00:00")
+    engine.apply_delta("u1", 42, "很好", judged_at="2026-08-14T12:00:00")
     calls: list = []
 
     async def fake_llm(messages, model=""):
@@ -69,7 +69,7 @@ def test_scan_and_apply_applies_and_clamps(tmp_path):
     cfg = FavorabilitySection(decay_after_days=7, decay_max=3)
     engine = BatchEngine(store, cfg)
     engine.ensure_schema()
-    engine.apply_delta("u1", "s1", 42, "很好", judged_at="2026-08-14T12:00:00")
+    engine.apply_delta("u1", 42, "很好", judged_at="2026-08-14T12:00:00")
     calls: list = []
 
     async def fake_llm(messages, model=""):
@@ -80,7 +80,7 @@ def test_scan_and_apply_applies_and_clamps(tmp_path):
     ex = DecayExecutor(store, cfg, fake_llm)
     result = asyncio.run(ex.scan_and_apply([("u1", "s1", "2026-08-01T10:00:00", "0")], now=lambda: NOW))
     assert result and result[0]["delta"] == -3  # 钳制到 -decay_max
-    assert engine.get_level("u1", "s1")["score"] == 39
+    assert engine.get_level("u1")["score"] == 39
 
 
 def test_scan_and_apply_judge_id_unique_per_user(tmp_path):
@@ -90,8 +90,8 @@ def test_scan_and_apply_judge_id_unique_per_user(tmp_path):
     cfg = FavorabilitySection(decay_after_days=7, decay_max=3)
     engine = BatchEngine(store, cfg)
     engine.ensure_schema()
-    engine.apply_delta("u1", "s1", 42, "很好", judged_at="2026-08-01T12:00:00")
-    engine.apply_delta("u2", "s2", 42, "很好", judged_at="2026-08-01T12:00:00")
+    engine.apply_delta("u1", 42, "很好", judged_at="2026-08-01T12:00:00")
+    engine.apply_delta("u2", 42, "很好", judged_at="2026-08-01T12:00:00")
 
     async def fake_llm(messages, model=""):
         return {"success": True, "response": '{"delta": -2, "note": "生疏了"}', "model": model}

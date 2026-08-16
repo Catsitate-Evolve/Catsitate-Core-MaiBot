@@ -82,7 +82,7 @@ def test_full_assembly_smoke(tmp_path):
     blocks = [
         InjectionBlock("environment", "env", env_text),
         InjectionBlock("memo", "memo:1", "[备忘] 周四交作业"),
-        InjectionBlock("favorability", "fav:u1", build_favorability_block(engine, "u1", "s1", include_rule=True)),
+        InjectionBlock("favorability", "fav:u1", build_favorability_block(engine, "u1", include_rule=True)),
     ]
     rendered = assembler.render(blocks)
     assert [m["role"] for m in rendered] == ["user"] * 3
@@ -102,7 +102,7 @@ def test_full_assembly_smoke(tmp_path):
     result = asyncio.run(executor.settle("u1", "s1", history, kind="early"))
     assert result["status"] == "ok" and result["delta"] == 2
     assert ("u1", "s1") not in engine.iter_today_active(now=lambda: NOW)  # 结算 reset 后 count=0
-    assert "累计 2" in build_favorability_block(engine, "u1", "s1")  # 2 分仍是「陌生」级
+    assert "累计 2" in build_favorability_block(engine, "u1")  # 2 分仍是「陌生」级
 
     # 贴表情(内置 QQ 表情表)
     messages, _ = react.build_choose_prompt("今天好累", "安慰")

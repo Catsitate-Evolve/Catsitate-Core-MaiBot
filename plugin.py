@@ -909,6 +909,8 @@ class CatsitatePlugin(MaiBotPlugin):
 
         计时基准(规格「判定后重置计时」):基准 = max(各活跃流内最近 bot 直接互动时间,
         最近一次 decay 判定时间)——衰减判定本身即一次「想起」,7 天内不重复衰减。
+        群聊互动 = @ 或 quote(reply 段经 message.get_by_id 解析原发送者,规格 §3.1);
+        quote 解析在本函数内预解析后注入 resolved_quote_user_id(decay.py 保持纯函数)。
         """
 
         if self.sleep.is_sleeping():
@@ -916,6 +918,7 @@ class CatsitatePlugin(MaiBotPlugin):
         if not self.config.plugin.enabled or not self.config.favorability.decay_enabled:
             return
         try:
+            decay_quote_warned = False  # 本轮 _daily_decay 至多一条 quote 解析失败告警(不静默)
             candidates = []
             # 注意:不能用 iter_today_active(只含今日活跃流)——衰减对象恰是长期未互动者,
             # 必须扫 favorability 全表 score>0 行(按人,行主键即 user_id)
@@ -939,6 +942,26 @@ class CatsitatePlugin(MaiBotPlugin):
                         # 单流取消息失败(如 RPC 超时)只跳过该流,其余流继续
                         self.ctx.logger.warning("衰减候选取消息失败(user=%s,stream=%s),跳过该流", user_id, stream_id)
                         continue
+                    # quote 语义(最终审查 I2 恢复):群聊 bot 消息 reply 段为纯消息 id,
+                    # 经 message.get_by_id 解析原发送者后注入 resolved_quote_user_id
+                    # (逐条浅拷贝,不就地修改 get_recent 返回值);解析失败不注入该字段,
+                    # 该条按 at 判定,每轮至多一条告警
+                    if self._stream_is_group(stream_id):
+                        senders, first_err = await self._resolve_quote_senders(recent, stream_id)
+                        if first_err and not decay_quote_warned:
+                            decay_quote_warned = True
+                            self.ctx.logger.warning("quote 发送者解析失败(stream=%s):%s", stream_id, first_err)
+                        annotated: list[dict] = []
+                        for m in recent:
+                            if not isinstance(m, dict):
+                                annotated.append(m)
+                                continue
+                            copy = dict(m)
+                            rid = str(m.get("reply_to") or "")
+                            if rid and senders.get(rid):
+                                copy["resolved_quote_user_id"] = senders[rid]
+                            annotated.append(copy)
+                        recent = annotated
                     t = last_bot_interaction_time(
                         recent, user_id, str(self.config.favorability.bot_user_id or ""),
                         stream_is_group=self._stream_is_group(stream_id),
@@ -1374,6 +1397,64 @@ class CatsitatePlugin(MaiBotPlugin):
         result = await self.ctx.call_capability("message.get_recent", chat_id=stream_id, limit=limit, include_binary_data=True)
         return result if isinstance(result, list) else []
 
+    async def _resolve_quote_sender(self, stream_id: str, reply_to_id: str) -> tuple[str | None, str]:
+        """经主机能力 message.get_by_id 解析 reply 消息原发送者(实机:reply 段为纯消息 id)。
+
+        能力签名:call_capability("message.get_by_id", message_id=<id>, chat_id=<stream_id>),
+        返回序列化消息 dict(含 message_info.user_info.user_id),SDK 解包键 "message";
+        失败返回 (None, 原因),不抛异常——原因供调用方每轮至多一条 warning。
+        """
+
+        try:
+            result = await self.ctx.call_capability(
+                "message.get_by_id", message_id=reply_to_id, chat_id=stream_id
+            )
+        except Exception as exc:  # noqa: BLE001
+            # 仅记异常类型,不插值 exc 本体(安全复审纪律,同 decay.py)
+            return None, f"能力调用异常({type(exc).__name__})"
+        if result is None:
+            return None, f"消息 {reply_to_id} 解析返回 None"
+        if not isinstance(result, dict):
+            return None, f"消息 {reply_to_id} 解析返回非 dict({type(result).__name__})"
+        payload = result.get("message")
+        if isinstance(payload, dict):
+            result = payload  # SDK 解包键 "message"
+        info = result.get("message_info") or {}
+        user_info = info.get("user_info") or {}
+        sender = str(user_info.get("user_id") or user_info.get("sender_id") or "")
+        if not sender:
+            return None, f"消息 {reply_to_id} 无发送者 user_id"
+        return sender, ""
+
+    async def _resolve_quote_senders(self, raw: list[dict], stream_id: str) -> tuple[dict[str, str | None], str]:
+        """解析本流 bot 消息 reply 段(reply_to)的原发送者 user_id(同一流内批量先收集、逐条解析)。
+
+        仅收集 bot 消息(消息归属按 message_info.user_info == bot_user_id)的 reply_to id,
+        id 去重后逐个经 _resolve_quote_sender 解析;解析失败的 id 记 None(该条按未 quote 命中)。
+        返回 (reply_to_id -> 发送者 user_id 或 None, 首个失败原因);失败原因空串 = 全部成功。
+        告警由调用方打出(每轮至多一条),本函数不记日志。
+        """
+
+        bot_id = str(self.config.favorability.bot_user_id or "").strip()
+        reply_ids: list[str] = []
+        for m in raw:
+            if not isinstance(m, dict):
+                continue
+            msg_info = m.get("message_info") or {}
+            ui = msg_info.get("user_info") or {}
+            uid = str(ui.get("user_id") or ui.get("sender_id") or "")
+            rid = str(m.get("reply_to") or "")
+            if bot_id and uid == bot_id and rid:
+                reply_ids.append(rid)
+        senders: dict[str, str | None] = {}
+        first_err = ""
+        for rid in dict.fromkeys(reply_ids):  # 同一 id 只解析一次
+            sender, err = await self._resolve_quote_sender(stream_id, rid)
+            senders[rid] = sender
+            if err and not first_err:
+                first_err = err
+        return senders, first_err
+
     async def _fetch_recent_for_history(self, stream_id: str, limit: int, target_user_id: str = "") -> list[dict]:
         """取近期消息并归一化为 build_material 所需形状
         {role, user_id, stream_id, text, seq, ts, is_group, addressed}。
@@ -1381,9 +1462,13 @@ class CatsitatePlugin(MaiBotPlugin):
         spike ④ 实测:消息 dict 键含 message_id/timestamp/platform/message_info/raw_message/
         is_*/session_id/processed_plain_text;user 在 message_info.user_info。
         role:message_info.user_info.user_id == bot_user_id 判为 bot(配置留空则一律 user)。
-        addressed 仅群聊 bot 消息有意义:raw_message 存在 type=at 且 target_user_id ==
-        结算目标用户;reply 段实机为纯消息 id(不含发送者 user_id),quote 判定恒不命中,
-        已删除,待主程序提供「消息 id → 发送者」映射后再启用(最终审查 I2);
+        addressed 仅群聊 bot 消息有意义,两类命中(规格 §3.1 互动定义):
+        raw_message 存在 type=at 且 target_user_id == 结算目标用户;或 bot 消息 reply 段
+        (实机为纯消息 id,不含发送者)经主机能力 message.get_by_id(message_id=reply 段,
+        chat_id=当前流)解析出的原发送者 == 结算目标用户(同一流内批量先收集 reply_to id、
+        逐条解析,id 去重)。
+        解析失败(能力调用异常/返回 None/缺 user_id)该条按未 quote 命中,每轮(每次调用
+        本函数)至多打一条 warning「quote 发送者解析失败(stream=…):…」,不静默;
         私聊流 bot 消息不读 addressed(build_material 私聊全随附),设为 None。
         """
 
@@ -1391,6 +1476,12 @@ class CatsitatePlugin(MaiBotPlugin):
         is_group = self._stream_is_group(stream_id)
         raw = await self._fetch_recent(stream_id, limit)
         bot_id = str(self.config.favorability.bot_user_id or "").strip()
+        # quote 语义(最终审查 I2 恢复):群聊 bot 消息 reply 段先批量收集、再逐条解析原发送者
+        senders: dict[str, str | None] = {}
+        if is_group and target_user_id:
+            senders, first_err = await self._resolve_quote_senders(raw, stream_id)
+            if first_err:
+                self.ctx.logger.warning("quote 发送者解析失败(stream=%s):%s", stream_id, first_err)
         history: list[dict] = []
         for i, m in enumerate(raw):
             if not isinstance(m, dict):
@@ -1405,14 +1496,15 @@ class CatsitatePlugin(MaiBotPlugin):
             role = "bot" if bot_id and user_id == bot_id else "user"
             addressed: bool | None = None
             if role == "bot" and is_group and target_user_id:
-                # reply 段实机为纯消息 id(不含发送者 user_id),quote 判定恒不命中,
-                # 只保留 at 判定(最终审查 I2)
                 at_hit = any(
                     isinstance(seg, dict) and seg.get("type") == "at"
                     and str((seg.get("data") or {}).get("target_user_id") or "") == target_user_id
                     for seg in (m.get("raw_message") or [])
                 )
-                addressed = at_hit
+                # quote 命中:reply 段解析出的原发送者 == 结算目标(解析失败该 id 记 None,不命中)
+                rid = str(m.get("reply_to") or "")
+                quote_hit = bool(rid) and senders.get(rid) == target_user_id
+                addressed = at_hit or quote_hit
             history.append({
                 "role": role,
                 "user_id": user_id,

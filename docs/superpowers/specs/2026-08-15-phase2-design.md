@@ -29,7 +29,7 @@
 
 - **互动定义**(按流类型区分,群聊防误判;按人聚合后跨流取最近一次):
   - **私聊**:互动 = 流内任意 bot 消息时间(流内只有 bot 与用户两人,任何 bot 消息即回应);
-  - **群聊**:互动 = 流内最近一条 **@ 了该用户** 的 bot 消息时间(bot 回应 A 不得重置 B 的计时;取流最近消息检查 bot 消息的 @ 归属,消息归属按 message_info.user_info 判定;reply 段实机为纯消息 id,不含发送者 user_id,quote 判定暂不可用,待主程序提供「消息 id → 发送者」映射后再启用,见最终审查 I2);
+  - **群聊**:互动 = 流内最近一条 **@ 或 quote(reply 段经 message.get_by_id 解析原发送者)了该用户** 的 bot 消息时间(bot 回应 A 不得重置 B 的计时;取流最近消息检查 bot 消息的 @ 归属与 quote 归属,消息归属按 message_info.user_info 判定;reply 段实机为纯消息 id,不含发送者 user_id,经主机能力 `message.get_by_id`(message_id=reply 段,chat_id=当前流)解析原发送者后与目标用户比对;解析失败按未 quote 命中并显式告警,每轮至多一条);
   - 该人的计时基准 = 其活跃过的所有流(batch_counter 记录)中互动时间的最大值;若从未命中(从未被 bot 直接回应),以该人好感度行的 `judged_at`(上次结算时间)为计时基准;
   - 距今 ≤ `decay_after_days` 视为有互动;用户发言但 bot 未直接回应不算互动(bot 主动发言不 quote 任何人时,群聊不重置任何人的计时,私聊重置)。
 - **触发**:每日调度(与日终结算同 tick,先衰减后结算):扫描 `favorability` 表 score>0 的**人**(单行 per user_id),距 bot 最后回应 > `decay_after_days`(默认 7 天)者进入衰减判定。每人每日最多一次;判定后重置计时。其流已消亡(流列表查无此流)的行跳过并显式告警;单行取消息失败只跳过该行,不中止整轮扫描。
@@ -37,7 +37,7 @@
 - **落库**:`apply_delta` + `favorability_log`(judge_id=`decay-时间戳-人`);分数可降到 0,等级按分数自然降级,注记更新。
 - **错误处理**:LLM 失败 → 跳过本轮、显式日志,次日重试。
 - **配置**(favorability 节):`decay_enabled`(默认 true)、`decay_after_days`(默认 7)、`decay_max`(默认 3)、`decay_llm_model`(默认 memory)、`decay_llm_timeout_ms`(默认 None)。
-- **测试**:候选流扫描(超期/未超期/0 分/有互动)、判定解析、delta 钳制、失败不落库。
+- **测试**:候选流扫描(超期/未超期/0 分/有互动)、判定解析、delta 钳制、失败不落库;quote 互动用例:bot 消息 reply 段经 `message.get_by_id` 解析原发送者 == 目标 → 互动命中,解析出他人 / 解析失败(未注入字段)→ 不命中,解析失败每轮至多一条 warning。
 
 ### 3.2 睡眠管理(全局状态机;睡眠=日程窗口)
 

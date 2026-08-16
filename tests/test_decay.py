@@ -36,13 +36,39 @@ def test_last_bot_interaction_group_only_at_mention():
     # bot 回应了别人(无 @),不算 u1 的互动
     msgs = [_msg("u2", "2026-08-10T10:00:00"), _msg("3545773341", "2026-08-12T10:00:00")]
     assert last_bot_interaction_time(msgs, "u1", "3545773341", stream_is_group=True) is None
-    # reply 段实机为纯消息 id(不含发送者 user_id),quote 判定恒不命中(最终审查 I2)
+    # 仅有原始 reply_to(纯消息 id,未注入 resolved_quote_user_id = 解析失败/未解析)不命中;
+    # quote 命中需 plugin.py _daily_decay 预解析注入字段(最终审查 I2 恢复)
     msgs2 = [_msg("u2", "2026-08-10T10:00:00"), _msg("3545773341", "2026-08-12T10:00:00", quote="<msg u1>")]
     assert last_bot_interaction_time(msgs2, "u1", "3545773341", stream_is_group=True) is None
     # bot @ 了 u1(消息含 at 段)
     at_msg = {"timestamp": "2026-08-12T10:00:00", "message_info": {"user_info": {"user_id": "3545773341"}},
               "raw_message": [{"type": "at", "data": {"target_user_id": "u1"}}]}
     assert last_bot_interaction_time([at_msg], "u1", "3545773341", stream_is_group=True) == "2026-08-12T10:00:00"
+
+
+def test_last_bot_interaction_group_quote_hit_after_resolve():
+    """quote 命中(规格 §3.1):bot 消息 reply 段经 message.get_by_id 解析原发送者,
+    由 plugin.py 预解析注入 resolved_quote_user_id —— == 目标则互动命中。"""
+
+    # 解析出的原发送者 == 目标 u1 → 命中
+    q_hit = {"timestamp": "2026-08-12T10:00:00",
+             "message_info": {"user_info": {"user_id": "3545773341"}},
+             "reply_to": "msg-1", "resolved_quote_user_id": "u1"}
+    assert last_bot_interaction_time([q_hit], "u1", "3545773341", stream_is_group=True) == "2026-08-12T10:00:00"
+    # 解析出的原发送者 != 目标(bot 回别人不得重置本用户计时)→ 不命中
+    q_other = {"timestamp": "2026-08-12T10:00:00",
+               "message_info": {"user_info": {"user_id": "3545773341"}},
+               "reply_to": "msg-2", "resolved_quote_user_id": "u2"}
+    assert last_bot_interaction_time([q_other], "u1", "3545773341", stream_is_group=True) is None
+    # 解析失败未注入字段(仅有原始 reply_to)→ 不命中(与 at 用例区分)
+    q_raw = _msg("3545773341", "2026-08-12T10:00:00", quote="msg-3")
+    assert last_bot_interaction_time([q_raw], "u1", "3545773341", stream_is_group=True) is None
+    # at + quote 同时存在:任一命中即互动
+    q_at = {"timestamp": "2026-08-12T10:00:00",
+            "message_info": {"user_info": {"user_id": "3545773341"}},
+            "reply_to": "msg-4", "resolved_quote_user_id": "u2",
+            "raw_message": [{"type": "at", "data": {"target_user_id": "u1"}}]}
+    assert last_bot_interaction_time([q_at], "u1", "3545773341", stream_is_group=True) == "2026-08-12T10:00:00"
 
 
 def test_scan_and_apply_skips_recent_interaction(tmp_path):

@@ -41,10 +41,31 @@ class _StubPaths:
 
 
 class _StubCtx:
-    def __init__(self, data_dir):
+    def __init__(self, data_dir, recent=None, by_id=None):
         self.logger = _StubLogger()
         self.paths = _StubPaths(data_dir)
         self.config = type("_C", (), {"get": staticmethod(lambda key, default="": None)})()
+        # call_capability 桩数据:recent = message.get_recent 返回;by_id = message_id -> 序列化消息 dict
+        self._recent = [] if recent is None else recent
+        self._by_id = {} if by_id is None else by_id
+        self._streams = [
+            {"session_id": "g1", "is_group_session": True, "user_id": ""},
+            {"session_id": "p1", "is_group_session": False, "user_id": "u1"},
+        ]
+        self.chat = type("_C", (), {"get_all_streams": self._get_all_streams})()
+
+    async def _get_all_streams(self):
+        return list(self._streams)
+
+    async def call_capability(self, name, **kw):
+        """桩:message.get_by_id 按注入的 by_id 表应答(异常/None 透传,模拟实机失败路径)。"""
+        if name == "message.get_recent":
+            return list(self._recent)
+        if name == "message.get_by_id":
+            return self._by_id.get(str(kw.get("message_id")))
+        if name == "chat.get_all_streams":
+            return list(self._streams)
+        return {"success": True, "response": "{}"}
 
 
 def _fake_llm(messages, model=""):
@@ -637,3 +658,73 @@ def test_settle_and_log_per_user_aggregates_streams(tmp_path):
     p._settling.add("u1")
     asyncio.run(p._settle_and_log("u1", kind="daily"))
     assert len(fetched) == 2
+
+
+def _make_history_plugin(tmp_path, logs, recent, by_id=None):
+    """构造 _fetch_recent_for_history 测试用插件实例:真实 config + 收集日志 + capability 桩。"""
+
+    import plugin as plugin_mod
+    from catsitate_core.config import CatsitateConfig
+
+    ctx = _StubCtx(tmp_path, recent=recent, by_id=by_id)
+    ctx.logger = _CollectLogger(logs)
+    p = plugin_mod.CatsitatePlugin()
+    p._ctx = ctx
+    p._plugin_config_instance = CatsitateConfig()
+    p.config.favorability.bot_user_id = "3545773341"
+    p._stream_cache = {}
+    p._stream_cache_at = 0.0
+    return p
+
+
+def test_fetch_recent_for_history_quote_resolves_sender(tmp_path):
+    """结算路径 quote 语义(规格 §3.1):bot 消息 reply 段经 message.get_by_id 解析原发送者,
+    与结算目标一致 → addressed=True;解析出他人 → False;用户消息不读 addressed。"""
+
+    logs: list = []
+    by_id = {
+        "m1": {"message": {"message_info": {"user_info": {"user_id": "u1"}}}},
+        "m2": {"message": {"message_info": {"user_info": {"user_id": "u2"}}}},
+    }
+    recent = [
+        {"message_id": "b1", "timestamp": "1755225600.0", "processed_plain_text": "回 u1",
+         "message_info": {"user_info": {"user_id": "3545773341"}}, "reply_to": "m1"},
+        {"message_id": "b2", "timestamp": "1755225660.0", "processed_plain_text": "回 u2",
+         "message_info": {"user_info": {"user_id": "3545773341"}}, "reply_to": "m2"},
+        {"message_id": "u3", "timestamp": "1755225720.0", "processed_plain_text": "普通发言",
+         "message_info": {"user_info": {"user_id": "u3"}}, "reply_to": "m1"},
+    ]
+    p = _make_history_plugin(tmp_path, logs, recent, by_id)
+    history = asyncio.run(p._fetch_recent_for_history("g1", 50, "u1"))
+    by_seq = {h["seq"]: h for h in history}
+    assert by_seq[0]["addressed"] is True   # 解析原发送者 == 结算目标
+    assert by_seq[1]["addressed"] is False  # 解析原发送者 != 结算目标
+    assert by_seq[2]["addressed"] is None   # 用户消息不读 addressed
+    assert not [lv for lv, a, k in logs if lv == "warning"]  # 全部解析成功,无告警
+
+
+def test_fetch_recent_for_history_quote_resolve_failure_warns_once(tmp_path):
+    """解析失败(能力抛异常)→ 该条未 addressed(False)且有 warning,每轮至多一条(不静默)。"""
+
+    logs: list = []
+
+    class _RaisingById(dict):
+        def get(self, key, default=None):
+            del key, default
+            raise RuntimeError("get_by_id 能力不可用")
+
+    recent = [
+        {"message_id": "b1", "timestamp": "1755225600.0", "processed_plain_text": "回 u1",
+         "message_info": {"user_info": {"user_id": "3545773341"}}, "reply_to": "m1"},
+        {"message_id": "b2", "timestamp": "1755225660.0", "processed_plain_text": "回 u2",
+         "message_info": {"user_info": {"user_id": "3545773341"}}, "reply_to": "m2"},
+    ]
+    p = _make_history_plugin(tmp_path, logs, recent, _RaisingById())
+    history = asyncio.run(p._fetch_recent_for_history("g1", 50, "u1"))
+    by_seq = {h["seq"]: h for h in history}
+    assert by_seq[0]["addressed"] is False  # 解析失败按未 quote 命中
+    assert by_seq[1]["addressed"] is False
+    warns = [(lv, a, k) for lv, a, k in logs if lv == "warning"]
+    assert len(warns) == 1  # 每轮至多一条告警
+    args = warns[0][1]
+    assert "quote 发送者解析失败(stream=%s):%s" in args[0] and args[1] == "g1"

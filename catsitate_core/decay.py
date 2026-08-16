@@ -47,10 +47,10 @@ def last_bot_interaction_time(
 ) -> str | None:
     """流内该用户最近一次被 bot 直接回应的时间(ISO);从未直接回应返回 None。
 
-    私聊:任意 bot 消息即回应;群聊:bot 消息 @ 了该用户才算——
-    bot 回应他人不得重置本用户计时(规格 §3.1 群聊防误判)。
-    reply 段实机为纯消息 id(不含发送者 user_id),quote 判定恒不命中;
-    quote 判定待主程序提供「消息 id → 发送者」映射后再启用(最终审查 I2)。
+    私聊:任意 bot 消息即回应;群聊:bot 消息 @ 或 quote(reply 段经 message.get_by_id
+    解析原发送者)了该用户才算——bot 回应他人不得重置本用户计时(规格 §3.1 群聊防误判)。
+    quote 的原发送者由 plugin.py _daily_decay 预解析后注入 resolved_quote_user_id
+    (解析失败不注入该字段);本函数为纯函数,只比对注入字段,不做任何消息解析/网络调用。
     """
 
     user_id, bot_user_id = str(user_id), str(bot_user_id)
@@ -64,14 +64,14 @@ def last_bot_interaction_time(
         if str(ui.get("user_id") or "") != bot_user_id:
             continue
         if stream_is_group:
-            # reply 段实机为纯消息 id(不含发送者 user_id),quote 判定恒不命中,
-            # 只保留 at 判定(最终审查 I2)
             at_hit = any(
                 isinstance(seg, dict) and seg.get("type") == "at"
                 and str((seg.get("data") or {}).get("target_user_id") or "") == user_id
                 for seg in (m.get("raw_message") or [])
             )
-            if not at_hit:
+            # quote 命中:已注入的 resolved_quote_user_id == 目标(字段缺失 = 解析失败
+            # 或非 quote 消息,均不等于目标,不再做 reply_to 子串比对)
+            if not at_hit and m.get("resolved_quote_user_id") != user_id:
                 continue
         ts = str(m.get("timestamp") or "")
         try:

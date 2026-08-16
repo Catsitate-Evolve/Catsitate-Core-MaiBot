@@ -37,6 +37,7 @@
   "capabilities": [
     "send.text",
     "message.get_recent",
+    "message.get_by_id",
     "llm.generate",
     "api.call",
     "chat.get_private_streams",

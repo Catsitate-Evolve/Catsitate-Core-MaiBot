@@ -207,8 +207,6 @@ class ScheduleSection(PluginConfigBase):
     enabled: bool = _f(True, "日程模块开关", label="日程模块开关")
     max_regenerate: int = _f(1, "生成校验失败重生成次数", label="重生成次数")
     speak_threshold_level: str = _f("熟悉", "日常发言最低好感度等级(陌生/熟悉/亲近/挚友/特别)", label="日常发言等级门槛")
-    greet_threshold_level: str = _f("亲近", "早晚安问候最低好感度等级", label="早晚安等级门槛")
-    private_threshold_level: str = _f("挚友", "主动私聊最低好感度等级", label="主动私聊等级门槛")
     speak_max_streams_per_window: int = _f(1, "每窗口最多主动触发流数(按等级+活跃度排序取前 n)", label="每窗口触发流数上限")
     schedule_llm_model: str = _f("memory", "日程生成模型:填主程序 task 名", label="日程生成模型(task 名)")
     schedule_llm_timeout_ms: int | None = _f(None, "日程生成 LLM 超时(毫秒);留空=主程序默认", label="日程生成超时(毫秒)")

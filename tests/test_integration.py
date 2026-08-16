@@ -440,3 +440,182 @@ def test_restore_schedule_from_file_today_only(tmp_path):
     p._restore_schedule()
     assert p._schedule_data == {}
     assert (p._ctx.paths.data_dir / "schedule.json").exists()
+
+
+class _CollectLogger:
+    """收集日志的 stub logger(断言主动问候跳过日志)。"""
+
+    def __init__(self, logs: list):
+        self._logs = logs
+
+    def _record(self, level, a, k):
+        self._logs.append((level, a, k))
+
+    def info(self, *a, **k):
+        self._record("info", a, k)
+
+    def warning(self, *a, **k):
+        self._record("warning", a, k)
+
+    def exception(self, *a, **k):
+        self._record("exception", a, k)
+
+    def error(self, *a, **k):
+        self._record("error", a, k)
+
+    def debug(self, *a, **k):
+        self._record("debug", a, k)
+
+
+class _ProactiveStub:
+    def __init__(self, out: list):
+        self._out = out
+
+    async def trigger(self, **kw):
+        self._out.append(kw)
+
+
+def _make_greet_plugin(tmp_path, logs):
+    """构造 _greet_exclusive 测试用插件实例:真实 store/fav_engine + 收集日志。"""
+
+    import plugin as plugin_mod
+    from catsitate_core.config import CatsitateConfig
+    from catsitate_core.favorability import BatchEngine
+    from catsitate_core.storage import SQLiteStore
+
+    ctx = _StubCtx(tmp_path)
+    ctx.logger = _CollectLogger(logs)
+    p = plugin_mod.CatsitatePlugin()
+    p._ctx = ctx
+    p._plugin_config_instance = CatsitateConfig()
+    p._speak_counts = {}
+    p.store = SQLiteStore(tmp_path / "greet.db")
+    p.fav_engine = BatchEngine(p.store, p.config.favorability)
+    p.fav_engine.ensure_schema()
+    return p
+
+
+def _make_exclusive_plugin(tmp_path, logs, streams=None):
+    """装配特别者(u1)与流缓存:streams 为 {stream_id: {is_group_session, user_id}}。"""
+
+    p = _make_greet_plugin(tmp_path, logs)
+    p.fav_engine.apply_delta("u1", 100, "特别之选", judged_at="2026-08-16T08:00:00")
+    if streams is not None:
+        async def _stub_refresh():
+            p._stream_cache = {
+                sid: {"session_id": sid, "is_group_session": info.get("is_group_session", False),
+                      "user_id": info.get("user_id", "")}
+                for sid, info in streams.items()
+            }
+        p._refresh_stream_cache = _stub_refresh
+    return p
+
+
+_GREET_WIN = {"kind": "greeting", "activity": "早安", "start": "2026-08-16T08:00", "end": "2026-08-16T08:30"}
+
+
+def test_greet_exclusive_no_special_no_trigger(tmp_path):
+    """主动问候:无特别者 → 不 trigger(库空直接返回 False)。"""
+
+    logs: list = []
+    p = _make_greet_plugin(tmp_path, logs)
+    triggered: list[dict] = []
+    p._ctx.maisaka = type("_M", (), {"proactive": _ProactiveStub(triggered)})()
+    assert asyncio.run(p._greet_exclusive("2026-08-16", _GREET_WIN)) is False
+    assert triggered == []
+
+
+def test_greet_exclusive_no_private_stream_logs_skip(tmp_path):
+    """主动问候:特别者无私聊流 → 不 trigger 且有跳过日志。"""
+
+    logs: list = []
+    p = _make_exclusive_plugin(tmp_path, logs, streams={"g1": {"is_group_session": True, "user_id": "u1"}})
+    triggered: list[dict] = []
+    p._ctx.maisaka = type("_M", (), {"proactive": _ProactiveStub(triggered)})()
+    assert asyncio.run(p._greet_exclusive("2026-08-16", _GREET_WIN)) is False
+    assert triggered == []
+    assert any(level == "info" and "无私聊流" in str(a) for level, a, k in logs)
+
+
+def test_greet_exclusive_private_stream_triggers(tmp_path):
+    """主动问候:有私聊流 → trigger 且 speak_counts+1。"""
+
+    logs: list = []
+    p = _make_exclusive_plugin(tmp_path, logs, streams={"p1": {"is_group_session": False, "user_id": "u1"}})
+    triggered: list[dict] = []
+    p._ctx.maisaka = type("_M", (), {"proactive": _ProactiveStub(triggered)})()
+    assert asyncio.run(p._greet_exclusive("2026-08-16", _GREET_WIN)) is True
+    assert len(triggered) == 1
+    assert triggered[0]["stream_id"] == "p1"
+    assert "特别" in str(triggered[0]["intent"])
+    assert p._speak_counts["2026-08-16"] == 1
+
+
+def test_greet_exclusive_speak_limit_blocks(tmp_path):
+    """主动问候:达 daily_speak_limit → 不 trigger。"""
+
+    logs: list = []
+    p = _make_exclusive_plugin(tmp_path, logs, streams={"p1": {"is_group_session": False, "user_id": "u1"}})
+    triggered: list[dict] = []
+    p._ctx.maisaka = type("_M", (), {"proactive": _ProactiveStub(triggered)})()
+    p._speak_counts = {"2026-08-16": p.config.schedule.daily_speak_limit}
+    assert asyncio.run(p._greet_exclusive("2026-08-16", _GREET_WIN)) is False
+    assert triggered == []
+
+
+def test_greet_exclusive_multiple_windows_no_daily_limit(tmp_path):
+    """主动问候:连续两个 greeting 窗口都触发(无每日一次限制,仅受 daily_speak_limit 约束)。"""
+
+    logs: list = []
+    p = _make_exclusive_plugin(tmp_path, logs, streams={"p1": {"is_group_session": False, "user_id": "u1"}})
+    triggered: list[dict] = []
+    p._ctx.maisaka = type("_M", (), {"proactive": _ProactiveStub(triggered)})()
+    morning = dict(_GREET_WIN)
+    night = {"kind": "greeting", "activity": "晚安", "start": "2026-08-16T22:00", "end": "2026-08-16T23:00"}
+    assert asyncio.run(p._greet_exclusive("2026-08-16", morning)) is True
+    assert asyncio.run(p._greet_exclusive("2026-08-16", night)) is True
+    assert len(triggered) == 2
+    assert p._speak_counts["2026-08-16"] == 2
+
+
+def test_settle_and_log_per_user_aggregates_streams(tmp_path):
+    """按人结算接线:check_trigger(user_id) 与 _settle_and_log(user_id, kind) 按人调用不抛错,
+    且结算聚合该人全部流的素材;同 (user, kind) 并发防护直接跳过。"""
+
+    import plugin as plugin_mod
+    from catsitate_core.config import CatsitateConfig
+    from catsitate_core.favorability import BatchEngine
+    from catsitate_core.storage import SQLiteStore
+
+    p = plugin_mod.CatsitatePlugin()
+    p._ctx = _StubCtx(tmp_path)
+    p._plugin_config_instance = CatsitateConfig()
+    p.config.plugin.enabled = True
+    p._settling = set()
+    p._speak_counts = {}
+    p.store = SQLiteStore(tmp_path / "settle.db")
+    p.fav_engine = BatchEngine(p.store, p.config.favorability)
+    p.fav_engine.ensure_schema()
+    p.fav_executor = SettleExecutor(p.fav_engine, _fake_llm)  # 与 plugin.py on_load 同装配
+    p.fav_engine.count_message("u1", "s1")
+    p.fav_engine.count_message("u1", "s2")
+    fetched: list[str] = []
+
+    async def _fetch_stub(stream_id, limit):
+        del limit
+        fetched.append(stream_id)
+        return []  # 空素材 → settle 返回 failed(素材为空),不走 LLM
+
+    async def _no_persona():
+        return "猫耳少女"
+
+    p._fetch_recent_for_history = _fetch_stub
+    p._persona = _no_persona
+    # check_trigger 按人调用不抛错(2 条 < 阈值 20,不触发早结)
+    assert p.fav_engine.check_trigger("u1") is None
+    asyncio.run(p._settle_and_log("u1", kind="daily"))
+    assert set(fetched) == {"s1", "s2"}  # 聚合该人全部流素材
+    # 并发防护:同 (user, kind) 已在结算中时直接跳过,不再取数
+    p._settling.add(("u1", "daily"))
+    asyncio.run(p._settle_and_log("u1", kind="daily"))
+    assert len(fetched) == 2

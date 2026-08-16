@@ -159,7 +159,6 @@ class CatsitatePlugin(MaiBotPlugin):
         self._scheduler.register("sleep_tick", 60, self._sleep_tick)
         self._schedule_generated: bool = False  # 当天日程是否为 LLM 生成(模板撑场为 False)
         self._schedule_tick_fired: dict[str, str] = {}  # day -> 已触发窗口 mark(day|start)
-        self._greet_sent: dict[str, str] = {}  # day|user_id -> day(2.3 每用户每日一次)
         # 触发去重持久化(联调发现:内存态重启后旧备忘重复注入)
         self._remind_fired_snapshot = JsonSnapshot(data_dir / "remind_fired.json")
         self._remind_fired: dict[str, str] = self._remind_fired_snapshot.load()  # remind:<id> -> 触发时刻
@@ -476,7 +475,7 @@ class CatsitatePlugin(MaiBotPlugin):
         self.fav_engine.count_message(user_id, stream_id)
         trigger = self.fav_engine.check_trigger(user_id)
         if trigger == "early":
-            self._spawn_background_task(self._settle_and_log(user_id, stream_id, kind="early"))
+            self._spawn_background_task(self._settle_and_log(user_id, kind="early"))
 
     # ---------- Hook:睡眠拦截与晚安判定 ----------
 
@@ -713,7 +712,7 @@ class CatsitatePlugin(MaiBotPlugin):
                         f"fav:{target}",
                         # 联调决定:5 级规则全量注入改为按等级单条注入(等级规则块并入好感度块)
                         build_favorability_block(
-                            self.fav_engine, target, stream_id,
+                            self.fav_engine, target,
                             include_rule=cfg.inject.level_rule_enabled,
                         ),
                     )
@@ -867,17 +866,11 @@ class CatsitatePlugin(MaiBotPlugin):
         await self._daily_decay()  # 先衰减后结算(同一 tick 调用顺序)
         if not self.config.plugin.enabled or not self.config.favorability.enabled:
             return
-        # 按人语义:多流用户日终只结一次,素材暂取最近活跃流(账本仅活跃记录,Task 3 后素材按人跨流聚合)
+        # 按人语义:多流用户日终只结一次,结算聚合该人全部流素材(规格全局决策 #7)
         for user_id in self.fav_engine.iter_today_active():
             if self.fav_engine.has_daily_settle_today(user_id):
                 continue
-            rows = self.store.query(
-                "SELECT stream_id FROM batch_counter WHERE user_id = ? AND count > 0 "
-                "ORDER BY last_bump DESC LIMIT 1",
-                (user_id,),
-            )
-            stream_id = rows[0][0] if rows else ""
-            await self._settle_and_log(user_id, stream_id, kind="daily")
+            await self._settle_and_log(user_id, kind="daily")
 
     async def _sleep_tick(self) -> None:
         if not self.config.plugin.enabled or not self.config.sleep.enabled:
@@ -1053,8 +1046,8 @@ class CatsitatePlugin(MaiBotPlugin):
             return  # 同窗口只触发一次
         if self._speak_counts.get(day, 0) >= self.config.schedule.daily_speak_limit:
             return
-        # greeting 窗口:先 2.3 后 2.1(每窗口最多一次)
-        if win.get("kind") == "greeting" and await self._try_private_greet(day, win):
+        if win.get("kind") == "greeting":
+            await self._greet_exclusive(day, win)  # 主动问候:仅特别者+私聊通道,无 2.1 群流路径
             self._schedule_tick_fired[day] = mark
             return
         await self._window_trigger(day, win)
@@ -1063,8 +1056,8 @@ class CatsitatePlugin(MaiBotPlugin):
     async def _window_trigger(self, day: str, win: dict) -> None:
         """2.1 窗口 trigger:门槛过滤 → 活跃流排序取前 n → 每流 trigger(计 1)。"""
 
-        threshold = self.config.schedule.greet_threshold_level if win.get("kind") == "greeting" else self.config.schedule.speak_threshold_level
-        candidates = await self._active_streams_over(threshold, day)
+        threshold = self.config.schedule.speak_threshold_level
+        candidates = await self._active_streams_over(day)
         if not candidates:
             return
         overview = self._day_overview_text(win)
@@ -1084,8 +1077,9 @@ class CatsitatePlugin(MaiBotPlugin):
             self._speak_counts[day] = self._speak_counts.get(day, 0) + 1
             self.ctx.logger.info("主动触发[%s] -> %s:%s", day, target["stream_id"], (win.get("activity") or "")[:40])
 
-    async def _active_streams_over(self, threshold: str, day: str) -> list[dict]:
-        """候选流:batch_counter.last_bump 近 24h 的活跃流,经等级门槛过滤,按(等级,最近活动)降序。
+    async def _active_streams_over(self, day: str) -> list[dict]:
+        """候选流(2.1 日常发言):近 24h 活跃流按人取等级,门槛固定 speak_threshold_level,
+        按(等级,最近活动)降序(daily 窗口专用)。
 
         私聊流 user_id 取流信息 user_id,群聊流取最近非 bot 说话人(复用 _resolve_speaker 近似);
         无当前说话人的流跳过(空 user_id 无法作 trigger 目标)。"""
@@ -1097,11 +1091,12 @@ class CatsitatePlugin(MaiBotPlugin):
             (cutoff,),
         )
         candidates = []
+        threshold = self.config.schedule.speak_threshold_level
         for stream_id, last_bump in rows:
             user_id = await self._resolve_speaker(stream_id)
             if not user_id:
                 continue  # 无当前说话人则跳过
-            row = self.fav_engine.get_level(user_id, stream_id)
+            row = self.fav_engine.get_level(user_id)
             level_name = LEVELS[row["level"]] if row else "陌生"
             if not threshold_met(level_name, threshold):
                 continue
@@ -1116,42 +1111,40 @@ class CatsitatePlugin(MaiBotPlugin):
         candidates.sort(key=lambda c: (c["_level"], c["_recent"]), reverse=True)
         return [{k: c[k] for k in ("stream_id", "user_id", "level_name", "note")} for c in candidates]
 
-    async def _try_private_greet(self, day: str, win: dict) -> bool:
-        """2.3 主动私聊:挚友级私聊流 trigger 问候语境指示;发送成功返回 True(本窗口不再走 2.1)。"""
+    async def _greet_exclusive(self, day: str, win: dict) -> bool:
+        """主动问候(规格 §3.5):仅「特别」等级者 + 必须存在私聊流;greeting 窗口起点触发,无每日一次限制。"""
 
         if self._speak_counts.get(day, 0) >= self.config.schedule.daily_speak_limit:
             return False
-        await self._refresh_stream_cache()  # 缓存可能为空/过期,先刷新再找目标(实机 2.3 验收发现)
-        target = None
+        rows = self.store.query("SELECT user_id, note FROM favorability WHERE level >= 4 LIMIT 1")
+        if not rows:
+            return False  # 无特别者,不问候
+        user_id, note = rows[0]
+        await self._refresh_stream_cache()
+        target_stream = None
         for stream_id, info in self._stream_cache.items():
             if str(info.get("is_group_session") or "").lower().startswith(("true", "1")):
                 continue
-            user_id = str(info.get("user_id") or "")
-            if not user_id or self._greet_sent.get(f"{day}|{user_id}"):
-                continue
-            row = self.fav_engine.get_level(user_id, stream_id)
-            level_name = LEVELS[row["level"]] if row else "陌生"
-            if threshold_met(level_name, self.config.schedule.private_threshold_level):
-                target = (user_id, stream_id, level_name, row["note"] if row else "")
+            if str(info.get("user_id") or "") == user_id:
+                target_stream = stream_id
                 break
-        if target is None:
+        if target_stream is None:
+            self.ctx.logger.info("主动问候跳过:特别者(%s)无私聊流", user_id)
             return False
-        user_id, stream_id, level_name, note = target
         intent = (
-            f"现在是你的日程「{win.get('activity')}」时间,{user_id} 是你{level_name}级的好友(注记:{note or '无'})。"
+            f"现在是你的日程「{win.get('activity')}」时间,{user_id} 是你「特别」级的好友(注记:{note or '无'})。"
             "想问候就用自己的方式轻轻说一句,不想说就保持沉默。"
         )
         try:
             await self.ctx.maisaka.proactive.trigger(
-                stream_id=stream_id, intent=intent,
+                stream_id=target_stream, intent=intent,
                 reason=f"日程问候窗口:{win.get('activity')}", priority="",
             )
         except Exception:
-            self.ctx.logger.exception("主动私聊触发失败(user=%s)", user_id)
+            self.ctx.logger.exception("主动问候触发失败(user=%s)", user_id)
             return False
-        self._greet_sent[f"{day}|{user_id}"] = day
         self._speak_counts[day] = self._speak_counts.get(day, 0) + 1
-        self.ctx.logger.info("主动私聊触发[%s] -> %s", day, user_id)
+        self.ctx.logger.info("主动问候触发[%s] -> %s", day, user_id)
         return True
 
     async def _remind_fallback_tick(self) -> None:
@@ -1210,10 +1203,10 @@ class CatsitatePlugin(MaiBotPlugin):
             return "无数据"
 
     def _fav_summary_text(self) -> str:
-        """重要用户好感度汇总:各用户跨流最高等级『u:等级(分数)』,按等级降序。"""
+        """重要用户好感度汇总:按人单行『u:等级(分数)』,按等级降序。"""
 
         rows = self.store.query(
-            "SELECT user_id, MAX(level), MAX(score) FROM favorability GROUP BY user_id ORDER BY MAX(level) DESC, MAX(score) DESC"
+            "SELECT user_id, level, score, note FROM favorability ORDER BY level DESC, score DESC"
         )
         if not rows:
             return "无"
@@ -1293,32 +1286,37 @@ class CatsitatePlugin(MaiBotPlugin):
         for key in list(self._speak_counts):
             if key != day:
                 del self._speak_counts[key]
-        for key in list(self._greet_sent):
-            if not key.startswith(f"{day}|"):
-                del self._greet_sent[key]
         for key, value in list(self._remind_fired.items()):
             if not str(value).startswith(day):
                 del self._remind_fired[key]
 
-    async def _settle_and_log(self, user_id: str, stream_id: str, kind: str) -> None:
-        """结算并发防护(最终审查 Important#1):fav_count 与 _daily_settle 可能对同一批次
-        并发发起结算(LLM 秒级延迟窗口内),同一 (user_id, stream_id) 已在结算中直接跳过,防 delta 双计。"""
+    async def _settle_and_log(self, user_id: str, kind: str) -> None:
+        """按人结算(规格全局决策 #7):聚合该人所有流的消息,一次 LLM 判定。
 
-        key = (user_id, stream_id)
+        并发防护保留(最终审查 Important#1):fav_count 与 _daily_settle 可能并发发起
+        同一用户结算(LLM 秒级延迟窗口内),同 (user_id, kind) 已在结算中直接跳过,防 delta 双计。
+        """
+
+        key = (user_id, kind)
         if key in self._settling:
-            self.ctx.logger.info("好感度结算[%s] %s/%s 已在结算中,跳过本轮", kind, user_id, stream_id)
+            self.ctx.logger.info("好感度结算[%s] %s 已在结算中,跳过本轮", kind, user_id)
             return
         self._settling.add(key)
         try:
-            history = await self._fetch_recent_for_history(stream_id, limit=200)
-            persona = await self._persona()
-            result = await self.fav_executor.settle(user_id, stream_id, history, kind=kind, persona=persona)
-            if result["status"] == "ok":
-                self.ctx.logger.info("好感度结算[%s] %s/%s:delta=%s note=%s", kind, user_id, stream_id, result["delta"], result["note"])
-            elif result["status"] == "carried_over":
-                self.ctx.logger.info("好感度日终顺延 %s/%s:%s", user_id, stream_id, result["reason"])
+            streams = [r[0] for r in self.store.query("SELECT DISTINCT stream_id FROM batch_counter WHERE user_id = ?", (user_id,))]
+            history: list[dict] = []
+            for stream_id in streams:
+                history.extend(await self._fetch_recent_for_history(stream_id, 50))
+            result = await self.fav_executor.settle(  # 仓库现有属性名为 fav_executor(plugin.py:85)
+                user_id, history, kind, model=self.config.favorability.llm_model,
+                persona=await self._persona(),
+            )
+            if result.get("status") == "ok":
+                self.ctx.logger.info("好感度结算 %s:%s delta=%s", user_id, kind, result.get("delta"))
+                if result.get("exclusive_clamped"):
+                    self.ctx.logger.warning("结算升特别被独占钳制(user=%s)", user_id)
             else:
-                self.ctx.logger.error("好感度结算失败[%s] %s/%s:%s", kind, user_id, stream_id, result.get("error"))
+                self.ctx.logger.warning("好感度结算失败 %s:%s %s", user_id, kind, result.get("error") or result.get("reason"))
         finally:
             self._settling.discard(key)
 
@@ -1374,16 +1372,36 @@ class CatsitatePlugin(MaiBotPlugin):
         return result if isinstance(result, list) else []
 
     async def _fetch_recent_for_history(self, stream_id: str, limit: int) -> list[dict]:
-        """取近期消息并归一化为 build_material 所需形状 {role, user_id, stream_id, text, seq, ts}。
+        """取近期消息并归一化为 build_material 所需形状
+        {role, user_id, stream_id, text, seq, ts, is_group, addressed}。
 
         spike ④ 实测:消息 dict 键含 message_id/timestamp/platform/message_info/raw_message/
         is_*/session_id/processed_plain_text;user 在 message_info.user_info。
-        role 硬编码说明:bot 消息识别需实机联调确认(bot 账号 id 字段未在 spike 覆盖),
-        当前全部按 user 处理,群聊 bot 随附分支暂不生效(最终审查 Minor#6)。
+        role:message_info.user_info.user_id == bot_user_id 判为 bot(配置留空则一律 user)。
+        addressed 仅群聊 bot 消息有意义:该 bot 消息 reply_to(被回复消息)含流说话人
+        user_id,或 raw_message 存在 type=at 且 target_user_id == 流说话人;流说话人取
+        最近非 bot 发言者(回退流信息 user_id),与 _resolve_speaker 同一近似——私聊流
+        bot 消息不读 addressed(build_material 私聊全随附),设为 None。
         """
 
+        await self._refresh_stream_cache()  # is_group 判定依赖流缓存,先刷新再归一化
+        is_group = self._stream_is_group(stream_id)
         raw = await self._fetch_recent(stream_id, limit)
         bot_id = str(self.config.favorability.bot_user_id or "").strip()
+        # 群聊流说话人(addressed 判定对象):最近非 bot 发言者,回退流信息 user_id
+        speaker = ""
+        if is_group:
+            info = self._stream_cache.get(stream_id) or {}
+            speaker = str(info.get("user_id") or "")
+            if not speaker:
+                for m in raw:
+                    if not isinstance(m, dict):
+                        continue
+                    ui = (m.get("message_info") or {}).get("user_info") or {}
+                    uid = str(ui.get("user_id") or ui.get("sender_id") or "")
+                    if uid and uid != bot_id:
+                        speaker = uid
+                        break
         history: list[dict] = []
         for i, m in enumerate(raw):
             if not isinstance(m, dict):
@@ -1395,9 +1413,16 @@ class CatsitatePlugin(MaiBotPlugin):
             msg_info = m.get("message_info") or {}
             user_info = msg_info.get("user_info") or {}
             user_id = str(user_info.get("user_id") or user_info.get("sender_id") or "")
-            # bot 发言识别:实机确认 napcat 账号后启用(user_id 与 bot_user_id 相等);
-            # 留空(未启用)时一律按 user 处理
             role = "bot" if bot_id and user_id == bot_id else "user"
+            addressed: bool | None = None
+            if role == "bot" and is_group and speaker:
+                quote = str(m.get("reply_to") or "")
+                at_hit = any(
+                    isinstance(seg, dict) and seg.get("type") == "at"
+                    and str((seg.get("data") or {}).get("target_user_id") or "") == speaker
+                    for seg in (m.get("raw_message") or [])
+                )
+                addressed = speaker in quote or at_hit
             history.append({
                 "role": role,
                 "user_id": user_id,
@@ -1405,6 +1430,8 @@ class CatsitatePlugin(MaiBotPlugin):
                 "text": text,
                 "seq": i,
                 "ts": self._normalize_ts(m.get("timestamp")),
+                "is_group": is_group,
+                "addressed": addressed,
             })
         if bot_id:
             bot_n = sum(1 for h in history if h["role"] == "bot")
@@ -1413,7 +1440,7 @@ class CatsitatePlugin(MaiBotPlugin):
 
     @staticmethod
     def _normalize_ts(raw_ts: Any) -> str:
-        """消息时间戳归一化为 ISO(与 batch_counter.window_start 同格式,保证批次过滤可比)。
+        """消息时间戳归一化为 ISO(与 favorability.window_start 同格式,保证窗口过滤可比)。
 
         实机实测:主程序序列化的 timestamp 为 epoch 浮点(字符串);直接与 ISO window_start
         字符串比较恒 False,导致批次素材恒空(联调发现)。

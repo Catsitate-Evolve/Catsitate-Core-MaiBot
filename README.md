@@ -41,5 +41,5 @@ Catsitate 的 MaiBot 核心人格行为插件。仓库地址:https://github.com/
 - 好感度自然衰减:未互动 N 天由 LLM 判定拟人化衰减(0~-decay_max),群聊 quote/@ 防误判,以 `favorability.judged_at` 起算
 - 睡眠管理:睡眠=日程窗口(LLM 自主作息)、睡眠中消息绝对静默拦截、晚安判定入睡、睡醒回顾报告(`data/plugins/catsitate.core/sleep_review/reports/`)
 - 日程:入睡时生成次日动态活动日程(1 睡眠 + 1~8 活动),`[日程]` 块注入 planner;到达活动窗口且存在满足门槛的活跃流 → 日程窗口 trigger 主动发言(表达权交主程序);`update_schedule` 工具可改次日日程
-- 主动私聊(2.3):挚友级私聊用户 greeting 窗口触发主动问候(日志「主动私聊触发[day] -> user」)
+- 主动问候:仅「特别」等级用户(全表唯一)且存在私聊流,greeting 窗口起点触发(日志『主动问候触发[day] -> user』);无每日一次限制
 - 备忘录提醒:备忘新增 remind_at 提醒时间,随日程注入归属流;无日程时到点独立兜底注入

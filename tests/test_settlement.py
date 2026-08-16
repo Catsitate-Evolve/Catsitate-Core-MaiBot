@@ -36,6 +36,7 @@ def test_settle_empty_material_fails(tmp_path):
     ]
     result = asyncio.run(executor.settle("u1", history, kind="early"))
     assert result["status"] == "failed" and "素材为空" in result["error"]
+    assert result["exclusive_clamped"] is False  # 未触达 apply_delta,钳制恒 False(最终审查 M3)
     assert not calls  # 未调 LLM
 
 
@@ -91,6 +92,7 @@ def test_daily_carry_over_when_below_min(tmp_path):
     history = [{"role": "user", "user_id": "u1", "stream_id": "s1", "is_group": False, "addressed": None, "text": "早", "seq": 1}]
     result = asyncio.run(executor.settle("u1", history, kind="daily"))
     assert result["status"] == "carried_over"
+    assert result["exclusive_clamped"] is False  # 顺延未落库,钳制恒 False(最终审查 M3)
     assert calls == []  # 未调用 LLM
     rows = engine.store.query("SELECT count FROM batch_counter WHERE user_id = 'u1' AND stream_id = 's1'")
     assert not rows or rows[0][0] == 0  # 顺延未写计数、未清零
@@ -125,9 +127,29 @@ def test_settle_llm_failure_keeps_state(tmp_path):
     ]
     result = asyncio.run(executor.settle("u1", history, kind="early"))
     assert result["status"] == "failed"
+    assert result["exclusive_clamped"] is False  # LLM 异常路径不落库,钳制恒 False(最终审查 M3)
     assert engine.get_level("u1") is None
     rows = engine.store.query("SELECT count FROM batch_counter WHERE user_id = 'u1' AND stream_id = 's1'")
     assert rows[0][0] == 20  # 失败不重置
+
+
+def test_settle_llm_result_failure_keeps_state(tmp_path):
+    """LLM 返回 success=False → failed 且不落库(exclusive_clamped 恒 False,最终审查 M3)。"""
+
+    import asyncio
+    executor, engine, calls = make_executor(tmp_path, llm_result={"success": False, "response": "模型不可用", "model": ""})
+    for _ in range(20):
+        engine.count_message("u1", "s1", now=lambda: NOW)
+    history = [
+        {"role": "user", "user_id": "u1", "stream_id": "s1", "is_group": False, "addressed": None, "text": "早", "seq": i}
+        for i in range(20)
+    ]
+    result = asyncio.run(executor.settle("u1", history, kind="early"))
+    assert result["status"] == "failed"
+    assert result["exclusive_clamped"] is False
+    assert engine.get_level("u1") is None  # 不落库
+    rows = engine.store.query("SELECT count FROM batch_counter WHERE user_id = 'u1' AND stream_id = 's1'")
+    assert rows[0][0] == 20  # 不重置
 
 
 def test_settle_parse_failure_keeps_state(tmp_path):
@@ -141,6 +163,7 @@ def test_settle_parse_failure_keeps_state(tmp_path):
     ]
     result = asyncio.run(executor.settle("u1", history, kind="early"))
     assert result["status"] == "failed"
+    assert result["exclusive_clamped"] is False  # 解析失败路径不落库,钳制恒 False(最终审查 M3)
     assert engine.get_level("u1") is None  # 不落库
     rows = engine.store.query("SELECT count FROM batch_counter WHERE user_id = 'u1' AND stream_id = 's1'")
     assert rows[0][0] == 20  # 不重置

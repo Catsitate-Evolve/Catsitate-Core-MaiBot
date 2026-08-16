@@ -36,11 +36,18 @@ class BatchEngine:
         self.config = config
 
     def ensure_schema(self) -> None:
-        # 开发期裁定:检测旧形状(含 stream_id 列)直接重建,不做数据迁移
+        # 开发期裁定:检测旧形状直接重建,不做数据迁移
+        #   favorability/favorability_log 旧形状 = 含 stream_id 列(按流存储时代);
+        #   batch_counter 旧形状 = 含 window_start 死列(按人重构前遗留,结算窗口已改用人级 favorability.window_start)
         cols = {r[1] for r in self.store.query("PRAGMA table_info(favorability)")}
+        counter_cols = {r[1] for r in self.store.query("PRAGMA table_info(batch_counter)")}
         if "stream_id" in cols:
             self.store.execute("DROP TABLE IF EXISTS favorability")
             self.store.execute("DROP TABLE IF EXISTS favorability_log")
+            self.store.execute("DROP TABLE IF EXISTS batch_counter")
+        elif "window_start" in counter_cols:
+            # 活跃账本旧形状(死列残留):开发期接受清零重建(最终审查 M1),
+            # 结算窗口按人走 favorability.window_start,不受账本重建影响
             self.store.execute("DROP TABLE IF EXISTS batch_counter")
         self.store.execute(
             """
@@ -72,7 +79,6 @@ class BatchEngine:
                 stream_id TEXT NOT NULL,
                 count INTEGER NOT NULL DEFAULT 0,
                 last_bump TEXT NOT NULL DEFAULT '',
-                window_start TEXT NOT NULL DEFAULT '',
                 PRIMARY KEY (user_id, stream_id)
             )
             """
@@ -328,11 +334,13 @@ class SettleExecutor:
         material = self.engine.build_material(user_id, history)
         # 素材为空(取不到消息/窗口过滤后无目标用户消息):不调 LLM,不落库(审查 M2)
         if not material:
-            return {"status": "failed", "error": "素材为空,跳过结算"}
+            # 未触达 apply_delta,独占钳制状态恒 False(最终审查 M3 统一字段)
+            return {"status": "failed", "error": "素材为空,跳过结算", "exclusive_clamped": False}
         # 顺延口径 = 素材中目标用户本人的消息条数(审查 Minor#8,群聊邻居不计入)
         target_count = sum(1 for m in material if f"[{user_id}]" in m)
         if kind == "daily" and target_count < self.engine.config.daily_settle_min:
-            return {"status": "carried_over", "reason": f"用户消息不足 {self.engine.config.daily_settle_min} 条,顺延"}
+            return {"status": "carried_over", "reason": f"用户消息不足 {self.engine.config.daily_settle_min} 条,顺延",
+                    "exclusive_clamped": False}
         # 稳定段 = 判定指令(system 模板)+ 5 级规则(配置,stable_ctx);变量尾 = 批次素材
         level_rules = self.engine.config.level_rules_list()
         stable_ctx = ([f"bot 人设:{persona}"] if persona.strip() else []) + level_rules
@@ -343,13 +351,14 @@ class SettleExecutor:
         try:
             result = await self.llm_call(messages, model)
         except Exception as exc:  # noqa: BLE001
-            return {"status": "failed", "error": f"LLM 调用异常: {exc}"}
+            # 未触达 apply_delta,独占钳制状态恒 False(最终审查 M3 统一字段)
+            return {"status": "failed", "error": f"LLM 调用异常: {exc}", "exclusive_clamped": False}
         if not isinstance(result, dict) or not result.get("success"):
             detail = result.get("response", "")[:200] if isinstance(result, dict) else str(result)[:200]
-            return {"status": "failed", "error": f"LLM 返回失败: {detail}"}
+            return {"status": "failed", "error": f"LLM 返回失败: {detail}", "exclusive_clamped": False}
         parsed = parse_judge_response(str(result.get("response", "")))
         if parsed is None:
-            return {"status": "failed", "error": "判定 JSON 解析失败"}
+            return {"status": "failed", "error": "判定 JSON 解析失败", "exclusive_clamped": False}
         delta_limit = max(1, self.engine.config.delta_max)
         delta = max(-delta_limit, min(delta_limit, parsed["delta"]))
         judged_at = datetime.now().strftime("%Y-%m-%dT%H:%M:%S")

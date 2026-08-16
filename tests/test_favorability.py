@@ -42,8 +42,7 @@ def test_early_settle_daily_cap(tmp_path):
 
 
 def test_batch_per_user(tmp_path):
-    engine, _ = make_engine(tmp_path)
-    engine.ensure_schema()
+    engine, _ = make_engine(tmp_path)  # make_engine 已 ensure_schema(最终审查 M5)
     now = datetime(2026, 8, 16, 12, 0, 0)
     engine.count_message("111", "s1", now=lambda: now)
     engine.count_message("111", "s2", now=lambda: now)
@@ -75,8 +74,7 @@ def test_group_material_anchored_by_user_messages(tmp_path):
 
 
 def test_material_aggregates_streams(tmp_path):
-    engine, _ = make_engine(tmp_path)
-    engine.ensure_schema()
+    engine, _ = make_engine(tmp_path)  # make_engine 已 ensure_schema(最终审查 M5)
     engine.apply_delta("111", 10, "老朋友", "2026-08-16T08:00:00", judge_id="daily-1")
     history = [
         # 私聊流 p1:用户发言 + bot 回复(全部随附)
@@ -158,6 +156,27 @@ def test_apply_delta_level_and_note_truncation(tmp_path):
     assert len(row["note"]) == 40
 
 
+def test_schema_batch_counter_old_shape_rebuild(tmp_path):
+    """batch_counter 旧形状(含 window_start 死列)检测 → 仅重建活跃账本(最终审查 M1)。"""
+
+    engine, _ = make_engine(tmp_path)
+    engine.store.execute("DROP TABLE batch_counter")
+    engine.store.execute("CREATE TABLE batch_counter (user_id TEXT, stream_id TEXT, count INTEGER, "
+                         "last_bump TEXT, window_start TEXT, PRIMARY KEY (user_id, stream_id))")
+    engine.store.execute("INSERT INTO batch_counter (user_id, stream_id, count, last_bump, window_start) "
+                         "VALUES ('u1', 's1', 5, '2026-08-16T10:00', '2026-08-16T10:00')")
+    engine.ensure_schema()  # 检测到 window_start 死列 → 重建清零(开发期接受活跃账本清零)
+    cols = {r[1] for r in engine.store.query("PRAGMA table_info(batch_counter)")}
+    assert "window_start" not in cols  # 死列已去除
+    rows = engine.store.query("SELECT count FROM batch_counter WHERE user_id = 'u1' AND stream_id = 's1'")
+    assert rows == []  # 账本已重建清零
+    # 新形状幂等:再次 ensure_schema 不重建,计数保留
+    engine.count_message("u1", "s1")
+    engine.ensure_schema()
+    rows = engine.store.query("SELECT count FROM batch_counter WHERE user_id = 'u1' AND stream_id = 's1'")
+    assert rows[0][0] == 1
+
+
 def test_schema_per_user_and_rebuild(tmp_path):
     engine, _ = make_engine(tmp_path)
     engine.ensure_schema()
@@ -175,8 +194,7 @@ def test_schema_per_user_and_rebuild(tmp_path):
 
 
 def test_exclusive_clamp(tmp_path):
-    engine, _ = make_engine(tmp_path)
-    engine.ensure_schema()
+    engine, _ = make_engine(tmp_path)  # make_engine 已 ensure_schema(最终审查 M5)
     engine.apply_delta("A", 100, "唯一", "2026-08-16T12:00:00", judge_id="t1")
     assert engine.get_level("A")["level"] == 4
     status = engine.apply_delta("B", 100, "也想上位", "2026-08-16T12:01:00", judge_id="t2")
@@ -223,8 +241,7 @@ def fake_llm(delta=2, note="测试"):
 
 
 def test_settle_per_user_and_clamp_status(tmp_path):
-    engine, _ = make_engine(tmp_path)
-    engine.ensure_schema()
+    engine, _ = make_engine(tmp_path)  # make_engine 已 ensure_schema(最终审查 M5)
     engine.apply_delta("A", 100, "唯一", "2026-08-16T12:00:00", judge_id="t1")
     # 简报测试缺 B 前置分数(不预置则 0+3=3 分,断言 score==99 永不成立);
     # 按断言意图补 97 分前置:97+3=100 → 触发独占钳制 → 99(挚友)

@@ -1,5 +1,12 @@
 # Changelog
 
+## v0.3.0(2026-08-16,按人重构)
+
+- 好感度按人唯一标识(user_id):favorability 单行按人存储与判定(跨流聚合),日终结算按人合并一次,衰减计时按人跨流取最近互动;`batch_counter` 保留 (user, stream) 行仅作活跃度记录
+- 「特别」等级独占:全表任意时刻最多 1 人「特别」(≥100 分),他人升入被占位时钳制 99 分(挚友)并显式日志;独占者掉出后空位释放
+- 主动问候统一(原 2.3 与 greeting 合并):仅「特别」等级 + 私聊流存在,greeting 窗口起点触发,无每日一次限制;删除 `greet_threshold_level`/`private_threshold_level` 配置
+- 配置字段清理:删 `speak_threshold_level` 以外旧门槛配置;`batch_counter` 移除 `window_start` 死列(旧形状检测自动重建)
+
 ## v0.2.0(2026-08-15,二期)
 
 - 好感度自然衰减:LLM 判定拟人化衰减(未互动 N 天,0~-decay_max),群聊 quote/@ 防误判

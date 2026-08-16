@@ -47,8 +47,10 @@ def last_bot_interaction_time(
 ) -> str | None:
     """流内该用户最近一次被 bot 直接回应的时间(ISO);从未直接回应返回 None。
 
-    私聊:任意 bot 消息即回应;群聊:bot 消息 quote(或 @)了该用户才算——
+    私聊:任意 bot 消息即回应;群聊:bot 消息 @ 了该用户才算——
     bot 回应他人不得重置本用户计时(规格 §3.1 群聊防误判)。
+    reply 段实机为纯消息 id(不含发送者 user_id),quote 判定恒不命中;
+    quote 判定待主程序提供「消息 id → 发送者」映射后再启用(最终审查 I2)。
     """
 
     user_id, bot_user_id = str(user_id), str(bot_user_id)
@@ -62,13 +64,14 @@ def last_bot_interaction_time(
         if str(ui.get("user_id") or "") != bot_user_id:
             continue
         if stream_is_group:
-            quote = str(m.get("reply_to") or "")
+            # reply 段实机为纯消息 id(不含发送者 user_id),quote 判定恒不命中,
+            # 只保留 at 判定(最终审查 I2)
             at_hit = any(
                 isinstance(seg, dict) and seg.get("type") == "at"
                 and str((seg.get("data") or {}).get("target_user_id") or "") == user_id
                 for seg in (m.get("raw_message") or [])
             )
-            if user_id not in quote and not at_hit:
+            if not at_hit:
                 continue
         ts = str(m.get("timestamp") or "")
         try:
@@ -137,6 +140,9 @@ class DecayExecutor:
                 continue
             limit = max(1, self.config.decay_max)
             delta = max(-limit, min(0, delta))
+            # 衰减 delta 恒 ≤ 0(parse_decay_response 已拒绝正 delta),分数只会下降,
+            # 不可能触发「升特别被占位」的独占钳制(钳制仅在 apply_delta 升入特别时发生),
+            # 故衰减路径 exclusive_clamped 恒 False 属设计必然(最终审查 M7)
             judged_at = now_fn().strftime(_ISO)
             status = self.engine.apply_delta(
                 user_id, delta, note, judged_at=judged_at,

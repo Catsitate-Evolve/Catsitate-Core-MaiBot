@@ -32,13 +32,13 @@ def test_last_bot_interaction_private_any_bot_msg():
     assert last_bot_interaction_time(msgs, "u1", "3545773341", stream_is_group=False) == "2026-08-12T10:00:00"
 
 
-def test_last_bot_interaction_group_only_quote_or_mention():
-    # bot 回应了别人(无 quote),不算 u1 的互动
+def test_last_bot_interaction_group_only_at_mention():
+    # bot 回应了别人(无 @),不算 u1 的互动
     msgs = [_msg("u2", "2026-08-10T10:00:00"), _msg("3545773341", "2026-08-12T10:00:00")]
     assert last_bot_interaction_time(msgs, "u1", "3545773341", stream_is_group=True) is None
-    # bot quote 了 u1 的消息
+    # reply 段实机为纯消息 id(不含发送者 user_id),quote 判定恒不命中(最终审查 I2)
     msgs2 = [_msg("u2", "2026-08-10T10:00:00"), _msg("3545773341", "2026-08-12T10:00:00", quote="<msg u1>")]
-    assert last_bot_interaction_time(msgs2, "u1", "3545773341", stream_is_group=True) == "2026-08-12T10:00:00"
+    assert last_bot_interaction_time(msgs2, "u1", "3545773341", stream_is_group=True) is None
     # bot @ 了 u1(消息含 at 段)
     at_msg = {"timestamp": "2026-08-12T10:00:00", "message_info": {"user_info": {"user_id": "3545773341"}},
               "raw_message": [{"type": "at", "data": {"target_user_id": "u1"}}]}

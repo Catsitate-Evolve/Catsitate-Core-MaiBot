@@ -24,7 +24,7 @@ from maibot_sdk.types import HookMode, HookOrder, ToolParameterInfo
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 
 from catsitate_core.config import CatsitateConfig
-from catsitate_core.favorability import LEVELS, LEVEL_INDEX, BatchEngine, SettleExecutor, build_favorability_block
+from catsitate_core.favorability import LEVELS, LEVEL_INDEX, EXCLUSIVE_LEVEL, BatchEngine, SettleExecutor, build_favorability_block
 from catsitate_core.image_relook import build_relook_prompt, find_image_segment
 from catsitate_core.inject import InjectAssembler, InjectionBlock
 from catsitate_core.llm_provider import build_side_prompt
@@ -148,7 +148,7 @@ class CatsitatePlugin(MaiBotPlugin):
         self._persona_cache: str | None = None  # bot 人设缓存(config.get 一次,bot 配置变更时失效)
         self._stream_cache: dict[str, dict] = {}  # session_id -> 流信息(说话人解析,10 分钟 TTL)
         self._stream_cache_at: float = 0.0
-        self._settling: set[tuple[str, str]] = set()  # 结算并发防护键(最终审查 Important#1)
+        self._settling: set[str] = set()  # 结算并发防护键(按人,user_id;最终审查 Important#1/M2)
         self._background_tasks: set[asyncio.Task] = set()  # 后台任务引用(最终审查 Important#2)
         self._scheduler = Scheduler(tick_seconds=60)
         self._scheduler.register("weather", max(self.config.time_aware.weather_refresh_minutes, 1) * 60, self._refresh_environment)
@@ -1116,7 +1116,9 @@ class CatsitatePlugin(MaiBotPlugin):
 
         if self._speak_counts.get(day, 0) >= self.config.schedule.daily_speak_limit:
             return False
-        rows = self.store.query("SELECT user_id, note FROM favorability WHERE level >= 4 LIMIT 1")
+        rows = self.store.query(
+            "SELECT user_id, note FROM favorability WHERE level >= ? LIMIT 1", (EXCLUSIVE_LEVEL,)
+        )
         if not rows:
             return False  # 无特别者,不问候
         user_id, note = rows[0]
@@ -1379,8 +1381,9 @@ class CatsitatePlugin(MaiBotPlugin):
         spike ④ 实测:消息 dict 键含 message_id/timestamp/platform/message_info/raw_message/
         is_*/session_id/processed_plain_text;user 在 message_info.user_info。
         role:message_info.user_info.user_id == bot_user_id 判为 bot(配置留空则一律 user)。
-        addressed 仅群聊 bot 消息有意义:该 bot 消息 reply_to(被回复消息)含结算目标
-        target_user_id,或 raw_message 存在 type=at 且 target_user_id == 结算目标用户;
+        addressed 仅群聊 bot 消息有意义:raw_message 存在 type=at 且 target_user_id ==
+        结算目标用户;reply 段实机为纯消息 id(不含发送者 user_id),quote 判定恒不命中,
+        已删除,待主程序提供「消息 id → 发送者」映射后再启用(最终审查 I2);
         私聊流 bot 消息不读 addressed(build_material 私聊全随附),设为 None。
         """
 
@@ -1402,15 +1405,14 @@ class CatsitatePlugin(MaiBotPlugin):
             role = "bot" if bot_id and user_id == bot_id else "user"
             addressed: bool | None = None
             if role == "bot" and is_group and target_user_id:
-                quote = str(m.get("reply_to") or "")
-                # reply_to 为消息 id,是否含发送者 id 未经实机验证,实机联调时确认;
-                # 若不含可删此分支只留 at
+                # reply 段实机为纯消息 id(不含发送者 user_id),quote 判定恒不命中,
+                # 只保留 at 判定(最终审查 I2)
                 at_hit = any(
                     isinstance(seg, dict) and seg.get("type") == "at"
                     and str((seg.get("data") or {}).get("target_user_id") or "") == target_user_id
                     for seg in (m.get("raw_message") or [])
                 )
-                addressed = target_user_id in quote or at_hit
+                addressed = at_hit
             history.append({
                 "role": role,
                 "user_id": user_id,

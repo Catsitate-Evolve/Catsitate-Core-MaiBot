@@ -8,7 +8,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 
-BLOCK_ORDER: tuple[str, ...] = ("level_rule", "environment", "memo", "favorability")
+BLOCK_ORDER: tuple[str, ...] = ("level_rule", "environment", "schedule", "memo", "favorability")  # 二期:日程块插环境块之后
 
 
 @dataclass(frozen=True)

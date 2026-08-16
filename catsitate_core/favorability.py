@@ -202,51 +202,38 @@ class BatchEngine:
             "window_start": r[4], "judged_at": r[5],
         }
 
-    def build_material(self, user_id: str, stream_id: str, history: list[dict]) -> list[str]:
-        """构造结算素材(时间正序;群聊以目标用户消息为锚,bot 发言与紧邻上下文随附)。
+    def build_material(self, user_id: str, history: list[dict]) -> list[str]:
+        """结算素材(按人跨流聚合;规格全局决策 #7)。"""
 
-        history 元素:{role: "user"|"bot", user_id: str, stream_id: str, text: str, seq: int, ts: str}
-        只取 ts > 当前批次 window_start 的消息(规格"批次内",已结算旧消息不进入素材)。
-        """
-
-        rows = self.store.query(
-            "SELECT window_start FROM batch_counter WHERE user_id = ? AND stream_id = ?",
-            (user_id, stream_id),
-        )
-        window_start = rows[0][0] if rows else ""
-        in_stream = [
-            m for m in history
-            if m["stream_id"] == stream_id and (not window_start or m.get("ts", "") > window_start)
-        ]
-        in_stream.sort(key=lambda m: m["seq"])
-        target_msgs = [m for m in in_stream if m["role"] == "user" and m["user_id"] == user_id]
-        if not target_msgs:
+        row = self.get_level(user_id)
+        window_start = (row or {}).get("window_start") or ""
+        fresh = [m for m in history if not window_start or m.get("ts", "") > window_start]
+        fresh.sort(key=lambda m: (m.get("ts") or "", m.get("seq") or 0))
+        target = [m for m in fresh if m["role"] == "user" and m["user_id"] == user_id]
+        if not target:
             return []
-        anchor = target_msgs[-self.config.material_max_messages :]
-        selected: dict[int, dict] = {}
-        pos_by_seq = {m["seq"]: i for i, m in enumerate(in_stream)}
+        anchor = target[-self.config.material_max_messages:]
+        by_stream: dict[str, list[dict]] = {}
+        for m in fresh:
+            by_stream.setdefault(m["stream_id"], []).append(m)
+        pos_of = {s: {id(m): i for i, m in enumerate(ms)} for s, ms in by_stream.items()}
+        selected: dict[tuple, dict] = {}
         for msg in anchor:
-            selected[msg["seq"]] = msg
-            # 紧邻上下文:同流前后各 1 条(群聊上下文判断 bot 是否回应 ta)
-            pos = pos_by_seq[msg["seq"]]
-            neighbors: list[dict] = []
-            if pos > 0:
-                neighbors.append(in_stream[pos - 1])
-            if pos + 1 < len(in_stream):
-                neighbors.append(in_stream[pos + 1])
+            selected[(msg["stream_id"], msg["seq"])] = msg
+            pos = pos_of[msg["stream_id"]][id(msg)]
+            neighbors = by_stream[msg["stream_id"]][max(0, pos - 1):pos + 2]  # 前后各 1
             for neighbor in neighbors:
-                selected[neighbor["seq"]] = neighbor
-        # bot 在该流的发言随附(与锚点消息同批次窗口内)
-        for msg in in_stream:
-            if msg["role"] == "bot":
-                selected[msg["seq"]] = msg
+                selected[(neighbor["stream_id"], neighbor["seq"])] = neighbor
+        for msg in fresh:  # bot 消息随附:私聊全收,群聊仅 quote/@ 该人
+            if msg["role"] == "bot" and (not msg["is_group"] or msg.get("addressed")):
+                selected[(msg["stream_id"], msg["seq"])] = msg
         material: list[str] = []
-        for msg in sorted(selected.values(), key=lambda m: m["seq"]):
-            role_label = "用户" if msg["role"] == "user" else "bot"
+        for msg in sorted(selected.values(), key=lambda m: (m.get("ts") or "", m.get("seq") or 0)):
+            ctx = "群聊" if msg["is_group"] else "私聊"
             text = msg["text"]
             if len(text) > self.config.material_message_max_chars:
                 text = text[: self.config.material_message_max_chars] + "…"
-            material.append(f"[{msg['user_id']}]({role_label}) {text}")
+            material.append(f"[{msg['user_id']}]({ctx}·{msg['role']}) {text}")
         return material
 
     def iter_today_active(
@@ -333,7 +320,7 @@ class SettleExecutor:
     ) -> dict:
         """执行一次结算。kind: "early" 或 "daily";persona 为 bot 人设背景(结合角色性格判定关系变化)。"""
 
-        material = self.engine.build_material(user_id, stream_id, history)
+        material = self.engine.build_material(user_id, history)
         # 素材为空(取不到消息/窗口过滤后无目标用户消息):不调 LLM,不落库(审查 M2)
         if not material:
             return {"status": "failed", "error": "素材为空,跳过结算"}

@@ -32,7 +32,7 @@ def test_settle_empty_material_fails(tmp_path):
     executor, engine, calls = make_executor(tmp_path)
     # history 无目标用户消息 → build_material 返回空 → 不调 LLM 直接 failed
     history = [
-        {"role": "user", "user_id": "other", "stream_id": "s1", "text": "别人的消息", "seq": 0, "ts": "2026-08-14T11:00:00"}
+        {"role": "user", "user_id": "other", "stream_id": "s1", "is_group": False, "addressed": None, "text": "别人的消息", "seq": 0, "ts": "2026-08-14T11:00:00"}
     ]
     result = asyncio.run(executor.settle("u1", "s1", history, kind="early"))
     assert result["status"] == "failed" and "素材为空" in result["error"]
@@ -43,7 +43,7 @@ def test_settle_includes_persona(tmp_path):
     import asyncio
     executor, engine, calls = make_executor(tmp_path)
     history = [
-        {"role": "user", "user_id": "u1", "stream_id": "s1", "text": f"消息{i}", "seq": i, "ts": f"2026-08-14T11:{i:02d}:00"}
+        {"role": "user", "user_id": "u1", "stream_id": "s1", "is_group": False, "addressed": None, "text": f"消息{i}", "seq": i, "ts": f"2026-08-14T11:{i:02d}:00"}
         for i in range(10)
     ]
     result = asyncio.run(executor.settle("u1", "s1", history, kind="early", persona="猫耳少女,话少"))
@@ -56,7 +56,7 @@ def test_settle_without_persona_no_persona_line(tmp_path):
     import asyncio
     executor, engine, calls = make_executor(tmp_path)
     history = [
-        {"role": "user", "user_id": "u1", "stream_id": "s1", "text": f"消息{i}", "seq": i, "ts": f"2026-08-14T11:{i:02d}:00"}
+        {"role": "user", "user_id": "u1", "stream_id": "s1", "is_group": False, "addressed": None, "text": f"消息{i}", "seq": i, "ts": f"2026-08-14T11:{i:02d}:00"}
         for i in range(10)
     ]
     result = asyncio.run(executor.settle("u1", "s1", history, kind="early"))
@@ -88,7 +88,7 @@ def test_parse_judge_response_non_object_json():
 def test_daily_carry_over_when_below_min(tmp_path):
     import asyncio
     executor, engine, calls = make_executor(tmp_path, daily_min=3)
-    history = [{"role": "user", "user_id": "u1", "stream_id": "s1", "text": "早", "seq": 1}]
+    history = [{"role": "user", "user_id": "u1", "stream_id": "s1", "is_group": False, "addressed": None, "text": "早", "seq": 1}]
     result = asyncio.run(executor.settle("u1", "s1", history, kind="daily"))
     assert result["status"] == "carried_over"
     assert calls == []  # 未调用 LLM
@@ -102,7 +102,7 @@ def test_settle_ok_applies_delta_and_resets(tmp_path):
     for _ in range(20):
         engine.count_message("u1", "s1", now=lambda: NOW)
     history = [
-        {"role": "user", "user_id": "u1", "stream_id": "s1", "text": "早", "seq": i}
+        {"role": "user", "user_id": "u1", "stream_id": "s1", "is_group": False, "addressed": None, "text": "早", "seq": i}
         for i in range(20)
     ]
     result = asyncio.run(executor.settle("u1", "s1", history, kind="early"))
@@ -120,7 +120,7 @@ def test_settle_llm_failure_keeps_state(tmp_path):
     for _ in range(20):
         engine.count_message("u1", "s1", now=lambda: NOW)
     history = [
-        {"role": "user", "user_id": "u1", "stream_id": "s1", "text": "早", "seq": i}
+        {"role": "user", "user_id": "u1", "stream_id": "s1", "is_group": False, "addressed": None, "text": "早", "seq": i}
         for i in range(20)
     ]
     result = asyncio.run(executor.settle("u1", "s1", history, kind="early"))
@@ -136,7 +136,7 @@ def test_settle_parse_failure_keeps_state(tmp_path):
     for _ in range(20):
         engine.count_message("u1", "s1", now=lambda: NOW)
     history = [
-        {"role": "user", "user_id": "u1", "stream_id": "s1", "text": "早", "seq": i}
+        {"role": "user", "user_id": "u1", "stream_id": "s1", "is_group": False, "addressed": None, "text": "早", "seq": i}
         for i in range(20)
     ]
     result = asyncio.run(executor.settle("u1", "s1", history, kind="early"))
@@ -152,7 +152,7 @@ def test_settle_delta_clamped(tmp_path):
     for _ in range(20):
         engine.count_message("u1", "s1", now=lambda: NOW)
     history = [
-        {"role": "user", "user_id": "u1", "stream_id": "s1", "text": "早", "seq": i}
+        {"role": "user", "user_id": "u1", "stream_id": "s1", "is_group": False, "addressed": None, "text": "早", "seq": i}
         for i in range(20)
     ]
     result = asyncio.run(executor.settle("u1", "s1", history, kind="early"))
@@ -184,7 +184,7 @@ def test_delta_clamped_by_config(tmp_path):
     engine.config = FavorabilitySection(delta_max=2)
     executor.engine = engine
     history = [
-        {"role": "user", "user_id": "u1", "stream_id": "s1", "text": f"消息{i}", "seq": i, "ts": f"2026-08-14T11:{i:02d}:00"}
+        {"role": "user", "user_id": "u1", "stream_id": "s1", "is_group": False, "addressed": None, "text": f"消息{i}", "seq": i, "ts": f"2026-08-14T11:{i:02d}:00"}
         for i in range(10)
     ]
     result = asyncio.run(executor.settle("u1", "s1", history, kind="early"))

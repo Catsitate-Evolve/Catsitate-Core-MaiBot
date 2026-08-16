@@ -358,6 +358,7 @@ def test_remind_fallback_tick_injects_when_schedule_not_generated(tmp_path):
     p._schedule_data = _materialize_template(DEFAULT_TEMPLATE_SCHEDULE, datetime.now().strftime("%Y-%m-%d"))
     p._schedule_generated = False
     p._remind_fired = {}
+    p._remind_fired_snapshot = JsonSnapshot(tmp_path / "remind_fired.json")
     p.memo = type("_M", (), {"due_on": staticmethod(lambda day: [
         {"id": 1, "content": "交作业", "stream_id": "s1", "user_id": "u1", "remind_at": "2000-01-01T00:00:00"},
     ])})()

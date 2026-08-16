@@ -150,7 +150,9 @@ class CatsitatePlugin(MaiBotPlugin):
         self._schedule_generated: bool = False  # 当天日程是否为 LLM 生成(模板撑场为 False)
         self._schedule_tick_fired: dict[str, str] = {}  # day -> 已触发窗口 mark(day|start)
         self._greet_sent: dict[str, str] = {}  # day|user_id -> day(2.3 每用户每日一次)
-        self._remind_fired: dict[str, str] = {}  # remind:<id> -> 触发时刻
+        # 触发去重持久化(联调发现:内存态重启后旧备忘重复注入)
+        self._remind_fired_snapshot = JsonSnapshot(data_dir / "remind_fired.json")
+        self._remind_fired: dict[str, str] = self._remind_fired_snapshot.load()  # remind:<id> -> 触发时刻
         self._scheduler.register("schedule_tick", 60, self._schedule_tick)
         self._scheduler.register("remind_fallback", 300, self._remind_fallback_tick)
         self._restore_schedule()  # 重启恢复当日日程与编辑历史(审查 I-4)
@@ -1113,6 +1115,7 @@ class CatsitatePlugin(MaiBotPlugin):
                 self.ctx.logger.exception("备忘提醒注入失败(stream=%s)", entry["stream_id"])
                 continue  # 失败不标记:留重试机会(审查 M-9)
             self._remind_fired[key] = now
+            self._remind_fired_snapshot.save(self._remind_fired)
 
     # ---------- 日程辅助 ----------
 

@@ -1,9 +1,11 @@
-"""好感度批次引擎测试:计数/触发/材料构造/等级。"""
+"""好感度批次引擎测试:计数/触发/材料构造/等级/结算。"""
 
+import asyncio
+import json
 from datetime import datetime
 
 from catsitate_core.config import FavorabilitySection
-from catsitate_core.favorability import BatchEngine, LEVELS, _ISO
+from catsitate_core.favorability import BatchEngine, LEVELS, SettleExecutor, _ISO
 from catsitate_core.storage import SQLiteStore
 
 NOW = datetime(2026, 8, 14, 12, 0, 0)
@@ -209,3 +211,28 @@ def test_material_anchor_at_stream_head_no_wraparound(tmp_path):
 
 def test_levels_order():
     assert LEVELS == ["陌生", "熟悉", "亲近", "挚友", "特别"]
+
+
+def fake_llm(delta=2, note="测试"):
+    """带参 fake LLM 工厂:返回固定 delta/note 判定的 async callable(settle 用)。"""
+
+    async def call(messages, model=""):
+        return {"success": True, "response": json.dumps({"delta": delta, "note": note}), "model": model}
+
+    return call
+
+
+def test_settle_per_user_and_clamp_status(tmp_path):
+    engine, _ = make_engine(tmp_path)
+    engine.ensure_schema()
+    engine.apply_delta("A", 100, "唯一", "2026-08-16T12:00:00", judge_id="t1")
+    # 简报测试缺 B 前置分数(不预置则 0+3=3 分,断言 score==99 永不成立);
+    # 按断言意图补 97 分前置:97+3=100 → 触发独占钳制 → 99(挚友)
+    engine.apply_delta("B", 97, "接近特别", "2026-08-16T12:00:30", judge_id="t2")
+    executor = SettleExecutor(engine, fake_llm(delta=3, note="更好了"))
+    history = [{"role": "user", "user_id": "B", "stream_id": "p1", "is_group": False, "addressed": None,
+                "text": "聊聊", "seq": 1, "ts": "2026-08-16T12:01:00"}]
+    result = asyncio.run(executor.settle("B", history, "early"))
+    assert result["status"] == "ok"
+    assert result["exclusive_clamped"] is True   # B 想升特别被钳制
+    assert engine.get_level("B")["score"] == 99

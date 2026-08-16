@@ -314,13 +314,16 @@ class SettleExecutor:
     async def settle(
         self,
         user_id: str,
-        stream_id: str,
         history: list[dict],
         kind: str,
         model: str = "",
         persona: str = "",
     ) -> dict:
-        """执行一次结算。kind: "early" 或 "daily";persona 为 bot 人设背景(结合角色性格判定关系变化)。"""
+        """执行一次结算(按人)。kind: "early" 或 "daily";persona 为 bot 人设背景(结合角色性格判定关系变化)。
+
+        返回含 "exclusive_clamped": apply_delta 返回 clamped_exclusive(升特别被占位钳制)时 True;
+        settle 层 status 仍为 "ok"(结算本身成功,钳制经该字段透传给调用方记录)。
+        """
 
         material = self.engine.build_material(user_id, history)
         # 素材为空(取不到消息/窗口过滤后无目标用户消息):不调 LLM,不落库(审查 M2)
@@ -351,11 +354,17 @@ class SettleExecutor:
         delta = max(-delta_limit, min(delta_limit, parsed["delta"]))
         judged_at = datetime.now().strftime("%Y-%m-%dT%H:%M:%S")
         judge_id = f"{kind}-{judged_at}"
-        self.engine.apply_delta(
+        status = self.engine.apply_delta(
             user_id, delta, parsed["note"], judged_at=judged_at, judge_id=judge_id
         )
         self.engine.reset_batch(user_id, judged_at)
-        return {"status": "ok", "delta": delta, "note": parsed["note"], "judge_id": judge_id}
+        return {
+            "status": "ok",
+            "delta": delta,
+            "note": parsed["note"],
+            "judge_id": judge_id,
+            "exclusive_clamped": status == "clamped_exclusive",
+        }
 
 
 def build_favorability_block(

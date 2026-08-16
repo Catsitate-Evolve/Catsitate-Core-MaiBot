@@ -99,7 +99,7 @@ def test_full_assembly_smoke(tmp_path):
         {"role": "user", "user_id": "u1", "stream_id": "s1", "is_group": False, "addressed": None, "text": f"消息{i}", "seq": i, "ts": f"2026-08-14T11:{i:02d}:00"}
         for i in range(20)
     ]
-    result = asyncio.run(executor.settle("u1", "s1", history, kind="early"))
+    result = asyncio.run(executor.settle("u1", history, kind="early"))
     assert result["status"] == "ok" and result["delta"] == 2
     assert "u1" not in engine.iter_today_active(now=lambda: NOW)  # 结算 reset 后 count=0
     assert "累计 2" in build_favorability_block(engine, "u1")  # 2 分仍是「陌生」级

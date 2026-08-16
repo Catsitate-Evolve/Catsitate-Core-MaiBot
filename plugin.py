@@ -1294,10 +1294,11 @@ class CatsitatePlugin(MaiBotPlugin):
         """按人结算(规格全局决策 #7):聚合该人所有流的消息,一次 LLM 判定。
 
         并发防护保留(最终审查 Important#1):fav_count 与 _daily_settle 可能并发发起
-        同一用户结算(LLM 秒级延迟窗口内),同 (user_id, kind) 已在结算中直接跳过,防 delta 双计。
+        同一用户结算(LLM 秒级延迟窗口内),该用户任一结算(kind 不限)已在飞即跳过,
+        防 delta 双计。
         """
 
-        key = (user_id, kind)
+        key = user_id
         if key in self._settling:
             self.ctx.logger.info("好感度结算[%s] %s 已在结算中,跳过本轮", kind, user_id)
             return
@@ -1306,7 +1307,7 @@ class CatsitatePlugin(MaiBotPlugin):
             streams = [r[0] for r in self.store.query("SELECT DISTINCT stream_id FROM batch_counter WHERE user_id = ?", (user_id,))]
             history: list[dict] = []
             for stream_id in streams:
-                history.extend(await self._fetch_recent_for_history(stream_id, 50))
+                history.extend(await self._fetch_recent_for_history(stream_id, 50, user_id))
             result = await self.fav_executor.settle(  # 仓库现有属性名为 fav_executor(plugin.py:85)
                 user_id, history, kind, model=self.config.favorability.llm_model,
                 persona=await self._persona(),
@@ -1371,37 +1372,22 @@ class CatsitatePlugin(MaiBotPlugin):
         result = await self.ctx.call_capability("message.get_recent", chat_id=stream_id, limit=limit, include_binary_data=True)
         return result if isinstance(result, list) else []
 
-    async def _fetch_recent_for_history(self, stream_id: str, limit: int) -> list[dict]:
+    async def _fetch_recent_for_history(self, stream_id: str, limit: int, target_user_id: str = "") -> list[dict]:
         """取近期消息并归一化为 build_material 所需形状
         {role, user_id, stream_id, text, seq, ts, is_group, addressed}。
 
         spike ④ 实测:消息 dict 键含 message_id/timestamp/platform/message_info/raw_message/
         is_*/session_id/processed_plain_text;user 在 message_info.user_info。
         role:message_info.user_info.user_id == bot_user_id 判为 bot(配置留空则一律 user)。
-        addressed 仅群聊 bot 消息有意义:该 bot 消息 reply_to(被回复消息)含流说话人
-        user_id,或 raw_message 存在 type=at 且 target_user_id == 流说话人;流说话人取
-        最近非 bot 发言者(回退流信息 user_id),与 _resolve_speaker 同一近似——私聊流
-        bot 消息不读 addressed(build_material 私聊全随附),设为 None。
+        addressed 仅群聊 bot 消息有意义:该 bot 消息 reply_to(被回复消息)含结算目标
+        target_user_id,或 raw_message 存在 type=at 且 target_user_id == 结算目标用户;
+        私聊流 bot 消息不读 addressed(build_material 私聊全随附),设为 None。
         """
 
         await self._refresh_stream_cache()  # is_group 判定依赖流缓存,先刷新再归一化
         is_group = self._stream_is_group(stream_id)
         raw = await self._fetch_recent(stream_id, limit)
         bot_id = str(self.config.favorability.bot_user_id or "").strip()
-        # 群聊流说话人(addressed 判定对象):最近非 bot 发言者,回退流信息 user_id
-        speaker = ""
-        if is_group:
-            info = self._stream_cache.get(stream_id) or {}
-            speaker = str(info.get("user_id") or "")
-            if not speaker:
-                for m in raw:
-                    if not isinstance(m, dict):
-                        continue
-                    ui = (m.get("message_info") or {}).get("user_info") or {}
-                    uid = str(ui.get("user_id") or ui.get("sender_id") or "")
-                    if uid and uid != bot_id:
-                        speaker = uid
-                        break
         history: list[dict] = []
         for i, m in enumerate(raw):
             if not isinstance(m, dict):
@@ -1415,14 +1401,16 @@ class CatsitatePlugin(MaiBotPlugin):
             user_id = str(user_info.get("user_id") or user_info.get("sender_id") or "")
             role = "bot" if bot_id and user_id == bot_id else "user"
             addressed: bool | None = None
-            if role == "bot" and is_group and speaker:
+            if role == "bot" and is_group and target_user_id:
                 quote = str(m.get("reply_to") or "")
+                # reply_to 为消息 id,是否含发送者 id 未经实机验证,实机联调时确认;
+                # 若不含可删此分支只留 at
                 at_hit = any(
                     isinstance(seg, dict) and seg.get("type") == "at"
-                    and str((seg.get("data") or {}).get("target_user_id") or "") == speaker
+                    and str((seg.get("data") or {}).get("target_user_id") or "") == target_user_id
                     for seg in (m.get("raw_message") or [])
                 )
-                addressed = speaker in quote or at_hit
+                addressed = target_user_id in quote or at_hit
             history.append({
                 "role": role,
                 "user_id": user_id,

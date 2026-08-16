@@ -578,6 +578,23 @@ def test_greet_exclusive_multiple_windows_no_daily_limit(tmp_path):
     assert p._speak_counts["2026-08-16"] == 2
 
 
+def test_greet_exclusive_trigger_exception_no_count(tmp_path):
+    """主动问候:proactive.trigger 抛异常 → 返回 False 且不增加 speak_counts(错误显式暴露)。"""
+
+    logs: list = []
+    p = _make_exclusive_plugin(tmp_path, logs, streams={"p1": {"is_group_session": False, "user_id": "u1"}})
+
+    class _FailingProactive:
+        async def trigger(self, **kw):
+            del kw
+            raise RuntimeError("proactive 不可用")
+
+    p._ctx.maisaka = type("_M", (), {"proactive": _FailingProactive()})()
+    assert asyncio.run(p._greet_exclusive("2026-08-16", _GREET_WIN)) is False
+    assert p._speak_counts.get("2026-08-16", 0) == 0  # 失败不计数
+    assert any(level == "exception" for level, a, k in logs)  # logger.exception 记录现场
+
+
 def test_settle_and_log_per_user_aggregates_streams(tmp_path):
     """按人结算接线:check_trigger(user_id) 与 _settle_and_log(user_id, kind) 按人调用不抛错,
     且结算聚合该人全部流的素材;同 (user, kind) 并发防护直接跳过。"""
@@ -599,11 +616,11 @@ def test_settle_and_log_per_user_aggregates_streams(tmp_path):
     p.fav_executor = SettleExecutor(p.fav_engine, _fake_llm)  # 与 plugin.py on_load 同装配
     p.fav_engine.count_message("u1", "s1")
     p.fav_engine.count_message("u1", "s2")
-    fetched: list[str] = []
+    fetched: list[tuple[str, str]] = []
 
-    async def _fetch_stub(stream_id, limit):
+    async def _fetch_stub(stream_id, limit, target_user_id=""):
         del limit
-        fetched.append(stream_id)
+        fetched.append((stream_id, target_user_id))
         return []  # 空素材 → settle 返回 failed(素材为空),不走 LLM
 
     async def _no_persona():
@@ -614,8 +631,9 @@ def test_settle_and_log_per_user_aggregates_streams(tmp_path):
     # check_trigger 按人调用不抛错(2 条 < 阈值 20,不触发早结)
     assert p.fav_engine.check_trigger("u1") is None
     asyncio.run(p._settle_and_log("u1", kind="daily"))
-    assert set(fetched) == {"s1", "s2"}  # 聚合该人全部流素材
-    # 并发防护:同 (user, kind) 已在结算中时直接跳过,不再取数
-    p._settling.add(("u1", "daily"))
+    assert set(s for s, _ in fetched) == {"s1", "s2"}  # 聚合该人全部流素材
+    assert all(t == "u1" for _, t in fetched)  # addressed 判定对象传结算目标用户
+    # 并发防护:该用户任一结算已在飞(键按人)时直接跳过,不再取数
+    p._settling.add("u1")
     asyncio.run(p._settle_and_log("u1", kind="daily"))
     assert len(fetched) == 2

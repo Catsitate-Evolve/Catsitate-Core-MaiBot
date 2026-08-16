@@ -1460,9 +1460,12 @@ class CatsitatePlugin(MaiBotPlugin):
             senders[rid] = sender
             if err and not first_err:
                 first_err = err
-        if reply_ids:  # 解析观测日志(每次调用一条,低频:结算/衰减路径)
-            resolved = sum(1 for v in senders.values() if v)
-            self.ctx.logger.info("quote 发送者解析: 成功 %d/%d(stream=%s)", resolved, len(senders), stream_id)
+        if reply_ids:  # 解析观测日志(每次调用一条,低频:结算/衰减路径;含解析出的 QQ 号便于联调核验)
+            resolved = [v for v in senders.values() if v]
+            self.ctx.logger.info(
+                "quote 发送者解析: 成功 %d/%d(stream=%s,发送者=%s)",
+                len(resolved), len(senders), stream_id, ",".join(dict.fromkeys(resolved))[:60],
+            )
         return senders, first_err
 
     async def _fetch_recent_for_history(self, stream_id: str, limit: int, target_user_id: str = "") -> list[dict]:

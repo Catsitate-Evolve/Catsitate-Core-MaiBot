@@ -1410,12 +1410,13 @@ class CatsitatePlugin(MaiBotPlugin):
     ) -> dict:
         """旁路 LLM 统一出口(规格 §4.10):model 填主程序 task 名;用量按模块记账。
 
-        经 call_capability 直调,超时由各能力配置节传入(留空=主程序默认 30s)。
+        经 call_capability 直调,超时由各能力配置节传入(0/None=主程序默认 30s;
+        配置默认值用 0 而非 None——主机配置回写经 tomlkit 序列化,None 会致激活失败)。
         联调实测:utils 模型 31-53s 会触发默认超时,慢模型建议配置 120000。
         """
 
         result = await self.ctx.call_capability(
-            "llm.generate", timeout_ms=timeout_ms, prompt=messages, model=model or ""
+            "llm.generate", timeout_ms=timeout_ms or None, prompt=messages, model=model or ""
         )
         if isinstance(result, dict):
             if "model" not in result and result.get("model_name"):

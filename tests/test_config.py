@@ -7,8 +7,8 @@ def test_config_defaults():
     cfg = CatsitateConfig()
     assert cfg.plugin.enabled is False
     assert cfg.plugin.llm_daily_call_warning_threshold == 50
-    assert cfg.favorability.llm_timeout_ms is None
-    assert cfg.reply_guard.sentinel_timeout_ms is None
+    assert cfg.favorability.llm_timeout_ms == 0  # 0=主程序默认超时(默认值不得为 None:主机 tomlkit 回写会崩溃)
+    assert cfg.reply_guard.sentinel_timeout_ms == 0
     assert cfg.inject.enabled is True
     assert cfg.time_aware.city == "珠海"
     assert cfg.time_aware.weather_refresh_minutes == 45
@@ -56,4 +56,24 @@ def test_phase2_sections_defaults():
     assert cfg.favorability.decay_after_days == 7
     assert cfg.favorability.decay_max == 3
     assert cfg.favorability.decay_llm_model == "memory"
-    assert cfg.favorability.decay_llm_timeout_ms is None
+    assert cfg.favorability.decay_llm_timeout_ms == 0
+
+
+def test_default_config_has_no_none_values():
+    """回归守卫:默认配置不得含 None——主机用 tomlkit 回写配置,None 会致插件激活失败(公测发现)。"""
+
+    from maibot_sdk.config import build_plugin_default_config
+
+    defaults = build_plugin_default_config(CatsitateConfig)
+
+    def walk(d: dict, path: str = "") -> list[str]:
+        found = []
+        for k, v in d.items():
+            p = f"{path}.{k}"
+            if isinstance(v, dict):
+                found += walk(v, p)
+            elif v is None:
+                found.append(p)
+        return found
+
+    assert walk(defaults) == []

@@ -80,7 +80,7 @@ class FavorabilitySection(PluginConfigBase):
     decay_after_days: int = _f(7, "未互动 N 天后开始衰减", label="衰减触发天数")
     decay_max: int = _f(3, "单次衰减幅度上限(-decay_max 到 0)", label="单次衰减上限")
     decay_llm_model: str = _f("memory", "衰减判定模型:填主程序 task 名", label="衰减模型(task 名)")
-    decay_llm_timeout_ms: int | None = _f(None, "衰减判定 LLM 超时(毫秒);留空=主程序默认", label="衰减调用超时(毫秒)")
+    decay_llm_timeout_ms: int | None = _f(0, "衰减判定 LLM 超时(毫秒);0=主程序默认(30s)", label="衰减调用超时(毫秒)")
     level_rule_stranger: str = _f("仅按普通网友对待,保持礼貌与距离", "陌生级行为准则", label="陌生级规则")
     level_rule_familiar: str = _f("认识一段时间,可自然闲聊", "熟悉级行为准则", label="熟悉级规则")
     level_rule_close: str = _f("关系较好,可主动关心", "亲近级行为准则", label="亲近级规则")
@@ -100,8 +100,8 @@ class FavorabilitySection(PluginConfigBase):
         label="判定模型(task 名)",
     )
     llm_timeout_ms: int | None = _f(
-        None,
-        "好感度判定 LLM 调用超时(毫秒);留空=主程序默认(30s);慢模型建议 120000",
+        0,
+        "好感度判定 LLM 调用超时(毫秒);0=主程序默认(30s);慢模型建议 120000",
         label="判定调用超时(毫秒)",
     )
 
@@ -131,8 +131,8 @@ class MsgReactSection(PluginConfigBase):
         label="选表情模型(task 名)",
     )
     llm_timeout_ms: int | None = _f(
-        None,
-        "选表情 LLM 调用超时(毫秒);留空=主程序默认(30s)",
+        0,
+        "选表情 LLM 调用超时(毫秒);0=主程序默认(30s)",
         label="选表情调用超时(毫秒)",
     )
 
@@ -159,8 +159,8 @@ class ReplyGuardSection(PluginConfigBase):
         label="哨兵模型(task 名)",
     )
     sentinel_timeout_ms: int | None = _f(
-        None,
-        "哨兵判定 LLM 调用超时(毫秒);留空=主程序默认(30s)",
+        0,
+        "哨兵判定 LLM 调用超时(毫秒);0=主程序默认(30s)",
         label="哨兵调用超时(毫秒)",
     )
 
@@ -176,8 +176,8 @@ class ImageRelookSection(PluginConfigBase):
         label="重看模型(task 名)",
     )
     llm_timeout_ms: int | None = _f(
-        None,
-        "图片重看 LLM 调用超时(毫秒);留空=主程序默认(30s);VLM 较慢建议 120000",
+        0,
+        "图片重看 LLM 调用超时(毫秒);0=主程序默认(30s);VLM 较慢建议 120000",
         label="重看调用超时(毫秒)",
     )
 
@@ -193,7 +193,7 @@ class SleepSection(PluginConfigBase):
     silent_sleep_minutes: int = _f(60, "静默入睡:无消息满 N 分钟", label="静默入睡分钟")
     review_enabled: bool = _f(True, "睡醒回顾开关(醒来生成聚合报告文件)", label="睡醒回顾开关")
     review_llm_model: str = _f("memory", "回顾总结模型:填主程序 task 名", label="回顾模型(task 名)")
-    review_llm_timeout_ms: int | None = _f(None, "回顾 LLM 调用超时(毫秒);留空=主程序默认", label="回顾调用超时(毫秒)")
+    review_llm_timeout_ms: int | None = _f(0, "回顾 LLM 调用超时(毫秒);0=主程序默认", label="回顾调用超时(毫秒)")
 
 
 class ScheduleSection(PluginConfigBase):
@@ -205,7 +205,7 @@ class ScheduleSection(PluginConfigBase):
     speak_threshold_level: str = _f("熟悉", "日常发言最低好感度等级(陌生/熟悉/亲近/挚友/特别)", label="日常发言等级门槛")
     speak_max_streams_per_window: int = _f(1, "每窗口最多主动触发流数(按等级+活跃度排序取前 n)", label="每窗口触发流数上限")
     schedule_llm_model: str = _f("memory", "日程生成模型:填主程序 task 名", label="日程生成模型(task 名)")
-    schedule_llm_timeout_ms: int | None = _f(None, "日程生成 LLM 超时(毫秒);留空=主程序默认", label="日程生成超时(毫秒)")
+    schedule_llm_timeout_ms: int | None = _f(0, "日程生成 LLM 超时(毫秒);0=主程序默认", label="日程生成超时(毫秒)")
     daily_speak_limit: int = _f(5, "全天主动发言次数上限(每次发言计 1)", label="每日发言上限")
 
 

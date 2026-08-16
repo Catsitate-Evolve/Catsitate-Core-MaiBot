@@ -827,6 +827,7 @@ def test_resolve_quote_senders_dedup_and_failure_passthrough(tmp_path):
 
 def test_debug_logging_switch(tmp_path):
     import logging
+    import os
 
     import plugin as plugin_mod
     from catsitate_core.config import CatsitateConfig
@@ -843,8 +844,11 @@ def test_debug_logging_switch(tmp_path):
     p._setup_debug_logging()
     assert p._debug_handler is not None
     assert any(isinstance(h, logging.FileHandler) and str(h.baseFilename).endswith(".log") for h in plogger.handlers)
+    log_file = next(h.baseFilename for h in plogger.handlers if isinstance(h, logging.FileHandler))
+    import stat
+    assert stat.S_IMODE(os.stat(log_file).st_mode) == 0o600  # 仅属主可读(安全复审)
     assert (tmp_path / "logs").exists()
     cfg.debug.enabled = False
     p._setup_debug_logging()
     assert p._debug_handler is None
-    assert len(plogger.handlers) == before  # handler 已移除,无泄漏
+    assert len(plogger.handlers) == before  # handler 已移除且关闭,无泄漏

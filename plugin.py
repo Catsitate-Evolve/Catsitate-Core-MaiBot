@@ -13,6 +13,7 @@ import asyncio
 import hashlib
 import json
 import logging
+import os
 import sys
 
 import httpx
@@ -76,6 +77,7 @@ class CatsitatePlugin(MaiBotPlugin):
     _persona_cache: str | None = None  # bot 人设缓存(config.get 一次,bot 配置变更时失效)
     _style_cache: str | None = None  # bot 行为风格缓存(同上)
     _debug_handler: logging.Handler | None = None  # debug 日志文件 handler(配置开关控制)
+    _debug_prev_level: int = logging.NOTSET  # 开启前 logger 级别(关闭时恢复)
 
     # ---------- 生命周期 ----------
 
@@ -1623,14 +1625,17 @@ class CatsitatePlugin(MaiBotPlugin):
     def _setup_debug_logging(self) -> None:
         """debug 日志开关(公测复审):开启时把 catsitate.core 的 debug 级日志落盘到数据目录 logs/ 当日文件。
 
-        关闭/文件创建失败时移除 handler 并回退主日志(显式告警,不静默)。
+        文件权限 0600(日志含 user_id/stream_id,仅属主可读——安全复审);关闭时移除并
+        关闭 handler、恢复 logger 原级别;文件创建失败显式告警,不静默。
         """
 
         plugin_logger = logging.getLogger("catsitate.core")
         if not self.config.debug.enabled:
             if self._debug_handler is not None:
                 plugin_logger.removeHandler(self._debug_handler)
+                self._debug_handler.close()
                 self._debug_handler = None
+                plugin_logger.setLevel(self._debug_prev_level)  # 恢复开启前级别
             return
         if self._debug_handler is not None:
             return  # 已挂载,不重复
@@ -1638,7 +1643,9 @@ class CatsitatePlugin(MaiBotPlugin):
         try:
             logs_dir.mkdir(parents=True, exist_ok=True)
             path = logs_dir / f"catsitate-{datetime.now().strftime('%Y%m%d')}.log"
+            self._debug_prev_level = plugin_logger.level
             handler = logging.FileHandler(path, encoding="utf-8")
+            os.chmod(path, 0o600)  # 仅属主可读(安全复审:日志含用户标识)
             handler.setLevel(logging.DEBUG)
             handler.setFormatter(logging.Formatter("%(asctime)s %(levelname)s %(name)s %(message)s"))
             plugin_logger.addHandler(handler)

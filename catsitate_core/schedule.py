@@ -301,7 +301,7 @@ def compress_with_anchor(
         if i == anchor_index:
             continue
         s, e = _parse_t(w)
-        before = f"{s.strftime('%H:%M')}-{e.strftime('%H:%M')}"
+        before_s, before_e = s, e
         if s < a_s and e > a_s:
             # 锚点前:尾部压缩
             w["end"] = anchor["start"]
@@ -312,9 +312,10 @@ def compress_with_anchor(
             s, e = _parse_t(w)
         if e <= s:
             return out, f"安排与「{_desc(w)}」完全重叠,该窗口会被挤没,请调整时间", adjustments
-        if w["start"] != before.split("-")[0] or w["end"] != before.split("-")[1]:
-            after = f"{s.strftime('%H:%M')}-{e.strftime('%H:%M')}"
-            adjustments.append(f"「{_desc(w)}」由 {before} 压缩为 {after}")
+        if s != before_s or e != before_e:
+            adjustments.append(
+                f"「{_desc(w)}」由 {before_s.strftime('%H:%M')}-{before_e.strftime('%H:%M')} "
+                f"压缩为 {s.strftime('%H:%M')}-{e.strftime('%H:%M')}")
     # 锚点后链式:非锚点窗口按开始排序,与前一窗 end 重叠则头部压缩
     ordered = sorted((w for i, w in enumerate(out) if i != anchor_index and _parse_t(w)[0] >= a_e),
                      key=lambda w: _parse_t(w)[0])
@@ -322,13 +323,15 @@ def compress_with_anchor(
     for w in ordered:
         s, e = _parse_t(w)
         if s < prev_end and s >= a_e:
-            before = f"{s.strftime('%H:%M')}-{e.strftime('%H:%M')}"
+            before_s, before_e = s, e
             w["start"] = prev_end.strftime(_ISO)
             s, e = _parse_t(w)
             if e <= s:
                 return out, f"安排与「{_desc(w)}」完全重叠,该窗口会被挤没,请调整时间", adjustments
-            if w["start"] != before.split("-")[0]:
-                adjustments.append(f"「{_desc(w)}」由 {before} 压缩为 {s.strftime('%H:%M')}-{e.strftime('%H:%M')}")
+            if s != before_s:
+                adjustments.append(
+                    f"「{_desc(w)}」由 {before_s.strftime('%H:%M')}-{before_e.strftime('%H:%M')} "
+                    f"压缩为 {s.strftime('%H:%M')}-{e.strftime('%H:%M')}")
         prev_end = e
     return out, "", adjustments
 

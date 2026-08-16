@@ -135,6 +135,40 @@ def test_add_anchor_fully_covers_window_rejected(tmp_path):
     assert out == data
 
 
+def test_add_anchor_squeezes_two_windows_both_sides(tmp_path):
+    from catsitate_core.schedule import apply_schedule_add
+    data = {"date": "2026-08-16", "windows": [
+        {"kind": "sleep", "start": "2026-08-16T23:00", "end": "2026-08-17T07:30", "activity": ""},
+        {"kind": "daily", "start": "2026-08-16T09:00", "end": "2026-08-16T11:00", "activity": "前窗"},
+        {"kind": "daily", "start": "2026-08-16T15:00", "end": "2026-08-16T18:00", "activity": "后窗"},
+    ]}
+    # 锚点 10:30-16:30:前窗尾部压缩到 09:00-10:30,后窗头部压缩到 16:30-18:00
+    out, err, _, adj = apply_schedule_add(data, "10:30", "16:30", "大块活动", "2026-08-16", min_sleep=240, max_sleep=660, history=[])
+    assert err == ""
+    front = next(w for w in out["windows"] if w.get("activity") == "前窗")
+    back = next(w for w in out["windows"] if w.get("activity") == "后窗")
+    assert front["end"] == "2026-08-16T10:30"
+    assert back["start"] == "2026-08-16T16:30" and back["end"] == "2026-08-16T18:00"
+    assert len(adj) == 2  # 两个窗口都被压缩且都有明细
+
+
+def test_add_anchor_chain_squeezes_two_following(tmp_path):
+    from catsitate_core.schedule import apply_schedule_add
+    data = {"date": "2026-08-16", "windows": [
+        {"kind": "sleep", "start": "2026-08-16T23:00", "end": "2026-08-17T07:30", "activity": ""},
+        {"kind": "daily", "start": "2026-08-16T14:00", "end": "2026-08-16T15:00", "activity": "A"},
+        {"kind": "daily", "start": "2026-08-16T15:30", "end": "2026-08-16T17:00", "activity": "B"},
+    ]}
+    # 锚点 14:30-16:00:A 尾部压至 14:00-14:30;B 头部压至 16:00-17:00
+    out, err, _, adj = apply_schedule_add(data, "14:30", "16:00", "插入活动", "2026-08-16", min_sleep=240, max_sleep=660, history=[])
+    assert err == ""
+    a = next(w for w in out["windows"] if w.get("activity") == "A")
+    b = next(w for w in out["windows"] if w.get("activity") == "B")
+    assert a["end"] == "2026-08-16T14:30"
+    assert b["start"] == "2026-08-16T16:00" and b["end"] == "2026-08-16T17:00"
+    assert len(adj) == 2
+
+
 def test_parse_from_llm_with_fence():
     import json as _json
     text = "```json\n" + _json.dumps(GOOD, ensure_ascii=False) + "\n```"

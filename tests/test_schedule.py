@@ -310,13 +310,26 @@ from catsitate_core.schedule import ScheduleGenerator, build_schedule_generate_p
 
 def test_build_generate_prompt_stable_first():
     messages, key = build_schedule_generate_prompt(
-        persona="猫耳少女", today_review="睡了8小时", weather_text="多云",
+        persona="猫耳少女", behavior_style="温柔陪伴", today_review="睡了8小时", weather_text="多云",
         fav_summary="无", due_memos=["周四交作业(19:00)"], min_sleep=240, max_sleep=660,
         target_date="2026-08-16",
     )
     assert messages[0]["role"] == "system"
     assert key
     assert any("周四交作业" in m["content"] for m in messages)
+    # 稳定段(系统模板之后的 user 段):人设在行为风格之前(顺序固定,前缀缓存),变量尾在后
+    stable_text = "\n".join(m["content"] for m in messages[1:] if m["role"] == "user")
+    assert stable_text.index("bot 人设:猫耳少女") < stable_text.index("bot 行为风格:温柔陪伴")
+    assert stable_text.index("bot 行为风格:温柔陪伴") < stable_text.index("周四交作业")
+
+
+def test_build_generate_prompt_style_optional():
+    messages, _ = build_schedule_generate_prompt(
+        persona="猫耳少女", behavior_style="", today_review="", weather_text="",
+        fav_summary="无", due_memos=[], min_sleep=240, max_sleep=660,
+        target_date="2026-08-16",
+    )
+    assert not any("行为风格" in m["content"] for m in messages)
 
 
 def test_generator_valid_output(tmp_path):

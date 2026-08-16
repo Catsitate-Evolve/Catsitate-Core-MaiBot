@@ -192,12 +192,14 @@ def _materialize_template(template: dict, date_str: str) -> dict:
 
 
 def build_schedule_generate_prompt(
-    persona: str, today_review: str, weather_text: str, fav_summary: str,
+    persona: str, behavior_style: str, today_review: str, weather_text: str, fav_summary: str,
     due_memos: list[str], min_sleep: int, max_sleep: int, target_date: str,
 ) -> tuple[list[dict], str]:
-    """日程生成 prompt:稳定段=system 模板+人设;变量尾=回顾/天气/好感度/备忘/约束/目标日。"""
+    """日程生成 prompt:稳定段=system 模板+人设+行为风格(顺序固定,保前缀缓存);变量尾=回顾/天气/好感度/备忘/约束/目标日。"""
 
-    stable = [f"bot 人设:{persona}"] if persona.strip() else []
+    stable = ([f"bot 人设:{persona}"] if persona.strip() else []) + (
+        [f"bot 行为风格:{behavior_style}"] if behavior_style.strip() else []
+    )
     tail = [
         f"今天回顾:{today_review or '无'}",
         f"明天天气/节日:{weather_text or '无数据'}",
@@ -218,13 +220,13 @@ class ScheduleGenerator:
         self.sleep_cfg = config_sleep
 
     async def generate(
-        self, *, persona: str, today_review: str, weather_text: str,
+        self, *, persona: str, behavior_style: str = "", today_review: str, weather_text: str,
         fav_summary: str, due_memos: list[str], target_date: str = "",
     ) -> tuple[dict, str]:
         if not target_date:
             target_date = datetime.now().strftime("%Y-%m-%d")
         messages, _ = build_schedule_generate_prompt(
-            persona, today_review, weather_text, fav_summary, due_memos,
+            persona, behavior_style, today_review, weather_text, fav_summary, due_memos,
             self.sleep_cfg.min_sleep_minutes, self.sleep_cfg.max_sleep_minutes, target_date,
         )
         attempts = max(1, self.cfg.max_regenerate) + 1

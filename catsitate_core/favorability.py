@@ -324,8 +324,9 @@ class SettleExecutor:
         kind: str,
         model: str = "",
         persona: str = "",
+        behavior_style: str = "",
     ) -> dict:
-        """执行一次结算(按人)。kind: "early" 或 "daily";persona 为 bot 人设背景(结合角色性格判定关系变化)。
+        """执行一次结算(按人)。kind: "early" 或 "daily";persona/behavior_style 为主程序配置的人设与行为风格(结合角色性格判定关系变化)。
 
         返回含 "exclusive_clamped": apply_delta 返回 clamped_exclusive(升特别被占位钳制)时 True;
         settle 层 status 仍为 "ok"(结算本身成功,钳制经该字段透传给调用方记录)。
@@ -343,7 +344,10 @@ class SettleExecutor:
                     "exclusive_clamped": False}
         # 稳定段 = 判定指令(system 模板)+ 5 级规则(配置,stable_ctx);变量尾 = 批次素材
         level_rules = self.engine.config.level_rules_list()
-        stable_ctx = ([f"bot 人设:{persona}"] if persona.strip() else []) + level_rules
+        # 稳定段顺序固定(人设 → 行为风格 → 规则),保前缀缓存
+        stable_ctx = ([f"bot 人设:{persona}"] if persona.strip() else []) + (
+            [f"bot 行为风格:{behavior_style}"] if behavior_style.strip() else []
+        ) + level_rules
         messages, _cache_key = build_side_prompt(
             "favorability", stable_ctx, material,
             replacements={"delta_max": str(max(1, self.engine.config.delta_max))},

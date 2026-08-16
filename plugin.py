@@ -73,6 +73,9 @@ class CatsitatePlugin(MaiBotPlugin):
     config_model = CatsitateConfig
     config_reload_subscriptions = ("bot",)
 
+    _persona_cache: str | None = None  # bot 人设缓存(config.get 一次,bot 配置变更时失效)
+    _style_cache: str | None = None  # bot 行为风格缓存(同上)
+
     # ---------- 生命周期 ----------
 
     async def on_load(self) -> None:
@@ -146,7 +149,6 @@ class CatsitatePlugin(MaiBotPlugin):
         self._snapshot_cache: dict[str, dict] = {}  # 注入块文本 -> 快照 UserMessageItem
         self._env_cache: dict[str, str] = {}  # content_key -> 环境块文本
         self._env_fetched_at: datetime | None = None
-        self._persona_cache: str | None = None  # bot 人设缓存(config.get 一次,bot 配置变更时失效)
         self._stream_cache: dict[str, dict] = {}  # session_id -> 流信息(说话人解析,10 分钟 TTL)
         self._stream_cache_at: float = 0.0
         self._settling: set[str] = set()  # 结算并发防护键(按人,user_id;最终审查 Important#1/M2)
@@ -201,6 +203,7 @@ class CatsitatePlugin(MaiBotPlugin):
             self.assembler.reset()
             self._snapshot_cache.clear()
             self._persona_cache = None
+            self._style_cache = None
 
     # ---------- 工具 ----------
 
@@ -977,7 +980,8 @@ class CatsitatePlugin(MaiBotPlugin):
                 )
                 decay_ts = decay_rows[0][0] if decay_rows else ""
                 candidates.append((user_id, max(best or "", decay_ts)))
-            results = await self.decay.scan_and_apply(candidates, persona=await self._persona())
+            persona, style = await self._persona_context()
+            results = await self.decay.scan_and_apply(candidates, persona=persona, behavior_style=style)
             for r in results:
                 self.ctx.logger.info("好感度衰减 %s:delta=%s", r["user_id"], r["delta"])
                 if r.get("exclusive_clamped"):
@@ -1033,8 +1037,9 @@ class CatsitatePlugin(MaiBotPlugin):
         target = (now + timedelta(days=1)).strftime("%Y-%m-%d")
         due = [f"{e['content']}({e['remind_at'][11:16]})" for e in self.memo.due_on(target)]
         try:
+            persona, style = await self._persona_context()
             data, err = await self.schedule_gen.generate(
-                persona=await self._persona(), today_review=self._today_review_text(),
+                persona=persona, behavior_style=style, today_review=self._today_review_text(),
                 weather_text=self._weather_text(), fav_summary=self._fav_summary_text(),
                 due_memos=due, target_date=target,
             )
@@ -1334,9 +1339,10 @@ class CatsitatePlugin(MaiBotPlugin):
             history: list[dict] = []
             for stream_id in streams:
                 history.extend(await self._fetch_recent_for_history(stream_id, 50, user_id))
+            persona, style = await self._persona_context()
             result = await self.fav_executor.settle(  # 仓库现有属性名为 fav_executor(plugin.py:85)
                 user_id, history, kind, model=self.config.favorability.llm_model,
-                persona=await self._persona(),
+                persona=persona, behavior_style=style,
             )
             if result.get("status") == "ok":
                 self.ctx.logger.info("好感度结算 %s:%s delta=%s", user_id, kind, result.get("delta"))
@@ -1597,15 +1603,15 @@ class CatsitatePlugin(MaiBotPlugin):
                         parts.append(p)
         return "".join(parts)
 
-    async def _persona(self) -> str:
-        """bot 人设文本(经 config.get 读全局配置 personality.personality,带缓存)。
+    async def _persona_context(self) -> tuple[str, str]:
+        """bot 人设与行为风格(经 config.get 读主程序全局配置 personality.personality / personality.behavior_style,带缓存)。
 
-        SDK MaisakaCapability 无 get_personality(联调实测),人设来自主程序 bot 全局配置;
-        读取失败或为空时兜底"猫耳少女",并显式告警(不静默)。
+        缓存保证旁路 prompt 稳定段字节不变(前缀缓存友好);bot 配置变更时经 on_config_update 失效。
+        读取失败或为空时人设兜底"猫耳少女"并显式告警(不静默);行为风格可为空(直接省略该段)。
         """
 
-        if self._persona_cache is not None:
-            return self._persona_cache
+        if self._persona_cache is not None and self._style_cache is not None:
+            return self._persona_cache, self._style_cache
         try:
             value = await self.ctx.config.get("personality.personality", "")
         except Exception:
@@ -1613,8 +1619,20 @@ class CatsitatePlugin(MaiBotPlugin):
             value = ""
         self._persona_cache = str(value or "").strip() or "猫耳少女"
         if self._persona_cache == "猫耳少女" and not str(value or "").strip():
-            self.ctx.logger.warning("bot 人设配置为空,哨兵/结算回退默认人设「猫耳少女」")
-        return self._persona_cache
+            self.ctx.logger.warning("bot 人设配置为空,结算/衰减/日程回退默认人设「猫耳少女」")
+        try:
+            style = await self.ctx.config.get("personality.behavior_style", "")
+        except Exception:
+            self.ctx.logger.exception("读取 bot 行为风格失败,省略该段")
+            style = ""
+        self._style_cache = str(style or "").strip()
+        return self._persona_cache, self._style_cache
+
+    async def _persona(self) -> str:
+        """bot 人设文本(见 _persona_context)。"""
+
+        persona, _ = await self._persona_context()
+        return persona
 
     async def _recent_context_text(self, stream_id: str, limit: int) -> str:
         raw = await self._fetch_recent(stream_id, limit)

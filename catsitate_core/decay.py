@@ -94,6 +94,7 @@ class DecayExecutor:
         candidates: list[tuple[str, str]],  # (user_id, 互动时间 ISO 或 "")
         now: Callable[[], datetime] | None = None,
         persona: str = "",
+        behavior_style: str = "",
     ) -> list[dict]:
         """对未互动超 decay_after_days 的用户执行衰减判定;返回 [{"user_id","delta","exclusive_clamped"}]。"""
 
@@ -118,7 +119,10 @@ class DecayExecutor:
             row = self.engine.get_level(user_id)
             if row is None or row["score"] <= 0:
                 continue
-            stable_ctx = ([f"bot 人设:{persona}"] if persona.strip() else []) + [
+            # 稳定段顺序固定(人设 → 行为风格 → 等级/天数),保前缀缓存
+            stable_ctx = ([f"bot 人设:{persona}"] if persona.strip() else []) + (
+                [f"bot 行为风格:{behavior_style}"] if behavior_style.strip() else []
+            ) + [
                 f"上次等级:{row['level']},分数:{row['score']},注记:{row['note'] or '无'}",
                 f"未互动天数:{days}",
             ]

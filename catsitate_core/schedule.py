@@ -26,6 +26,17 @@ def _parse_t(w: dict) -> tuple[datetime, datetime]:
     return datetime.strptime(w["start"], _ISO), datetime.strptime(w["end"], _ISO)
 
 
+def sort_windows(windows: list[dict]) -> list[dict]:
+    """按窗口开始时间排序(供 view 按时间顺序显示);解析失败的窗口排到末尾。"""
+
+    def _key(w: dict) -> datetime:
+        try:
+            return _parse_t(w)[0]
+        except (KeyError, ValueError, TypeError):
+            return datetime.max
+    return sorted(windows, key=_key)
+
+
 def validate_schedule(data: dict, *, min_sleep: int, max_sleep: int) -> tuple[dict | None, str]:
     """校验日程结构:恰好 1 睡眠窗口、活动 1~8、不重叠、睡眠时长在 [min,max]、kind 合法。"""
 
@@ -176,6 +187,7 @@ def _materialize_template(template: dict, date_str: str) -> dict:
         if w["end"] <= w["start"]:
             w["end"] = (day + timedelta(days=1)).strftime("%Y-%m-%d") + w["end"][10:]
         out["windows"].append(w)
+    out["windows"] = sort_windows(out["windows"])
     return out
 
 
@@ -231,6 +243,7 @@ class ScheduleGenerator:
                 continue
             checked, verr = validate_schedule(data, min_sleep=self.sleep_cfg.min_sleep_minutes, max_sleep=self.sleep_cfg.max_sleep_minutes)
             if checked is not None:
+                checked["windows"] = sort_windows(checked["windows"])
                 return checked, ""
             last_err = verr
         # 重生成耗尽 → 确定性钳制修复;修复后仍无效 → 默认模板 + 显式错误(规格兜底链)
@@ -362,6 +375,7 @@ def apply_schedule_move(
     checked, verr = validate_schedule(candidate, min_sleep=min_sleep, max_sleep=max_sleep)
     if checked is None:
         return data, verr, history, []
+    checked["windows"] = sort_windows(checked["windows"])
     history.append({"time": datetime.now().strftime("%Y-%m-%dT%H:%M:%S"),
                     "action": f"move#{window_index}", "before": before,
                     "after": json.dumps(checked, ensure_ascii=False)})
@@ -393,6 +407,7 @@ def apply_schedule_add(
     checked, verr = validate_schedule(candidate, min_sleep=min_sleep, max_sleep=max_sleep)
     if checked is None:
         return data, verr, history, []
+    checked["windows"] = sort_windows(checked["windows"])
     history.append({"time": datetime.now().strftime("%Y-%m-%dT%H:%M:%S"),
                     "action": "add", "before": before,
                     "after": json.dumps(checked, ensure_ascii=False)})
@@ -441,6 +456,7 @@ def apply_schedule_edit(
     checked, verr = validate_schedule(candidate, min_sleep=min_sleep, max_sleep=max_sleep)
     if checked is None:
         return data, verr, history
+    checked["windows"] = sort_windows(checked["windows"])
     history.append({
         "time": datetime.now().strftime("%Y-%m-%dT%H:%M:%S"),
         "action": action, "before": before,

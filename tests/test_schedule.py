@@ -266,6 +266,29 @@ def test_compress_chain_squeeze_out_rejected(tmp_path):
     assert "挤没" in err
 
 
+def test_edit_result_windows_time_ordered(tmp_path):
+    from catsitate_core.schedule import apply_schedule_add, schedule_overview_text
+    data = {"date": "2026-08-16", "windows": [
+        {"kind": "sleep", "start": "2026-08-16T23:00", "end": "2026-08-17T07:30", "activity": ""},
+        {"kind": "daily", "start": "2026-08-16T09:00", "end": "2026-08-16T11:00", "activity": "发呆"},
+        {"kind": "daily", "start": "2026-08-16T15:00", "end": "2026-08-16T18:00", "activity": "随便做点什么"},
+    ]}
+    # 读书追加到存储尾部,但结果必须按时间排序:读书 15:00 排在随便做点什么 16:00 之前
+    out, err, _, _ = apply_schedule_add(data, "15:00", "16:00", "读书", "2026-08-16", min_sleep=240, max_sleep=660, history=[])
+    assert err == ""
+    starts = [w["start"] for w in out["windows"]]
+    assert starts == sorted(starts)
+    text = schedule_overview_text(out)
+    assert text.index("读书") < text.index("随便做点什么")
+
+
+def test_materialize_template_time_ordered():
+    from catsitate_core.schedule import _materialize_template
+    out = _materialize_template(DEFAULT_TEMPLATE_SCHEDULE, "2026-08-16")
+    starts = [w["start"] for w in out["windows"]]
+    assert starts == sorted(starts)
+
+
 def test_parse_from_llm_with_fence():
     import json as _json
     text = "```json\n" + _json.dumps(GOOD, ensure_ascii=False) + "\n```"
@@ -299,7 +322,7 @@ def test_build_generate_prompt_stable_first():
 def test_generator_valid_output(tmp_path):
     import asyncio
     from catsitate_core.config import ScheduleSection, SleepSection
-    from catsitate_core.schedule import validate_schedule
+    from catsitate_core.schedule import sort_windows, validate_schedule
     good = {"date": "2026-08-16", "windows": [
         {"kind": "sleep", "start": "2026-08-16T23:00", "end": "2026-08-17T07:00"},
         {"kind": "daily", "start": "2026-08-16T09:00", "end": "2026-08-16T11:00",
@@ -310,7 +333,9 @@ def test_generator_valid_output(tmp_path):
         return {"success": True, "response": _json.dumps(good, ensure_ascii=False), "model": model}
     gen = ScheduleGenerator(fake_llm, ScheduleSection(), SleepSection())
     data, err = asyncio.run(gen.generate(persona="猫耳少女", today_review="", weather_text="", fav_summary="", due_memos=[]))
-    assert err == "" and data == good
+    # 生成结果规范化为时间顺序(睡眠 23:00 排到活动之后)
+    expected = {"date": good["date"], "windows": sort_windows(good["windows"])}
+    assert err == "" and data == expected
 
 
 def test_generator_retry_then_fix(tmp_path):

@@ -46,8 +46,9 @@ from catsitate_core.schedule import (
     build_proactive_intent,
     current_window,
     next_window,
-    threshold_met,
     schedule_overview_text,
+    sort_windows,
+    threshold_met,
 )
 from catsitate_core.services.scheduler import Scheduler
 from catsitate_core.sleep import is_goodnight_utterance, parse_sleep_confirm_response
@@ -248,7 +249,7 @@ class CatsitatePlugin(MaiBotPlugin):
         description="增/删/改 bot 自己今天的日程安排(活动窗口)。活动最多 8 个;睡眠窗口不可删除、时间修改受最短/最长睡眠约束。",
         brief_description="修改今日日程",
         parameters=[
-            ToolParameterInfo(name="action", param_type="string", description="view(查看当前日程)/move(把某窗口挪到新时段)/add(新增活动)/delete(删除活动窗口)。建议流程:编辑前先 view 看当前日程与窗口序号,编辑后再次 view 确认结果。常用示例:把睡眠窗口改成11:45到16:00 → action=move, window_index=0, start=11:45, end=16:00;新增下午听歌 → action=add, start=16:00, end=18:00, activity=和Hesitate_P一起听歌", required=True),
+            ToolParameterInfo(name="action", param_type="string", description="view(查看当前日程)/move(把某窗口挪到新时段)/add(新增活动)/delete(删除活动窗口)。日程按时间顺序排列,窗口序号以 view 输出为准。建议流程:编辑前先 view 看当前日程与窗口序号,编辑后再次 view 确认结果。常用示例:把睡眠窗口改成11:45到16:00 → action=move, window_index=view 中睡眠窗口的序号, start=11:45, end=16:00;新增下午听歌 → action=add, start=16:00, end=18:00, activity=和Hesitate_P一起听歌", required=True),
             ToolParameterInfo(name="window_index", param_type="integer", description="move/delete 时的窗口序号(view 结果每行开头数字)", required=False),
             ToolParameterInfo(name="start", param_type="string", description="move/add 的新开始时刻,HH:MM 格式如 11:45(自动按当天日期)", required=False),
             ToolParameterInfo(name="end", param_type="string", description="move/add 的新结束时刻,HH:MM 格式如 16:00(跨午夜自动次日)", required=False),
@@ -1239,6 +1240,8 @@ class CatsitatePlugin(MaiBotPlugin):
                 self.ctx.logger.exception("过期 schedule.json 删除失败")
             return
         self._schedule_data = data["data"]
+        if isinstance(self._schedule_data.get("windows"), list):
+            self._schedule_data["windows"] = sort_windows(self._schedule_data["windows"])  # 旧数据按时间顺序重排
         self._schedule_edit_history = data["edit_history"] if isinstance(data.get("edit_history"), list) else []
         self._schedule_generated = bool(data.get("generated"))
         self.ctx.logger.info("已从 schedule.json 恢复当日日程(%s)", data["data"].get("date"))

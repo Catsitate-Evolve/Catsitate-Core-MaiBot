@@ -113,8 +113,11 @@ class CatsitatePlugin(MaiBotPlugin):
         # 睡眠期拦截消息缓冲(回顾报告素材);持久化防重启丢失(联调发现)
         self._sleep_review_buffer_snapshot = JsonSnapshot(data_dir / "sleep_review_buffer.json")
         _loaded_buffer = self._sleep_review_buffer_snapshot.load()
-        # JsonSnapshot.load 缺文件返回 {} 而非 [],显式归一(联调:dict.append 异常)
-        self._sleep_review_buffer: list[dict] = _loaded_buffer if isinstance(_loaded_buffer, list) else []
+        # JsonSnapshot.load 仅接受 dict(非 dict 一律返回 {}):缓冲以 {"messages": [...]} 包装存储
+        self._sleep_review_buffer: list[dict] = (
+            _loaded_buffer.get("messages", []) if isinstance(_loaded_buffer, dict) else []
+        )
+        self.ctx.logger.info("回顾缓冲加载: %d 条", len(self._sleep_review_buffer))
         for service in (self.memo, self.fav_engine):
             service.ensure_schema()
         self.store.execute(
@@ -492,7 +495,7 @@ class CatsitatePlugin(MaiBotPlugin):
                 "text": str(msg.get("processed_plain_text") or ""),
                 "ts": datetime.now().strftime("%Y-%m-%dT%H:%M:%S"),
             })
-            self._sleep_review_buffer_snapshot.save(self._sleep_review_buffer)
+            self._sleep_review_buffer_snapshot.save({"messages": self._sleep_review_buffer})
         return {"action": "abort", "modified_kwargs": kwargs}
 
     @HookHandler("maisaka.replyer.after_response", name="catsitate_goodnight", mode=HookMode.BLOCKING, order=HookOrder.LATE)
@@ -931,10 +934,12 @@ class CatsitatePlugin(MaiBotPlugin):
         """睡醒回顾:拦截缓冲按流聚合,LLM 摘要,写单份聚合报告文件。"""
 
         buffer, self._sleep_review_buffer = self._sleep_review_buffer, []
-        self._sleep_review_buffer_snapshot.save(self._sleep_review_buffer)
+        self._sleep_review_buffer_snapshot.save({"messages": self._sleep_review_buffer})
+        self.ctx.logger.info("回顾任务启动: 缓冲 %d 条", len(buffer))
         if not buffer:
             return
         report_dir = self.ctx.paths.data_dir / "sleep_review" / "reports"
+        self.ctx.logger.info("回顾报告目录: %s", report_dir)
         report_dir.mkdir(parents=True, exist_ok=True)
         by_stream: dict[str, list[dict]] = {}
         for item in buffer:
@@ -946,8 +951,10 @@ class CatsitatePlugin(MaiBotPlugin):
                 "sleep_review", [], [f"睡眠期间 {stream_id} 的消息(共 {len(msgs)} 条):\n{preview}"]
             )
             try:
+                self.ctx.logger.info("回顾摘要调用(流 %s, %d 条)", stream_id, len(msgs))
                 result = await self._side_llm_call(messages, self.config.sleep.review_llm_model, "sleep_review", self.config.sleep.review_llm_timeout_ms)
                 summary = str(result.get("response") or "")[:200] if isinstance(result, dict) else ""
+
             except Exception:
                 self.ctx.logger.exception("回顾摘要失败(流 %s)", stream_id)
                 summary = ""

@@ -935,11 +935,9 @@ class CatsitatePlugin(MaiBotPlugin):
 
         buffer, self._sleep_review_buffer = self._sleep_review_buffer, []
         self._sleep_review_buffer_snapshot.save({"messages": self._sleep_review_buffer})
-        self.ctx.logger.info("回顾任务启动: 缓冲 %d 条", len(buffer))
         if not buffer:
             return
         report_dir = self.ctx.paths.data_dir / "sleep_review" / "reports"
-        self.ctx.logger.info("回顾报告目录: %s", report_dir)
         report_dir.mkdir(parents=True, exist_ok=True)
         by_stream: dict[str, list[dict]] = {}
         for item in buffer:
@@ -951,7 +949,6 @@ class CatsitatePlugin(MaiBotPlugin):
                 "sleep_review", [], [f"睡眠期间 {stream_id} 的消息(共 {len(msgs)} 条):\n{preview}"]
             )
             try:
-                self.ctx.logger.info("回顾摘要调用(流 %s, %d 条)", stream_id, len(msgs))
                 result = await self._side_llm_call(messages, self.config.sleep.review_llm_model, "sleep_review", self.config.sleep.review_llm_timeout_ms)
                 summary = str(result.get("response") or "")[:200] if isinstance(result, dict) else ""
 

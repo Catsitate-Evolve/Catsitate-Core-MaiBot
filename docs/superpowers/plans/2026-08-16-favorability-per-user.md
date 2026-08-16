@@ -531,7 +531,7 @@ async def _settle_and_log(self, user_id: str, kind: str) -> None:
     history: list[dict] = []
     for stream_id in streams:
         history.extend(await self._fetch_recent_for_history(stream_id, 50))
-    result = await self.settle_executor.settle(
+    result = await self.fav_executor.settle(  # 仓库现有属性名为 fav_executor(plugin.py:85)
         user_id, history, kind, model=self.config.favorability.llm_model,
         persona=await self._persona(),
     )

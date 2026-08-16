@@ -110,7 +110,9 @@ class CatsitatePlugin(MaiBotPlugin):
         self._schedule_edit_history: list[dict] = []
         self._speak_counts: dict[str, int] = {}  # date -> 已发言次数
         self._last_activity_ts: float = 0.0  # 静默入睡计时(入站/出站活动刷新)
-        self._sleep_review_buffer: list[dict] = []  # 睡眠期拦截消息缓冲(回顾报告素材)
+        # 睡眠期拦截消息缓冲(回顾报告素材);持久化防重启丢失(联调发现)
+        self._sleep_review_buffer_snapshot = JsonSnapshot(data_dir / "sleep_review_buffer.json")
+        self._sleep_review_buffer: list[dict] = self._sleep_review_buffer_snapshot.load()
         for service in (self.memo, self.fav_engine):
             service.ensure_schema()
         self.store.execute(
@@ -488,6 +490,7 @@ class CatsitatePlugin(MaiBotPlugin):
                 "text": str(msg.get("processed_plain_text") or ""),
                 "ts": datetime.now().strftime("%Y-%m-%dT%H:%M:%S"),
             })
+            self._sleep_review_buffer_snapshot.save(self._sleep_review_buffer)
         return {"action": "abort", "modified_kwargs": kwargs}
 
     @HookHandler("maisaka.replyer.after_response", name="catsitate_goodnight", mode=HookMode.BLOCKING, order=HookOrder.LATE)
@@ -926,6 +929,7 @@ class CatsitatePlugin(MaiBotPlugin):
         """睡醒回顾:拦截缓冲按流聚合,LLM 摘要,写单份聚合报告文件。"""
 
         buffer, self._sleep_review_buffer = self._sleep_review_buffer, []
+        self._sleep_review_buffer_snapshot.save(self._sleep_review_buffer)
         if not buffer:
             return
         report_dir = self.ctx.paths.data_dir / "sleep_review" / "reports"

@@ -205,7 +205,7 @@ class CatsitatePlugin(MaiBotPlugin):
             ToolParameterInfo(name="user_id", param_type="string", description="关联用户,默认当前说话人", required=False),
             ToolParameterInfo(name="ttl_hours", param_type="number", description="单条有效期小时数,缺省用默认", required=False),
             ToolParameterInfo(name="remind_at", param_type="string",
-                              description="可选提醒时间,ISO 格式如 2026-08-16T19:00;仅日程联动用", required=False),
+                              description="可选提醒时刻,ISO 格式如 2026-08-16T19:00。重要:备忘内容含时间要求时(如「5分钟后」「今晚8点」)必须换算为绝对时间传入本参数,否则到期不会提醒", required=False),
         ],
         visibility="visible",
     )

@@ -248,7 +248,7 @@ class CatsitatePlugin(MaiBotPlugin):
         description="增/删/改 bot 自己今天的日程安排(活动窗口)。活动最多 8 个;睡眠窗口不可删除、时间修改受最短/最长睡眠约束。",
         brief_description="修改今日日程",
         parameters=[
-            ToolParameterInfo(name="action", param_type="string", description="view(查看当前日程)/move(把某窗口挪到新时段)/add(新增活动)/delete(删除活动窗口)。常用示例:把睡眠窗口改成11:45到16:00 → action=move, window_index=0, start=11:45, end=16:00;新增下午听歌 → action=add, start=16:00, end=18:00, activity=和Hesitate_P一起听歌。先 view 看窗口序号", required=True),
+            ToolParameterInfo(name="action", param_type="string", description="view(查看当前日程)/move(把某窗口挪到新时段)/add(新增活动)/delete(删除活动窗口)。建议流程:编辑前先 view 看当前日程与窗口序号,编辑后再次 view 确认结果。常用示例:把睡眠窗口改成11:45到16:00 → action=move, window_index=0, start=11:45, end=16:00;新增下午听歌 → action=add, start=16:00, end=18:00, activity=和Hesitate_P一起听歌", required=True),
             ToolParameterInfo(name="window_index", param_type="integer", description="move/delete 时的窗口序号(view 结果每行开头数字)", required=False),
             ToolParameterInfo(name="start", param_type="string", description="move/add 的新开始时刻,HH:MM 格式如 11:45(自动按当天日期)", required=False),
             ToolParameterInfo(name="end", param_type="string", description="move/add 的新结束时刻,HH:MM 格式如 16:00(跨午夜自动次日)", required=False),
@@ -266,13 +266,14 @@ class CatsitatePlugin(MaiBotPlugin):
             return "当前日程(每行开头是窗口序号):\n" + schedule_overview_text(self._schedule_data)
         day = self._schedule_data.get("date") or datetime.now().strftime("%Y-%m-%d")
         min_sleep, max_sleep = self.config.sleep.min_sleep_minutes, self.config.sleep.max_sleep_minutes
+        adjustments: list[str] = []
         if action == "move":
-            data, err, history = apply_schedule_move(
+            data, err, history, adjustments = apply_schedule_move(
                 self._schedule_data, window_index, start, end, day,
                 min_sleep=min_sleep, max_sleep=max_sleep, history=self._schedule_edit_history,
             )
         elif action == "add":
-            data, err, history = apply_schedule_add(
+            data, err, history, adjustments = apply_schedule_add(
                 self._schedule_data, start, end, activity, day,
                 min_sleep=min_sleep, max_sleep=max_sleep, history=self._schedule_edit_history,
             )
@@ -288,6 +289,9 @@ class CatsitatePlugin(MaiBotPlugin):
         self._schedule_data = data
         self._schedule_edit_history = history
         self._persist_schedule()
+        if adjustments:
+            # 重叠警告(联调对齐):编辑发生压缩时返回明细,bot 可再 view 确认
+            return "日程已更新。注意:与已有安排重叠,已自动调整:" + ";".join(adjustments)
         return "日程已更新。"
 
     @Tool(

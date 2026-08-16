@@ -278,81 +278,119 @@ def parse_hm(hm: str, day: str) -> str | None:
     return None
 
 
-def auto_shift_overlaps(windows: list[dict]) -> list[dict]:
-    """自动让位(确定性,人挪日历的直觉):按开始排序,重叠时——
-    活动窗口整体平移顺延;睡眠窗口压缩(入睡推迟、醒来不变)——活动挤占睡眠
-    时间(联调对齐:醒来时间是作息锚点,熬夜只动入睡侧)。"""
+def compress_with_anchor(
+    windows: list[dict], anchor_index: int,
+) -> tuple[list[dict], str, list[str]]:
+    """锚点压缩(联调对齐:新操作窗口挤旧窗口,不整体顺延):
+    - 锚点窗口保持完整;
+    - 锚点之前的窗口:end 提前到锚点 start(尾部压缩);
+    - 锚点之后的窗口:start 推迟到前一窗 end(头部压缩,链式);
+    - 任一窗口被压至 start>=end(挤没)即返回错误(不自动删除窗口,Q1=A);
+    返回 (窗口列表, 错误, 调整明细[「<活动> 由 <原> 压缩为 <新>」])。
+    """
 
-    out = sorted([dict(w) for w in windows], key=lambda w: _parse_t(w)[0])
-    prev_end: datetime | None = None
-    for w in out:
+    out = [dict(w) for w in windows]
+    anchor = out[anchor_index]
+    a_s, a_e = _parse_t(anchor)
+    adjustments: list[str] = []
+
+    def _desc(w: dict) -> str:
+        return w.get("activity") or ("睡觉" if w.get("kind") == "sleep" else "自由时间")
+
+    for i, w in enumerate(out):
+        if i == anchor_index:
+            continue
         s, e = _parse_t(w)
-        if prev_end and s < prev_end:
-            if w.get("kind") == "sleep":
-                w["start"] = prev_end.strftime(_ISO)  # 压缩:入睡推迟,醒来不变
-                s, _ = _parse_t(w)
-            else:
-                shift = prev_end - s
-                w["start"] = prev_end.strftime(_ISO)
-                w["end"] = (e + shift).strftime(_ISO)
-                s, e = _parse_t(w)
+        before = f"{s.strftime('%H:%M')}-{e.strftime('%H:%M')}"
+        if s < a_s and e > a_s:
+            # 锚点前:尾部压缩
+            w["end"] = anchor["start"]
+            s, e = _parse_t(w)
+        elif s >= a_s and s < a_e:
+            # 锚点后(与锚点重叠):头部压缩
+            w["start"] = anchor["end"]
+            s, e = _parse_t(w)
+        if e <= s:
+            return out, f"安排与「{_desc(w)}」完全重叠,该窗口会被挤没,请调整时间", adjustments
+        if w["start"] != before.split("-")[0] or w["end"] != before.split("-")[1]:
+            after = f"{s.strftime('%H:%M')}-{e.strftime('%H:%M')}"
+            adjustments.append(f"「{_desc(w)}」由 {before} 压缩为 {after}")
+    # 锚点后链式:非锚点窗口按开始排序,与前一窗 end 重叠则头部压缩
+    ordered = sorted((w for i, w in enumerate(out) if i != anchor_index and _parse_t(w)[0] >= a_e),
+                     key=lambda w: _parse_t(w)[0])
+    prev_end = a_e
+    for w in ordered:
+        s, e = _parse_t(w)
+        if s < prev_end and s >= a_e:
+            before = f"{s.strftime('%H:%M')}-{e.strftime('%H:%M')}"
+            w["start"] = prev_end.strftime(_ISO)
+            s, e = _parse_t(w)
+            if e <= s:
+                return out, f"安排与「{_desc(w)}」完全重叠,该窗口会被挤没,请调整时间", adjustments
+            if w["start"] != before.split("-")[0]:
+                adjustments.append(f"「{_desc(w)}」由 {before} 压缩为 {s.strftime('%H:%M')}-{e.strftime('%H:%M')}")
         prev_end = e
-    return out
+    return out, "", adjustments
 
 
 def apply_schedule_move(
     data: dict, window_index: int, start_hm: str, end_hm: str, day: str, *,
     min_sleep: int, max_sleep: int, history: list[dict],
-) -> tuple[dict, str, list[dict]]:
-    """move:把窗口挪到新时段(保留 kind/activity/plan_speak/topic),冲突自动让位。"""
+) -> tuple[dict, str, list[dict], list[str]]:
+    """move:把窗口挪到新时段(保留属性);重叠时新窗口挤旧窗口(压缩),返回调整明细。"""
 
     windows = [dict(w) for w in (data.get("windows") or [])]
     if not (0 <= window_index < len(windows)):
-        return data, "窗口序号非法", history
+        return data, "窗口序号非法", history, []
     start, end = parse_hm(start_hm, day), parse_hm(end_hm, day)
     if not start or not end:
-        return data, "时间格式须为 HH:MM(如 11:45)", history
+        return data, "时间格式须为 HH:MM(如 11:45)", history, []
     if end <= start:
         end = (datetime.strptime(end, _ISO) + timedelta(days=1)).strftime(_ISO)  # 跨午夜
     before = json.dumps(data, ensure_ascii=False)
     windows[window_index] = {**windows[window_index], "start": start, "end": end}
-    windows = auto_shift_overlaps(windows)
+    windows, cerr, adjustments = compress_with_anchor(windows, window_index)
+    if cerr:
+        return data, cerr, history, []
     candidate = {"date": data.get("date", ""), "windows": windows}
     checked, verr = validate_schedule(candidate, min_sleep=min_sleep, max_sleep=max_sleep)
     if checked is None:
-        return data, verr, history
+        return data, verr, history, []
     history.append({"time": datetime.now().strftime("%Y-%m-%dT%H:%M:%S"),
                     "action": f"move#{window_index}", "before": before,
                     "after": json.dumps(checked, ensure_ascii=False)})
-    return checked, "", history
+    return checked, "", history, adjustments
 
 
 def apply_schedule_add(
     data: dict, start_hm: str, end_hm: str, activity: str, day: str, *,
     min_sleep: int, max_sleep: int, history: list[dict],
-) -> tuple[dict, str, list[dict]]:
-    """add:新增活动窗口(daily 类型),冲突自动让位;活动上限拒绝拟人化。"""
+) -> tuple[dict, str, list[dict], list[str]]:
+    """add:新增活动窗口;重叠时新窗口挤旧窗口(压缩),返回调整明细。"""
 
     windows = [dict(w) for w in (data.get("windows") or [])]
     if sum(1 for w in windows if w.get("kind") != "sleep") >= ACTIVITY_WINDOW_LIMIT:
-        return data, _EDIT_LIMIT_REASON, history
+        return data, _EDIT_LIMIT_REASON, history, []
     start, end = parse_hm(start_hm, day), parse_hm(end_hm, day)
     if not start or not end:
-        return data, "时间格式须为 HH:MM(如 16:00)", history
+        return data, "时间格式须为 HH:MM(如 16:00)", history, []
     if end <= start:
         end = (datetime.strptime(end, _ISO) + timedelta(days=1)).strftime(_ISO)
     before = json.dumps(data, ensure_ascii=False)
     windows.append({"kind": "daily", "start": start, "end": end,
                     "activity": (activity or "自由时间").strip()[:40], "plan_speak": False, "topic": ""})
-    windows = auto_shift_overlaps(windows)
+    anchor_index = len(windows) - 1
+    windows, cerr, adjustments = compress_with_anchor(windows, anchor_index)
+    if cerr:
+        return data, cerr, history, []
     candidate = {"date": data.get("date", ""), "windows": windows}
     checked, verr = validate_schedule(candidate, min_sleep=min_sleep, max_sleep=max_sleep)
     if checked is None:
-        return data, verr, history
+        return data, verr, history, []
     history.append({"time": datetime.now().strftime("%Y-%m-%dT%H:%M:%S"),
                     "action": "add", "before": before,
                     "after": json.dumps(checked, ensure_ascii=False)})
-    return checked, "", history
+    return checked, "", history, adjustments
 
 
 ACTIVITY_WINDOW_LIMIT = 8

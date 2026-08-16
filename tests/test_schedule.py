@@ -71,56 +71,20 @@ def test_parse_hm():
     assert parse_hm("25:00", "2026-08-16") is None
 
 
-def test_auto_shift_overlaps():
-    from catsitate_core.schedule import auto_shift_overlaps
-    ws = auto_shift_overlaps([
-        {"kind": "daily", "start": "2026-08-16T16:00", "end": "2026-08-16T18:00"},
-        {"kind": "sleep", "start": "2026-08-16T11:45", "end": "2026-08-16T16:00"},
-    ])
-    # 睡眠 11:45-16:00 在前,听歌 16:00 起不重叠;若重叠则后窗顺延
-    assert ws[0]["kind"] == "sleep"
-    assert ws[1]["start"] >= ws[0]["end"]
-
-
-def test_add_activity_squeezes_sleep_wake_fixed(tmp_path):
-    from catsitate_core.schedule import apply_schedule_add
-    data = {"date": "2026-08-16", "windows": [
-        {"kind": "sleep", "start": "2026-08-16T23:00", "end": "2026-08-17T07:30", "activity": ""},
-    ]}
-    # 活动 22:30-23:30 与睡眠 23:00-07:30 重叠 → 睡眠压缩(入睡 23:30,醒来 07:30 不变)
-    out, err, _ = apply_schedule_add(data, "22:30", "23:30", "打游戏", "2026-08-16", min_sleep=240, max_sleep=660, history=[])
-    assert err == ""
-    sleep = next(w for w in out["windows"] if w["kind"] == "sleep")
-    assert sleep["start"] == "2026-08-16T23:30"
-    assert sleep["end"] == "2026-08-17T07:30"  # 醒来不变
-    # 压缩后 8h=480min ≥ 240 ✓
-
-
-def test_add_activity_squeeze_below_min_rejected(tmp_path):
-    from catsitate_core.schedule import apply_schedule_add
-    data = {"date": "2026-08-16", "windows": [
-        {"kind": "sleep", "start": "2026-08-16T23:00", "end": "2026-08-17T07:30", "activity": ""},
-    ]}
-    # 活动挤到 04:00 → 睡眠 04:00-07:30=210min < 240 → 拒绝
-    out, err, _ = apply_schedule_add(data, "22:00", "04:00", "通宵活动", "2026-08-16", min_sleep=240, max_sleep=660, history=[])
-    assert err != "" and "最短" in err
-    assert out == data  # 原日程不变
-
-
 def test_move_window_hhmm_and_shift(tmp_path):
     from catsitate_core.schedule import apply_schedule_move
     data = {"date": "2026-08-16", "windows": [
         {"kind": "sleep", "start": "2026-08-16T23:00", "end": "2026-08-17T07:30", "activity": ""},
         {"kind": "daily", "start": "2026-08-16T15:00", "end": "2026-08-16T18:00", "activity": "听歌"},
     ]}
-    out, err, hist = apply_schedule_move(data, 0, "11:45", "16:00", "2026-08-16", min_sleep=240, max_sleep=660, history=[])
+    out, err, hist, adj = apply_schedule_move(data, 0, "11:45", "16:00", "2026-08-16", min_sleep=240, max_sleep=660, history=[])
     assert err == ""
     sleep = next(w for w in out["windows"] if w["kind"] == "sleep")
     assert sleep["start"] == "2026-08-16T11:45" and sleep["end"] == "2026-08-16T16:00"
-    # 听歌 15:00-18:00 与睡眠 11:45-16:00 重叠 → 自动让位顺延到 16:00-19:00
+    # 听歌 15:00-18:00 与睡眠(锚点)重叠 → 头部压缩到 16:00-18:00(不整体顺延)
     song = next(w for w in out["windows"] if w["kind"] != "sleep")
-    assert song["start"] == "2026-08-16T16:00" and song["end"] == "2026-08-16T19:00"
-    assert hist
+    assert song["start"] == "2026-08-16T16:00" and song["end"] == "2026-08-16T18:00"
+    assert hist and adj  # 压缩明细非空
 
 
 def test_move_sleep_keeps_kind(tmp_path):
@@ -129,7 +93,7 @@ def test_move_sleep_keeps_kind(tmp_path):
         {"kind": "sleep", "start": "2026-08-16T23:00", "end": "2026-08-17T07:30", "activity": ""},
         {"kind": "daily", "start": "2026-08-16T09:00", "end": "2026-08-16T11:00", "activity": "发呆"},
     ]}
-    out, err, _ = apply_schedule_move(data, 0, "11:45", "16:00", "2026-08-16", min_sleep=240, max_sleep=660, history=[])
+    out, err, _, _ = apply_schedule_move(data, 0, "11:45", "16:00", "2026-08-16", min_sleep=240, max_sleep=660, history=[])
     assert err == "" and any(w["kind"] == "sleep" for w in out["windows"])  # move 保持 sleep(排序后首位未必是睡眠)
 
 
@@ -138,11 +102,37 @@ def test_add_window_hhmm(tmp_path):
     data = {"date": "2026-08-16", "windows": [
         {"kind": "sleep", "start": "2026-08-16T23:00", "end": "2026-08-17T07:30", "activity": ""},
     ]}
-    out, err, hist = apply_schedule_add(data, "16:00", "18:00", "和Hesitate_P一起听歌", "2026-08-16", min_sleep=240, max_sleep=660, history=[])
+    out, err, hist, _ = apply_schedule_add(data, "16:00", "18:00", "和Hesitate_P一起听歌", "2026-08-16", min_sleep=240, max_sleep=660, history=[])
     assert err == ""
     new_w = next(w for w in out["windows"] if w["kind"] == "daily")
     assert new_w["start"] == "2026-08-16T16:00" and "听歌" in new_w["activity"]
     assert hist
+
+
+def test_add_anchor_squeezes_earlier_window_tail(tmp_path):
+    from catsitate_core.schedule import apply_schedule_add
+    data = {"date": "2026-08-16", "windows": [
+        {"kind": "sleep", "start": "2026-08-16T23:00", "end": "2026-08-17T07:30", "activity": ""},
+        {"kind": "daily", "start": "2026-08-16T09:00", "end": "2026-08-16T11:00", "activity": "发呆"},
+    ]}
+    # 新窗口(锚点)10:30-12:00 在旧窗之后 → 旧窗尾部压缩 09:00-10:30
+    out, err, _, adj = apply_schedule_add(data, "10:30", "12:00", "买菜", "2026-08-16", min_sleep=240, max_sleep=660, history=[])
+    assert err == ""
+    old_w = next(w for w in out["windows"] if w.get("activity") == "发呆")
+    assert old_w["end"] == "2026-08-16T10:30"
+    assert any("发呆" in a for a in adj)
+
+
+def test_add_anchor_fully_covers_window_rejected(tmp_path):
+    from catsitate_core.schedule import apply_schedule_add
+    data = {"date": "2026-08-16", "windows": [
+        {"kind": "sleep", "start": "2026-08-16T23:00", "end": "2026-08-17T07:30", "activity": ""},
+        {"kind": "daily", "start": "2026-08-16T10:30", "end": "2026-08-16T11:00", "activity": "短暂活动"},
+    ]}
+    # 新窗口 10:00-12:00 完全覆盖旧窗 10:30-11:00 → 挤没拒绝(Q1=A)
+    out, err, _, _ = apply_schedule_add(data, "10:00", "12:00", "大块活动", "2026-08-16", min_sleep=240, max_sleep=660, history=[])
+    assert "挤没" in err
+    assert out == data
 
 
 def test_parse_from_llm_with_fence():

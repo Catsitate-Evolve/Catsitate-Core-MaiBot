@@ -40,7 +40,9 @@ from catsitate_core.decay import last_bot_interaction_time
 from catsitate_core.schedule import (
     DEFAULT_TEMPLATE_SCHEDULE,
     _materialize_template,
+    apply_schedule_add,
     apply_schedule_edit,
+    apply_schedule_move,
     build_proactive_intent,
     current_window,
     next_window,
@@ -239,13 +241,15 @@ class CatsitatePlugin(MaiBotPlugin):
         description="增/删/改 bot 自己今天的日程安排(活动窗口)。活动最多 8 个;睡眠窗口不可删除、时间修改受最短/最长睡眠约束。",
         brief_description="修改今日日程",
         parameters=[
-            ToolParameterInfo(name="action", param_type="string", description="view(查看当前日程)/add(新增活动)/update(修改窗口)/delete(删除活动窗口);建议先 view 查看窗口序号与占用时间,再决定怎么改", required=True),
-            ToolParameterInfo(name="window_index", param_type="integer", description="update/delete 时的窗口序号(view 结果每行开头数字)", required=False),
-            ToolParameterInfo(name="window", param_type="string", description='活动窗口 JSON:{"kind":"daily"或"greeting","start":"YYYY-MM-DDTHH:MM","end":"...","activity":"活动描述","plan_speak":true/false,"topic":"主题"}', required=False),
+            ToolParameterInfo(name="action", param_type="string", description="view(查看当前日程)/move(把某窗口挪到新时段)/add(新增活动)/delete(删除活动窗口);建议先 view 查看窗口序号,再决定怎么改", required=True),
+            ToolParameterInfo(name="window_index", param_type="integer", description="move/delete 时的窗口序号(view 结果每行开头数字)", required=False),
+            ToolParameterInfo(name="start", param_type="string", description="move/add 的新开始时刻,HH:MM 格式如 11:45(自动按当天日期)", required=False),
+            ToolParameterInfo(name="end", param_type="string", description="move/add 的新结束时刻,HH:MM 格式如 16:00(跨午夜自动次日)", required=False),
+            ToolParameterInfo(name="activity", param_type="string", description="add 时的活动描述(如 和Hesitate_P一起听歌);move 时留空保持原活动", required=False),
         ],
         visibility="visible",
     )
-    async def update_schedule(self, action: str = "", window_index: int = 0, window: str = "", **kwargs: Any) -> str:
+    async def update_schedule(self, action: str = "", window_index: int = 0, start: str = "", end: str = "", activity: str = "", **kwargs: Any) -> str:
         del kwargs
         if not self.config.plugin.enabled or not self.config.schedule.enabled:
             return "日程模块未启用。"
@@ -253,19 +257,26 @@ class CatsitatePlugin(MaiBotPlugin):
             return "今天还没有日程,等睡前一并安排吧。"
         if action == "view":
             return "当前日程(每行开头是窗口序号):\n" + schedule_overview_text(self._schedule_data)
-        new_window = None
-        if window:
-            try:
-                new_window = json.loads(window)
-            except json.JSONDecodeError:
-                return "window 参数不是合法 JSON。"
-        data, err, history = apply_schedule_edit(
-            self._schedule_data, action, window_index if action in ("update", "delete") else None, new_window,
-            self._schedule_edit_history,
-            min_sleep=self.config.sleep.min_sleep_minutes, max_sleep=self.config.sleep.max_sleep_minutes,
-        )
+        day = self._schedule_data.get("date") or datetime.now().strftime("%Y-%m-%d")
+        min_sleep, max_sleep = self.config.sleep.min_sleep_minutes, self.config.sleep.max_sleep_minutes
+        if action == "move":
+            data, err, history = apply_schedule_move(
+                self._schedule_data, window_index, start, end, day,
+                min_sleep=min_sleep, max_sleep=max_sleep, history=self._schedule_edit_history,
+            )
+        elif action == "add":
+            data, err, history = apply_schedule_add(
+                self._schedule_data, start, end, activity, day,
+                min_sleep=min_sleep, max_sleep=max_sleep, history=self._schedule_edit_history,
+            )
+        elif action == "delete":
+            data, err, history = apply_schedule_edit(
+                self._schedule_data, "delete", window_index, None, self._schedule_edit_history,
+                min_sleep=min_sleep, max_sleep=max_sleep,
+            )
+        else:
+            return f"未知操作: {action}(可选 view/move/add/delete)"
         if err:
-            # 失败时附当前日程,让 bot 看到窗口序号与占用时间再调整(联调反馈:盲改重叠率高)
             return f"{err}\n当前日程:\n" + schedule_overview_text(self._schedule_data)
         self._schedule_data = data
         self._schedule_edit_history = history

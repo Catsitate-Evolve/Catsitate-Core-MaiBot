@@ -267,6 +267,88 @@ def build_proactive_intent(window: dict, stream: dict, day_overview: str) -> str
     )
 
 
+def parse_hm(hm: str, day: str) -> str | None:
+    """「HH:MM」宽松解析为当天 ISO;非法返回 None。"""
+
+    t = (hm or "").strip()
+    if len(t) == 5 and t[2] == ":":
+        hh, mm = t[:2], t[3:]
+        if hh.isdigit() and mm.isdigit() and int(hh) <= 23 and int(mm) <= 59:
+            return f"{day}T{t}"
+    return None
+
+
+def auto_shift_overlaps(windows: list[dict]) -> list[dict]:
+    """自动让位:按开始排序,重叠时后窗顺延到前窗结束(确定性,人挪日历的直觉)。"""
+
+    out = sorted([dict(w) for w in windows], key=lambda w: _parse_t(w)[0])
+    prev_end: datetime | None = None
+    for w in out:
+        s, e = _parse_t(w)
+        if prev_end and s < prev_end:
+            shift = prev_end - s
+            w["start"] = prev_end.strftime(_ISO)
+            w["end"] = (e + shift).strftime(_ISO)
+            s, e = _parse_t(w)
+        prev_end = e
+    return out
+
+
+def apply_schedule_move(
+    data: dict, window_index: int, start_hm: str, end_hm: str, day: str, *,
+    min_sleep: int, max_sleep: int, history: list[dict],
+) -> tuple[dict, str, list[dict]]:
+    """move:把窗口挪到新时段(保留 kind/activity/plan_speak/topic),冲突自动让位。"""
+
+    windows = [dict(w) for w in (data.get("windows") or [])]
+    if not (0 <= window_index < len(windows)):
+        return data, "窗口序号非法", history
+    start, end = parse_hm(start_hm, day), parse_hm(end_hm, day)
+    if not start or not end:
+        return data, "时间格式须为 HH:MM(如 11:45)", history
+    if end <= start:
+        end = (datetime.strptime(end, _ISO) + timedelta(days=1)).strftime(_ISO)  # 跨午夜
+    before = json.dumps(data, ensure_ascii=False)
+    windows[window_index] = {**windows[window_index], "start": start, "end": end}
+    windows = auto_shift_overlaps(windows)
+    candidate = {"date": data.get("date", ""), "windows": windows}
+    checked, verr = validate_schedule(candidate, min_sleep=min_sleep, max_sleep=max_sleep)
+    if checked is None:
+        return data, verr, history
+    history.append({"time": datetime.now().strftime("%Y-%m-%dT%H:%M:%S"),
+                    "action": f"move#{window_index}", "before": before,
+                    "after": json.dumps(checked, ensure_ascii=False)})
+    return checked, "", history
+
+
+def apply_schedule_add(
+    data: dict, start_hm: str, end_hm: str, activity: str, day: str, *,
+    min_sleep: int, max_sleep: int, history: list[dict],
+) -> tuple[dict, str, list[dict]]:
+    """add:新增活动窗口(daily 类型),冲突自动让位;活动上限拒绝拟人化。"""
+
+    windows = [dict(w) for w in (data.get("windows") or [])]
+    if sum(1 for w in windows if w.get("kind") != "sleep") >= ACTIVITY_WINDOW_LIMIT:
+        return data, _EDIT_LIMIT_REASON, history
+    start, end = parse_hm(start_hm, day), parse_hm(end_hm, day)
+    if not start or not end:
+        return data, "时间格式须为 HH:MM(如 16:00)", history
+    if end <= start:
+        end = (datetime.strptime(end, _ISO) + timedelta(days=1)).strftime(_ISO)
+    before = json.dumps(data, ensure_ascii=False)
+    windows.append({"kind": "daily", "start": start, "end": end,
+                    "activity": (activity or "自由时间").strip()[:40], "plan_speak": False, "topic": ""})
+    windows = auto_shift_overlaps(windows)
+    candidate = {"date": data.get("date", ""), "windows": windows}
+    checked, verr = validate_schedule(candidate, min_sleep=min_sleep, max_sleep=max_sleep)
+    if checked is None:
+        return data, verr, history
+    history.append({"time": datetime.now().strftime("%Y-%m-%dT%H:%M:%S"),
+                    "action": "add", "before": before,
+                    "after": json.dumps(checked, ensure_ascii=False)})
+    return checked, "", history
+
+
 ACTIVITY_WINDOW_LIMIT = 8
 _EDIT_LIMIT_REASON = "今天的日程已经排得满满当当了,再排下去会累坏的,明天再安排吧。"
 

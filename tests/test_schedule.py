@@ -63,6 +63,63 @@ def test_schedule_overview_text():
     assert schedule_overview_text({}) == "(空)"
 
 
+def test_parse_hm():
+    from catsitate_core.schedule import parse_hm
+    assert parse_hm("11:45", "2026-08-16") == "2026-08-16T11:45"
+    assert parse_hm(" 16:00 ", "2026-08-16") == "2026-08-16T16:00"
+    assert parse_hm("bad", "2026-08-16") is None
+    assert parse_hm("25:00", "2026-08-16") is None
+
+
+def test_auto_shift_overlaps():
+    from catsitate_core.schedule import auto_shift_overlaps
+    ws = auto_shift_overlaps([
+        {"kind": "daily", "start": "2026-08-16T16:00", "end": "2026-08-16T18:00"},
+        {"kind": "sleep", "start": "2026-08-16T11:45", "end": "2026-08-16T16:00"},
+    ])
+    # 睡眠 11:45-16:00 在前,听歌 16:00 起不重叠;若重叠则后窗顺延
+    assert ws[0]["kind"] == "sleep"
+    assert ws[1]["start"] >= ws[0]["end"]
+
+
+def test_move_window_hhmm_and_shift(tmp_path):
+    from catsitate_core.schedule import apply_schedule_move
+    data = {"date": "2026-08-16", "windows": [
+        {"kind": "sleep", "start": "2026-08-16T23:00", "end": "2026-08-17T07:30", "activity": ""},
+        {"kind": "daily", "start": "2026-08-16T15:00", "end": "2026-08-16T18:00", "activity": "听歌"},
+    ]}
+    out, err, hist = apply_schedule_move(data, 0, "11:45", "16:00", "2026-08-16", min_sleep=240, max_sleep=660, history=[])
+    assert err == ""
+    sleep = next(w for w in out["windows"] if w["kind"] == "sleep")
+    assert sleep["start"] == "2026-08-16T11:45" and sleep["end"] == "2026-08-16T16:00"
+    # 听歌 15:00-18:00 与睡眠 11:45-16:00 重叠 → 自动让位顺延到 16:00-19:00
+    song = next(w for w in out["windows"] if w["kind"] != "sleep")
+    assert song["start"] == "2026-08-16T16:00" and song["end"] == "2026-08-16T19:00"
+    assert hist
+
+
+def test_move_sleep_keeps_kind(tmp_path):
+    from catsitate_core.schedule import apply_schedule_move
+    data = {"date": "2026-08-16", "windows": [
+        {"kind": "sleep", "start": "2026-08-16T23:00", "end": "2026-08-17T07:30", "activity": ""},
+        {"kind": "daily", "start": "2026-08-16T09:00", "end": "2026-08-16T11:00", "activity": "发呆"},
+    ]}
+    out, err, _ = apply_schedule_move(data, 0, "11:45", "16:00", "2026-08-16", min_sleep=240, max_sleep=660, history=[])
+    assert err == "" and any(w["kind"] == "sleep" for w in out["windows"])  # move 保持 sleep(排序后首位未必是睡眠)
+
+
+def test_add_window_hhmm(tmp_path):
+    from catsitate_core.schedule import apply_schedule_add
+    data = {"date": "2026-08-16", "windows": [
+        {"kind": "sleep", "start": "2026-08-16T23:00", "end": "2026-08-17T07:30", "activity": ""},
+    ]}
+    out, err, hist = apply_schedule_add(data, "16:00", "18:00", "和Hesitate_P一起听歌", "2026-08-16", min_sleep=240, max_sleep=660, history=[])
+    assert err == ""
+    new_w = next(w for w in out["windows"] if w["kind"] == "daily")
+    assert new_w["start"] == "2026-08-16T16:00" and "听歌" in new_w["activity"]
+    assert hist
+
+
 def test_parse_from_llm_with_fence():
     import json as _json
     text = "```json\n" + _json.dumps(GOOD, ensure_ascii=False) + "\n```"

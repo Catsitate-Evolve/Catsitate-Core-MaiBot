@@ -10,6 +10,7 @@ from .favorability import LEVEL_INDEX
 from .llm_provider import build_side_prompt
 
 _ISO = "%Y-%m-%dT%H:%M"
+_ISO_SEC = "%Y-%m-%dT%H:%M:%S"  # 容忍格式(仅解析用,落库一律归一化到 _ISO)
 
 DEFAULT_TEMPLATE_SCHEDULE: dict = {
     "date": "",
@@ -23,7 +24,27 @@ DEFAULT_TEMPLATE_SCHEDULE: dict = {
 
 
 def _parse_t(w: dict) -> tuple[datetime, datetime]:
-    return datetime.strptime(w["start"], _ISO), datetime.strptime(w["end"], _ISO)
+    """解析窗口起止时间;容忍 LLM 偶发带秒的格式(HH:MM:SS,实机 WARN「unconverted data remains: :00」)。"""
+
+    out = []
+    for v in (w["start"], w["end"]):
+        try:
+            out.append(datetime.strptime(v, _ISO))
+        except ValueError:
+            out.append(datetime.strptime(v, _ISO_SEC))
+    return out[0], out[1]
+
+
+def _normalize_window_times(windows: list[dict]) -> None:
+    """窗口时间归一化到分钟精度(容忍秒后落库前统一,防 LLM 带秒污染后续解析)。"""
+
+    for w in windows:
+        try:
+            s, e = _parse_t(w)
+            w["start"] = s.strftime(_ISO)
+            w["end"] = e.strftime(_ISO)
+        except (KeyError, ValueError, TypeError):
+            continue  # 非法时间交给 validate 报错,此处只做归一化
 
 
 def sort_windows(windows: list[dict]) -> list[dict]:
@@ -110,6 +131,7 @@ def fix_schedule(data: dict, *, min_sleep: int, max_sleep: int) -> dict:
             w["end"] = (e + shift).strftime(_ISO)
             s, e = _parse_t(w)
         prev_end = e
+    _normalize_window_times(keep)  # 秒格式归一到分钟(兜底链输出同样干净)
     return {"date": data.get("date", ""), "windows": keep}
 
 
@@ -246,6 +268,7 @@ class ScheduleGenerator:
             checked, verr = validate_schedule(data, min_sleep=self.sleep_cfg.min_sleep_minutes, max_sleep=self.sleep_cfg.max_sleep_minutes)
             if checked is not None:
                 checked["windows"] = sort_windows(checked["windows"])
+                _normalize_window_times(checked["windows"])
                 return checked, ""
             last_err = verr
         # 重生成耗尽 → 确定性钳制修复;修复后仍无效 → 默认模板 + 显式错误(规格兜底链)

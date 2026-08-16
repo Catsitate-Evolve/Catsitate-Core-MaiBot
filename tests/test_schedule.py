@@ -289,6 +289,27 @@ def test_materialize_template_time_ordered():
     assert starts == sorted(starts)
 
 
+def test_seconds_format_tolerated_and_normalized():
+    from catsitate_core.schedule import ScheduleGenerator
+    from catsitate_core.config import ScheduleSection, SleepSection
+    import asyncio, json as _json
+    # LLM 偶发带秒的时间:校验通过、落库归一化到分钟(实机 WARN「unconverted data remains: :00」)
+    good = {"date": "2026-08-17", "windows": [
+        {"kind": "sleep", "start": "2026-08-17T23:00:00", "end": "2026-08-18T07:30:00"},
+        {"kind": "daily", "start": "2026-08-17T09:00:00", "end": "2026-08-17T11:00:00",
+         "activity": "写代码", "plan_speak": False, "topic": ""},
+    ]}
+    async def fake_llm(messages, model=""):
+        return {"success": True, "response": _json.dumps(good, ensure_ascii=False), "model": model}
+    gen = ScheduleGenerator(fake_llm, ScheduleSection(), SleepSection())
+    data, err = asyncio.run(gen.generate(persona="", today_review="", weather_text="", fav_summary="", due_memos=[]))
+    assert err == ""
+    for w in data["windows"]:
+        assert len(w["start"]) == 16 and len(w["end"]) == 16  # 归一化到 YYYY-MM-DDTHH:MM
+    sleep = next(w for w in data["windows"] if w["kind"] == "sleep")
+    assert sleep["end"] == "2026-08-18T07:30"  # 跨午夜秒格式归一化后仍是分钟精度
+
+
 def test_parse_from_llm_with_fence():
     import json as _json
     text = "```json\n" + _json.dumps(GOOD, ensure_ascii=False) + "\n```"

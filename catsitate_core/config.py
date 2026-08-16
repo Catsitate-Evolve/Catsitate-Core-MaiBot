@@ -152,10 +152,6 @@ class ReplyGuardSection(PluginConfigBase):
 
     enabled: bool = _f(True, "reply_guard 模块开关", label="reply 补传模块开关")
     context_backfill_enabled: bool = _f(True, "上下文补传开关", label="上下文补传开关")
-    context_tools: list[str] = _f(
-        ["query_memory", "query_person_profile", "fetch_history", "view_forward_message", "memo_read"],
-        "视为上下文工具的工具名列表", label="上下文工具列表",
-    )
     sentinel_enabled: bool = _f(False, "LLM 哨兵层开关(默认关)", label="LLM 哨兵层开关")
     sentinel_model: str = _f(
         "planner",
@@ -193,7 +189,7 @@ class SleepSection(PluginConfigBase):
     enabled: bool = _f(True, "睡眠模块开关", label="睡眠模块开关")
     min_sleep_minutes: int = _f(240, "最短睡眠分钟(不足顺延醒来)", label="最短睡眠分钟")
     max_sleep_minutes: int = _f(660, "最长睡眠分钟(超过提前醒)", label="最长睡眠分钟")
-    silent_sleep_enabled: bool = _f(False, "静默入睡开关(仅睡前语境活动期间生效)", label="静默入睡开关")
+    silent_sleep_enabled: bool = _f(True, "静默入睡开关(仅睡前语境活动期间生效)", label="静默入睡开关")
     silent_sleep_minutes: int = _f(60, "静默入睡:无消息满 N 分钟", label="静默入睡分钟")
     review_enabled: bool = _f(True, "睡醒回顾开关(醒来生成聚合报告文件)", label="睡醒回顾开关")
     review_llm_model: str = _f("memory", "回顾总结模型:填主程序 task 名", label="回顾模型(task 名)")

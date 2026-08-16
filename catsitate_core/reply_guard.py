@@ -7,17 +7,21 @@ import re
 
 from .llm_provider import build_side_prompt
 
+# 上下文工具列表(联调裁定:内置常量,不再作为可配置项)
+CONTEXT_TOOLS: tuple[str, ...] = (
+    "query_memory", "query_person_profile", "fetch_history", "view_forward_message", "memo_read",
+)
+
 
 def should_backfill(
     called_tools: list[str],
-    context_tools: list[str],
     reply_reference: str,
     reasoning: str,
 ) -> bool:
     """三条件全真才补传:本轮调用过上下文工具 且 reply_reference 为空 且 reasoning 为空。"""
 
     return (
-        bool(set(called_tools) & set(context_tools))
+        bool(set(called_tools) & set(CONTEXT_TOOLS))
         and not reply_reference.strip()
         and not reasoning.strip()
     )
@@ -44,14 +48,13 @@ def merge_tool_results(tool_results: dict[str, str], max_chars: int = 400) -> st
 def backfill_reply_items(
     output_items: list[dict],
     tool_results: dict[str, str],
-    context_tools: list[str],
     called_tools: list[str],
     reasoning: str,
     max_chars: int = 400,
 ) -> list[dict]:
     """为满足触发条件的 reply 调用补 reply_reference,不改动其它工具调用。"""
 
-    if not should_backfill(called_tools, context_tools, "", reasoning):
+    if not should_backfill(called_tools, "", reasoning):
         return output_items
     merged = merge_tool_results(tool_results, max_chars=max_chars)
     if not merged:

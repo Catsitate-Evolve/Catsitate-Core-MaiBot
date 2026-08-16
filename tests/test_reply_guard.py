@@ -12,19 +12,19 @@ CTX_TOOLS = ["query_memory", "memo_read"]
 
 
 def test_should_backfill_all_three_conditions():
-    assert should_backfill(["memo_read"], CTX_TOOLS, "", "") is True
+    assert should_backfill(["memo_read"], "", "") is True
 
 
 def test_should_backfill_reference_present_blocks():
-    assert should_backfill(["memo_read"], CTX_TOOLS, "查过资料", "") is False
+    assert should_backfill(["memo_read"], "查过资料", "") is False
 
 
 def test_should_backfill_reasoning_present_blocks():
-    assert should_backfill(["memo_read"], CTX_TOOLS, "", "用户问过时间") is False
+    assert should_backfill(["memo_read"], "", "用户问过时间") is False
 
 
 def test_should_backfill_no_context_tool_called():
-    assert should_backfill(["web_search"], CTX_TOOLS, "", "") is False
+    assert should_backfill(["web_search"], "", "") is False
 
 
 def test_merge_tool_results_sorted_and_truncated():
@@ -41,7 +41,7 @@ def test_backfill_reply_items_only_targets_reply():
         {"tool_name": "web_search", "arguments": {"query": "天气"}},
         {"tool_name": "reply", "arguments": {"reply_reference": "已有引用"}},
     ]
-    out = backfill_reply_items(items, {"memo_read": "备忘内容"}, CTX_TOOLS, ["memo_read"], "")
+    out = backfill_reply_items(items, {"memo_read": "备忘内容"}, ["memo_read"], "")
     assert out[0]["arguments"]["reply_reference"] == "[memo_read] 备忘内容"  # 合并摘要含工具名前缀
     assert "reply_reference" not in out[1]["arguments"]  # 其它工具不动
     assert out[2]["arguments"]["reply_reference"] == "已有引用"  # 已有引用不动
@@ -49,7 +49,7 @@ def test_backfill_reply_items_only_targets_reply():
 
 def test_backfill_reply_items_reasoning_nonempty_skips():
     items = [{"tool_name": "reply", "arguments": {"reply_reference": ""}}]
-    out = backfill_reply_items(items, {"memo_read": "备忘内容"}, CTX_TOOLS, ["memo_read"], "有推理")
+    out = backfill_reply_items(items, {"memo_read": "备忘内容"}, ["memo_read"], "有推理")
     assert out[0]["arguments"]["reply_reference"] == ""
 
 

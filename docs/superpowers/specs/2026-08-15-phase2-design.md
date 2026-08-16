@@ -47,11 +47,11 @@
   - **睡眠窗口起点**:仍未睡 → 兜底强制入睡;
   - 日程中无睡前语境活动时,提前入睡通路自然不存在(只有到点强制睡,不侵占其它日程);
   - 防诱导:只接受短句、自我入睡;带 @/称呼他人/引用回复不触发;
-  - **静默入睡**(默认关,可配置):**仅睡前语境活动期间生效**——无任何入站/出站消息满 N 分钟自动入睡(不调 LLM);其余时间静默不触发。
+  - **静默入睡**(默认开,可配置):**仅睡前语境活动期间生效**——无任何入站/出站消息满 N 分钟自动入睡(不调 LLM);其余时间静默不触发。
 - **唤醒**:醒来时刻 = `clamp(计划醒来时刻, 入睡时刻 + min_sleep_minutes, 入睡时刻 + max_sleep_minutes)`——正常情况下等于计划醒来时刻(提前入睡不改变醒来时间,拟人);仅当实际睡眠时长越出 [min, max] 边界时以约束为准(最短顺延/最长提前醒)。**无唤醒浮动**。
 - **睡眠期间**:绝对静默(§2.4)——`chat.receive.before_process` BLOCKING 拦截(allow_abort)一切消息含命令,记录进睡眠回顾;**不执行任何其它操作**(@ 不唤醒、提醒不执行)。
 - **睡醒回顾**(默认开,可配置关):醒来时对睡眠期间被拦截消息生成**单份聚合报告文件**(`data/plugins/catsitate.core/sleep_review/reports/`),含每流消息数、摘要、重要消息(LLM 总结),**报告末尾静态附列睡眠期到期的备忘提醒**(不占 LLM 总结额度,延续备忘不丢失原则);不补发历史回复、不注入对话上下文。
-- **配置**(新 sleep 节):`enabled`、`min_sleep_minutes`(默认 240)、`max_sleep_minutes`(默认 660)、`silent_sleep_enabled`(默认 false)、`silent_sleep_minutes`(默认 60)、`review_enabled`(默认 true)、`review_llm_model`(默认 memory)、`review_llm_timeout_ms`(默认 None)。
+- **配置**(新 sleep 节):`enabled`、`min_sleep_minutes`(默认 240)、`max_sleep_minutes`(默认 660)、`silent_sleep_enabled`(默认 true)、`silent_sleep_minutes`(默认 60)、`review_enabled`(默认 true)、`review_llm_model`(默认 memory)、`review_llm_timeout_ms`(默认 None)。
 - **测试**:判定器解析、窗口边界(含跨午夜)、最短/最长睡眠、拦截 hook 行为、状态持久化、静默入睡计时、睡眠中零操作(无提醒/无 @ 唤醒)。
 
 ### 3.3 日程(2.1:入睡确认时生成 + 窗口执行 + 可被工具修改)

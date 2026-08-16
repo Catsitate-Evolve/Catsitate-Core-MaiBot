@@ -27,7 +27,8 @@ def test_config_defaults():
     assert cfg.msg_react.per_stream_cooldown_seconds == 30
     assert cfg.poke.cooldown_seconds == 600
     assert cfg.reply_guard.sentinel_enabled is False
-    assert "memo_read" in cfg.reply_guard.context_tools
+    from catsitate_core.reply_guard import CONTEXT_TOOLS
+    assert "memo_read" in CONTEXT_TOOLS
 
 
 def test_default_config_dump():
@@ -43,7 +44,7 @@ def test_phase2_sections_defaults():
     assert cfg.sleep.enabled is True
     assert cfg.sleep.min_sleep_minutes == 240
     assert cfg.sleep.max_sleep_minutes == 660
-    assert cfg.sleep.silent_sleep_enabled is False
+    assert cfg.sleep.silent_sleep_enabled is True
     assert cfg.sleep.silent_sleep_minutes == 60
     assert cfg.sleep.review_enabled is True
     assert cfg.schedule.enabled is True

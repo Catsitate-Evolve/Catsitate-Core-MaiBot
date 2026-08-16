@@ -32,6 +32,7 @@ from catsitate_core.memo import MemoService, validate_remind_at
 from catsitate_core.msg_react import MsgReactEngine, parse_choice_resp
 from catsitate_core.poke import PokeEngine
 from catsitate_core.reply_guard import (
+    CONTEXT_TOOLS,
     backfill_reply_items,
     build_sentinel_prompt,
     parse_sentinel_response,
@@ -563,10 +564,10 @@ class CatsitatePlugin(MaiBotPlugin):
             return {"action": "continue", "modified_kwargs": kwargs}
         called_tools = self._called_tools(kwargs)
         reasoning = self._reasoning_from_items(output_items)
-        tool_results = self._context_tool_results(output_items, cfg.context_tools, called_tools)
+        tool_results = self._context_tool_results(output_items, called_tools)
         if not tool_results:
             return {"action": "continue", "modified_kwargs": kwargs}
-        new_items = backfill_reply_items(output_items, tool_results, cfg.context_tools, called_tools, reasoning)
+        new_items = backfill_reply_items(output_items, tool_results, called_tools, reasoning)
         if new_items is output_items:
             return {"action": "continue", "modified_kwargs": kwargs}
         new_kwargs = {**kwargs, self._OUTPUT_ITEMS_KEY: new_items}
@@ -1571,11 +1572,11 @@ class CatsitatePlugin(MaiBotPlugin):
         return names
 
     def _context_tool_results(
-        self, output_items: list[dict], context_tools: list[str], called_tools: list[str]
+        self, output_items: list[dict], called_tools: list[str]
     ) -> dict[str, str]:
         """本轮**被调用过的**上下文工具的结果:从 output_items 的 FunctionCallOutputItem 提取(实机快照格式)。"""
 
-        wanted = set(context_tools) & set(called_tools)
+        wanted = set(CONTEXT_TOOLS) & set(called_tools)
         results: dict[str, str] = {}
         for it in output_items:
             if isinstance(it, dict) and it.get("item_type") == "FunctionCallOutputItem":

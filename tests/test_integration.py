@@ -137,7 +137,7 @@ def test_full_assembly_smoke(tmp_path):
 
     # reply 补传
     items = [{"tool_name": "reply", "arguments": {"reply_reference": ""}}]
-    out = backfill_reply_items(items, {"memo_read": "备忘内容"}, cfg.reply_guard.context_tools, ["memo_read"], "")
+    out = backfill_reply_items(items, {"memo_read": "备忘内容"}, ["memo_read"], "")
     assert out[0]["arguments"]["reply_reference"] == "[memo_read] 备忘内容"
 
 

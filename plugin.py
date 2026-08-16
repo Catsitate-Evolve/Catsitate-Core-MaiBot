@@ -55,6 +55,7 @@ from catsitate_core.time_aware import (
     dedup_festival_names,
     holiday_chain,
     lunar_festivals_near,
+    lunar_festivals_upcoming,
     parse_holiday_cn,
     solar_terms_near,
 )
@@ -801,13 +802,17 @@ class CatsitatePlugin(MaiBotPlugin):
             )
         # 当天 + 临近 3 天节日/节气(规格 §4.2 注入示例)
         # 公历节日走回退链结果;农历节日经 lunar-python 实算;双源重名按名去重
-        near_holidays: list[str] = []
-        for offset in range(4):
+        today_holidays = dedup_festival_names(holidays.get(today.strftime("%m-%d"), []) + lunar_festivals_near(today, days=0))
+        today_terms = solar_terms_near(today, days=0)
+        # 临近节日/节气单独一段(带日期),不与「今天」混淆(联调 bug:3 天窗口混入今日)
+        upcoming: list[str] = []
+        for offset in range(1, 4):
             day = today + timedelta(days=offset)
-            near_holidays.extend(holidays.get(day.strftime("%m-%d"), []))
-        near_holidays = dedup_festival_names(near_holidays + lunar_festivals_near(today, days=3))
-        near_terms = solar_terms_near(today, days=3)
-        text = build_environment_text(today, cfg.city, weather, near_holidays, near_terms)
+            upcoming.extend(f"{day.month}月{day.day}日 {n}" for n in holidays.get(day.strftime("%m-%d"), []))
+        upcoming += [n for n in lunar_festivals_upcoming(today, days=3) if "月" in n]
+        upcoming += [n for n in solar_terms_near(today, days=3) if "月" in n]
+        upcoming = dedup_festival_names(upcoming)
+        text = build_environment_text(today, cfg.city, weather, today_holidays, today_terms, upcoming=upcoming)
         self._env_cache["env"] = text
         self._env_fetched_at = datetime.now()
 
@@ -1103,6 +1108,7 @@ class CatsitatePlugin(MaiBotPlugin):
                     stream_id=entry["stream_id"],
                     segments=[{"type": "text", "text": f"[备忘提醒] {entry['content']}"}],
                 )
+                self.ctx.logger.info("备忘提醒兜底注入(stream=%s):%s", entry["stream_id"], entry["content"])
             except Exception:
                 self.ctx.logger.exception("备忘提醒注入失败(stream=%s)", entry["stream_id"])
                 continue  # 失败不标记:留重试机会(审查 M-9)

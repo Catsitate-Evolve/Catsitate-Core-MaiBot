@@ -56,6 +56,15 @@ def test_weather_code_map_common():
     assert 95 in WEATHER_CODE_MAP
 
 
+def test_build_environment_text_separates_today_and_upcoming():
+    from datetime import date
+    text = build_environment_text(
+        date(2026, 8, 16), "珠海", None, [], [], upcoming=["8月19日 七夕节"],
+    )
+    assert "节日:" not in text  # 今天无节日,不出现节日段
+    assert "临近:8月19日 七夕节" in text
+
+
 def test_build_environment_text_with_weather_and_festival():
     text = build_environment_text(
         now=date(2026, 8, 14),

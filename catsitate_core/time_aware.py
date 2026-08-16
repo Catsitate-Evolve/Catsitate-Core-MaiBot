@@ -51,7 +51,17 @@ def solar_terms_near(now: date, days: int = 3) -> list[str]:
 
 
 def lunar_festivals_near(now: date, days: int = 3) -> list[str]:
-    """当天+临近 days 天的农历节日名列表(lunar-python 实算,按日期升序);依赖缺失返回空。"""
+    """当天+临近 days 天的农历节日名列表(lunar-python 实算,按日期升序);依赖缺失返回空。
+
+    注意:仅「今天」的节日;临近节日经 lunar_festivals_upcoming 单独取(联调发现:
+    3 天窗口混入当天文本会让人误以为今天就是那个节日,如七夕)。
+    """
+
+    return lunar_festivals_upcoming(now, days=0)
+
+
+def lunar_festivals_upcoming(now: date, days: int = 3) -> list[str]:
+    """今天起未来 days 天内的农历节日,带日期前缀(如「8月19日 七夕节」),升序。"""
 
     if Solar is None:
         return []
@@ -59,7 +69,9 @@ def lunar_festivals_near(now: date, days: int = 3) -> list[str]:
     out: list[str] = []
     for offset in range(days + 1):
         day = now + timedelta(days=offset)
-        out.extend(Solar.fromYmd(day.year, day.month, day.day).getLunar().getFestivals())
+        for name in Solar.fromYmd(day.year, day.month, day.day).getLunar().getFestivals():
+            label = name if offset == 0 else f"{day.month}月{day.day}日 {name}"
+            out.append(label)
     return out
 
 
@@ -116,8 +128,13 @@ def build_environment_text(
     weather: dict | None,
     holidays: list[str],
     solar_terms: list[str],
+    upcoming: list[str] | None = None,
 ) -> str:
-    """组装环境块文本(单行,自解释)。"""
+    """组装环境块文本(单行,自解释)。
+
+    holidays/solar_terms = 仅今天的节日/节气;upcoming = 未来几天的
+    (带日期前缀,如「8月19日 七夕节」),单独拼「临近:」段,不与今日混淆。
+    """
 
     weekday = ("周一", "周二", "周三", "周四", "周五", "周六", "周日")[now.weekday()]
     parts = [f"今天 {now.month}月{now.day}日 {weekday}"]
@@ -133,4 +150,6 @@ def build_environment_text(
     extras = list(solar_terms) + list(holidays)
     if extras:
         parts.append("节日:" + "、".join(extras))
+    if upcoming:
+        parts.append("临近:" + "、".join(upcoming))
     return "[环境] " + ";".join(parts) + "。"

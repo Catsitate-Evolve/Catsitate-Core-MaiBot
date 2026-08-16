@@ -279,17 +279,23 @@ def parse_hm(hm: str, day: str) -> str | None:
 
 
 def auto_shift_overlaps(windows: list[dict]) -> list[dict]:
-    """自动让位:按开始排序,重叠时后窗顺延到前窗结束(确定性,人挪日历的直觉)。"""
+    """自动让位(确定性,人挪日历的直觉):按开始排序,重叠时——
+    活动窗口整体平移顺延;睡眠窗口压缩(入睡推迟、醒来不变)——活动挤占睡眠
+    时间(联调对齐:醒来时间是作息锚点,熬夜只动入睡侧)。"""
 
     out = sorted([dict(w) for w in windows], key=lambda w: _parse_t(w)[0])
     prev_end: datetime | None = None
     for w in out:
         s, e = _parse_t(w)
         if prev_end and s < prev_end:
-            shift = prev_end - s
-            w["start"] = prev_end.strftime(_ISO)
-            w["end"] = (e + shift).strftime(_ISO)
-            s, e = _parse_t(w)
+            if w.get("kind") == "sleep":
+                w["start"] = prev_end.strftime(_ISO)  # 压缩:入睡推迟,醒来不变
+                s, _ = _parse_t(w)
+            else:
+                shift = prev_end - s
+                w["start"] = prev_end.strftime(_ISO)
+                w["end"] = (e + shift).strftime(_ISO)
+                s, e = _parse_t(w)
         prev_end = e
     return out
 

@@ -82,6 +82,31 @@ def test_auto_shift_overlaps():
     assert ws[1]["start"] >= ws[0]["end"]
 
 
+def test_add_activity_squeezes_sleep_wake_fixed(tmp_path):
+    from catsitate_core.schedule import apply_schedule_add
+    data = {"date": "2026-08-16", "windows": [
+        {"kind": "sleep", "start": "2026-08-16T23:00", "end": "2026-08-17T07:30", "activity": ""},
+    ]}
+    # 活动 22:30-23:30 与睡眠 23:00-07:30 重叠 → 睡眠压缩(入睡 23:30,醒来 07:30 不变)
+    out, err, _ = apply_schedule_add(data, "22:30", "23:30", "打游戏", "2026-08-16", min_sleep=240, max_sleep=660, history=[])
+    assert err == ""
+    sleep = next(w for w in out["windows"] if w["kind"] == "sleep")
+    assert sleep["start"] == "2026-08-16T23:30"
+    assert sleep["end"] == "2026-08-17T07:30"  # 醒来不变
+    # 压缩后 8h=480min ≥ 240 ✓
+
+
+def test_add_activity_squeeze_below_min_rejected(tmp_path):
+    from catsitate_core.schedule import apply_schedule_add
+    data = {"date": "2026-08-16", "windows": [
+        {"kind": "sleep", "start": "2026-08-16T23:00", "end": "2026-08-17T07:30", "activity": ""},
+    ]}
+    # 活动挤到 04:00 → 睡眠 04:00-07:30=210min < 240 → 拒绝
+    out, err, _ = apply_schedule_add(data, "22:00", "04:00", "通宵活动", "2026-08-16", min_sleep=240, max_sleep=660, history=[])
+    assert err != "" and "最短" in err
+    assert out == data  # 原日程不变
+
+
 def test_move_window_hhmm_and_shift(tmp_path):
     from catsitate_core.schedule import apply_schedule_move
     data = {"date": "2026-08-16", "windows": [

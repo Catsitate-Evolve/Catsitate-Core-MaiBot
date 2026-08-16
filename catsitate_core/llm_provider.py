@@ -55,6 +55,7 @@ SIDE_TEMPLATES: dict[str, dict] = {
         "version": 1,
         "system": (
             "你是日程规划助手。为 bot 规划目标日的生活日程,输出 JSON:\n"
+            "通常作息:晚上 23:00 左右入睡、早上 7:30 左右自然醒;当天活动可适度挤占睡眠(推迟入睡),但醒来时间尽量保持稳定;睡眠时长不得短于给定约束。\n"
             '{"date": "YYYY-MM-DD", "windows": [窗口列表]}。\n'
             "窗口结构:\n"
             '- 睡眠窗口:{"kind": "sleep", "start": "YYYY-MM-DDTHH:MM", "end": "YYYY-MM-DDTHH:MM"}\n'

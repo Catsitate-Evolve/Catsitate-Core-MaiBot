@@ -293,8 +293,9 @@ def apply_schedule_edit(
     elif action == "update":
         if window_index is None or not (0 <= window_index < len(windows)) or not isinstance(new_window, dict):
             return data, "窗口序号非法", history
-        if windows[window_index].get("kind") == "sleep" and new_window.get("kind") != "sleep":
-            return data, "睡眠窗口不可变更为活动窗口", history
+        if windows[window_index].get("kind") == "sleep":
+            # 睡眠窗口只允许改时间:kind 恒为 sleep(联调:LLM 常误传 daily,强制纠正)
+            new_window = {**dict(new_window), "kind": "sleep"}
         windows[window_index] = dict(new_window)
     elif action == "delete":
         if window_index is None or not (0 <= window_index < len(windows)):

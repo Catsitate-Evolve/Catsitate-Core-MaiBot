@@ -51,6 +51,18 @@ def test_validate_too_many_activities():
     assert data is None and "活动窗口" in err
 
 
+def test_schedule_overview_text():
+    from catsitate_core.schedule import schedule_overview_text
+    data = {"date": "2026-08-16", "windows": [
+        {"kind": "sleep", "start": "2026-08-16T23:00", "end": "2026-08-17T07:30", "activity": ""},
+        {"kind": "daily", "start": "2026-08-16T09:00", "end": "2026-08-16T11:00", "activity": "发呆"},
+    ]}
+    text = schedule_overview_text(data)
+    assert "0. 睡眠 23:00-07:30" in text
+    assert "1. 活动 09:00-11:00 发呆" in text
+    assert schedule_overview_text({}) == "(空)"
+
+
 def test_parse_from_llm_with_fence():
     import json as _json
     text = "```json\n" + _json.dumps(GOOD, ensure_ascii=False) + "\n```"

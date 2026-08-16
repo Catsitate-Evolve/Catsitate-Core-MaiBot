@@ -45,6 +45,7 @@ from catsitate_core.schedule import (
     current_window,
     next_window,
     threshold_met,
+    schedule_overview_text,
 )
 from catsitate_core.services.scheduler import Scheduler
 from catsitate_core.sleep import is_goodnight_utterance, parse_sleep_confirm_response
@@ -235,8 +236,8 @@ class CatsitatePlugin(MaiBotPlugin):
         description="增/删/改 bot 自己今天的日程安排(活动窗口)。活动最多 8 个;睡眠窗口不可删除、时间修改受最短/最长睡眠约束。",
         brief_description="修改今日日程",
         parameters=[
-            ToolParameterInfo(name="action", param_type="string", description="add(新增活动)/update(修改窗口)/delete(删除活动窗口)", required=True),
-            ToolParameterInfo(name="window_index", param_type="integer", description="update/delete 时的窗口序号(从 0 开始)", required=False),
+            ToolParameterInfo(name="action", param_type="string", description="view(查看当前日程)/add(新增活动)/update(修改窗口)/delete(删除活动窗口);建议先 view 查看窗口序号与占用时间,再决定怎么改", required=True),
+            ToolParameterInfo(name="window_index", param_type="integer", description="update/delete 时的窗口序号(view 结果每行开头数字)", required=False),
             ToolParameterInfo(name="window", param_type="string", description='活动窗口 JSON:{"kind":"daily"或"greeting","start":"YYYY-MM-DDTHH:MM","end":"...","activity":"活动描述","plan_speak":true/false,"topic":"主题"}', required=False),
         ],
         visibility="visible",
@@ -247,6 +248,8 @@ class CatsitatePlugin(MaiBotPlugin):
             return "日程模块未启用。"
         if not self._schedule_data:
             return "今天还没有日程,等睡前一并安排吧。"
+        if action == "view":
+            return "当前日程(每行开头是窗口序号):\n" + schedule_overview_text(self._schedule_data)
         new_window = None
         if window:
             try:
@@ -259,7 +262,8 @@ class CatsitatePlugin(MaiBotPlugin):
             min_sleep=self.config.sleep.min_sleep_minutes, max_sleep=self.config.sleep.max_sleep_minutes,
         )
         if err:
-            return err
+            # 失败时附当前日程,让 bot 看到窗口序号与占用时间再调整(联调反馈:盲改重叠率高)
+            return f"{err}\n当前日程:\n" + schedule_overview_text(self._schedule_data)
         self._schedule_data = data
         self._schedule_edit_history = history
         self._persist_schedule()

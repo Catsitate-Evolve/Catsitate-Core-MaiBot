@@ -120,6 +120,20 @@ def schedule_from_json(text: str) -> tuple[dict | None, str]:
     return (data, "") if isinstance(data, dict) else (None, "日程非对象 JSON")
 
 
+def schedule_overview_text(data: dict) -> str:
+    """当前日程概览文本(update_schedule 工具 view/错误提示用):每窗口一行带序号。"""
+
+    lines: list[str] = []
+    for i, w in enumerate((data.get("windows") or []) if isinstance(data, dict) else []):
+        if not isinstance(w, dict):
+            continue
+        kind_label = "睡眠" if w.get("kind") == "sleep" else ("问候" if w.get("kind") == "greeting" else "活动")
+        time_range = f"{w.get('start', '?')[11:16]}-{w.get('end', '?')[11:16]}"
+        activity = w.get("activity") or ("睡觉" if w.get("kind") == "sleep" else "自由时间")
+        lines.append(f"{i}. {kind_label} {time_range} {activity}")
+    return "\n".join(lines) or "(空)"
+
+
 def current_window(data: dict, now_iso: str) -> dict | None:
     """当前所处窗口(空白时间返回 None=自由时间)。"""
 

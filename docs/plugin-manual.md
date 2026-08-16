@@ -1,0 +1,648 @@
+# Catsitate Core MaiBot 插件 — 公测使用手册
+
+- 插件 ID:`catsitate.core`
+- 仓库:https://github.com/Catsitate-Evolve/Catsitate-Core-MaiBot(目录 `plugins/catsitate_core_maibot/`)
+- 文档日期:2026-08-16(对应 v0.3.0,二期·按人重构联调完成)
+- 适用对象:公测使用方、复审人员
+- 依据:设计规格(`docs/superpowers/specs/2026-08-14-catsitate-core-maibot-design.md`、`docs/superpowers/specs/2026-08-15-phase2-design.md`,其中全局决策 #7/#8/#9 为最终裁定)、`docs/acceptance-checklist.md`(全部已验收行为)、当前代码。本文内容与代码不一致处,以代码为准。
+
+---
+
+## 1. 概述
+
+### 1.1 插件定位
+
+Catsitate 是部署在 MaiBot 上的 QQ 聊天机器人人设(伪三无猫耳少女,信息海意识体)。本插件是 Catsitate 的**核心人格行为插件**,负责在**不修改主程序**的前提下:
+
+- 为 bot 提供"生活感":好感度(按人)、睡眠作息、每日日程、节日/天气/时间感知、主动发言与主动问候;
+- 扩展行为能力:备忘录(工具+命令)、贴表情、主动戳一戳、图片重看、reply 上下文补传与可选哨兵层;
+- 优化请求结构使提示词缓存命中率尽量高(插件侧缓存纪律,见 §2.4)。
+
+### 1.2 核心设计哲学
+
+| 原则 | 含义与落地 |
+|---|---|
+| **拟人化** | 一切行为围绕"像活人一样"设计:按人积累好感、睡觉即一天的结束、睡前规划次日日程、醒来回顾、久不联系关系自然降温、城市/节日/天气注入生活感。 |
+| **按人好感度** | 好感度的**唯一标识是 QQ 号(user_id)**,不按聊天流分账;跨流聚合判定、聚合结算、聚合衰减(全局决策 #7 最终裁定)。 |
+| **睡眠即日程** | 睡眠是日程中的一个窗口(恰好 1 个),不是独立开关;睡眠期间**绝对静默**(拦截一切入站消息含命令、@ 不唤醒、提醒不执行);入睡确认瞬间生成次日日程是睡眠期间唯一允许的 LLM 调用。 |
+| **主动发言交还主程序** | 插件在日程窗口到达时只做**指示**(`maisaka.proactive.trigger` 传 intent 上下文),是否说话、说什么、话术全部由主程序结合人设/记忆/上下文决定;插件不 send.text、不生成话术。 |
+| **错误显式暴露** | 不实现任何"偷偷兜底":所有跳过、降级、钳制、失败都有日志痕迹;LLM 失败跳过本轮但记录日志;配置错误 on_load 报错拒绝加载;数据损坏告警并忽略。 |
+| **无纯概率** | 摒弃单纯概率行为:发言/入睡/衰减/结算等决策交给 LLM 判定或确定性规则,随机数只允许出现在工程护栏(冷却、限频)。 |
+
+### 1.3 版本与里程碑
+
+- v1.0.0(2026-08-15):一期联调完成(注入/好感度/备忘录/贴表情/戳一戳/reply 补传/图片重看/时间感知/旁路记账)。
+- v0.2.0(2026-08-15):二期(自然衰减/睡眠/日程/主动问候/备忘 remind_at)。
+- v0.3.0(2026-08-16):**按人重构**(好感度以 QQ 号唯一标识、特别独占、主动问候统一、配置清理),即当前公测版本。
+
+---
+
+## 2. 架构
+
+### 2.1 模块清单与职责
+
+| 文件 | 职责(一句话) |
+|---|---|
+| `plugin.py` | 薄接线层:插件生命周期、6 个 Hook、6 个工具、1 个命令、8 个后台调度任务、全部 SDK 适配与日志(业务逻辑不在此)。 |
+| `catsitate_core/config.py` | 配置模型(`PluginConfigBase` 嵌套 12 节,中文 label 供 WebUI 渲染)。 |
+| `catsitate_core/storage.py` | 存储层:`SQLiteStore`(sqlite3 薄封装,WAL 模式)+ `JsonSnapshot`(轻量 JSON 快照,原子写)。 |
+| `catsitate_core/inject.py` | 注入框架唯一出口:注入块组装、`BLOCK_ORDER` 固定排序、字节级版本化缓存复用。 |
+| `catsitate_core/favorability.py` | 好感度引擎:`BatchEngine`(按人批次账本/触发判定/apply_delta/特别独占钳制)+ `SettleExecutor`(素材构造→LLM 判定→落库/顺延)+ 好感度块渲染。 |
+| `catsitate_core/decay.py` | 自然衰减引擎:互动时间判定(私聊全收/群聊 @/quote)+ LLM 衰减判定 + apply_delta。 |
+| `catsitate_core/sleep.py` | 睡眠状态机(全局唯一,JSON 持久化)+ clamp 醒来时刻 + 晚安短句过滤 + 入睡判定解析。 |
+| `catsitate_core/schedule.py` | 日程引擎:数据模型/校验/钳制修复/默认作息模板/生成器/窗口判定/update_schedule 工具全部修改语义(压缩/上限/睡眠窗口保护)。 |
+| `catsitate_core/memo.py` | 备忘录:读写(单条 TTL/remind_at 校验)、到期筛选 `due_on`、过期清理、注入取数。 |
+| `catsitate_core/msg_react.py` | 贴表情引擎:每流冷却(JSON 快照)+ 选表情 prompt 组装;表情表在 `qq_emoji.py`。 |
+| `catsitate_core/qq_emoji.py` | 内置 30 项精选 QQ 表情表(id→描述,替代可配置白名单的联调裁定)。 |
+| `catsitate_core/poke.py` | 主动戳引擎:仅每用户冷却前置校验(好感度门槛已取消)。 |
+| `catsitate_core/reply_guard.py` | reply 补传规则层(三条件判定、工具结果合并摘要)+ 哨兵 prompt 组装与解析。 |
+| `catsitate_core/image_relook.py` | 图片重看:图片段定位(按 message_id 或倒数 index)+ MIME 魔数嗅探 + VLM prompt 组装。 |
+| `catsitate_core/time_aware.py` | 时间感知:节日数据回退链(在线→库→内置)、lunar-python 农历节日/节气实算、天气码中文映射、环境块文本组装。 |
+| `catsitate_core/llm_provider.py` | 旁路 LLM 统一出口:8 个内置 prompt 模板、主程序 prompt 管理覆盖加载、稳定段前置组装、模板版本化缓存键。 |
+| `catsitate_core/services/scheduler.py` | 后台 asyncio 任务引擎:60s tick,任务异常隔离(记录日志不中断主循环)。 |
+
+### 2.2 消息数据流概览
+
+```
+入站消息 ── chat.receive.before_process(BLOCKING EARLY)──> sleep_gate:睡眠拦截(abort+缓冲)/唤醒态记活动时间
+        ── chat.receive.after_process(OBSERVE)──────────> fav_count:好感度计数+提前结算触发(睡眠期跳过)
+主链路 planner ── maisaka.planner.before_request(BLOCKING LATE)──> inject:注入块前插 system 之后、历史之前
+              ── maisaka.planner.after_response(BLOCKING LATE)──> reply_backfill:reply 上下文补传
+replyer 出站 ── maisaka.replyer.after_response(BLOCKING LATE)──> goodnight_check(晚安入睡判定)
+             ── maisaka.replyer.after_response(BLOCKING LATE)──> sentinel_check(LLM 哨兵,默认关)
+发送链路(proactive)── maisaka.proactive.trigger 由调度器在日程窗口调用,表达权交主程序
+后台调度器(60s tick)── 天气/节日/备忘清理/日终结算/衰减/睡眠/日程窗口/提醒兜底(见 §6.2)
+```
+
+### 2.3 旁路 LLM prompt 纪律(§4.10)
+
+- **模型路由**:所有旁路请求统一经 `ctx.call_capability("llm.generate", prompt=messages, model=<task 名>)`;`model` 填**主程序 `model_task_config` 的 task 名**(节名),填模型标识会报「未找到名为 … 的模型配置」;留空=主程序默认(取首个可用 task,不可控,不推荐)。
+- **统一结构**:`[任务指令+输出格式(system,固定模板+版本化)] [稳定上下文(5 级规则/白名单/人设背景,配置数据)] [变量素材(时间正序)]`——稳定段在前、变量段在后。
+- **模板加载顺序**:主程序数据目录 `data/custom_prompts/zh-CN/catsitate_<id>.prompt`(WebUI「提示词管理」编辑产物)→ `prompts/zh-CN/catsitate_<id>.prompt`(内置层)→ 插件内置默认(`llm_provider.SIDE_TEMPLATES`)。模板缺失时告警一次并回退内置,部署后自动恢复;模板内容变化即缓存键失效。
+- **8 个旁路模板**:`catsitate_favorability`、`catsitate_msg_react`、`catsitate_sentinel`、`catsitate_image_relook`、`catsitate_decay`、`catsitate_schedule_generate`、`catsitate_sleep_confirm`、`catsitate_sleep_review`(与 `prompt_templates/` 下 8 个文件一一对应,含 `{{delta_max}}`/`{{decay_max}}` 占位符)。
+- **记账**:每次旁路调用写入 `llm_usage` 表(day/module/calls/tokens 按模块分列)。
+
+### 2.4 主链路注入纪律(§4.1)
+
+- 注入点:**system 之后、历史之前**前插(目标顺序:`[system][环境块][日程块][备忘块][好感度块][历史][主程序动态注入][时间][tail][注意事项]`),绝不改动 system prompt 与历史。
+- 注入块按波动频率分层排序(`BLOCK_ORDER = level_rule → environment → schedule → memo → favorability`,等级规则块在实现上并入好感度块首行);任一后部块变化不影响前部块缓存。
+- 空块跳过;同 `(module, content_key, text)` 内容未变时字节级复用上一轮渲染结果;每模块每轮仅允许一块(重复即抛错,显式暴露)。
+- 长度在源头控制(注入管线不截断):备忘 ≤80 字符/合计 ≤5 条,注记 ≤40 字符,环境块天然短小,规则文本由配置自控。
+- 任一注入源出错仅记录日志并跳过该小节,不阻塞主链路。
+
+---
+
+## 3. 功能详解
+
+## 3.1 好感度(按人,`favorability.py`)
+
+### 3.1.1 数据模型与 5 级制
+
+- **按人单行**:`favorability` 表主键 `user_id`(QQ 号),一个用户全局一行,跨流聚合(全局决策 #7)。
+- **分数→等级**:`0-9 陌生 / 10-29 熟悉 / 30-59 亲近 / 60-99 挚友 / ≥100 特别`(5 级)。
+- `batch_counter` 保留 `(user_id, stream_id)` 行**仅作活跃度记录**(count、last_bump),不再承担结算窗口语义;结算窗口走人级 `favorability.window_start`。
+- 开发期裁定:检测旧形状(含 stream_id 列 / window_start 死列)直接重建,不做数据迁移;重建前请留意数据丢失。
+
+### 3.1.2 计数与批次
+
+- `chat.receive.after_process`(`catsitate_fav_count`)记录消息:**通知类消息(`is_notify`,如戳一戳)不计数**;睡眠期不计数(绝对静默);无 user_id/stream_id 跳过。
+- 每次计数 = `batch_counter` 按 (user, stream) bump;触发判定按人取跨流 SUM。
+
+### 3.1.3 结算(纯计数触发,消息永不丢弃)
+
+| 类型 | 触发条件 | 说明 |
+|---|---|---|
+| **early 提前结算** | 该人跨流总计数 ≥ `early_settle_threshold`(默认 20),且当日 early 次数 < `daily_max_early_settle`(默认 3) | 结算后该人所有流计数清零并开新批次;每用户每日提前结算 ≤3 次 |
+| **daily 日终结算** | `daily_settle` 调度(默认每 24h)扫描当日有消息且未日终结算的用户 | 不计提前结算上限;若素材中该用户本人消息数 < `daily_settle_min`(默认 3)→ **顺延**(不结算、不清零,消息保留继续累积,待再次活跃进入后续日终检查) |
+
+- 每用户每日判定次数硬上限 = 提前 ≤3 + 日终 ≤1 = **≤4 次**;日终兜底保证最后一次提前结算之后的批次也被判定。
+- 结算并发防护:`_settling` 集合,同一用户任一结算已在飞即跳过(防 delta 双计),日志「好感度结算[%s] %s 已在结算中,跳过本轮」。
+- **LLM 判定**:prompt 结构 = 判定指令(system)+ 人设/行为风格(主程序 `personality.*`,非硬编码)+ 5 级规则表(配置)为稳定段,批次素材为变量尾;输出 `{"delta": 整数(-delta_max~+delta_max), "note": "一句话注记"}`;delta 按 `delta_max`(默认 5)钳制;解析失败/LLM 失败跳过本轮并记日志。
+- **落库**:`apply_delta` 累加分数、重算等级、注记强制截断至 `note_max_chars`(默认 40)字符、写 `favorability_log`(judge_id=`early-{时间}` / `daily-{时间}`,幂等防重)。素材为空时**不调 LLM 不落库**(返回 failed)。
+- 日志关键词:
+  - `好感度结算 {user}:early delta={n}` / `好感度结算 {user}:daily delta={n}`
+  - `好感度结算失败 {user}:{kind} {原因}`(含「素材为空,跳过结算」「用户消息不足 3 条,顺延」「LLM 调用异常…」「判定 JSON 解析失败」等)
+  - `结算取数: 共 {N} 条,其中 bot 发言 {M} 条(bot_user_id={id})`(需配置 bot_user_id)
+
+### 3.1.4 结算素材构造(私聊/群聊差异化,按人跨流聚合)
+
+- 取 `window_start`(上次结算时间)之后的消息,时间正序;以该人用户消息为锚取最近 `material_max_messages`(默认 30)条,每条紧邻上下文前后各 1 条;bot 消息仅随附目标用户发过言的流(私聊全收,群聊仅 **@ 该人或 quote 解析出原发送者为该人** 的 bot 消息)。
+- 单条素材超过 `material_message_max_chars`(默认 200)在**单条尾部**截断加「…」;每条素材格式 `[user_id](私聊/群聊·user/bot) 文本`。
+- 关键前提:`bot_user_id` 必须配置为 bot 自身账号 id(实机 3545773341),否则 bot 发言全部被当作用户素材、bot 识别与 quote 归属全部失效。
+
+### 3.1.5 「特别」等级独占(全局决策 #8)
+
+- 全表任意时刻**最多 1 人**处于「特别」(≥100 分)。
+- 他人分数变动试图升入时,若特别之位已被占据 → 钳制在 **99 分(挚友)** 并显式日志「结算升特别被独占钳制(user=…)」;`apply_delta` 返回状态 `clamped_exclusive`。
+- 独占者本人继续加分不受限(`is_exclusive_holder` 排除自己);独占者因衰减/结算掉出(score<100)后空位释放,他人**下一次分数变动**时方可升入(判定在 `apply_delta` 统一入口,无需额外扫描)。
+- 注:`favorability_log.delta` 记录判定意图,钳制时与实际落库分数变化可能有差。
+
+### 3.1.6 注入块
+
+- 好感度块(`[好感度]`):私聊=对端用户,群聊=当前消息发送者(最近非 bot 消息发送者,取 3 条内解析);`include_rule=True` 时块首行注入**当前等级的对应单条规则**(联调决定:5 级全量注入改为按等级单条,缓存友好)。
+- 文本示例:`[好感度] 规则「熟悉」:认识一段时间,可自然闲聊。\n[好感度] 3341299096:等级「熟悉」(累计 42),注记:最近主动关心过你。`
+- 无结算记录的用户显示默认等级「陌生」、0 分、无注记(内容稳定统一,新说话人不引入波动);等级/注记变化(结算)才更新该块。
+
+## 3.2 好感度自然衰减(`decay.py`)
+
+- **互动定义**(按流类型区分,群聊防误判;按人聚合后跨流取最近一次):
+  - 私聊:流内任意 bot 消息时间(流内只有 bot 与用户两人,任何 bot 消息即回应);
+  - 群聊:流内最近一条 **@ 该用户或 quote 了该用户** 的 bot 消息时间(bot 回应 A 不重置 B 的计时;reply 段实机为纯消息 id,经主机能力 `message.get_by_id`(message_id=reply 段,chat_id=当前流)解析原发送者后与目标用户比对;解析失败按未 quote 命中并显式告警,每轮至多一条);
+  - 从未被 bot 直接回应:以该人 `favorability.judged_at`(上次结算时间)为计时基准。
+- **计时基准**(判定后重置):`max(各活跃流内最近 bot 直接互动时间, 最近一次 decay 判定时间)`——衰减判定本身即一次「想起」,7 天内不重复衰减(每人每日最多一次的天然去重)。
+- **触发**:`daily_decay` 调度(24h,与日终结算同 tick **先衰减后结算**);扫描 `favorability` 表 **score>0 的人**(单行 per user),距基准 > `decay_after_days`(默认 7 天)进入衰减判定;睡眠期跳过。
+- **流消亡处理**:`batch_counter` 中流已不在 `chat.get_all_streams` 结果 → 显式跳过该流并告警「衰减候选流不存在(user=…,stream=…),跳过该流」;单流取消息失败只跳过该流,不中止整轮。
+- **LLM 判定**:prompt 稳定段 = 人设 + 行为风格 + 上次等级/分数/注记 + 未互动天数;输出 `{"delta": 整数(-decay_max~0), "note": "新注记(≤40 字)"}`;delta=0 表示关系稳定不减;delta>0 直接拒绝(衰减不可加分);结果按 `decay_max`(默认 3)钳制后 `apply_delta` 落库(judge_id=`decay-{时间}-{user}`,同秒多用户判重)。
+- 日志关键词:`好感度衰减 {user}:delta={n}`、`衰减判定 LLM 失败(user=…)`、`衰减扫描异常,本轮跳过`、`quote 发送者解析失败(stream=…)`、`quote 发送者解析: 成功 {n}/{m}(stream=…)`。
+
+## 3.3 睡眠(`sleep.py` + plugin 接线)
+
+### 3.3.1 状态机
+
+- 全局唯一状态 `awake / sleep`,持久化 `sleep_state.json`(state、sleep_at、wake_at);重启恢复:睡眠中则继续睡至醒来时刻(醒来时刻按 clamp 公式以持久化的入睡时刻重算,**不依赖日程文件**);日程缺失不影响睡眠状态。
+- `is_sleeping()` = 状态 sleep 且 now < wake_at。
+
+### 3.3.2 入睡三通道
+
+| 通道 | 条件 | 细节 |
+|---|---|---|
+| **① 晚安判定入睡** | bot 出站晚安短句 + 处于可入睡时间 + AI 判定 `SLEEP` | 可入睡时间 = 当前窗口为 kind=greeting 且活动含「睡/洗漱/晚安/休息/就寝」之一(睡前语境活动);短句须过 `is_goodnight_utterance` 过滤(≤12 字、无 @、无「」、不含「你好/再见」、逗号仅允许「大家/各位」群体收尾、含「睡/晚安/安眠/就寝」关键词);再经旁路 LLM(`sleep_confirm` 模板,**模型固定 memory,不可配**)三值判定 `SLEEP / NOT_SLEEP / UNSURE`,`SLEEP` 才入睡——防诱导,只接受短句、自我入睡 |
+| **② 兜底强制入睡** | 睡眠窗口起点已到仍未睡 | `_sleep_tick` 检查 `now >= 睡眠窗口.start` → 兜底入睡,日志「睡眠窗口起点已到,兜底强制入睡」 |
+| **③ 静默入睡**(默认开) | 仅睡前语境活动期间,无任何入站/出站活动满 `silent_sleep_minutes`(默认 60)分钟 | 不调 LLM,日志「静默入睡:安静 60 分钟」;活动计时 `_last_activity_ts` 由入站消息(非睡眠时)与出站回复刷新;其余时间静默不触发 |
+
+- 入睡 = `_enter_sleep()`:幂等(已睡直接返回,防交错二次生成);计划醒来时刻 = 日程睡眠窗口的 end(无日程则 now+8h);醒来时刻 `clamp(计划醒来, 入睡+min_sleep_minutes, 入睡+max_sleep_minutes)`(默认 240/660)——正常等于计划醒来,**提前入睡不改变醒来时间**(拟人),仅实际时长越界时以约束为准(最短顺延/最长提前醒);**无唤醒浮动**。日志「已入睡:醒来 %s」。
+- 入睡成功瞬间触发**次日日程生成**(§3.4,睡眠期间唯一 LLM 调用)。
+
+### 3.3.3 睡眠期间(绝对静默)
+
+- `chat.receive.before_process`(BLOCKING EARLY)拦截**一切入站消息含命令**:消息记入睡眠回顾缓冲(`_sleep_review_buffer`,持久化 `sleep_review_buffer.json` 防重启丢失)后 `abort`;**@ 不唤醒、提醒不执行、不计数、不结算、不衰减、环境不刷新、日程窗口不触发**——任何其它 hook/调度任务在睡眠期一律直接返回。
+- 醒来:`_sleep_tick` 检测 now ≥ wake_at → 「自然醒来」→ `_wake_up()`(状态置 awake + 可选睡醒回顾 + 醒来补跑当日结算(内部先衰减后结算))。
+
+### 3.3.4 睡醒回顾(默认开)
+
+- 醒来时对睡眠期被拦截消息生成**单份聚合报告文件**:`data/plugins/catsitate.core/sleep_review/reports/sleep_review_{YYYYMMDD_HHMMSS}.md`,按流分组,每流 LLM 摘要(≤100 字要求,落盘截断 200 字;失败记「摘要生成失败」);报告末尾**静态附列睡眠期到期的备忘提醒**(不占 LLM 额度,延续备忘不丢失原则);不补发历史回复、不注入对话上下文。
+- 日志:「睡醒回顾已生成: {路径}」「回顾摘要失败(流 {id})」。
+- 今日回顾材料:次日日程生成的「今天执行情况回顾」取最新一篇回顾报告前 200 字。
+
+### 3.3.5 配置
+
+`sleep` 节:`enabled`(默认 true)、`min_sleep_minutes`(240)、`max_sleep_minutes`(660)、`silent_sleep_enabled`(true)、`silent_sleep_minutes`(60)、`review_enabled`(true)、`review_llm_model`(memory)、`review_llm_timeout_ms`(None)。**无窗口时间字段**——时间在日程里。
+
+## 3.4 日程(`schedule.py`)
+
+### 3.4.1 生成时机(入睡确认)
+
+- **任何入睡状态切换成功的瞬间**(晚安判定/兜底/静默)→ 生成**次日**日程——**唯一的日程生成路径**;睡眠期间唯一允许的 LLM 调用。
+- 首日无有效日程(启动后):`_schedule_tick` 用**内置默认作息模板**撑场(不生成当天日程,避免"已过大半天"浪费):`23:00-07:30 睡觉 / 09:00-12:00 发呆 / 15:00-18:00 随便做点什么 / 22:00-23:00 洗漱准备睡(greeting)`。
+- 入睡生成失败:沿用默认作息模板撑过次日,**醒来不补生成当天**,下次入睡确认时正常生成(告警「次日日程生成:…(模板兜底)」)。
+
+### 3.4.2 生成内容与校验
+
+- 次日日程 = **恰好 1 个睡眠窗口 + 1~8 个活动窗口**(时间段+活动描述+是否计划发言+发言主题+kind 标注 `greeting`=问候类/`daily`=日常),窗口按活动排列、**允许空白时间**(空白=自由时间)、不重叠;默认作息 23:00/7:30 为软基准(模板提示,LLM 可结合当天活动调整)。
+- **生成 prompt 输入**:人设+行为风格(主程序 `personality.*`,非硬编码)+ 今天执行情况回顾(最新睡醒回顾前 200 字)+ 明天天气/节日(weather_snapshot 快照)+ 重要用户好感度概况(全表按等级降序)+ **日程对应日到期的备忘提醒(remind_at)** + 睡眠约束(min/max)+ 目标日。
+- **校验规则**(与工具修改共用):恰好 1 睡眠窗口、活动 1~8、窗口不重叠、睡眠时长在 [min,max]、kind ∈ {greeting, daily}、时间精确到分钟(带秒容忍解析后归一化)。
+- **失败兜底链**:LLM 失败 → 默认模板+告警;JSON 解析失败/校验失败 → 重生成(`max_regenerate` 次,默认 1)→ 确定性钳制修复(`fix_schedule`:缺睡眠窗口插模板睡眠段、多睡眠窗口只留第一个、活动裁到 8、睡眠时长钳边界、重叠顺延)→ 仍无效 → 默认模板+告警。
+- 日志:「次日日程已生成:{JSON 前 200 字}」「次日日程生成:{err}(模板兜底)」「次日日程生成异常,使用默认作息模板」。
+- 重启恢复:`schedule.json` 的 date == 今天时恢复日程/编辑历史/生成标记;过期文件删除并告警;损坏/结构非法告警忽略。
+
+### 3.4.3 注入(日程块)
+
+- 独立注入块,插在环境块之后、备忘块之前(`BLOCK_ORDER` 第 3 位),窗口切换才变化(半天级稳定)。
+- 内容 = 当前活动 + 下一活动预览 + 该窗口到期的备忘提醒:`[日程] 午后:发呆看雨(至16:00);接下来:买菜;备忘:周四交作业`(空白时间显示「自由时间」;窗口已触发过附加「(该窗口已过)」;当天到期备忘取当前说话人/当前流相关,最多 3 条)。
+- 注:日程块构造要求 `schedule.enabled and time_aware.enabled and memo.enabled` 同时开启。
+
+### 3.4.4 update_schedule 工具
+
+- 入口 `@Tool("update_schedule")`(visible),planner 可自主调用;**无频率上限**(联调决定)。
+- 操作:`view`(每行带序号的全天概览)/ `move`(窗口挪到新时段,保留属性)/ `add`(新增活动)/ `delete`(删除活动);建议流程 view→改→view 确认。
+- **约束与语义**:
+  - 活动窗口 1~8 上限,超限拒绝并返回固定拟人化文案:`今天的日程已经排得满满当当了,再排下去会累坏的,明天再安排吧。`;
+  - **睡眠窗口不可删**(「睡眠窗口不可删除」)、不可新增睡眠(「新增仅支持活动窗口」);睡眠窗口 update 时 kind 强制纠正为 sleep(联调:LLM 常误传 daily);
+  - 时间修改受 [min_sleep, max_sleep] 校验;时间格式 `HH:MM`(如 11:45),end≤start 自动跨午夜 +1 天;
+  - **重叠压缩语义**(`compress_with_anchor`):新操作窗口为锚点保持完整;锚点前窗口 end 提前到锚点 start(尾部压缩)、锚点后窗口 start 推迟到前一窗 end(头部压缩,链式);与锚点重叠的睡眠窗口**入睡推迟到锚点 end、醒来时间不变**;任一窗口被压至 start≥end 即拒绝(不自动删除),返回压缩明细警告(「日程已更新。注意:与已有安排重叠,已自动调整:…」);
+  - add 活动描述截断 40 字符。
+- 修改落盘(`schedule.json`)、立即反映到注入块,并记录**修改历史**(time/action/before/after,存 `schedule.json.edit_history`)。
+
+## 3.5 主动发言(2.1 窗口触发 + 主动问候)
+
+### 3.5.1 窗口触发(表达权交主程序)
+
+- `_schedule_tick`(60s)对**当前所处非睡眠窗口**触发一次(去重标记 `day|start`,内存态,跨天清理):
+  1. 睡眠期跳过(绝对静默);
+  2. 无日程或日期不符 → 当日默认模板撑场(`_schedule_generated=False`);
+  3. 同窗口已触发 → 跳过;当日 `_speak_counts` ≥ `daily_speak_limit`(默认 5)→ 跳过;
+- **daily 窗口流程**:
+  1. **门槛过滤**:该流说话人好感度(按人判定)≥ `speak_threshold_level`(默认「熟悉」);等级不足不 trigger;
+  2. **候选流收集**:活跃流 = `batch_counter.last_bump` 近 24 小时内有消息的流(确定性收集),说话人解析失败(空 user_id)跳过;
+  3. **排序取前 n**:按(说话人好感度等级, 最近活动)降序,取前 `speak_max_streams_per_window`(默认 1)个;
+  4. **trigger**:`maisaka.proactive.trigger(stream_id, intent=指示prompt, reason=日程窗口活动)`——intent 含日程窗口活动/计划发言/主题/全天概览/目标流等级注记,要求 bot 结合日程与好感度**自然决定是否主动发言**;**是否说话、说什么全部由主程序决定**;插件不 send.text、不生成话术。
+- **执行后状态**:窗口触发即更新触发标记(无论主程序是否实际发言),防同窗口重复触发;**每次 trigger 计 1**(主程序沉默也计,触发即消耗)。日志:`主动触发[{day}] -> {stream}:{活动}`、`主动任务触发失败(stream=…)`。
+
+### 3.5.2 主动问候(仅特别者,全局决策 #9)
+
+- 仅在 **kind=greeting 窗口**触发,**窗口起点即触发**;只走私聊通道,强制要求私聊流存在。
+- **触发条件**(全部满足):(1) 存在「特别」等级的人(全表唯一,查询 level≥4 LIMIT 1);(2) 该人存在私聊流(非群流且流 user_id == 该人)。
+- 满足则对其私聊流 `proactive.trigger`(问候语境 intent:日程活动 + 特别级 + 注记,话术由主程序生成);**无每日一次限制**——每个 greeting 窗口都问候(受 `daily_speak_limit` 全局上限约束);不满足条件不触发、**不群内替代**。计数与日志:`主动问候触发[{day}] -> {user}`、`主动问候跳过:特别者({user})无私聊流`、`主动问候触发失败(user=…)`。
+- 睡眠期跳过;窗口触发标记在 greeting 分支同样置位(同窗口不重复)。
+
+## 3.6 备忘录与提醒(`memo.py`)
+
+### 3.6.1 读写
+
+- 双通道:① `@Tool("memo_write"/"memo_read")`(planner 自主);② `@Command("/记一下", pattern=^/记一下\s+…, aliases=["/备忘"])`(用户显式,默认 TTL,超长直接提示精简)。
+- 写入参数:内容(≤`entry_max_chars` 80 字符,超长返回错误让 LLM 重写/提示用户)、关联流/用户、`ttl_hours`(单条有效期,缺省 `default_ttl_hours` 24h,上限 `max_ttl_hours` 168h)、`remind_at`(可选 ISO 绝对时间如 `2026-08-16T19:00`,格式非法显式拒绝,防静默丢提醒)。
+- 读取:当前流相关 + 当前说话人相关(OR 语义,两维度各取 3 条、合计 ≤`inject_max` 5 条),返回剩余有效时间;双空维度返回空。
+- 清理:`memo_cleanup` 调度每小时删除过期项,日志「备忘清理:{n} 条过期」。
+
+### 3.6.2 提醒两级(remind_at 联动)
+
+1. **日程收录**:生成日程时,日程对应日 remind_at 到期的备忘并入生成 prompt 的「到期备忘」段;执行窗口时,当日到期且属于当前说话人/当前流的备忘附在日程块注入中(最多 3 条)。
+2. **独立兜底**:无可用生成日程时(默认模板撑场当天、或日程缺失),`remind_fallback` 调度(300s)在 remind_at 到点时经 `maisaka.context.append` 注入**备忘归属流**上下文(`[备忘提醒] {content}`;不主动发言);去重持久化 `remind_fired.json`(key=`remind:{id}`,防重启后旧备忘重复注入,跨天清理);注入失败不标记、留重试机会。日志:「备忘提醒兜底注入(stream={id}):{content}」。
+
+**睡眠期间两级都不执行**(绝对静默),醒后不补执行过期提醒;过期提醒在睡醒回顾报告末尾静态附列。
+
+## 3.7 注入框架(`inject.py`)
+
+- 固定顺序 `BLOCK_ORDER = ("level_rule", "environment", "schedule", "memo", "favorability")`;实现上等级规则块并入好感度块首行(联调决定),实际渲染顺序 = 环境 → 日程 → 备忘 → 好感度。
+- 每模块每轮仅允许一块(重复抛错,显式暴露);空块跳过;内容未变字节级复用(`InjectAssembler._cache`),热重载时 `reset()`。
+- 块文本示例:`[环境] 今天 8月16日 周日,珠海:晴,29°C;节日:…;临近:…。` / `[日程] …` / `[备忘] 内容1;内容2` / `[好感度] …`。
+- 各块独立开关:`inject.level_rule_enabled / environment_enabled / memo_enabled / favorability_enabled`(等级规则开关=好感度块首行规则条)。
+
+## 3.8 时间/节日/天气感知(`time_aware.py`)
+
+- **公历节日回退链**:在线 holiday-cn(jsDelivr gh master 每年 JSON → raw.githubusercontent)→ `holiday-calendar` 库(manifest 依赖自动安装)→ 内置公历静态表(元旦/情人节/妇女节/劳动节/儿童节/国庆节/平安夜/圣诞节)。`holiday_online` 关闭时跳过在线源。
+- **农历节日+节气**:`lunar-python` 库实时计算(无需网络、无预生成表);「今天」节日单独列,临近 3 天节日带日期前缀单独拼「临近:」段(联调发现:混入当天文本会误以为今天就是那个节日);双源重名(「七夕」vs「七夕节」)按名去重。
+- **天气**:Open-Meteo(免 key),`city`/`city_lat`/`city_lon`(默认珠海 22.279410,113.528098),后台 `weather_refresh_minutes`(默认 45)分钟刷新;天气码→中文映射内置;快照落 `weather_snapshot` 表(供日程生成联动);失败静默跳过该片段(日志「天气获取失败,本轮环境块省略天气」)。
+- 环境块由 `_refresh_environment` 后台任务维护(注册了 weather 45 分钟 + holiday 24h 两个调度);`_environment_block` 按 `_env_fetched_at` 缓存 45 分钟;睡眠期禁网络调用,下一 tick 重试。
+- 注入文本格式:`[环境] 今天 8月16日 周日,珠海:晴,29°C;节日:…;临近:8月19日 七夕节。`(拟人感:城市名出现,bot 表现"生活在这个城市")。
+
+## 3.9 reply 补传与哨兵(`reply_guard.py`)
+
+### 3.9.1 上下文补传(规则层,默认开,零成本)
+
+- 锚点 `maisaka.planner.after_response`(BLOCKING LATE,可改写 output_items)。
+- **触发三条件全真**:本轮 planner 调用过上下文工具(内置常量 `CONTEXT_TOOLS = (query_memory, query_person_profile, fetch_history, view_forward_message, memo_read)`,**不再可配置**)且该 reply 调用的 `reply_reference` 为空且本轮 planner 的 reasoning 为空。
+- 动作:把本轮被调用的上下文工具结果合并为文本摘要(按工具名排序、条目边界截断,默认 400 字符)填入该 reply 调用的 `reply_reference`;不改动其它工具调用。
+- 日志:`reply 补传:{工具名列表}`。
+
+### 3.9.2 LLM 哨兵层(默认关)
+
+- 锚点 `maisaka.replyer.after_response`;判定「本次回复是否与聊天上下文明显不符/是否不该回复」;输出 `{"should_send": true/false, "reason": "…"}`;不符则撤回并闭环反馈 planner(corpus-callosum 式)。
+- **当前实现:撤回动作仅日志**(spike ④ 验证结论前不承诺撤回);LLM 失败放行并告警。
+- 日志:`哨兵判定:放行回复` / `哨兵判定:撤回回复:{reason}` / `哨兵层 LLM 调用失败,放行回复:…`。
+
+## 3.10 贴表情(`msg_react.py`,仅群聊)
+
+- `@Tool("msg_react")`:参数目标消息 ID + 贴表情意图;私聊调用返回「贴表情仅限群聊(QQ 私聊不支持贴表情)」。
+- 执行链:每流冷却检查(`per_stream_cooldown_seconds` 默认 30 秒,JSON 快照 `msg_react_cooldown.json`)→ 取目标消息文本(`_fetch_recent` 50 条内)→ 旁路 LLM 从**内置 30 项 QQ 表情表**(`qq_emoji.py`,`emoji_id` 为 napcat `set_msg_emoji_like` 的 id)选最合适 → 必须命中表内 id,否则失败显式返回 → `adapter.napcat.message.set_msg_emoji_like` → 标记冷却。
+- **无任何概率旁路**;防刷仅工程护栏。默认模型 `replyer`。
+
+## 3.11 主动戳(`poke.py`)
+
+- `@Tool("poke_user")`:参数目标用户/群号;**仅每用户冷却前置校验**(`cooldown_seconds` 默认 600 秒,JSON 快照 `poke_cooldown.json`;**好感度等级门槛已取消**——联调裁定);调用 `adapter.napcat.message.send_poke(user_id, group_id, target_id, qq_id)`(实测签名)。
+- **入站戳一戳解析已按联调结论删除**(改写在实机中效果不及理想);被戳反应逻辑不实现(规格剔除)。
+
+## 3.12 图片重看(`image_relook.py`)
+
+- `@Tool("inspect_image")`:参数目标消息 ID(可选)或 `image_index`(倒数第几张含图消息,默认 1)+ 具体问题。
+- 执行链:`message.get_recent(include_binary_data=True)` 解析 image 段(实机仅 hash 无 data)→ 经 `database.get`(Images 表按 image_hash)补读 `full_path` → 读 `/MaiMBot` 下文件补 base64 → 按字节魔数嗅探 MIME(PNG/JPEG/GIF/WEBP,兜底 png)→ 旁路 VLM 回答(文本前缀稳定;图片块追加尾部,无前缀缓存意义)。
+- 目标太旧/取不到/补图失败均**显式报错并记录日志**(不静默)。默认模型 `utils`(轻量任务;VLM 较慢建议超时 120000)。
+
+## 3.13 LLM 用量记账与旁路调用(`plugin.py`)
+
+- `_side_llm_call` 是全部旁路 LLM 统一出口:经 `llm.generate` 能力直调,`model` = 主程序 task 名,超时由各能力节 `*_timeout_ms` 传入(留空=主程序默认 30s;联调实测 utils 模型 31-53s 会触发默认超时,慢模型建议 120000)。
+- 每次调用按模块记账 `llm_usage(day, module, calls, tokens)`;模块分列:`favorability` / `decay` / `msg_react` / `image_relook` / `sentinel` / `schedule_generate` / `sleep_confirm` / `sleep_review`。
+- 当日旁路调用合计首次达到 `plugin.llm_daily_call_warning_threshold`(默认 50)时告警:「旁路 LLM 当日调用次数已达阈值 50,请注意用量」。
+
+---
+
+## 4. 配置项全表
+
+> WebUI 插件配置页按节渲染(中文 label)。所有 LLM 字段为**平铺字段**:填主程序 `model_task_config` 的 **task 名**(填模型标识会报「未找到名为 … 的模型配置」),留空=主程序默认(不推荐)。`*_timeout_ms` 留空=主程序默认(30s)。
+
+### 4.1 plugin 节(插件)
+
+| 字段 | 默认 | 说明 |
+|---|---|---|
+| enabled | **false** | 插件总开关(须手动打开) |
+| config_version | "1.0.0" | 配置版本(仅标识) |
+| llm_daily_call_warning_threshold | 50 | 旁路 LLM 每日调用告警阈值 |
+
+### 4.2 inject 节(注入框架)
+
+| 字段 | 默认 | 说明 |
+|---|---|---|
+| enabled | true | 注入管线总开关 |
+| level_rule_enabled | true | 好感度块内按等级单条注入规则开关 |
+| environment_enabled | true | 环境块(节日/天气)注入开关 |
+| memo_enabled | true | 备忘块注入开关 |
+| favorability_enabled | true | 好感度块注入开关 |
+
+### 4.3 time_aware 节(时间感知)
+
+| 字段 | 默认 | 说明 |
+|---|---|---|
+| enabled | true | 节日/天气感知开关 |
+| city | "珠海" | 城市名(注入文本用) |
+| city_lat | 22.279410 | 纬度(Open-Meteo) |
+| city_lon | 113.528098 | 经度(Open-Meteo) |
+| weather_refresh_minutes | 45 | 天气后台刷新间隔(分钟) |
+| holiday_online | true | 节日数据在线刷新开关 |
+
+### 4.4 favorability 节(好感度)
+
+| 字段 | 默认 | 说明 |
+|---|---|---|
+| enabled | true | 模块开关 |
+| window_hours | 24 | 日终结算周期(小时) |
+| early_settle_threshold | 20 | 提前结算消息数阈值 |
+| daily_max_early_settle | 3 | 每用户每日提前结算上限 |
+| daily_settle_min | 3 | 日终结算最小消息数(不足顺延) |
+| delta_max | 5 | 单次结算 delta 变化上限(±,判定结果钳制在此范围) |
+| decay_enabled | true | 自然衰减开关 |
+| decay_after_days | 7 | 未互动 N 天后开始衰减 |
+| decay_max | 3 | 单次衰减幅度上限(-decay_max 到 0) |
+| decay_llm_model | "memory" | 衰减判定模型(task 名) |
+| decay_llm_timeout_ms | None | 衰减判定超时(毫秒) |
+| level_rule_stranger / familiar / close / best_friend / special | 见 §4.9 默认文案 | 5 级行为准则文本(独立字段,可自改) |
+| note_max_chars | 40 | 关系注记最大字符数(落库强制) |
+| material_max_messages | 30 | 结算素材锚定的用户消息条数 |
+| material_message_max_chars | 200 | 单条素材截断长度 |
+| bot_user_id | ""(留空=不识别) | bot 自身账号 id(实机 napcat 账号,如 3545773341);结算素材中该 id 发言标记为 bot 随附;**必须配置,否则 bot 发言识别与 quote 归属全部失效** |
+| llm_model | "memory" | 结算判定模型(task 名) |
+| llm_timeout_ms | None | 判定超时(毫秒) |
+
+5 级规则默认文案:陌生=「仅按普通网友对待,保持礼貌与距离」;熟悉=「认识一段时间,可自然闲聊」;亲近=「关系较好,可主动关心」;挚友=「非常信任,可分享心事」;特别=「最重要的人,格外在意其感受」。
+
+### 4.5 memo 节(备忘录)
+
+| 字段 | 默认 | 说明 |
+|---|---|---|
+| enabled | true | 模块开关 |
+| tool_enabled | true | memo_write/memo_read 工具开关 |
+| command_enabled | true | /记一下 命令开关 |
+| default_ttl_hours | 24 | 单条缺省有效期(小时) |
+| max_ttl_hours | 168 | 单条有效期上限(小时) |
+| entry_max_chars | 80 | 备忘内容最大字符数(写入强制) |
+| inject_max | 5 | 备忘注入合计条数上限 |
+
+### 4.6 msg_react 节(贴表情)
+
+| 字段 | 默认 | 说明 |
+|---|---|---|
+| enabled | true | 工具开关 |
+| per_stream_cooldown_seconds | 30 | 每流冷却秒数 |
+| llm_model | "replyer" | 选表情模型(task 名) |
+| llm_timeout_ms | None | 选表情超时(毫秒) |
+
+注:表情表为**内置 30 项**精选 QQ 表情表(联调裁定,原规划的可配置 `emoji_whitelist` 未实现)。
+
+### 4.7 poke 节(戳一戳)
+
+| 字段 | 默认 | 说明 |
+|---|---|---|
+| enabled | true | 模块开关 |
+| poke_tool_enabled | true | 主动戳工具开关 |
+| cooldown_seconds | 600 | 每用户冷却秒数 |
+
+### 4.8 reply_guard 节(reply 补传)
+
+| 字段 | 默认 | 说明 |
+|---|---|---|
+| enabled | true | 模块开关 |
+| context_backfill_enabled | true | 上下文补传开关 |
+| sentinel_enabled | **false** | LLM 哨兵层开关(默认关;开启后每句回复多一次旁路判定) |
+| sentinel_model | "planner" | 哨兵模型(task 名) |
+| sentinel_timeout_ms | None | 哨兵超时(毫秒) |
+
+### 4.9 image_relook 节(图片重看)
+
+| 字段 | 默认 | 说明 |
+|---|---|---|
+| enabled | true | 工具开关 |
+| llm_model | "utils" | 重看模型(task 名;VLM 较慢建议超时 120000) |
+| llm_timeout_ms | None | 重看超时(毫秒) |
+
+### 4.10 sleep 节(睡眠)
+
+| 字段 | 默认 | 说明 |
+|---|---|---|
+| enabled | true | 模块开关 |
+| min_sleep_minutes | 240 | 最短睡眠分钟(不足顺延醒来) |
+| max_sleep_minutes | 660 | 最长睡眠分钟(超过提前醒) |
+| silent_sleep_enabled | true | 静默入睡开关(仅睡前语境活动期间生效) |
+| silent_sleep_minutes | 60 | 静默入睡:无消息满 N 分钟 |
+| review_enabled | true | 睡醒回顾开关(生成聚合报告文件) |
+| review_llm_model | "memory" | 回顾总结模型(task 名) |
+| review_llm_timeout_ms | None | 回顾超时(毫秒) |
+
+### 4.11 schedule 节(日程)
+
+| 字段 | 默认 | 说明 |
+|---|---|---|
+| enabled | true | 模块开关 |
+| max_regenerate | 1 | 生成校验失败重生成次数 |
+| speak_threshold_level | "熟悉" | 日常发言最低好感度等级(仅 daily 窗口) |
+| speak_max_streams_per_window | 1 | 每窗口最多主动触发流数(按等级+活跃度排序取前 n) |
+| schedule_llm_model | "memory" | 日程生成模型(task 名) |
+| schedule_llm_timeout_ms | None | 日程生成超时(毫秒) |
+| daily_speak_limit | 5 | 全天主动发言次数上限(每次 trigger 计 1,主程序沉默也计) |
+
+### 4.12 debug 节(调试)
+
+| 字段 | 默认 | 说明 |
+|---|---|---|
+| enabled | false | debug 日志开关:开启后 `catsitate.core` 的 debug 级日志写入数据目录 `logs/catsitate-{YYYYMMDD}.log`(公测复审用),热生效;文件权限 0600(日志含用户标识,仅属主可读),关闭时恢复 logger 原级别 |
+
+### 4.13 已删除字段(历史遗留,勿再配置)
+
+| 字段 | 归属 | 删除原因 |
+|---|---|---|
+| `greet_threshold_level` | schedule | 主动问候门槛与「特别」等级绑定,无独立配置(全局决策 #9) |
+| `private_threshold_level` | schedule | 同上 |
+| `context_tools` | reply_guard | 上下文工具列表改为内置常量 `CONTEXT_TOOLS`,不再可配置(联调裁定) |
+| `enhance_notice_text` / `inject_to_context` | poke | 入站戳一戳通知解析整体删除(联调结论:改写效果不及理想) |
+| `min_level_for_poke` | poke | 主动戳好感度门槛已取消(仅冷却) |
+| `emoji_whitelist` | msg_react | 表情白名单改为内置 30 项精选表 |
+
+---
+
+## 5. 数据文件
+
+数据根目录:`data/plugins/catsitate.core/`(MaiBot 插件数据目录)。
+
+### 5.1 catsitate.db(sqlite, WAL 模式)
+
+| 表 | 列 | 说明 |
+|---|---|---|
+| favorability | user_id(PK), level, score, note, window_start, judged_at | 好感度**按人单行**;window_start=当前批次起点,judged_at=上次结算时间 |
+| favorability_log | judge_id(PK), user_id, delta, note, judged_at | 判定日志,幂等防重;judge_id 前缀 `early-`/`daily-`/`decay-{时间}-{user}` |
+| batch_counter | user_id, stream_id(PK 联合), count, last_bump | 活跃度账本(计数 + 近 24h 活跃判定、衰减流定位);结算窗口不在此 |
+| memo | id, content, stream_id, user_id, expires_at, created_at, remind_at | 备忘录;remind_at 为二期加列(可选) |
+| llm_usage | day, module, calls, tokens(PK 联合) | 旁路 LLM 用量按日/模块分列 |
+| weather_snapshot | id(=1), city, fetched_at, data | 天气快照(JSON),供日程生成联动 |
+
+### 5.2 JSON 快照(JsonSnapshot,原子写)
+
+| 文件 | 内容 | 用途 |
+|---|---|---|
+| msg_react_cooldown.json | `{stream_id: 上次贴表情时刻}` | 贴表情每流冷却 |
+| poke_cooldown.json | `{user_id: 上次戳时刻}` | 主动戳每用户冷却 |
+| sleep_state.json | `{state, sleep_at, wake_at}` | 睡眠状态持久化(重启恢复不依赖日程) |
+| sleep_review_buffer.json | `{"messages": [拦截消息…]}` | 睡眠期拦截消息缓冲(dict 包装,防重启丢失) |
+| remind_fired.json | `{"remind:{memo_id}": 触发时刻}` | 备忘兜底注入去重(防重启重复注入) |
+
+### 5.3 schedule.json(日程落盘)
+
+`{"data": {date, windows}, "edit_history": [{time, action, before, after}], "generated": bool, "saved_at": …}`;重启恢复仅当 `data.date == 今天`;过期文件删除并告警,损坏/非法告警忽略。
+
+### 5.4 sleep_review/reports/
+
+`sleep_review_{YYYYMMDD_HHMMSS}.md`:睡醒回顾聚合报告(每流消息数+LLM 摘要+睡眠期到期备忘静态附列)。
+
+### 5.5 logs/
+
+`catsitate-{YYYYMMDD}.log`:debug.enabled 开启时的插件 debug 级日志落盘。
+
+---
+
+## 6. 运行时链路(带日志关键词)
+
+### 6.1 消息处理流
+
+```
+入站消息
+ ├─ chat.receive.before_process(catsitate_sleep_gate, BLOCKING EARLY)
+ │    ├─ 睡眠中 → 记缓冲 → abort(绝对静默,无任何后续处理)
+ │    └─ 唤醒态 → 刷新 _last_activity_ts(静默入睡计时)→ 放行
+ ├─ chat.receive.after_process(catsitate_fav_count, OBSERVE)
+ │    ├─ 睡眠/通知类/缺 id → 跳过
+ │    ├─ count_message(batch_counter bump)
+ │    └─ check_trigger == "early" → spawn 结算(kind=early)
+ │         └─ 日志:「好感度结算 {user}:early delta={n}」/「好感度结算失败 …」
+主链路 planner 请求
+ └─ maisaka.planner.before_request(catsitate_inject, BLOCKING LATE)
+      ├─ 构造注入块(环境/日程/备忘/好感度)→ 前插 system 之后
+      └─ 失败仅日志:「注入块构造失败,本轮跳过注入」;定位失败:「注入定位失败:…已回退追加尾部」
+planner 输出
+ └─ maisaka.planner.after_response(catsitate_reply_backfill, BLOCKING LATE)
+      └─ 三条件满足 → 补 reply_reference → 「reply 补传:[…]」
+replyer 出站
+ ├─ maisaka.replyer.after_response(catsitate_goodnight, BLOCKING LATE)
+ │    ├─ 刷新活动计时;晚安短句 + 可入睡时间 → sleep_confirm LLM → SLEEP → 入睡+生成次日日程
+ │    └─ 日志:「已入睡:醒来 {wake_at}」「次日日程已生成:…」
+ └─ maisaka.replyer.after_response(catsitate_sentinel, BLOCKING LATE, 默认关)
+      └─ 日志:「哨兵判定:放行/撤回回复」
+```
+
+### 6.2 每日调度任务表(Scheduler,60s tick)
+
+| 任务名 | 间隔 | 行为 | 关键日志 |
+|---|---|---|---|
+| weather | max(weather_refresh_minutes,1)×60 s(默认 45 分钟) | 拉节日+天气,刷新环境块缓存,天气落库 | 「holiday-cn 数据源…获取失败」「天气获取失败,本轮环境块省略天气」 |
+| holiday | 24h | 节日数据日级刷新(同上任务) | 同上 |
+| memo_cleanup | 1h | 删除过期备忘 | 「备忘清理:{n} 条过期」 |
+| daily_settle | max(window_hours,1)×3600(默认 24h) | **先衰减后结算**:逐人日终结算(当日有消息且未结) | 「好感度衰减 …」「好感度结算 {user}:daily delta={n}」「好感度结算失败 …:用户消息不足 3 条,顺延」 |
+| daily_decay | 24h | 自然衰减(单独注册,与日终同 tick 顺序由 daily_settle 内部先调用保证) | 「好感度衰减 {user}:delta={n}」 |
+| sleep_tick | 60s | 睡眠状态机:自然醒(now≥wake_at→wake+回顾+补跑结算)/ 睡眠窗口起点兜底入睡 / 睡前语境静默入睡检查 | 「自然醒来: {t}」「睡眠窗口起点已到,兜底强制入睡」「静默入睡:安静 {n} 分钟」 |
+| schedule_tick | 60s | 日程窗口触发:greeting→主动问候;daily→门槛过滤+候选流排序→proactive.trigger | 「主动问候触发[{day}] -> {user}」「主动触发[{day}] -> {stream}:{活动}」 |
+| remind_fallback | 5 分钟 | 备忘提醒兜底注入(仅无生成日程日;睡眠期跳过) | 「备忘提醒兜底注入(stream={id}):{content}」 |
+
+### 6.3 睡眠全链路
+
+```
+睡前语境活动(如「洗漱准备睡」22:00-23:00)
+ ├─ bot 出站晚安短句(≤12 字,含睡/晚安/安眠/就寝)→ sleep_confirm LLM → SLEEP → 入睡
+ ├─ 或:睡眠窗口起点已到 → 兜底强制入睡
+ └─ 或:安静满 silent_sleep_minutes(仅该活动期间)→ 静默入睡
+入睡(任意通道)→ 计算 clamp 醒来时刻 → sleep_state.json 落盘 →「已入睡:醒来 {t}」
+ → spawn 次日日程生成(睡眠期间唯一 LLM 调用)→「次日日程已生成:…」
+睡眠期间:一切入站消息被拦截进缓冲(sleep_review_buffer.json)+ abort;所有调度与 hook 空转
+醒来(now ≥ wake_at)→「自然醒来」→ 状态置 awake
+ → 睡醒回顾(可选):按流 LLM 摘要 + 到期备忘静态附列 →「睡醒回顾已生成: {path}」
+ → 补跑当日结算(内部先衰减后结算)→「好感度结算 …」
+```
+
+### 6.4 结算/衰减链路
+
+```
+计数(after_process)→ check_trigger(SUM≥20 且 early 当日<3)→ spawn 结算(early)
+结算:聚合该人全部流消息(每流取 50 条,群聊解析 quote 发送者)→ build_material(窗口过滤/锚 30 条/邻居/截断)
+ → 旁路 LLM(稳定段:人设+风格+5 级规则;变量尾:素材)→ 解析/钳制 delta → apply_delta(+注记截断 40 字)
+ → 升特别被占位 → 钳 99/挚友(clamped_exclusive,「结算升特别被独占钳制」)
+ → 落库+日志 → reset_batch(该人全流清零)
+日终(daily_settle 调度):iter_today_active(当日有消息)→ 未日终者 → 结算(daily;素材不足 daily_settle_min → 顺延不清零)
+衰减(daily_decay):扫 favorability score>0 全表 → 跨流取最近 bot 直接互动(@/quote 解析)
+ → 基准 = max(互动时间, 最近 decay 判定时间)→ 超 decay_after_days → LLM 判定(-decay_max~0)
+ → apply_delta(judge_id=decay-{时间}-{user})→「好感度衰减 {user}:delta={n}」→ 基准即被重置
+```
+
+---
+
+## 7. 已知限制与观察项
+
+1. **reply 补传实机少触发(thinking 模型)**:补传三条件要求「调用过上下文工具 ∧ reply_reference 为空 ∧ reasoning 为空」;thinking 模型恒有推理文本,第三个条件实机几乎不满足(验收中 memo_read 调用后按设计跳过),行为由单元测试守护,非缺陷。观测:主程序日志无「reply 补传」不代表失效。
+2. **quote 解析依赖主机能力 `message.get_by_id`**:reply 段实机为纯消息 id 不含发送者;能力缺失/调用失败/返回无 user_id 时该条按未 quote 命中(群聊防误判退化为仅 @ 判定),每轮至多一条告警「quote 发送者解析失败(stream=…)」。
+3. **衰减恒不触发独占钳制**:衰减 delta 被强制 ≤0(正 delta 直接拒绝),而独占钳制只发生在升入「特别」(正 delta 场景),故衰减路径 `exclusive_clamped` 恒 False 属设计必然。
+4. **回复/内容保真由 LLM 决定**:备忘内容、日程活动、关系注记、主动发言话术的语义保真均取决于模型;如用户说「记得喝水」,模型工具传参可能记成「看书」——插件只做格式/长度校验,不校验语义。
+5. **睡眠期到期提醒不补执行**:过期提醒仅在睡醒回顾报告末尾静态列出,醒后不补注入。
+6. **首日无生成日程**:启动当日用默认作息模板撑场(不生成当天日程),主动发言/备忘兜底按模板日路径工作,当晚入睡确认才生成次日完整日程。
+7. **触发即计数**:`daily_speak_limit` 在 trigger 调用成功即计 1,主程序最终保持沉默也消耗配额。
+8. **重启后当日窗口可能重复触发**:`_schedule_tick_fired` / `_speak_counts` 为内存态(仅跨天清理),重启恢复当天 schedule.json 后,重启前已触发过的窗口可能再次触发且配额清零;备忘兜底去重(`remind_fired.json`)是持久化的,不受影响。
+9. **缓存命中率现状**:实测 57.91%,断点在主程序每轮变化的动态块(时间/记忆检索),插件侧纪律已全部落实(详见 `docs/cache-baseline.md`)。
+10. **sleep_confirm 判定模型固定 memory**:晚安判定器不随配置走,不可换 task。
+11. **静默入睡计时口径**:入站消息(非睡眠期)与出站回复(经 replyer after_response)刷新 `_last_activity_ts`;长时间仅有 bot 单方活动(如纯主动发言)时计时可能不刷新。
+12. **bot_user_id 留空的连锁影响**:结算素材中 bot 发言被当作普通用户素材、群聊 @/quote 归属与 bot 消息随附全部失效、衰减互动判定失效——实机必须配置。
+13. **群聊说话人近似**:注入与候选流按「最近非 bot 消息发送者」解析(取近 3 条),群聊换人即换好感度块(缓存分层预期内)。
+14. **poke 无好感度门槛**:主动戳只受每用户 600s 冷却限制(联调裁定,如后续需要恢复门槛需改动代码)。
+
+---
+
+## 8. 公测注意事项
+
+### 8.1 启用与配置恢复基准值
+
+1. 插件目录放入 `plugins/` 并重启;WebUI「插件」页确认 `catsitate.core` 已加载,日志出现 **`catsitate_core 已加载`**。
+2. 打开 `plugin.enabled = true`(总开关,默认关);按需调整各模块节。
+3. **必须配置**:`favorability.bot_user_id` = bot 自身 QQ 号(实机 3545773341)。留空则好感度判定/衰减/注入的 bot 识别全部失效。
+4. 各能力 `llm_model` 填主程序 `model_task_config` 的 task 名(如 `memory`/`replyer`/`utils`,或专用 task);主程序 task 集合固定(replyer/planner/memory/mid_memory/utils/learner/expression_use),不能新增自定义 task;README 提供专用 task 配置示例(如 `[model_task_config.catsitate]`,temperature 0.3、slow_threshold 30、hard_timeout 120)。
+5. 慢模型建议配置超时:utils 实测 31-53s 会触发默认 30s 超时,`image_relook.llm_timeout_ms` 建议 120000。
+6. 验收/短时测试期间改动过的临时值必须恢复基准:`early_settle_threshold`=20、`silent_sleep_minutes`=60、`decay_after_days`=7、`window_hours`=24、`daily_speak_limit`=5、`max_regenerate`=1。
+7. 热重载:WebUI 修改配置后 `on_config_update` 生效,日志「**catsitate_core 配置已刷新,派生缓存已重置**」;weather/daily_settle 调度周期随配置重注册。
+8. 复审观测建议:打开 `debug.enabled` → 数据目录 `logs/catsitate-{date}.log` 落盘插件 debug 级日志(注入构造/插入位置等),关闭/文件失败自动回退主日志。
+
+### 8.2 观察日志关键词(按功能)
+
+| 功能 | 应出现的关键日志 |
+|---|---|
+| 加载成功 | `catsitate_core 已加载` |
+| 注入 | `注入完成: 插入 N 条(system 尾 …)`(debug);告警:`注入定位失败:items 中无 SystemMessageItem,已回退追加尾部` |
+| 好感度结算 | `好感度结算 {user}:early/daily delta={n}`;失败:`好感度结算失败 …`;钳制:`结算升特别被独占钳制(user=…)` |
+| 衰减 | `好感度衰减 {user}:delta={n}`;`衰减判定 LLM 失败(user=…)` |
+| 睡眠 | `已入睡:醒来 {t}`;`睡眠窗口起点已到,兜底强制入睡`;`静默入睡:安静 N 分钟`;`自然醒来: {t}`;`睡醒回顾已生成: {path}` |
+| 日程 | `次日日程已生成:…`;`次日日程生成:{err}(模板兜底)`;`已从 schedule.json 恢复当日日程({date})`;`schedule.json 为过期日程…删除并忽略恢复` |
+| 主动发言/问候 | `主动触发[{day}] -> {stream}:{活动}`;`主动问候触发[{day}] -> {user}`;`主动问候跳过:特别者({user})无私聊流` |
+| 备忘提醒 | `备忘提醒兜底注入(stream={id}):{content}`;`备忘清理:{n} 条过期` |
+| reply 补传/哨兵 | `reply 补传:[…]`;`哨兵判定:放行回复` / `哨兵判定:撤回回复:{reason}` |
+| 旁路记账 | `旁路 LLM 当日调用次数已达阈值 {n},请注意用量`;llm_usage 表按模块分列 |
+| quote 解析 | `quote 发送者解析: 成功 {n}/{m}(stream=…)`;`quote 发送者解析失败(stream=…):…` |
+
+### 8.3 常见问题排查
+
+| 现象 | 排查路径 |
+|---|---|
+| 插件未加载 | 检查主程序版本满足 manifest(min 1.2.0)、插件目录是否在 plugins/ 下、重启后日志有无 on_load 报错(配置错误会拒绝加载,不静默) |
+| 无节日/农历信息 | 日志「lunar-python 未安装:农历节日/节气不可用」→ 安装依赖;「holiday-cn 数据源…获取失败」→ 网络受限时回退链自动生效(库/内置表),环境块仍含日期与城市 |
+| 无天气 | 「天气获取失败,本轮环境块省略天气」→ Open-Meteo 可达性/城市坐标是否正确(默认珠海 22.279410,113.528098) |
+| 旁路 LLM 报「未找到名为 … 的模型配置」 | `llm_model` 填了模型标识而非 task 名;改为 model_task_config 节名 |
+| 旁路调用超时 | 慢模型留空超时默认 30s;按 §8.1 配置 120000 |
+| 好感度一直不结算 | 检查 bot_user_id 是否配置;素材为空判定「素材为空,跳过结算」;daily 素材不足 3 条「顺延」属预期 |
+| 睡眠中一切无响应 | 绝对静默设计预期,不是故障;入站消息被拦截记入回顾缓冲,醒来生成报告 |
+| 日程不是预期作息 | 默认作息为软基准,LLM 结合当天活动自主排布;生成失败会有模板兜底告警;可用 update_schedule 工具修改 |
+| 主动发言没有出现 | 检查 speak_threshold_level 门槛(默认熟悉)、近 24h 活跃流、daily_speak_limit 配额、当日是否模板撑场、睡眠期跳过 |
+| 数据异常想重置 | 删除 `data/plugins/catsitate.core/catsitate.db` 与各 JSON 快照(重启重建);注意 favorability 重建即清零(开发期裁定不做迁移) |
+| 复审证据链 | 打开 debug.enabled 落盘日志;`catsitate.db` 查 `llm_usage`/`favorability_log` 核旁路记账与结算/衰减记录;`schedule.json` 查日程修改历史;`sleep_review/reports/` 查回顾报告 |
+
+---
+
+*本文档面向公测使用方与复审人员;功能描述以当前代码为最终依据,规格文档(两期设计)与实现存在差异处(如等级规则块并入好感度块、poke 门槛取消、表情内置表、sleep_confirm 固定模型等)以本文与代码为准。*

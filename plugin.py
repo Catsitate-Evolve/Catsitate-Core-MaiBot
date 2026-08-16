@@ -75,6 +75,7 @@ class CatsitatePlugin(MaiBotPlugin):
 
     _persona_cache: str | None = None  # bot 人设缓存(config.get 一次,bot 配置变更时失效)
     _style_cache: str | None = None  # bot 行为风格缓存(同上)
+    _debug_handler: logging.Handler | None = None  # debug 日志文件 handler(配置开关控制)
 
     # ---------- 生命周期 ----------
 
@@ -168,6 +169,7 @@ class CatsitatePlugin(MaiBotPlugin):
         self._scheduler.register("schedule_tick", 60, self._schedule_tick)
         self._scheduler.register("remind_fallback", 300, self._remind_fallback_tick)
         self._restore_schedule()  # 重启恢复当日日程与编辑历史(审查 I-4)
+        self._setup_debug_logging()
         self._scheduler.start()
         # 首次环境数据立即刷新一次,避免环境块空缺到首个定时点(45 分钟)
         self._spawn_background_task(self._refresh_environment())
@@ -197,6 +199,7 @@ class CatsitatePlugin(MaiBotPlugin):
             self._scheduler.register("weather", max(self.config.time_aware.weather_refresh_minutes, 1) * 60, self._refresh_environment)
             self._scheduler.unregister("daily_settle")
             self._scheduler.register("daily_settle", max(self.config.favorability.window_hours, 1) * 3600, self._daily_settle)
+            self._setup_debug_logging()  # debug 开关随配置热生效
             self.ctx.logger.info("catsitate_core 配置已刷新,派生缓存已重置")
         elif scope == "bot":
             # personality 变化影响等级规则块注入与哨兵人设(下次渲染自动生效)
@@ -497,6 +500,7 @@ class CatsitatePlugin(MaiBotPlugin):
             msg_info = msg.get("message_info") or {}
             ui = msg_info.get("user_info") or {}
             stream_id = str(msg.get("session_id") or "")
+            logger.debug("睡眠拦截:消息入回顾缓冲(stream=%s,当前共 %d 条)", stream_id, len(self._sleep_review_buffer) + 1)
             self._sleep_review_buffer.append({
                 "stream_id": stream_id,
                 "user_id": str(ui.get("user_id") or ""),
@@ -569,9 +573,11 @@ class CatsitatePlugin(MaiBotPlugin):
         reasoning = self._reasoning_from_items(output_items)
         tool_results = self._context_tool_results(output_items, called_tools)
         if not tool_results:
+            logger.debug("reply 补传跳过:本轮无上下文工具结果(called=%s)", called_tools)
             return {"action": "continue", "modified_kwargs": kwargs}
         new_items = backfill_reply_items(output_items, tool_results, called_tools, reasoning)
         if new_items is output_items:
+            logger.debug("reply 补传跳过:三条件不齐(reasoning 非空=%s)", bool(reasoning.strip()))
             return {"action": "continue", "modified_kwargs": kwargs}
         new_kwargs = {**kwargs, self._OUTPUT_ITEMS_KEY: new_items}
         self.ctx.logger.info("reply 补传:%s", [t.get("tool_name") for t in new_items if t.get("tool_name") == "reply"])
@@ -1058,6 +1064,7 @@ class CatsitatePlugin(MaiBotPlugin):
 
     async def _schedule_tick(self) -> None:
         if not self.config.plugin.enabled or not self.config.schedule.enabled:
+            logger.debug("schedule_tick 跳过:模块未启用")
             return
         if self.sleep.is_sleeping():
             return  # 绝对静默,跳过窗口执行
@@ -1072,9 +1079,12 @@ class CatsitatePlugin(MaiBotPlugin):
             return
         mark = f"{day}|{win.get('start')}"
         if self._schedule_tick_fired.get(day) == mark:
+            logger.debug("schedule_tick 跳过:窗口已触发(mark=%s)", mark)
             return  # 同窗口只触发一次
         if self._speak_counts.get(day, 0) >= self.config.schedule.daily_speak_limit:
+            logger.debug("schedule_tick 跳过:已达每日发言上限 %s", self.config.schedule.daily_speak_limit)
             return
+        logger.debug("schedule_tick 进入窗口 kind=%s 活动=%s", win.get("kind"), win.get("activity"))
         if win.get("kind") == "greeting":
             await self._greet_exclusive(day, win)  # 主动问候:仅特别者+私聊通道,无 2.1 群流路径
             self._schedule_tick_fired[day] = mark
@@ -1138,17 +1148,20 @@ class CatsitatePlugin(MaiBotPlugin):
                 "_recent": last_bump or "",
             })
         candidates.sort(key=lambda c: (c["_level"], c["_recent"]), reverse=True)
+        logger.debug("2.1 候选流: 活跃 %d -> 门槛过滤后 %d", len(rows), len(candidates))
         return [{k: c[k] for k in ("stream_id", "user_id", "level_name", "note")} for c in candidates]
 
     async def _greet_exclusive(self, day: str, win: dict) -> bool:
         """主动问候(规格 §3.5):仅「特别」等级者 + 必须存在私聊流;greeting 窗口起点触发,无每日一次限制。"""
 
         if self._speak_counts.get(day, 0) >= self.config.schedule.daily_speak_limit:
+            logger.debug("主动问候跳过:已达每日发言上限")
             return False
         rows = self.store.query(
             "SELECT user_id, note FROM favorability WHERE level >= ? LIMIT 1", (EXCLUSIVE_LEVEL,)
         )
         if not rows:
+            logger.debug("主动问候跳过:无特别等级者")
             return False  # 无特别者,不问候
         user_id, note = rows[0]
         await self._refresh_stream_cache()
@@ -1349,6 +1362,7 @@ class CatsitatePlugin(MaiBotPlugin):
                 if result.get("exclusive_clamped"):
                     self.ctx.logger.warning("结算升特别被独占钳制(user=%s)", user_id)
             else:
+                logger.debug("结算未落库 user=%s kind=%s status=%s 原因=%s", user_id, kind, result.get("status"), result.get("error") or result.get("reason"))
                 self.ctx.logger.warning("好感度结算失败 %s:%s %s", user_id, kind, result.get("error") or result.get("reason"))
         finally:
             self._settling.discard(key)
@@ -1605,6 +1619,34 @@ class CatsitatePlugin(MaiBotPlugin):
                     if isinstance(p, str):
                         parts.append(p)
         return "".join(parts)
+
+    def _setup_debug_logging(self) -> None:
+        """debug 日志开关(公测复审):开启时把 catsitate.core 的 debug 级日志落盘到数据目录 logs/ 当日文件。
+
+        关闭/文件创建失败时移除 handler 并回退主日志(显式告警,不静默)。
+        """
+
+        plugin_logger = logging.getLogger("catsitate.core")
+        if not self.config.debug.enabled:
+            if self._debug_handler is not None:
+                plugin_logger.removeHandler(self._debug_handler)
+                self._debug_handler = None
+            return
+        if self._debug_handler is not None:
+            return  # 已挂载,不重复
+        logs_dir = self.ctx.paths.data_dir / "logs"
+        try:
+            logs_dir.mkdir(parents=True, exist_ok=True)
+            path = logs_dir / f"catsitate-{datetime.now().strftime('%Y%m%d')}.log"
+            handler = logging.FileHandler(path, encoding="utf-8")
+            handler.setLevel(logging.DEBUG)
+            handler.setFormatter(logging.Formatter("%(asctime)s %(levelname)s %(name)s %(message)s"))
+            plugin_logger.addHandler(handler)
+            plugin_logger.setLevel(logging.DEBUG)
+            self._debug_handler = handler
+            self.ctx.logger.info("debug 日志已开启: %s", path)
+        except OSError:
+            self.ctx.logger.exception("debug 日志文件创建失败,回退仅主日志")
 
     async def _persona_context(self) -> tuple[str, str]:
         """bot 人设与行为风格(经 config.get 读主程序全局配置 personality.personality / personality.behavior_style,带缓存)。

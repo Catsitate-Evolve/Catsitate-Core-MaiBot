@@ -209,6 +209,17 @@ class ScheduleSection(PluginConfigBase):
     daily_speak_limit: int = _f(5, "全天主动发言次数上限(每次发言计 1)", label="每日发言上限")
 
 
+class DebugSection(PluginConfigBase):
+    __ui_label__ = "调试"
+    __ui_order__ = 99
+
+    enabled: bool = _f(
+        False,
+        "debug 日志开关:开启后 debug 级日志写入插件数据目录 logs/ 下的当日文件(供公测复审)",
+        label="debug 日志开关",
+    )
+
+
 class CatsitateConfig(PluginConfigBase):
     """Catsitate 插件顶层配置。"""
 
@@ -223,3 +234,4 @@ class CatsitateConfig(PluginConfigBase):
     image_relook: ImageRelookSection = Field(default_factory=ImageRelookSection)
     sleep: SleepSection = Field(default_factory=SleepSection)
     schedule: ScheduleSection = Field(default_factory=ScheduleSection)
+    debug: DebugSection = Field(default_factory=DebugSection)

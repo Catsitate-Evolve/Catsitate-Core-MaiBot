@@ -823,3 +823,28 @@ def test_resolve_quote_senders_dedup_and_failure_passthrough(tmp_path):
     p2 = _make_history_plugin(tmp_path, logs, recent, _RaisingById())
     senders2, first_err2 = asyncio.run(p2._resolve_quote_senders(recent, "g1"))
     assert senders2 == {"m1": None} and "能力调用异常" in first_err2
+
+
+def test_debug_logging_switch(tmp_path):
+    import logging
+
+    import plugin as plugin_mod
+    from catsitate_core.config import CatsitateConfig
+
+    p = plugin_mod.CatsitatePlugin()
+    p._ctx = _StubCtx(tmp_path)
+    cfg = CatsitateConfig()
+    p._plugin_config_instance = cfg  # SDK 的 config 属性无 setter,走内部实例(与既有测试同款)
+    plogger = logging.getLogger("catsitate.core")
+    before = len(plogger.handlers)
+    p._setup_debug_logging()
+    assert p._debug_handler is None  # 默认关闭,不挂 handler
+    cfg.debug.enabled = True
+    p._setup_debug_logging()
+    assert p._debug_handler is not None
+    assert any(isinstance(h, logging.FileHandler) and str(h.baseFilename).endswith(".log") for h in plogger.handlers)
+    assert (tmp_path / "logs").exists()
+    cfg.debug.enabled = False
+    p._setup_debug_logging()
+    assert p._debug_handler is None
+    assert len(plogger.handlers) == before  # handler 已移除,无泄漏

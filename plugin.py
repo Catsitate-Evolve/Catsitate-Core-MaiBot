@@ -112,7 +112,9 @@ class CatsitatePlugin(MaiBotPlugin):
         self._last_activity_ts: float = 0.0  # 静默入睡计时(入站/出站活动刷新)
         # 睡眠期拦截消息缓冲(回顾报告素材);持久化防重启丢失(联调发现)
         self._sleep_review_buffer_snapshot = JsonSnapshot(data_dir / "sleep_review_buffer.json")
-        self._sleep_review_buffer: list[dict] = self._sleep_review_buffer_snapshot.load()
+        _loaded_buffer = self._sleep_review_buffer_snapshot.load()
+        # JsonSnapshot.load 缺文件返回 {} 而非 [],显式归一(联调:dict.append 异常)
+        self._sleep_review_buffer: list[dict] = _loaded_buffer if isinstance(_loaded_buffer, list) else []
         for service in (self.memo, self.fav_engine):
             service.ensure_schema()
         self.store.execute(

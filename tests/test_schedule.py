@@ -169,6 +169,103 @@ def test_add_anchor_chain_squeezes_two_following(tmp_path):
     assert len(adj) == 2
 
 
+def test_add_cross_midnight_anchor_pushes_sleep_bedtime(tmp_path):
+    from catsitate_core.schedule import apply_schedule_add, validate_schedule
+    data = {"date": "2026-08-16", "windows": [
+        {"kind": "sleep", "start": "2026-08-16T23:00", "end": "2026-08-17T07:30", "activity": ""},
+        {"kind": "daily", "start": "2026-08-16T09:00", "end": "2026-08-16T11:00", "activity": "发呆"},
+    ]}
+    # 跨午夜锚点 23:30-01:00 压睡眠尾侧:入睡推迟到 01:00,醒来 07:30 不变
+    out, err, _, adj = apply_schedule_add(data, "23:30", "01:00", "深夜活动", "2026-08-16", min_sleep=240, max_sleep=660, history=[])
+    assert err == ""
+    sleep = next(w for w in out["windows"] if w.get("kind") == "sleep")
+    assert sleep["start"] == "2026-08-17T01:00"
+    assert sleep["end"] == "2026-08-17T07:30"
+    assert any("睡觉" in a for a in adj)
+    assert validate_schedule(out, min_sleep=240, max_sleep=660)[1] == ""
+
+
+def test_add_anchor_squeezes_sleep_below_min_rejected(tmp_path):
+    from catsitate_core.schedule import apply_schedule_add
+    data = {"date": "2026-08-16", "windows": [
+        {"kind": "sleep", "start": "2026-08-16T23:00", "end": "2026-08-17T07:30", "activity": ""},
+        {"kind": "daily", "start": "2026-08-16T09:00", "end": "2026-08-16T11:00", "activity": "发呆"},
+    ]}
+    # 入睡被推到 06:30 只剩 60 分钟 < 最短 240 → 拒绝且原数据不变
+    out, err, _, _ = apply_schedule_add(data, "23:30", "06:30", "深夜活动", "2026-08-16", min_sleep=240, max_sleep=660, history=[])
+    assert "睡眠不足" in err
+    assert out == data
+
+
+def test_add_anchor_fully_covers_sleep_rejected(tmp_path):
+    from catsitate_core.schedule import apply_schedule_add
+    data = {"date": "2026-08-16", "windows": [
+        {"kind": "sleep", "start": "2026-08-16T23:00", "end": "2026-08-17T07:30", "activity": ""},
+        {"kind": "daily", "start": "2026-08-16T09:00", "end": "2026-08-16T11:00", "activity": "发呆"},
+    ]}
+    # 锚点 22:00-08:00 完全盖住睡眠窗 → 挤没拒绝(不是「睡眠不足」)
+    out, err, _, _ = apply_schedule_add(data, "22:00", "08:00", "大块活动", "2026-08-16", min_sleep=240, max_sleep=660, history=[])
+    assert "挤没" in err
+    assert out == data
+
+
+def test_move_anchor_compresses_overlapping_window(tmp_path):
+    from catsitate_core.schedule import apply_schedule_move, validate_schedule
+    data = {"date": "2026-08-16", "windows": [
+        {"kind": "sleep", "start": "2026-08-16T23:00", "end": "2026-08-17T07:30", "activity": ""},
+        {"kind": "daily", "start": "2026-08-16T09:00", "end": "2026-08-16T11:00", "activity": "发呆"},
+        {"kind": "daily", "start": "2026-08-16T15:00", "end": "2026-08-16T18:00", "activity": "听歌"},
+    ]}
+    # move 窗口 1(发呆)到 15:00-16:00:锚点挤「听歌」头部到 16:00
+    out, err, _, adj = apply_schedule_move(data, 1, "15:00", "16:00", "2026-08-16", min_sleep=240, max_sleep=660, history=[])
+    assert err == ""
+    song = next(w for w in out["windows"] if w.get("activity") == "听歌")
+    assert song["start"] == "2026-08-16T16:00" and song["end"] == "2026-08-16T18:00"
+    assert any("听歌" in a for a in adj)
+    assert validate_schedule(out, min_sleep=240, max_sleep=660)[1] == ""
+
+
+def test_add_no_overlap_no_adjustments(tmp_path):
+    from catsitate_core.schedule import apply_schedule_add
+    data = {"date": "2026-08-16", "windows": [
+        {"kind": "sleep", "start": "2026-08-16T23:00", "end": "2026-08-17T07:30", "activity": ""},
+        {"kind": "daily", "start": "2026-08-16T09:00", "end": "2026-08-16T11:00", "activity": "发呆"},
+    ]}
+    out, err, _, adj = apply_schedule_add(data, "13:00", "14:00", "买菜", "2026-08-16", min_sleep=240, max_sleep=660, history=[])
+    assert err == ""
+    assert adj == []  # 无重叠:任何窗口都不得被记入压缩明细
+
+
+def test_compress_chain_with_overlapping_followers(tmp_path):
+    from catsitate_core.schedule import compress_with_anchor
+    # 直接喂「锚点后窗口彼此重叠」的输入:链式循环触发,B/C 依次头部后推
+    windows = [
+        {"kind": "daily", "start": "2026-08-16T10:00", "end": "2026-08-16T12:00", "activity": "锚点"},
+        {"kind": "daily", "start": "2026-08-16T12:30", "end": "2026-08-16T14:00", "activity": "A"},
+        {"kind": "daily", "start": "2026-08-16T13:00", "end": "2026-08-16T15:00", "activity": "B"},
+        {"kind": "daily", "start": "2026-08-16T14:30", "end": "2026-08-16T16:00", "activity": "C"},
+    ]
+    out, err, adj = compress_with_anchor(windows, 0)
+    assert err == ""
+    by = {w["activity"]: w for w in out}
+    assert by["A"]["start"] == "2026-08-16T12:30"  # 与锚点不重叠,不动
+    assert by["B"]["start"] == "2026-08-16T14:00"  # 被 A 尾部链式后推
+    assert by["C"]["start"] == "2026-08-16T15:00"  # 再被 B 尾部链式后推
+    assert len(adj) == 2
+
+
+def test_compress_chain_squeeze_out_rejected(tmp_path):
+    from catsitate_core.schedule import compress_with_anchor
+    # 链上窗口被推到挤没 → 拒绝,返回错误
+    windows = [
+        {"kind": "daily", "start": "2026-08-16T10:00", "end": "2026-08-16T12:00", "activity": "锚点"},
+        {"kind": "daily", "start": "2026-08-16T12:30", "end": "2026-08-16T14:00", "activity": "A"},
+        {"kind": "daily", "start": "2026-08-16T13:00", "end": "2026-08-16T13:30", "activity": "短窗"},
+    ]
+    _, err, _ = compress_with_anchor(windows, 0)
+    assert "挤没" in err
+
+
 def test_parse_from_llm_with_fence():
     import json as _json
     text = "```json\n" + _json.dumps(GOOD, ensure_ascii=False) + "\n```"

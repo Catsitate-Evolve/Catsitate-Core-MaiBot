@@ -283,12 +283,15 @@ def compress_with_anchor(
 ) -> tuple[list[dict], str, list[str]]:
     """锚点压缩(联调对齐:新操作窗口挤旧窗口,不整体顺延):
     - 锚点窗口保持完整;
-    - 锚点之前的窗口:end 提前到锚点 start(尾部压缩);
+    - 锚点之前的窗口:end 提前到锚点 start(尾部压缩);窗口不可拆分,锚点后部分释放为自由时间;
     - 锚点之后的窗口:start 推迟到前一窗 end(头部压缩,链式);
+    - 睡眠窗口特殊:与锚点重叠时入睡推迟到锚点 end、醒来时间不变;
     - 任一窗口被压至 start>=end(挤没)即返回错误(不自动删除窗口,Q1=A);
     返回 (窗口列表, 错误, 调整明细[「<活动> 由 <原> 压缩为 <新>」])。
     """
 
+    if not (0 <= anchor_index < len(windows)):
+        return [dict(w) for w in windows], "窗口序号非法", []
     out = [dict(w) for w in windows]
     anchor = out[anchor_index]
     a_s, a_e = _parse_t(anchor)
@@ -300,38 +303,38 @@ def compress_with_anchor(
     for i, w in enumerate(out):
         if i == anchor_index:
             continue
-        s, e = _parse_t(w)
-        before_s, before_e = s, e
-        if s < a_s and e > a_s:
+        s0, e0 = _parse_t(w)
+        before = f"{s0.strftime('%H:%M')}-{e0.strftime('%H:%M')}"
+        if w.get("kind") == "sleep" and s0 < a_e and a_s < e0:
+            # 睡眠与锚点重叠:入睡推迟到锚点 end,醒来时间不变
+            w["start"] = anchor["end"]
+        elif s0 < a_s and e0 > a_s:
             # 锚点前:尾部压缩
             w["end"] = anchor["start"]
-            s, e = _parse_t(w)
-        elif s >= a_s and s < a_e:
+        elif s0 >= a_s and s0 < a_e:
             # 锚点后(与锚点重叠):头部压缩
             w["start"] = anchor["end"]
-            s, e = _parse_t(w)
+        s, e = _parse_t(w)
         if e <= s:
             return out, f"安排与「{_desc(w)}」完全重叠,该窗口会被挤没,请调整时间", adjustments
-        if s != before_s or e != before_e:
-            adjustments.append(
-                f"「{_desc(w)}」由 {before_s.strftime('%H:%M')}-{before_e.strftime('%H:%M')} "
-                f"压缩为 {s.strftime('%H:%M')}-{e.strftime('%H:%M')}")
+        if (s, e) != (s0, e0):
+            after = f"{s.strftime('%H:%M')}-{e.strftime('%H:%M')}"
+            adjustments.append(f"「{_desc(w)}」由 {before} 压缩为 {after}")
     # 锚点后链式:非锚点窗口按开始排序,与前一窗 end 重叠则头部压缩
     ordered = sorted((w for i, w in enumerate(out) if i != anchor_index and _parse_t(w)[0] >= a_e),
                      key=lambda w: _parse_t(w)[0])
     prev_end = a_e
     for w in ordered:
         s, e = _parse_t(w)
+        s0 = s
         if s < prev_end and s >= a_e:
-            before_s, before_e = s, e
+            before = f"{s.strftime('%H:%M')}-{e.strftime('%H:%M')}"
             w["start"] = prev_end.strftime(_ISO)
             s, e = _parse_t(w)
             if e <= s:
                 return out, f"安排与「{_desc(w)}」完全重叠,该窗口会被挤没,请调整时间", adjustments
-            if s != before_s:
-                adjustments.append(
-                    f"「{_desc(w)}」由 {before_s.strftime('%H:%M')}-{before_e.strftime('%H:%M')} "
-                    f"压缩为 {s.strftime('%H:%M')}-{e.strftime('%H:%M')}")
+            if s != s0:
+                adjustments.append(f"「{_desc(w)}」由 {before} 压缩为 {s.strftime('%H:%M')}-{e.strftime('%H:%M')}")
         prev_end = e
     return out, "", adjustments
 

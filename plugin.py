@@ -719,27 +719,38 @@ class CatsitatePlugin(MaiBotPlugin):
                 )
         return blocks
 
+    async def _refresh_stream_cache(self) -> None:
+        """流信息缓存刷新(10 分钟 TTL);失败保持旧缓存并显式告警。"""
+
+        now = datetime.now().timestamp()
+        if self._stream_cache and now - self._stream_cache_at <= 600:
+            return
+        try:
+            result = await self.ctx.chat.get_all_streams()
+            # SDK 对 chat.get_all_streams 解包后返回裸 list;兼容 dict 包装形状(实机 2.3 验收发现)
+            if isinstance(result, list):
+                raw = result
+            elif isinstance(result, dict) and result.get("success"):
+                raw = result.get("streams") or []
+            else:
+                self.ctx.logger.warning("聊天流列表形状异常(%s),沿用旧缓存", type(result).__name__)
+                return
+            self._stream_cache = {
+                str(st.get("session_id") or ""): st
+                for st in raw if isinstance(st, dict) and st.get("session_id")
+            }
+            self._stream_cache_at = now
+        except Exception:
+            self.ctx.logger.exception("聊天流列表获取失败,沿用旧缓存")
+
     async def _resolve_speaker(self, stream_id: str) -> str:
         """注入目标说话人:私聊=流对端用户;群聊=最近非 bot 消息发送者(无则回退流 user_id)。
 
         流信息经 chat.get_all_streams 建缓存(10 分钟 TTL);群聊说话人每轮变化属设计预期。
         """
 
-        now = datetime.now().timestamp()
+        await self._refresh_stream_cache()
         streams = self._stream_cache
-        if not streams or now - self._stream_cache_at > 600:
-            try:
-                result = await self.ctx.chat.get_all_streams()
-                if isinstance(result, dict) and result.get("success"):
-                    raw = result.get("streams") or []
-                    streams = {
-                        str(st.get("session_id") or ""): st
-                        for st in raw if isinstance(st, dict) and st.get("session_id")
-                    }
-                    self._stream_cache = streams
-                    self._stream_cache_at = now
-            except Exception:
-                self.ctx.logger.exception("聊天流列表获取失败,说话人解析退化为最近消息")
         info = streams.get(stream_id) or {}
         if not str(info.get("is_group_session") or "").lower().startswith(("true", "1")):
             uid = str(info.get("user_id") or "")
@@ -912,8 +923,18 @@ class CatsitatePlugin(MaiBotPlugin):
                 row = self.fav_engine.get_level(user_id, stream_id)
                 if row is None or row["score"] <= 0:
                     continue
-                recent = await self._fetch_recent(stream_id, 50)
-                is_group = "1" if recent and self._stream_is_group(stream_id) else "0"
+                await self._refresh_stream_cache()
+                if stream_id not in self._stream_cache:
+                    # 流已消亡(解散/移除):显式跳过该行,不误判为私聊,不拖垮整轮
+                    self.ctx.logger.warning("衰减候选流不存在(user=%s,stream=%s),跳过该行", user_id, stream_id)
+                    continue
+                try:
+                    recent = await self._fetch_recent(stream_id, 50)
+                except Exception:
+                    # 单行取消息失败(如 RPC 超时)只跳过该行,其余候选继续
+                    self.ctx.logger.warning("衰减候选取消息失败(user=%s,stream=%s),跳过该行", user_id, stream_id)
+                    continue
+                is_group = "1" if self._stream_is_group(stream_id) else "0"
                 interaction = last_bot_interaction_time(
                     recent, user_id, str(self.config.favorability.bot_user_id or ""), stream_is_group=bool(is_group == "1")
                 )
@@ -1084,6 +1105,7 @@ class CatsitatePlugin(MaiBotPlugin):
 
         if self._speak_counts.get(day, 0) >= self.config.schedule.daily_speak_limit:
             return False
+        await self._refresh_stream_cache()  # 缓存可能为空/过期,先刷新再找目标(实机 2.3 验收发现)
         target = None
         for stream_id, info in self._stream_cache.items():
             if str(info.get("is_group_session") or "").lower().startswith(("true", "1")):

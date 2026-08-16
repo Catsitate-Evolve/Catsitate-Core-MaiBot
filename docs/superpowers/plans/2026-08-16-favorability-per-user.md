@@ -656,6 +656,33 @@ git commit -m "docs: 验收清单同步按人重构"
 
 ---
 
+### Task 8: 全项目审查(设计冲突 + 可配置项一致性,SDD 最终审查范围)
+
+**Files:**
+- 审查对象:全仓库(重点 `plugin.py`、`catsitate_core/*.py`、`config.toml`、`prompt_templates/`、`docs/superpowers/specs/2026-08-15-phase2-design.md`、`docs/acceptance-checklist.md`)
+- 由控制器派发独立审查子代理(most capable model),产审报告;发现 Critical/Important 逐条修复后 scoped re-review
+
+**审查维度:**
+
+1. **设计冲突**(spec 为权威,对照全文):
+   - 特别独占(决策 #8)与衰减/结算/主动戳/注入块各路径是否有矛盾(如:特别者被钳制路径之外还能否绕过;独占者掉出后空位释放是否生效);
+   - 主动问候(决策 #9)与 `daily_speak_limit`、`_schedule_tick` 窗口标记、睡眠静默的关系是否一致(睡眠期不问候、同窗口不重复触发);
+   - 按人(决策 #7)后是否残留任何 (user, stream) 分流语义(旧签名、旧查询、旧注释);
+   - 2.1 daily 窗口门槛(按人 `speak_threshold_level`)与注入块/trigger intent 中等级注记是否按人;
+   - 备忘 remind(§3.4)、睡眠(§3.2)、日程(§3.3)与本轮改动无交互冲突。
+2. **可配置项一致性**:
+   - `config.toml` ↔ `catsitate_core/config.py` 字段一一对应(无孤儿字段、无缺失字段、默认值一致);
+   - 已删除的 `greet_threshold_level`/`private_threshold_level` 在代码/注释/文档/模板中零残留;
+   - 新增逻辑(特别独占、问候)是否引入了硬编码而非配置项——如应可配置需列出并裁定;
+   - `_manifest.json` capabilities 与插件实际调用能力一致(本轮不新增能力调用)。
+3. **规格/文档同步**:spec 与本计划实现一致;`docs/acceptance-checklist.md` 补记本轮验收项;`CONTEXT.md` 术语表如需更新。
+
+- [ ] **Step 1**:控制器派发最终审查子代理(review package 覆盖 Task 1-7 全部 diff + 全仓 grep 检查),输出 Critical/Important/Minor
+- [ ] **Step 2**:Critical/Important 逐条修复(单次 fix dispatch + scoped re-review,残留逐条裁定入 ledger)
+- [ ] **Step 3**:更新验收清单与文档,提交
+
+---
+
 ## Self-Review
 
 1. **Spec coverage**:全局决策 #7(按人)→ Task 1/2/4/5/6;#8(特别独占)→ Task 1/4/5(透传钳制状态)+ Task 7 实机;#9(问候统一/无每日一次/不群内替代)→ Task 6;§3.1 衰减按人跨流 → Task 5;§3.3 greeting 无 2.1 路径 → Task 6;§3.5 测试(特别者无私聊流/多窗口触发)→ Task 6/7。✓

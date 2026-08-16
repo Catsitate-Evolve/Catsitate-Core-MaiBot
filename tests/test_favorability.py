@@ -91,6 +91,9 @@ def test_material_aggregates_streams(tmp_path):
          "text": "回应别人", "seq": 5, "ts": "2026-08-16T09:01:10"},
         {"role": "bot", "user_id": "999", "stream_id": "g1", "is_group": True, "addressed": True,
          "text": "回应你", "seq": 6, "ts": "2026-08-16T09:01:15"},
+        # 他人流 s2:目标用户在该流无任何消息,该流 bot 消息不得随附(流归属收口)
+        {"role": "bot", "user_id": "999", "stream_id": "s2", "is_group": False, "addressed": True,
+         "text": "他人流回复", "seq": 7, "ts": "2026-08-16T09:02:00"},
     ]
     material = engine.build_material("111", history)
     text = "\n".join(material)
@@ -98,6 +101,7 @@ def test_material_aggregates_streams(tmp_path):
     assert "群里的我" in text
     assert "回应别人" not in text                     # 群聊未 quote 该人的 bot 消息不随附
     assert "回应你" in text
+    assert "他人流回复" not in text                   # 目标用户未发过言的流,bot 消息不随附
     assert "(私聊·" in text and "(群聊·" in text  # 语境前缀(格式 (语境·角色))
 
 

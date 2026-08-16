@@ -212,7 +212,8 @@ class BatchEngine:
         target = [m for m in fresh if m["role"] == "user" and m["user_id"] == user_id]
         if not target:
             return []
-        anchor = target[-self.config.material_max_messages:]
+        # 锚点数守卫:0/负数取全量,避免 [-0:] 切片语义歧义
+        anchor = target[-self.config.material_max_messages:] if self.config.material_max_messages > 0 else target
         by_stream: dict[str, list[dict]] = {}
         for m in fresh:
             by_stream.setdefault(m["stream_id"], []).append(m)
@@ -224,8 +225,9 @@ class BatchEngine:
             neighbors = by_stream[msg["stream_id"]][max(0, pos - 1):pos + 2]  # 前后各 1
             for neighbor in neighbors:
                 selected[(neighbor["stream_id"], neighbor["seq"])] = neighbor
-        for msg in fresh:  # bot 消息随附:私聊全收,群聊仅 quote/@ 该人
-            if msg["role"] == "bot" and (not msg["is_group"] or msg.get("addressed")):
+        user_streams = {m["stream_id"] for m in target}
+        for msg in fresh:  # bot 消息随附:仅目标用户发过言的流(私聊全收,群聊仅 quote/@ 该人)
+            if msg["role"] == "bot" and msg["stream_id"] in user_streams and (not msg["is_group"] or msg.get("addressed")):
                 selected[(msg["stream_id"], msg["seq"])] = msg
         material: list[str] = []
         for msg in sorted(selected.values(), key=lambda m: (m.get("ts") or "", m.get("seq") or 0)):

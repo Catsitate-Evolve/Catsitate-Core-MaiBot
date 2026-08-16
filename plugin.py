@@ -182,6 +182,7 @@ class CatsitatePlugin(MaiBotPlugin):
         self.ctx.logger.info("catsitate_core 已加载:注入/备忘录/好感度/贴表情/戳一戳/reply补传/图片重看")
 
     async def on_unload(self) -> None:
+        self._teardown_debug_logging()  # 卸载清理:debug handler 移除并 close、logger 级别恢复(审查 I5)
         await self._scheduler.stop()
         for task in list(self._background_tasks):
             task.cancel()
@@ -410,9 +411,18 @@ class CatsitatePlugin(MaiBotPlugin):
 
         seg = {**seg, "data": base64.b64encode(image_bytes).decode("ascii")}
         messages, _ = build_relook_prompt(question, seg)
-        result = await self._side_llm_call(messages, self.config.image_relook.llm_model, "image_relook", self.config.image_relook.llm_timeout_ms)
-        if not result.get("success"):
-            return f"图片重看 LLM 调用失败:{result.get('response', '')[:200]}"
+        try:
+            result = await self._side_llm_call(messages, self.config.image_relook.llm_model, "image_relook", self.config.image_relook.llm_timeout_ms)
+        except Exception as exc:  # noqa: BLE001
+            # 失败显式日志并返回失败(与哨兵层同款纪律,审查 M9);仅记异常类型防 PII
+            msg = f"图片重看 LLM 调用异常({type(exc).__name__})"
+            self.ctx.logger.warning(msg)
+            return msg
+        if not isinstance(result, dict) or not result.get("success"):
+            detail = result.get("response", "")[:200] if isinstance(result, dict) else str(result)[:200]
+            msg = f"图片重看 LLM 调用失败:{detail}"
+            self.ctx.logger.warning(msg)
+            return msg
         return str(result.get("response") or "")
 
     # ---------- 命令 ----------
@@ -463,8 +473,8 @@ class CatsitatePlugin(MaiBotPlugin):
 
     @HookHandler("chat.receive.after_process", name="catsitate_fav_count", mode=HookMode.OBSERVE)
     async def fav_count(self, **kwargs: Any) -> None:
-        if self.sleep.is_sleeping():
-            return  # 睡眠期消息不得计数(绝对静默)
+        if self.config.sleep.enabled and self.sleep.is_sleeping():
+            return  # 睡眠期消息不得计数(绝对静默;睡眠模块关闭时计数不暂停,审查 M14)
         if not self.config.plugin.enabled or not self.config.favorability.enabled:
             return
         msg = kwargs.get("message")
@@ -529,7 +539,16 @@ class CatsitatePlugin(MaiBotPlugin):
         messages, _ = build_side_prompt(
             "sleep_confirm", [], [f"待判定晚安短句:{text}"]
         )
-        result = await self._side_llm_call(messages, "memory", "sleep_confirm")
+        try:
+            result = await self._side_llm_call(messages, "memory", "sleep_confirm")
+        except Exception as exc:  # noqa: BLE001
+            # 失败显式日志并跳过本轮(与哨兵层同款纪律,审查 M9);仅记异常类型防 PII
+            self.ctx.logger.warning("晚安判定 LLM 调用异常(%s),本轮不入睡", type(exc).__name__)
+            return {"action": "continue", "modified_kwargs": kwargs}
+        if not isinstance(result, dict) or not result.get("success"):
+            detail = result.get("response", "")[:200] if isinstance(result, dict) else str(result)[:200]
+            self.ctx.logger.warning("晚安判定 LLM 失败,本轮不入睡:%s", detail)
+            return {"action": "continue", "modified_kwargs": kwargs}
         verdict, _ = parse_sleep_confirm_response(str(result.get("response") or ""))
         if verdict == "SLEEP":
             await self._enter_sleep()
@@ -882,7 +901,12 @@ class CatsitatePlugin(MaiBotPlugin):
         for user_id in self.fav_engine.iter_today_active():
             if self.fav_engine.has_daily_settle_today(user_id):
                 continue
-            await self._settle_and_log(user_id, kind="daily")
+            try:
+                await self._settle_and_log(user_id, kind="daily")
+            except Exception:
+                # 单用户结算失败隔离,不拖垮整轮(与衰减逐流隔离对齐,审查 I4)
+                self.ctx.logger.exception("日终结算失败(user=%s),跳过该用户", user_id)
+                continue
 
     async def _sleep_tick(self) -> None:
         if not self.config.plugin.enabled or not self.config.sleep.enabled:
@@ -1036,6 +1060,7 @@ class CatsitatePlugin(MaiBotPlugin):
             sections.append("## 睡眠期到期的备忘提醒\n" + "\n".join(f"- {e['content']}({e['remind_at']})" for e in sleep_day_due))
         path = report_dir / f"sleep_review_{datetime.now().strftime('%Y%m%d_%H%M%S')}.md"
         path.write_text("\n\n".join(sections) or "(无内容)", encoding="utf-8")
+        os.chmod(path, 0o600)  # 报告含消息文本/用户标识,仅属主可读(安全复审,审查 M15)
         self.ctx.logger.info("睡醒回顾已生成: %s", path)
 
     async def _generate_tomorrow_schedule(self) -> None:
@@ -1196,6 +1221,9 @@ class CatsitatePlugin(MaiBotPlugin):
     async def _remind_fallback_tick(self) -> None:
         """备忘提醒独立兜底:无生成日程(模板撑场)时到点注入备忘归属流;睡眠中不执行。"""
 
+        # 日键清理(schedule 关闭时 _schedule_tick 早退,兜底 tick 仍须清理,
+        # 防 remind_fired.json 跨天无限增长,审查 M13)
+        self._prune_day_keys(datetime.now().strftime("%Y-%m-%d"))
         if not self.config.plugin.enabled or self.config.memo.enabled is False:
             return
         if self.sleep.is_sleeping():
@@ -1288,9 +1316,10 @@ class CatsitatePlugin(MaiBotPlugin):
             self.ctx.logger.exception("日程落盘失败")
 
     def _restore_schedule(self) -> None:
-        """重启恢复:仅当 schedule.json 的 date == 今天时恢复日程/编辑历史/生成标记(审查 I-4)。
+        """重启恢复:schedule.json 的 date 为今天或明天时恢复日程/编辑历史/生成标记(审查 I2)。
 
-        过期文件删除并告警;损坏/结构非法文件告警并忽略(错误显式暴露,不静默)。
+        入睡当晚生成的是次日日程,夜间重启不得误删——date ∈ {今天, 明天} 均恢复;
+        仅真正过期(早于今天)的文件删除并告警;损坏/结构非法文件告警并忽略(错误显式暴露,不静默)。
         """
 
         path = self.ctx.paths.data_dir / "schedule.json"
@@ -1309,8 +1338,10 @@ class CatsitatePlugin(MaiBotPlugin):
         if not isinstance(data, dict) or not isinstance(data.get("data"), dict):
             self.ctx.logger.warning("schedule.json 结构非法,忽略恢复")
             return
-        if data["data"].get("date") != datetime.now().strftime("%Y-%m-%d"):
-            self.ctx.logger.warning("schedule.json 为过期日程(%s),删除并忽略恢复", data["data"].get("date"))
+        now = datetime.now()
+        saved_date = data["data"].get("date")
+        if saved_date not in (now.strftime("%Y-%m-%d"), (now + timedelta(days=1)).strftime("%Y-%m-%d")):
+            self.ctx.logger.warning("schedule.json 为过期日程(%s),删除并忽略恢复", saved_date)
             try:
                 path.unlink()
             except OSError:
@@ -1321,7 +1352,7 @@ class CatsitatePlugin(MaiBotPlugin):
             self._schedule_data["windows"] = sort_windows(self._schedule_data["windows"])  # 旧数据按时间顺序重排
         self._schedule_edit_history = data["edit_history"] if isinstance(data.get("edit_history"), list) else []
         self._schedule_generated = bool(data.get("generated"))
-        self.ctx.logger.info("已从 schedule.json 恢复当日日程(%s)", data["data"].get("date"))
+        self.ctx.logger.info("已从 schedule.json 恢复日程(%s)", saved_date)
 
     def _prune_day_keys(self, day: str) -> None:
         """日键清理:只保留当天的状态条目(缓存纪律,防跨天无限增长)。"""
@@ -1411,8 +1442,8 @@ class CatsitatePlugin(MaiBotPlugin):
             "SELECT SUM(calls) FROM llm_usage WHERE day = ?", (day,)
         )
         total = int(rows[0][0] or 0)
-        if total == self.config.plugin.llm_daily_call_warning_threshold:
-            self.ctx.logger.warning("旁路 LLM 当日调用次数已达阈值 %s,请注意用量", total)
+        if total >= self.config.plugin.llm_daily_call_warning_threshold:
+            self.ctx.logger.warning("旁路 LLM 当日调用次数已达或超过阈值 %s,请注意用量", total)
 
     async def _fetch_recent(self, stream_id: str, limit: int) -> list[dict]:
         """取近期消息。spike ④ 实测:返回 list;include_binary_data 透传不产生二进制(image 段仅 hash)。"""
@@ -1631,11 +1662,7 @@ class CatsitatePlugin(MaiBotPlugin):
 
         plugin_logger = logging.getLogger("catsitate.core")
         if not self.config.debug.enabled:
-            if self._debug_handler is not None:
-                plugin_logger.removeHandler(self._debug_handler)
-                self._debug_handler.close()
-                self._debug_handler = None
-                plugin_logger.setLevel(self._debug_prev_level)  # 恢复开启前级别
+            self._teardown_debug_logging()
             return
         if self._debug_handler is not None:
             return  # 已挂载,不重复
@@ -1654,6 +1681,20 @@ class CatsitatePlugin(MaiBotPlugin):
             self.ctx.logger.info("debug 日志已开启: %s", path)
         except OSError:
             self.ctx.logger.exception("debug 日志文件创建失败,回退仅主日志")
+
+    def _teardown_debug_logging(self) -> None:
+        """关闭 debug 日志:移除并 close handler、恢复 logger 原级别。
+
+        on_unload 卸载与 debug 开关关闭共用(关闭分支语义抽离,审查 I5);
+        on_unload 阶段配置对象仍可读,但直接按已挂载的 _debug_handler 清理即可。
+        """
+
+        plugin_logger = logging.getLogger("catsitate.core")
+        if self._debug_handler is not None:
+            plugin_logger.removeHandler(self._debug_handler)
+            self._debug_handler.close()
+            self._debug_handler = None
+            plugin_logger.setLevel(self._debug_prev_level)  # 恢复开启前级别
 
     async def _persona_context(self) -> tuple[str, str]:
         """bot 人设与行为风格(经 config.get 读主程序全局配置 personality.personality / personality.behavior_style,带缓存)。

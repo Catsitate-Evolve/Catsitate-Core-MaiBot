@@ -312,7 +312,7 @@ replyer 出站 ── maisaka.replyer.after_response(BLOCKING LATE)──> goodn
 
 - `_side_llm_call` 是全部旁路 LLM 统一出口:经 `llm.generate` 能力直调,`model` = 主程序 task 名,超时由各能力节 `*_timeout_ms` 传入(留空=主程序默认 30s;联调实测 utils 模型 31-53s 会触发默认超时,慢模型建议 120000)。
 - 每次调用按模块记账 `llm_usage(day, module, calls, tokens)`;模块分列:`favorability` / `decay` / `msg_react` / `image_relook` / `sentinel` / `schedule_generate` / `sleep_confirm` / `sleep_review`。
-- 当日旁路调用合计首次达到 `plugin.llm_daily_call_warning_threshold`(默认 50)时告警:「旁路 LLM 当日调用次数已达阈值 50,请注意用量」。
+- 当日旁路调用合计达到或超过 `plugin.llm_daily_call_warning_threshold`(默认 50)时告警:「旁路 LLM 当日调用次数已达或超过阈值 50,请注意用量」。
 
 ---
 
@@ -605,7 +605,7 @@ replyer 出站
 1. 插件目录放入 `plugins/` 并重启;WebUI「插件」页确认 `catsitate.core` 已加载,日志出现 **`catsitate_core 已加载`**。
 2. 打开 `plugin.enabled = true`(总开关,默认关);按需调整各模块节。
 3. **必须配置**:`favorability.bot_user_id` = bot 自身 QQ 号(实机 3545773341)。留空则好感度判定/衰减/注入的 bot 识别全部失效。
-4. 各能力 `llm_model` 填主程序 `model_task_config` 的 task 名(如 `memory`/`replyer`/`utils`,或专用 task);主程序 task 集合固定(replyer/planner/memory/mid_memory/utils/learner/expression_use),不能新增自定义 task;README 提供专用 task 配置示例(如 `[model_task_config.catsitate]`,temperature 0.3、slow_threshold 30、hard_timeout 120)。
+4. 插件旁路 LLM 使用主程序内置 task 名(如 `planner`/`memory`/`replyer`),不支持新增自定义 task;主程序 task 集合固定(replyer/planner/memory/mid_memory/utils/learner/expression_use,WebUI「功能分配」页可见),各能力 `llm_model` 填对应 task 名。
 5. 慢模型建议配置超时:utils 实测 31-53s 会触发默认 30s 超时,`image_relook.llm_timeout_ms` 建议 120000。
 6. 验收/短时测试期间改动过的临时值必须恢复基准:`early_settle_threshold`=20、`silent_sleep_minutes`=60、`decay_after_days`=7、`window_hours`=24、`daily_speak_limit`=5、`max_regenerate`=1。
 7. 热重载:WebUI 修改配置后 `on_config_update` 生效,日志「**catsitate_core 配置已刷新,派生缓存已重置**」;weather/daily_settle 调度周期随配置重注册。
@@ -620,11 +620,11 @@ replyer 出站
 | 好感度结算 | `好感度结算 {user}:early/daily delta={n}`;失败:`好感度结算失败 …`;钳制:`结算升特别被独占钳制(user=…)` |
 | 衰减 | `好感度衰减 {user}:delta={n}`;`衰减判定 LLM 失败(user=…)` |
 | 睡眠 | `已入睡:醒来 {t}`;`睡眠窗口起点已到,兜底强制入睡`;`静默入睡:安静 N 分钟`;`自然醒来: {t}`;`睡醒回顾已生成: {path}` |
-| 日程 | `次日日程已生成:…`;`次日日程生成:{err}(模板兜底)`;`已从 schedule.json 恢复当日日程({date})`;`schedule.json 为过期日程…删除并忽略恢复` |
+| 日程 | `次日日程已生成:…`;`次日日程生成:{err}(模板兜底)`;`已从 schedule.json 恢复日程({date})`;`schedule.json 为过期日程…删除并忽略恢复` |
 | 主动发言/问候 | `主动触发[{day}] -> {stream}:{活动}`;`主动问候触发[{day}] -> {user}`;`主动问候跳过:特别者({user})无私聊流` |
 | 备忘提醒 | `备忘提醒兜底注入(stream={id}):{content}`;`备忘清理:{n} 条过期` |
 | reply 补传/哨兵 | `reply 补传:[…]`;`哨兵判定:放行回复` / `哨兵判定:撤回回复:{reason}` |
-| 旁路记账 | `旁路 LLM 当日调用次数已达阈值 {n},请注意用量`;llm_usage 表按模块分列 |
+| 旁路记账 | `旁路 LLM 当日调用次数已达或超过阈值 {n},请注意用量`;llm_usage 表按模块分列 |
 | quote 解析 | `quote 发送者解析: 成功 {n}/{m}(stream=…)`;`quote 发送者解析失败(stream=…):…` |
 
 ### 8.3 常见问题排查

@@ -19,6 +19,8 @@ class SQLiteStore:
         parent.mkdir(parents=True, exist_ok=True)
         with sqlite3.connect(self.db_path) as conn:
             conn.execute("PRAGMA journal_mode=WAL")
+        # 库文件权限 0600(库内含 QQ 号/消息文本等隐私,仅属主可读——安全复审)
+        os.chmod(self.db_path, 0o600)
 
     def _connect(self) -> sqlite3.Connection:
         conn = sqlite3.connect(self.db_path, check_same_thread=False)

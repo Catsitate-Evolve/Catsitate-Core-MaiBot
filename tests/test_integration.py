@@ -378,6 +378,8 @@ def test_remind_fallback_tick_injects_when_schedule_not_generated(tmp_path):
     p.sleep = SleepManager(JsonSnapshot(tmp_path / "sleep_state.json"), p.config.sleep)
     p._schedule_data = _materialize_template(DEFAULT_TEMPLATE_SCHEDULE, datetime.now().strftime("%Y-%m-%d"))
     p._schedule_generated = False
+    p._schedule_tick_fired = {}  # _prune_day_keys 依赖(M13:兜底 tick 同步清理)
+    p._speak_counts = {}
     p._remind_fired = {}
     p._remind_fired_snapshot = JsonSnapshot(tmp_path / "remind_fired.json")
     p.memo = type("_M", (), {"due_on": staticmethod(lambda day: [
@@ -461,6 +463,36 @@ def test_restore_schedule_from_file_today_only(tmp_path):
     p._restore_schedule()
     assert p._schedule_data == {}
     assert (p._ctx.paths.data_dir / "schedule.json").exists()
+
+
+def test_restore_schedule_tomorrow_date_restored_and_kept(tmp_path):
+    """I2:入睡当晚生成的是次日日程,夜间重启不得误删——date=明天 → 恢复成功且不删文件。"""
+    import json
+    from datetime import datetime, timedelta
+
+    import plugin as plugin_mod
+    from catsitate_core.config import CatsitateConfig
+    from catsitate_core.schedule import DEFAULT_TEMPLATE_SCHEDULE, _materialize_template
+
+    p = plugin_mod.CatsitatePlugin()
+    p._ctx = _StubCtx(tmp_path)
+    p._plugin_config_instance = CatsitateConfig()
+    p._schedule_data = {}
+    p._schedule_edit_history = []
+    p._schedule_generated = False
+
+    tomorrow = (datetime.now() + timedelta(days=1)).strftime("%Y-%m-%d")
+    path = p._ctx.paths.data_dir / "schedule.json"
+    p._ctx.paths.data_dir.mkdir(parents=True, exist_ok=True)
+    path.write_text(json.dumps({
+        "data": _materialize_template(DEFAULT_TEMPLATE_SCHEDULE, tomorrow),
+        "edit_history": [{"time": "x", "action": "add", "before": "{}", "after": "{}"}],
+        "generated": True, "saved_at": "2026-08-15T23:00:00",
+    }, ensure_ascii=False), encoding="utf-8")
+    p._restore_schedule()
+    assert p._schedule_data.get("date") == tomorrow  # 明日期恢复成功
+    assert p._schedule_generated is True
+    assert path.exists()  # 明日期文件不删除(仅真正过期才 unlink)
 
 
 class _CollectLogger:
@@ -852,3 +884,65 @@ def test_debug_logging_switch(tmp_path):
     p._setup_debug_logging()
     assert p._debug_handler is None
     assert len(plogger.handlers) == before  # handler 已移除且关闭,无泄漏
+
+
+def test_on_unload_removes_debug_handler_and_restores_level(tmp_path):
+    """I5:开启 debug 后 on_unload → debug handler 已移除并关闭、logger 级别恢复开启前。"""
+    import asyncio
+    import logging
+
+    import plugin as plugin_mod
+    from catsitate_core.config import CatsitateConfig
+
+    p = plugin_mod.CatsitatePlugin()
+    p._ctx = _StubCtx(tmp_path)
+    p._plugin_config_instance = CatsitateConfig()
+    p.config.debug.enabled = True
+    p._background_tasks = set()
+
+    async def _stop():
+        return None
+
+    p._scheduler = type("_S", (), {"stop": staticmethod(_stop)})()  # staticmethod 避免绑定 self 传参
+    p.store = type("_S", (), {"close": staticmethod(lambda: None)})()
+
+    plogger = logging.getLogger("catsitate.core")
+    prev_level = plogger.level
+    p._setup_debug_logging()
+    assert p._debug_handler is not None
+    assert plogger.level == logging.DEBUG
+
+    asyncio.run(p.on_unload())
+    assert p._debug_handler is None  # handler 已移除并 close
+    assert not any(isinstance(h, logging.FileHandler) for h in plogger.handlers)
+    assert plogger.level == prev_level  # logger 级别已恢复
+
+
+def test_sleep_review_report_file_permission(tmp_path):
+    """M15:睡醒回顾报告 write_text 后 chmod 0600(报告含消息文本,仅属主可读)。"""
+    import asyncio
+    import os
+    import stat
+
+    import plugin as plugin_mod
+    from catsitate_core.config import CatsitateConfig
+    from catsitate_core.storage import JsonSnapshot
+
+    p = plugin_mod.CatsitatePlugin()
+    p._ctx = _StubCtx(tmp_path)
+    p._plugin_config_instance = CatsitateConfig()
+    p.memo = type("_M", (), {"due_on": staticmethod(lambda day: [])})()
+    p._sleep_review_buffer = [
+        {"stream_id": "s1", "user_id": "u1", "nickname": "昵称", "text": "睡觉时发的消息", "ts": "2026-08-16T01:00:00"},
+    ]
+    p._sleep_review_buffer_snapshot = JsonSnapshot(tmp_path / "sleep_review_buffer.json")
+
+    async def _stub_side_llm(messages, model="", module="", timeout_ms=None):
+        del messages, model, module, timeout_ms
+        return {"success": True, "response": "摘要", "model": ""}
+
+    p._side_llm_call = _stub_side_llm
+    asyncio.run(p._write_sleep_review())
+    reports = list((tmp_path / "sleep_review" / "reports").glob("sleep_review_*.md"))
+    assert len(reports) == 1
+    assert stat.S_IMODE(os.stat(reports[0]).st_mode) == 0o600  # 仅属主可读(安全复审)

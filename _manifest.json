@@ -1,6 +1,6 @@
 {
   "manifest_version": 2,
-  "version": "0.1.0",
+  "version": "0.3.0",
   "name": "Catsitate 核心人格插件",
   "description": "Catsitate 的注入框架、时间节日天气感知、好感度、备忘录、贴表情、戳一戳、reply 补传、图片重看",
   "author": {
@@ -35,17 +35,12 @@
     }
   ],
   "capabilities": [
-    "send.text",
     "message.get_recent",
     "message.get_by_id",
     "llm.generate",
     "api.call",
-    "chat.get_private_streams",
-    "chat.get_group_streams",
-    "chat.get_stream_by_user_id",
     "maisaka.context.append",
     "maisaka.proactive.trigger",
-    "database.query",
     "database.get",
     "config.get",
     "chat.get_all_streams"

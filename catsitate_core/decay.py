@@ -113,8 +113,10 @@ class DecayExecutor:
                 last = datetime.strptime(interaction_ts, _ISO)
             except ValueError:
                 continue
-            days = (today - last).days
-            if days <= self.config.decay_after_days:
+            # 未互动天数判定用浮点(规格「距今 > N 天」语义,消除整天截断偏差):
+            # (today - last).days 向下取整会把 7.9 天判成 7 天,总小时数/86400 精确比较
+            elapsed_days = (today - last).total_seconds() / 86400
+            if elapsed_days <= self.config.decay_after_days:
                 continue
             row = self.engine.get_level(user_id)
             if row is None or row["score"] <= 0:
@@ -124,7 +126,7 @@ class DecayExecutor:
                 [f"bot 行为风格:{behavior_style}"] if behavior_style.strip() else []
             ) + [
                 f"上次等级:{row['level']},分数:{row['score']},注记:{row['note'] or '无'}",
-                f"未互动天数:{days}",
+                f"未互动天数:{int(elapsed_days)}",  # 展示用整数(判定已用浮点)
             ]
             messages, _ = build_side_prompt(
                 "decay", stable_ctx, [],

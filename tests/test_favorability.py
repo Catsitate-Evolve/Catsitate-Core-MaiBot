@@ -156,6 +156,20 @@ def test_apply_delta_level_and_note_truncation(tmp_path):
     assert len(row["note"]) == 40
 
 
+def test_apply_delta_clamps_negative_score_to_zero(tmp_path):
+    """I1:负分钳制(规格 §3.1「分数可降到 0」)——score=2 时 delta=-5 → 落库 0 分且 level=0。"""
+
+    engine, _ = make_engine(tmp_path)
+    engine.apply_delta("u1", 2, "初始", judged_at="2026-08-16T12:00:00", judge_id="j1")
+    status = engine.apply_delta("u1", -5, "衰减", judged_at="2026-08-16T12:00:01", judge_id="j2")
+    row = engine.get_level("u1")
+    assert row["score"] == 0 and row["level"] == 0  # 分数钳到 0,不再为负
+    assert status == "ok"
+    # 日志仍记录判定意图 delta=-5(钳制只影响落库分数)
+    rows = engine.store.query("SELECT delta FROM favorability_log WHERE judge_id = 'j2'")
+    assert rows[0][0] == -5
+
+
 def test_schema_batch_counter_old_shape_rebuild(tmp_path):
     """batch_counter 旧形状(含 window_start 死列)检测 → 仅重建活跃账本(最终审查 M1)。"""
 

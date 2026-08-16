@@ -258,7 +258,8 @@ class ScheduleGenerator:
             try:
                 result = await self.llm_call(messages, self.cfg.schedule_llm_model)
             except Exception as exc:  # noqa: BLE001
-                return _materialize_template(DEFAULT_TEMPLATE_SCHEDULE, target_date), f"日程生成 LLM 异常: {exc}"
+                # 仅记异常类型,不插值 exc 本体:LLM API 错误可能含请求体/PII(安全复审)
+                return _materialize_template(DEFAULT_TEMPLATE_SCHEDULE, target_date), f"日程生成 LLM 异常: {type(exc).__name__}"
             if not isinstance(result, dict) or not result.get("success"):
                 return _materialize_template(DEFAULT_TEMPLATE_SCHEDULE, target_date), f"日程生成 LLM 失败: {str(result)[:200]}"
             data, parse_err = schedule_from_json(str(result.get("response") or ""))
@@ -282,7 +283,8 @@ class ScheduleGenerator:
                 return checked, ""
             return _materialize_template(DEFAULT_TEMPLATE_SCHEDULE, target_date), f"日程钳制修复后仍无效: {last_err or verr}"
         except Exception as exc:  # noqa: BLE001
-            return _materialize_template(DEFAULT_TEMPLATE_SCHEDULE, target_date), f"日程钳制修复异常: {exc}"
+            # 仅记异常类型,不插值 exc 本体:LLM API 错误可能含请求体/PII(安全复审)
+            return _materialize_template(DEFAULT_TEMPLATE_SCHEDULE, target_date), f"日程钳制修复异常: {type(exc).__name__}"
 
 
 def threshold_met(level_name: str, threshold_level: str) -> bool:

@@ -162,6 +162,9 @@ class BatchEngine:
 
         row = self.get_level(user_id)
         score = (row["score"] if row else 0) + delta
+        # 负分钳制(规格 §3.1「分数可降到 0」):结算/衰减共用入口,落库前统一钳到 0,
+        # 不得出现负分(一处两路生效)
+        score = max(0, score)
         level = _level_for_score(score)
         status = "ok"
         if level >= EXCLUSIVE_LEVEL and self.is_exclusive_holder(user_id):
@@ -171,7 +174,8 @@ class BatchEngine:
             status = "clamped_exclusive"
         trimmed_note = note.strip()[: self.config.note_max_chars]
         current = judged_at or datetime.now().strftime(_ISO)
-        log_id = judge_id or f"early-{current}"
+        # 幂等键带用户后缀(与 decay 同款):同秒多用户结算不撞键,INSERT OR IGNORE 不静默丢日志
+        log_id = judge_id or f"early-{current}-{user_id}"
         self.store.execute(
             """
             INSERT INTO favorability (user_id, level, score, note, window_start, judged_at)
@@ -355,8 +359,9 @@ class SettleExecutor:
         try:
             result = await self.llm_call(messages, model)
         except Exception as exc:  # noqa: BLE001
+            # 仅记异常类型,不插值 exc 本体:LLM API 错误可能含请求体/PII(安全复审,同 decay.py)
             # 未触达 apply_delta,独占钳制状态恒 False(最终审查 M3 统一字段)
-            return {"status": "failed", "error": f"LLM 调用异常: {exc}", "exclusive_clamped": False}
+            return {"status": "failed", "error": f"LLM 调用异常: {type(exc).__name__}", "exclusive_clamped": False}
         if not isinstance(result, dict) or not result.get("success"):
             detail = result.get("response", "")[:200] if isinstance(result, dict) else str(result)[:200]
             return {"status": "failed", "error": f"LLM 返回失败: {detail}", "exclusive_clamped": False}

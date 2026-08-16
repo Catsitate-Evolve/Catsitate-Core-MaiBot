@@ -6,6 +6,7 @@
 - 「特别」等级独占:全表任意时刻最多 1 人「特别」(≥100 分),他人升入被占位时钳制 99 分(挚友)并显式日志;独占者掉出后空位释放
 - 主动问候统一(原 2.3 与 greeting 合并):仅「特别」等级 + 私聊流存在,greeting 窗口起点触发,无每日一次限制;删除 `greet_threshold_level`/`private_threshold_level` 配置
 - 配置字段清理:删 `speak_threshold_level` 以外旧门槛配置;`batch_counter` 移除 `window_start` 死列(旧形状检测自动重建)
+- 公测前最终审查修复:好感度分数负分钳制(最低 0,规格 §3.1);次日日程夜间重启恢复(date ∈ 今天/明天,过期才删);LLM 异常日志只记异常类型(防请求体/PII 入日志);日终结算逐用户 try/except 隔离;debug 日志卸载清理(on_unload 移除并 close handler、恢复 logger 级别);manifest 能力对账(删除零调用能力)与版本号 0.3.0;衰减天数判定改浮点(「距今 > N 天」语义);early 幂等键加用户后缀;remind_fired 兜底 tick 同步日键清理;fav_count 同查睡眠模块开关;catsitate.db 与睡醒回顾报告 0600 权限;旁路告警阈值 `==` 改 `>=`
 
 ## v0.2.0(2026-08-15,二期)
 

@@ -39,9 +39,9 @@ class BatchEngine:
         # 开发期裁定:检测旧形状(含 stream_id 列)直接重建,不做数据迁移
         cols = {r[1] for r in self.store.query("PRAGMA table_info(favorability)")}
         if "stream_id" in cols:
-            self.store.execute("DROP TABLE favorability")
-            self.store.execute("DROP TABLE favorability_log")
-            self.store.execute("DROP TABLE batch_counter")
+            self.store.execute("DROP TABLE IF EXISTS favorability")
+            self.store.execute("DROP TABLE IF EXISTS favorability_log")
+            self.store.execute("DROP TABLE IF EXISTS batch_counter")
         self.store.execute(
             """
             CREATE TABLE IF NOT EXISTS favorability (
@@ -81,7 +81,7 @@ class BatchEngine:
     def count_message(
         self, user_id: str, stream_id: str, now: Callable[[], datetime] | None = None
     ) -> dict:
-        """记录一条用户消息,返回该批次统计。"""
+        """记录一条用户消息,仅作活跃账本 bump(batch_counter (user, stream) 行),返回该流计数。"""
 
         now_fn = now or datetime.now
         current = now_fn()
@@ -99,45 +99,36 @@ class BatchEngine:
             "SELECT count FROM batch_counter WHERE user_id = ? AND stream_id = ?",
             (user_id, stream_id),
         )
-        messages = rows[0][0]
+        return {"messages": rows[0][0]}
+
+    def check_trigger(
+        self, user_id: str, now: Callable[[], datetime] | None = None
+    ) -> str | None:
+        """按人判定触发:总计数 = 该人跨流 SUM(count);早结上限按人查日志。返回 "early" 或 None。"""
+
+        now_fn = now or datetime.now
+        current = now_fn()
+        rows = self.store.query("SELECT SUM(count) FROM batch_counter WHERE user_id = ?", (user_id,))
+        total = rows[0][0] or 0
         early_today = len(
             self.store.query(
                 """
                 SELECT 1 FROM favorability_log
-                WHERE user_id = ?
-                  AND judge_id LIKE 'early-%' AND judged_at LIKE ?
+                WHERE user_id = ? AND judge_id LIKE 'early-%' AND judged_at LIKE ?
                 """,
                 (user_id, f"{current.strftime('%Y-%m-%d')}%"),
             )
         )
-        return {
-            "messages": messages,
-            "reached_early_threshold": messages >= self.config.early_settle_threshold,
-            "early_settled_today": early_today,
-        }
-
-    def check_trigger(
-        self, user_id: str, stream_id: str, now: Callable[[], datetime] | None = None
-    ) -> str | None:
-        """返回触发类型 "early" 或 None(日终兜底/顺延在 Task 9 调度侧判定)。"""
-
-        stat = self.count_message(user_id, stream_id, now=now)
-        if (
-            stat["reached_early_threshold"]
-            and stat["early_settled_today"] < self.config.daily_max_early_settle
-        ):
+        if total >= self.config.early_settle_threshold and early_today < self.config.daily_max_early_settle:
             return "early"
         return None
 
-    def reset_batch(self, user_id: str, stream_id: str, judged_at: str) -> None:
-        """结算后开新批次:计数清零、window_start 更新为新批次起点(judged_at)。"""
+    def reset_batch(self, user_id: str, judged_at: str) -> None:
+        """结算后该人所有流批次清零(judged_at 保留签名,账本不再写窗口起点)。"""
 
         self.store.execute(
-            """
-            UPDATE batch_counter SET count = 0, window_start = ?
-            WHERE user_id = ? AND stream_id = ?
-            """,
-            (judged_at, user_id, stream_id),
+            "UPDATE batch_counter SET count = 0 WHERE user_id = ?",
+            (user_id,),
         )
 
     def is_exclusive_holder(self, user_id: str) -> bool:
@@ -188,6 +179,7 @@ class BatchEngine:
             """,
             (user_id, level, score, trimmed_note, current, current),
         )
+        # log.delta 记录判定意图,特别钳制时与实际落库分数变化可能有差
         self.store.execute(
             """
             INSERT OR IGNORE INTO favorability_log (judge_id, user_id, delta, note, judged_at)
@@ -259,16 +251,16 @@ class BatchEngine:
 
     def iter_today_active(
         self, now: Callable[[], datetime] | None = None
-    ) -> list[tuple[str, str]]:
-        """当日有消息且批次未清零的 (user_id, stream_id) 列表(日终兜底扫描对象)。"""
+    ) -> list[str]:
+        """当日有消息且批次未清零的人(user_id 去重,日终兜底扫描对象)。"""
 
         now_fn = now or datetime.now
         day = now_fn().strftime("%Y-%m-%d")
         rows = self.store.query(
-            "SELECT DISTINCT user_id, stream_id FROM batch_counter WHERE count > 0 AND last_bump LIKE ?",
+            "SELECT DISTINCT user_id FROM batch_counter WHERE count > 0 AND last_bump LIKE ?",
             (f"{day}%",),
         )
-        return [(r[0], r[1]) for r in rows]
+        return [r[0] for r in rows]
 
     def has_daily_settle_today(
         self, user_id: str, now: Callable[[], datetime] | None = None
@@ -373,7 +365,7 @@ class SettleExecutor:
         self.engine.apply_delta(
             user_id, delta, parsed["note"], judged_at=judged_at, judge_id=judge_id
         )
-        self.engine.reset_batch(user_id, stream_id, judged_at)
+        self.engine.reset_batch(user_id, judged_at)
         return {"status": "ok", "delta": delta, "note": parsed["note"], "judge_id": judge_id}
 
 

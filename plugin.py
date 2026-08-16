@@ -472,8 +472,9 @@ class CatsitatePlugin(MaiBotPlugin):
         stream_id = str(msg.get("session_id") or "")
         if not user_id or not stream_id:
             return
-        # 注意:check_trigger 内部会执行 count_message(+1),勿在此前重复计数(审查 ⚠️ 裁决)
-        trigger = self.fav_engine.check_trigger(user_id, stream_id)
+        # 计数与触发判定按人:先 bump 活跃账本,再判定(check_trigger 不再内部计数,审查 ⚠️ 裁决)
+        self.fav_engine.count_message(user_id, stream_id)
+        trigger = self.fav_engine.check_trigger(user_id)
         if trigger == "early":
             self._spawn_background_task(self._settle_and_log(user_id, stream_id, kind="early"))
 
@@ -866,9 +867,16 @@ class CatsitatePlugin(MaiBotPlugin):
         await self._daily_decay()  # 先衰减后结算(同一 tick 调用顺序)
         if not self.config.plugin.enabled or not self.config.favorability.enabled:
             return
-        for user_id, stream_id in self.fav_engine.iter_today_active():
-            if self.fav_engine.has_daily_settle_today(user_id, stream_id):
+        # 按人语义:多流用户日终只结一次,素材暂取最近活跃流(账本仅活跃记录,Task 3 后素材按人跨流聚合)
+        for user_id in self.fav_engine.iter_today_active():
+            if self.fav_engine.has_daily_settle_today(user_id):
                 continue
+            rows = self.store.query(
+                "SELECT stream_id FROM batch_counter WHERE user_id = ? AND count > 0 "
+                "ORDER BY last_bump DESC LIMIT 1",
+                (user_id,),
+            )
+            stream_id = rows[0][0] if rows else ""
             await self._settle_and_log(user_id, stream_id, kind="daily")
 
     async def _sleep_tick(self) -> None:

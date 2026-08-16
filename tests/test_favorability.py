@@ -3,7 +3,7 @@
 from datetime import datetime
 
 from catsitate_core.config import FavorabilitySection
-from catsitate_core.favorability import BatchEngine, LEVELS
+from catsitate_core.favorability import BatchEngine, LEVELS, _ISO
 from catsitate_core.storage import SQLiteStore
 
 NOW = datetime(2026, 8, 14, 12, 0, 0)
@@ -22,22 +22,37 @@ def test_count_and_early_trigger(tmp_path):
         engine.count_message("u1", "s1", now=lambda: NOW)
     stat = engine.count_message("u1", "s1", now=lambda: NOW)
     assert stat["messages"] == 21
-    assert stat["reached_early_threshold"] is True
-    assert engine.check_trigger("u1", "s1", now=lambda: NOW) == "early"
+    assert engine.check_trigger("u1", now=lambda: NOW) == "early"
 
 
 def test_early_settle_daily_cap(tmp_path):
     engine, _ = make_engine(tmp_path)
     for i in range(3):
         judged_at = NOW.strftime("%Y-%m-%dT%H:%M:%S")
-        engine.reset_batch("u1", "s1", judged_at)
+        engine.reset_batch("u1", judged_at)
         for _ in range(20):
             engine.count_message("u1", "s1", now=lambda: NOW)
         engine.apply_delta("u1", 1, f"第{i}次", judged_at=judged_at, judge_id=f"early-{i}")
-    engine.reset_batch("u1", "s1", NOW.strftime("%Y-%m-%dT%H:%M:%S"))
+    engine.reset_batch("u1", NOW.strftime("%Y-%m-%dT%H:%M:%S"))
     for _ in range(20):
         engine.count_message("u1", "s1", now=lambda: NOW)
-    assert engine.check_trigger("u1", "s1", now=lambda: NOW) is None  # 当日提前结算已达 3 次
+    assert engine.check_trigger("u1", now=lambda: NOW) is None  # 当日提前结算已达 3 次
+
+
+def test_batch_per_user(tmp_path):
+    engine, _ = make_engine(tmp_path)
+    engine.ensure_schema()
+    now = datetime(2026, 8, 16, 12, 0, 0)
+    engine.count_message("111", "s1", now=lambda: now)
+    engine.count_message("111", "s2", now=lambda: now)
+    engine.count_message("111", "s1", now=lambda: now)
+    assert engine.check_trigger("111", now=lambda: now) is None  # 总数 3 < 阈值(默认 20)
+    assert engine.iter_today_active(now=lambda: now) == ["111"]
+    engine.apply_delta("111", 5, "测试", now.strftime(_ISO), judge_id=f"daily-{now.strftime('%Y-%m-%dT%H:%M:%S')}")
+    assert engine.has_daily_settle_today("111", now=lambda: now)
+    engine.reset_batch("111", now.strftime(_ISO))
+    assert engine.check_trigger("111", now=lambda: now) is None  # 清零后归零
+    assert engine.iter_today_active(now=lambda: now) == []  # count=0 不再活跃
 
 
 def test_group_material_anchored_by_user_messages(tmp_path):
@@ -58,7 +73,12 @@ def test_group_material_anchored_by_user_messages(tmp_path):
 
 
 def test_material_respects_batch_window(tmp_path):
-    """结算后的旧批次消息不进入新批次素材(规格 §4.3「批次内」)。"""
+    """结算后的旧批次消息不进入新批次素材(规格 §4.3「批次内」)。
+
+    Task 2 过渡态:窗口起点已随结算落 favorability.window_start(apply_delta),
+    build_material 仍读 batch_counter.window_start(Task 3 起按人改读 favorability),
+    此处直接建行模拟结算后的账本状态,保持规格行为可测。
+    """
 
     engine, _ = make_engine(tmp_path)
     old = "2026-08-14T09:00:00"
@@ -71,7 +91,10 @@ def test_material_respects_batch_window(tmp_path):
     assert len(engine.build_material("u1", "p", history)) == 2
     # 结算开新批次(window_start = 10:00),旧消息被排除(先计数建批次行,与生产流程一致)
     engine.count_message("u1", "p", now=lambda: NOW)
-    engine.reset_batch("u1", "p", "2026-08-14T10:00:00")
+    engine.store.execute(
+        "UPDATE batch_counter SET window_start = ? WHERE user_id = ? AND stream_id = ?",
+        ("2026-08-14T10:00:00", "u1", "p"),
+    )
     material = engine.build_material("u1", "p", history)
     text = "\n".join(material)
     assert "新批次" in text and "旧批次" not in text

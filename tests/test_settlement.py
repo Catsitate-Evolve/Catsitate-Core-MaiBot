@@ -225,7 +225,7 @@ def test_iter_today_active_and_daily_settle_check(tmp_path):
     engine.count_message("u1", "s1", now=lambda: NOW)
     engine.count_message("u2", "s1", now=lambda: NOW)
     active = engine.iter_today_active(now=lambda: NOW)
-    assert ("u1", "s1") in active and ("u2", "s1") in active
+    assert "u1" in active and "u2" in active
     assert engine.has_daily_settle_today("u1", now=lambda: NOW) is False
     engine.apply_delta(
         "u1", 1, "日终",

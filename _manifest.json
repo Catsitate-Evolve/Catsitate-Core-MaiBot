@@ -43,6 +43,7 @@
     "chat.get_group_streams",
     "chat.get_stream_by_user_id",
     "maisaka.context.append",
+    "maisaka.proactive.trigger",
     "database.query",
     "database.get",
     "config.get",

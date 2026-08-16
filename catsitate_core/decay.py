@@ -131,6 +131,7 @@ class DecayExecutor:
                 
                 continue  # 显式日志后跳过(规格 §3.1 失败不得静默)
             if not isinstance(result, dict) or not result.get("success"):
+                logger.warning("衰减判定 LLM 失败(stream=%s): %s", stream_id, str(result)[:120])
                 continue
             delta, note = parse_decay_response(str(result.get("response") or ""))
             if delta is None:

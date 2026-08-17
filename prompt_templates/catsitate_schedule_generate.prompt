@@ -5,5 +5,5 @@
 - 睡眠窗口:{"kind": "sleep", "start": "YYYY-MM-DDTHH:MM", "end": "YYYY-MM-DDTHH:MM"}
 - 活动窗口(1~8 个):{"kind": "greeting" 或 "daily", "start": "...", "end": "...", "activity": "活动描述", "plan_speak": true/false, "topic": "发言主题(计划发言时)"}
 要求:恰好 1 个睡眠窗口;活动窗口 1~8 个;窗口不重叠;时间可留空隙;睡眠时长符合给定约束;时间精确到分钟(格式 HH:MM,不含秒);
-睡前语境活动(洗漱/准备睡等)标 kind=greeting;活动描述贴合上述人设与行为风格(发呆/看雨/散步/听音乐等)。
+kind=greeting 为问候/陪伴类活动(早安/晚安问候等,窗口起点触发主动问候);kind=daily 为日常活动。活动描述贴合上述人设与行为风格(发呆/看雨/散步/听音乐等)。
 不要输出其它内容。

@@ -1364,7 +1364,7 @@ class CatsitatePlugin(MaiBotPlugin):
 
         入睡当晚生成的是次日日程,夜间重启不得误删——date ∈ {今天, 明天} 均恢复;
         早于今天的文件删除并告警,但**其睡眠窗口仍覆盖当前时刻**(跨午夜未睡完)时保留恢复,
-        以便首个 sleep_tick 兜底强制入睡(公测发现:直接删除会导致当天无法入睡);
+        以便首个 sleep_tick 按静默开关入睡(公测发现:直接删除会导致当天无法入睡);
         损坏/结构非法文件告警并忽略(错误显式暴露,不静默)。
         """
 
@@ -1390,7 +1390,7 @@ class CatsitatePlugin(MaiBotPlugin):
         stale_sleep_active = False
         if saved_date not in keep_dates:
             # 跨午夜边界:过期日程的睡眠窗口若仍覆盖当前时刻(如昨夜 23:00 入睡、今晨重启),
-            # 保留恢复以便首个 sleep_tick 兜底强制入睡——直接删除会导致当天无法入睡(公测发现)
+            # 保留恢复以便首个 sleep_tick 按静默开关入睡(关=直接入睡/开=安静计时)——直接删除会导致当天无法入睡(公测发现)
             stale_win = current_window(data["data"], now.strftime("%Y-%m-%dT%H:%M"))
             stale_sleep_active = bool(stale_win and stale_win.get("kind") == "sleep")
         if saved_date not in keep_dates and not stale_sleep_active:

@@ -32,6 +32,7 @@ from catsitate_core.llm_provider import build_side_prompt
 from catsitate_core.memo import MemoService, validate_remind_at
 from catsitate_core.msg_react import MsgReactEngine, parse_choice_resp
 from catsitate_core.poke import PokeEngine
+from catsitate_core.prompt_deploy import sync_prompt_templates
 from catsitate_core.reply_guard import (
     CONTEXT_TOOLS,
     backfill_reply_items,
@@ -83,6 +84,11 @@ class CatsitatePlugin(MaiBotPlugin):
     # ---------- 生命周期 ----------
 
     async def on_load(self) -> None:
+        # 旁路模板自动部署到主程序 prompts/zh-CN/(主程序 load_prompts 在插件启动后
+        # 调用,同次启动即生效,无需重启);结构不符时告警跳过,不阻断加载
+        written, skipped = sync_prompt_templates()
+        if written or skipped:
+            logger.info("旁路模板自动部署完成:写入 %d 个、内容一致跳过 %d 个", written, skipped)
         data_dir = self.ctx.paths.data_dir
         data_dir.mkdir(parents=True, exist_ok=True)
         self.store = SQLiteStore(data_dir / "catsitate.db")

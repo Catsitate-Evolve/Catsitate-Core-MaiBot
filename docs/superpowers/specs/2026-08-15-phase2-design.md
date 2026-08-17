@@ -36,7 +36,7 @@
 - **LLM 判定衰减**:prompt = 人设 + 行为风格 + 上次等级/分数/注记 + 未互动天数 → 输出 `{"delta": 整数(-decay_max 到 0), "note": "新注记(≤40 字)"}`;delta=0 表示关系稳定不减。模板 `catsitate_decay.prompt` 进主程序 prompt 管理,含 `{{decay_max}}` 占位符。**人设与行为风格取主程序全局配置 `personality.personality` / `personality.behavior_style`(非硬编码),稳定段顺序固定保前缀缓存**。
 - **落库**:`apply_delta` + `favorability_log`(judge_id=`decay-时间戳-人`);分数可降到 0,等级按分数自然降级,注记更新。
 - **错误处理**:LLM 失败 → 跳过本轮、显式日志,次日重试。
-- **配置**(favorability 节):`decay_enabled`(默认 true)、`decay_after_days`(默认 7)、`decay_max`(默认 3)、`decay_llm_model`(默认 memory)、`decay_llm_timeout_ms`(默认 None)。
+- **配置**(favorability 节):`decay_enabled`(默认 true)、`decay_after_days`(默认 7)、`decay_max`(默认 3)、`decay_llm_model`(默认 memory)、`decay_llm_timeout_ms`(默认 0=主程序默认)。
 - **测试**:候选流扫描(超期/未超期/0 分/有互动)、判定解析、delta 钳制、失败不落库;quote 互动用例:bot 消息 reply 段经 `message.get_by_id` 解析原发送者 == 目标 → 互动命中,解析出他人 / 解析失败(未注入字段)→ 不命中,解析失败每轮至多一条 warning。
 
 ### 3.2 睡眠管理(全局状态机;睡眠=日程窗口)
@@ -45,14 +45,14 @@
 - **可入睡时间**(联调裁定 2026-08-17:睡眠窗口 = 可入睡时间,窗口内两种入睡途径):
   - **晚安判定睡眠**(与静默开关无关):睡眠窗口内 bot 自发晚安短句出站,经 **AI 判定器**(模板 `catsitate_sleep_confirm.prompt` 进主程序 prompt 管理;正则兜底)判定 `SLEEP / NOT_SLEEP / UNSURE`,`SLEEP` → 入睡;**窗口外不判定不入睡**(无提前入睡通路,不侵占其它日程);
   - **静默睡眠开关**:
-    - `silent_sleep_enabled = false`:睡眠窗口起点到 → 直接入睡(兜底强制入睡);
+    - `silent_sleep_enabled = false`:睡眠窗口起点到 → 直接入睡(日志「睡眠窗口起点已到(静默睡眠关闭),直接入睡」);
     - `silent_sleep_enabled = true`(默认):窗口起点到后,无任何入站/出站消息满 `silent_sleep_minutes` 分钟入睡(计时基准 = max(窗口起点, 最后活动时刻);不调 LLM);
   - 防诱导:只接受短句、自我入睡;带 @/称呼他人/引用回复不触发;
   - **窗口终点未入睡**(静默开且一直有活动):不入睡(可入睡时间已过),但补执行入睡时会做的任务——生成次日日程(每窗口一次,入睡过的窗口不重复);跨午夜时旧日程睡眠窗口仍进行中则保留旧日程(不删除/不换模板)直至窗口结束。
 - **唤醒**:醒来时刻 = `clamp(计划醒来时刻, 入睡时刻 + min_sleep_minutes, 入睡时刻 + max_sleep_minutes)`——正常情况下等于计划醒来时刻(提前入睡不改变醒来时间,拟人);仅当实际睡眠时长越出 [min, max] 边界时以约束为准(最短顺延/最长提前醒)。**无唤醒浮动**。
 - **睡眠期间**:绝对静默(§2.4)——`chat.receive.before_process` BLOCKING 拦截(allow_abort)一切消息含命令,记录进睡眠回顾;**不执行任何其它操作**(@ 不唤醒、提醒不执行)。
 - **睡醒回顾**(默认开,可配置关):醒来时对睡眠期间被拦截消息生成**单份聚合报告文件**(`data/plugins/catsitate.core/sleep_review/reports/`),含每流消息数、摘要、重要消息(LLM 总结),**报告末尾静态附列睡眠期到期的备忘提醒**(不占 LLM 总结额度,延续备忘不丢失原则);不补发历史回复、不注入对话上下文。
-- **配置**(新 sleep 节):`enabled`、`min_sleep_minutes`(默认 240)、`max_sleep_minutes`(默认 660)、`silent_sleep_enabled`(默认 true)、`silent_sleep_minutes`(默认 60)、`review_enabled`(默认 true)、`review_llm_model`(默认 memory)、`review_llm_timeout_ms`(默认 None)。
+- **配置**(新 sleep 节):`enabled`、`min_sleep_minutes`(默认 240)、`max_sleep_minutes`(默认 660)、`silent_sleep_enabled`(默认 true)、`silent_sleep_minutes`(默认 60)、`review_enabled`(默认 true)、`review_llm_model`(默认 memory)、`review_llm_timeout_ms`(默认 0=主程序默认)。
 - **测试**:判定器解析、窗口边界(含跨午夜)、最短/最长睡眠、拦截 hook 行为、状态持久化、静默入睡计时、睡眠中零操作(无提醒/无 @ 唤醒)。
 
 ### 3.3 日程(2.1:入睡确认时生成 + 窗口执行 + 可被工具修改)

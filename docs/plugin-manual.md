@@ -2,7 +2,7 @@
 
 - 插件 ID:`catsitate.core`
 - 仓库:https://github.com/Catsitate-Evolve/Catsitate-Core-MaiBot(目录 `plugins/catsitate_core_maibot/`)
-- 文档日期:2026-08-16(对应 v0.3.0,二期·按人重构联调完成)
+- 文档日期:2026-08-18(对应 v0.3.1,公测修复集:睡眠窗口语义对齐/跨午夜保留/配置 None 修复/RPC 帧修复)
 - 适用对象:公测使用方、复审人员
 - 依据:设计规格(`docs/superpowers/specs/2026-08-14-catsitate-core-maibot-design.md`、`docs/superpowers/specs/2026-08-15-phase2-design.md`,其中全局决策 #7/#8/#9 为最终裁定)、`docs/acceptance-checklist.md`(全部已验收行为)、当前代码。本文内容与代码不一致处,以代码为准。
 
@@ -33,7 +33,8 @@ Catsitate 是部署在 MaiBot 上的 QQ 聊天机器人人设(伪三无猫耳少
 
 - v1.0.0(2026-08-15):一期联调完成(注入/好感度/备忘录/贴表情/戳一戳/reply 补传/图片重看/时间感知/旁路记账)。
 - v0.2.0(2026-08-15):二期(自然衰减/睡眠/日程/主动问候/备忘 remind_at)。
-- v0.3.0(2026-08-16):**按人重构**(好感度以 QQ 号唯一标识、特别独占、主动问候统一、配置清理),即当前公测版本。
+- v0.3.0(2026-08-16):**按人重构**(好感度以 QQ 号唯一标识、特别独占、主动问候统一、配置清理)。
+- v0.3.1(2026-08-18):公测修复集(睡眠窗口语义对齐、跨午夜睡眠窗口保留、超时字段 None→0、RPC 帧超限修复),即当前公测版本。
 
 ---
 
@@ -162,16 +163,17 @@ replyer 出站 ── maisaka.replyer.after_response(BLOCKING LATE)──> goodn
 - 全局唯一状态 `awake / sleep`,持久化 `sleep_state.json`(state、sleep_at、wake_at);重启恢复:睡眠中则继续睡至醒来时刻(醒来时刻按 clamp 公式以持久化的入睡时刻重算,**不依赖日程文件**);日程缺失不影响睡眠状态。
 - `is_sleeping()` = 状态 sleep 且 now < wake_at。
 
-### 3.3.2 入睡三通道
+### 3.3.2 入睡通道(睡眠窗口 = 可入睡时间)
 
 | 通道 | 条件 | 细节 |
 |---|---|---|
-| **① 晚安判定入睡** | bot 出站晚安短句 + 处于可入睡时间 + AI 判定 `SLEEP` | 可入睡时间 = 当前窗口为 kind=greeting 且活动含「睡/洗漱/晚安/休息/就寝」之一(睡前语境活动);短句须过 `is_goodnight_utterance` 过滤(≤12 字、无 @、无「」、不含「你好/再见」、逗号仅允许「大家/各位」群体收尾、含「睡/晚安/安眠/就寝」关键词);再经旁路 LLM(`sleep_confirm` 模板,**模型固定 memory,不可配**)三值判定 `SLEEP / NOT_SLEEP / UNSURE`,`SLEEP` 才入睡——防诱导,只接受短句、自我入睡 |
-| **② 兜底强制入睡** | 睡眠窗口起点已到仍未睡 | `_sleep_tick` 检查 `now >= 睡眠窗口.start` → 兜底入睡,日志「睡眠窗口起点已到,兜底强制入睡」 |
-| **③ 静默入睡**(默认开) | 仅睡前语境活动期间,无任何入站/出站活动满 `silent_sleep_minutes`(默认 60)分钟 | 不调 LLM,日志「静默入睡:安静 60 分钟」;活动计时 `_last_activity_ts` 由入站消息(非睡眠时)与出站回复刷新;其余时间静默不触发 |
+| **① 晚安判定入睡** | bot 出站晚安短句 + **处于睡眠窗口内** + AI 判定 `SLEEP` | 判定**与静默开关无关**;睡眠窗口外不判定不入睡(无提前入睡通路,不侵占其它日程);短句须过 `is_goodnight_utterance` 过滤(≤12 字、无 @、无「」、不含「你好/再见」、逗号仅允许「大家/各位」群体收尾、含「睡/晚安/安眠/就寝」关键词);再经旁路 LLM(`sleep_confirm` 模板,**模型固定 memory,不可配**)三值判定 `SLEEP / NOT_SLEEP / UNSURE`,`SLEEP` 才入睡——防诱导,只接受短句、自我入睡 |
+| **② 静默关:窗口起点直接入睡** | 睡眠窗口起点已到仍未睡,`silent_sleep_enabled=false` | `_sleep_tick` 检查 `now >= 睡眠窗口.start` → 直接入睡,日志「睡眠窗口起点已到(静默睡眠关闭),直接入睡」 |
+| **③ 静默开:安静满 N 分钟入睡**(默认开) | 睡眠窗口起点后,无任何入站/出站活动满 `silent_sleep_minutes`(默认 60)分钟 | 不调 LLM,日志「静默入睡:安静 60 分钟」;计时基准 = `max(窗口起点, 最后活动时刻)`(`_last_activity_ts` 由入站消息(非睡眠时)与出站回复刷新,无活动记录从窗口起点起算) |
 
 - 入睡 = `_enter_sleep()`:幂等(已睡直接返回,防交错二次生成);计划醒来时刻 = 日程睡眠窗口的 end(无日程则 now+8h);醒来时刻 `clamp(计划醒来, 入睡+min_sleep_minutes, 入睡+max_sleep_minutes)`(默认 240/660)——正常等于计划醒来,**提前入睡不改变醒来时间**(拟人),仅实际时长越界时以约束为准(最短顺延/最长提前醒);**无唤醒浮动**。日志「已入睡:醒来 %s」。
 - 入睡成功瞬间触发**次日日程生成**(§3.4,睡眠期间唯一 LLM 调用)。
+- **窗口终点未入睡**(静默开且一直有活动):**不入睡**,但补执行入睡时的任务——生成次日日程(每窗口一次,入睡过的窗口不重复,`_sleep_window_settled` 标记),日志「睡眠窗口已过未入睡:补执行次日日程生成(不入睡)」;跨午夜时旧日程睡眠窗口仍在进行则保留旧日程(不删除/不换模板)直至窗口结束。
 
 ### 3.3.3 睡眠期间(绝对静默)
 
@@ -186,13 +188,13 @@ replyer 出站 ── maisaka.replyer.after_response(BLOCKING LATE)──> goodn
 
 ### 3.3.5 配置
 
-`sleep` 节:`enabled`(默认 true)、`min_sleep_minutes`(240)、`max_sleep_minutes`(660)、`silent_sleep_enabled`(true)、`silent_sleep_minutes`(60)、`review_enabled`(true)、`review_llm_model`(memory)、`review_llm_timeout_ms`(None)。**无窗口时间字段**——时间在日程里。
+`sleep` 节:`enabled`(默认 true)、`min_sleep_minutes`(240)、`max_sleep_minutes`(660)、`silent_sleep_enabled`(true)、`silent_sleep_minutes`(60)、`review_enabled`(true)、`review_llm_model`(memory)、`review_llm_timeout_ms`(0=主程序默认)。**无窗口时间字段**——时间在日程里。
 
 ## 3.4 日程(`schedule.py`)
 
 ### 3.4.1 生成时机(入睡确认)
 
-- **任何入睡状态切换成功的瞬间**(晚安判定/兜底/静默)→ 生成**次日**日程——**唯一的日程生成路径**;睡眠期间唯一允许的 LLM 调用。
+- **任何入睡状态切换成功的瞬间**(晚安判定/静默关到点入睡/静默入睡)→ 生成**次日**日程;睡眠期间唯一允许的 LLM 调用。**例外补生成**:睡眠窗口终点未入睡 → 不入睡但补生成次日日程(每窗口一次,见 §3.3.2)——两条生成路径。
 - 首日无有效日程(启动后):`_schedule_tick` 用**内置默认作息模板**撑场(不生成当天日程,避免"已过大半天"浪费):`23:00-07:30 睡觉 / 09:00-12:00 发呆 / 15:00-18:00 随便做点什么 / 22:00-23:00 洗漱准备睡(greeting)`。
 - 入睡生成失败:沿用默认作息模板撑过次日,**醒来不补生成当天**,下次入睡确认时正常生成(告警「次日日程生成:…(模板兜底)」)。
 
@@ -310,7 +312,7 @@ replyer 出站 ── maisaka.replyer.after_response(BLOCKING LATE)──> goodn
 
 ## 3.13 LLM 用量记账与旁路调用(`plugin.py`)
 
-- `_side_llm_call` 是全部旁路 LLM 统一出口:经 `llm.generate` 能力直调,`model` = 主程序 task 名,超时由各能力节 `*_timeout_ms` 传入(留空=主程序默认 30s;联调实测 utils 模型 31-53s 会触发默认超时,慢模型建议 120000)。
+- `_side_llm_call` 是全部旁路 LLM 统一出口:经 `llm.generate` 能力直调,`model` = 主程序 task 名,超时由各能力节 `*_timeout_ms` 传入(填 0=主程序默认 30s;联调实测 utils 模型 31-53s 会触发默认超时,慢模型建议 120000)。
 - 每次调用按模块记账 `llm_usage(day, module, calls, tokens)`;模块分列:`favorability` / `decay` / `msg_react` / `image_relook` / `sentinel` / `schedule_generate` / `sleep_confirm` / `sleep_review`。
 - 当日旁路调用合计达到或超过 `plugin.llm_daily_call_warning_threshold`(默认 50)时告警:「旁路 LLM 当日调用次数已达或超过阈值 50,请注意用量」。
 
@@ -318,7 +320,7 @@ replyer 出站 ── maisaka.replyer.after_response(BLOCKING LATE)──> goodn
 
 ## 4. 配置项全表
 
-> WebUI 插件配置页按节渲染(中文 label)。所有 LLM 字段为**平铺字段**:填主程序 `model_task_config` 的 **task 名**(填模型标识会报「未找到名为 … 的模型配置」),留空=主程序默认(不推荐)。`*_timeout_ms` 留空=主程序默认(30s)。
+> WebUI 插件配置页按节渲染(中文 label)。所有 LLM 字段为**平铺字段**:填主程序 `model_task_config` 的 **task 名**(填模型标识会报「未找到名为 … 的模型配置」),留空=主程序默认(不推荐)。`*_timeout_ms` 填 **0** = 主程序默认(30s)。
 
 ### 4.1 plugin 节(插件)
 
@@ -363,14 +365,14 @@ replyer 出站 ── maisaka.replyer.after_response(BLOCKING LATE)──> goodn
 | decay_after_days | 7 | 未互动 N 天后开始衰减 |
 | decay_max | 3 | 单次衰减幅度上限(-decay_max 到 0) |
 | decay_llm_model | "memory" | 衰减判定模型(task 名) |
-| decay_llm_timeout_ms | None | 衰减判定超时(毫秒) |
+| decay_llm_timeout_ms | 0 | 衰减判定超时(毫秒;0=主程序默认) |
 | level_rule_stranger / familiar / close / best_friend / special | 见 §4.9 默认文案 | 5 级行为准则文本(独立字段,可自改) |
 | note_max_chars | 40 | 关系注记最大字符数(落库强制) |
 | material_max_messages | 30 | 结算素材锚定的用户消息条数 |
 | material_message_max_chars | 200 | 单条素材截断长度 |
 | bot_user_id | ""(留空=不识别) | bot 自身账号 id(实机 napcat 账号,如 3545773341);结算素材中该 id 发言标记为 bot 随附;**必须配置,否则 bot 发言识别与 quote 归属全部失效** |
 | llm_model | "memory" | 结算判定模型(task 名) |
-| llm_timeout_ms | None | 判定超时(毫秒) |
+| llm_timeout_ms | 0 | 判定超时(毫秒;0=主程序默认) |
 
 5 级规则默认文案:陌生=「仅按普通网友对待,保持礼貌与距离」;熟悉=「认识一段时间,可自然闲聊」;亲近=「关系较好,可主动关心」;挚友=「非常信任,可分享心事」;特别=「最重要的人,格外在意其感受」。
 
@@ -393,7 +395,7 @@ replyer 出站 ── maisaka.replyer.after_response(BLOCKING LATE)──> goodn
 | enabled | true | 工具开关 |
 | per_stream_cooldown_seconds | 30 | 每流冷却秒数 |
 | llm_model | "replyer" | 选表情模型(task 名) |
-| llm_timeout_ms | None | 选表情超时(毫秒) |
+| llm_timeout_ms | 0 | 选表情超时(毫秒;0=主程序默认) |
 
 注:表情表为**内置 30 项**精选 QQ 表情表(联调裁定,原规划的可配置 `emoji_whitelist` 未实现)。
 
@@ -413,7 +415,7 @@ replyer 出站 ── maisaka.replyer.after_response(BLOCKING LATE)──> goodn
 | context_backfill_enabled | true | 上下文补传开关 |
 | sentinel_enabled | **false** | LLM 哨兵层开关(默认关;开启后每句回复多一次旁路判定) |
 | sentinel_model | "planner" | 哨兵模型(task 名) |
-| sentinel_timeout_ms | None | 哨兵超时(毫秒) |
+| sentinel_timeout_ms | 0 | 哨兵超时(毫秒;0=主程序默认) |
 
 ### 4.9 image_relook 节(图片重看)
 
@@ -421,7 +423,7 @@ replyer 出站 ── maisaka.replyer.after_response(BLOCKING LATE)──> goodn
 |---|---|---|
 | enabled | true | 工具开关 |
 | llm_model | "utils" | 重看模型(task 名;VLM 较慢建议超时 120000) |
-| llm_timeout_ms | None | 重看超时(毫秒) |
+| llm_timeout_ms | 0 | 重看超时(毫秒;0=主程序默认) |
 
 ### 4.10 sleep 节(睡眠)
 
@@ -430,11 +432,11 @@ replyer 出站 ── maisaka.replyer.after_response(BLOCKING LATE)──> goodn
 | enabled | true | 模块开关 |
 | min_sleep_minutes | 240 | 最短睡眠分钟(不足顺延醒来) |
 | max_sleep_minutes | 660 | 最长睡眠分钟(超过提前醒) |
-| silent_sleep_enabled | true | 静默入睡开关(仅睡前语境活动期间生效) |
+| silent_sleep_enabled | true | 静默入睡开关(睡眠窗口内生效:关=窗口起点直接入睡,开=安静满 N 分钟入睡) |
 | silent_sleep_minutes | 60 | 静默入睡:无消息满 N 分钟 |
 | review_enabled | true | 睡醒回顾开关(生成聚合报告文件) |
 | review_llm_model | "memory" | 回顾总结模型(task 名) |
-| review_llm_timeout_ms | None | 回顾超时(毫秒) |
+| review_llm_timeout_ms | 0 | 回顾超时(毫秒;0=主程序默认) |
 
 ### 4.11 schedule 节(日程)
 
@@ -445,7 +447,7 @@ replyer 出站 ── maisaka.replyer.after_response(BLOCKING LATE)──> goodn
 | speak_threshold_level | "熟悉" | 日常发言最低好感度等级(仅 daily 窗口) |
 | speak_max_streams_per_window | 1 | 每窗口最多主动触发流数(按等级+活跃度排序取前 n) |
 | schedule_llm_model | "memory" | 日程生成模型(task 名) |
-| schedule_llm_timeout_ms | None | 日程生成超时(毫秒) |
+| schedule_llm_timeout_ms | 0 | 日程生成超时(毫秒;0=主程序默认) |
 | daily_speak_limit | 5 | 全天主动发言次数上限(每次 trigger 计 1,主程序沉默也计) |
 
 ### 4.12 debug 节(调试)
@@ -529,7 +531,7 @@ planner 输出
       └─ 三条件满足 → 补 reply_reference → 「reply 补传:[…]」
 replyer 出站
  ├─ maisaka.replyer.after_response(catsitate_goodnight, BLOCKING LATE)
- │    ├─ 刷新活动计时;晚安短句 + 可入睡时间 → sleep_confirm LLM → SLEEP → 入睡+生成次日日程
+ │    ├─ 刷新活动计时;晚安短句 + 睡眠窗口内(可入睡时间)→ sleep_confirm LLM → SLEEP → 入睡+生成次日日程
  │    └─ 日志:「已入睡:醒来 {wake_at}」「次日日程已生成:…」
  └─ maisaka.replyer.after_response(catsitate_sentinel, BLOCKING LATE, 默认关)
       └─ 日志:「哨兵判定:放行/撤回回复」
@@ -544,19 +546,20 @@ replyer 出站
 | memo_cleanup | 1h | 删除过期备忘 | 「备忘清理:{n} 条过期」 |
 | daily_settle | max(window_hours,1)×3600(默认 24h) | **先衰减后结算**:逐人日终结算(当日有消息且未结) | 「好感度衰减 …」「好感度结算 {user}:daily delta={n}」「好感度结算失败 …:用户消息不足 3 条,顺延」 |
 | daily_decay | 24h | 自然衰减(单独注册,与日终同 tick 顺序由 daily_settle 内部先调用保证) | 「好感度衰减 {user}:delta={n}」 |
-| sleep_tick | 60s | 睡眠状态机:自然醒(now≥wake_at→wake+回顾+补跑结算)/ 睡眠窗口起点兜底入睡 / 睡前语境静默入睡检查 | 「自然醒来: {t}」「睡眠窗口起点已到,兜底强制入睡」「静默入睡:安静 {n} 分钟」 |
+| sleep_tick | 60s | 睡眠状态机:自然醒(now≥wake_at→wake+回顾+补跑结算)/ 静默关=窗口起点直接入睡 / 静默开=安静满 N 分钟入睡检查 / 窗口终点未入睡→补生成次日日程 | 「自然醒来: {t}」「睡眠窗口起点已到(静默睡眠关闭),直接入睡」「静默入睡:安静 {n} 分钟」「睡眠窗口已过未入睡:补执行次日日程生成(不入睡)」 |
 | schedule_tick | 60s | 日程窗口触发:greeting→主动问候;daily→门槛过滤+候选流排序→proactive.trigger | 「主动问候触发[{day}] -> {user}」「主动触发[{day}] -> {stream}:{活动}」 |
 | remind_fallback | 5 分钟 | 备忘提醒兜底注入(仅无生成日程日;睡眠期跳过) | 「备忘提醒兜底注入(stream={id}):{content}」 |
 
 ### 6.3 睡眠全链路
 
 ```
-睡前语境活动(如「洗漱准备睡」22:00-23:00)
- ├─ bot 出站晚安短句(≤12 字,含睡/晚安/安眠/就寝)→ sleep_confirm LLM → SLEEP → 入睡
- ├─ 或:睡眠窗口起点已到 → 兜底强制入睡
- └─ 或:安静满 silent_sleep_minutes(仅该活动期间)→ 静默入睡
+睡眠窗口(23:00 起点 ~ 07:30 终点,即可入睡时间)
+ ├─ 睡眠窗口内:bot 出站晚安短句(≤12 字,含睡/晚安/安眠/就寝)→ sleep_confirm LLM → SLEEP → 入睡(与静默开关无关)
+ ├─ 静默关:窗口起点已到 → 直接入睡(「睡眠窗口起点已到(静默睡眠关闭),直接入睡」)
+ └─ 静默开:窗口起点后安静满 silent_sleep_minutes 分钟(基准 = max(窗口起点, 最后活动))→ 静默入睡
 入睡(任意通道)→ 计算 clamp 醒来时刻 → sleep_state.json 落盘 →「已入睡:醒来 {t}」
  → spawn 次日日程生成(睡眠期间唯一 LLM 调用)→「次日日程已生成:…」
+未入睡(静默开且一直有活动)→ 窗口终点:不入睡,补执行次日日程生成(每窗口一次)→「睡眠窗口已过未入睡:补执行次日日程生成(不入睡)」
 睡眠期间:一切入站消息被拦截进缓冲(sleep_review_buffer.json)+ abort;所有调度与 hook 空转
 醒来(now ≥ wake_at)→「自然醒来」→ 状态置 awake
  → 睡醒回顾(可选):按流 LLM 摘要 + 到期备忘静态附列 →「睡醒回顾已生成: {path}」
@@ -619,7 +622,7 @@ replyer 出站
 | 注入 | `注入完成: 插入 N 条(system 尾 …)`(debug);告警:`注入定位失败:items 中无 SystemMessageItem,已回退追加尾部` |
 | 好感度结算 | `好感度结算 {user}:early/daily delta={n}`;失败:`好感度结算失败 …`;钳制:`结算升特别被独占钳制(user=…)` |
 | 衰减 | `好感度衰减 {user}:delta={n}`;`衰减判定 LLM 失败(user=…)` |
-| 睡眠 | `已入睡:醒来 {t}`;`睡眠窗口起点已到,兜底强制入睡`;`静默入睡:安静 N 分钟`;`自然醒来: {t}`;`睡醒回顾已生成: {path}` |
+| 睡眠 | `已入睡:醒来 {t}`;`睡眠窗口起点已到(静默睡眠关闭),直接入睡`;`静默入睡:安静 N 分钟`;`睡眠窗口已过未入睡:补执行次日日程生成(不入睡)`;`自然醒来: {t}`;`睡醒回顾已生成: {path}` |
 | 日程 | `次日日程已生成:…`;`次日日程生成:{err}(模板兜底)`;`已从 schedule.json 恢复日程({date})`;`schedule.json 为过期日程…删除并忽略恢复` |
 | 主动发言/问候 | `主动触发[{day}] -> {stream}:{活动}`;`主动问候触发[{day}] -> {user}`;`主动问候跳过:特别者({user})无私聊流` |
 | 备忘提醒 | `备忘提醒兜底注入(stream={id}):{content}`;`备忘清理:{n} 条过期` |
@@ -635,7 +638,7 @@ replyer 出站
 | 无节日/农历信息 | 日志「lunar-python 未安装:农历节日/节气不可用」→ 安装依赖;「holiday-cn 数据源…获取失败」→ 网络受限时回退链自动生效(库/内置表),环境块仍含日期与城市 |
 | 无天气 | 「天气获取失败,本轮环境块省略天气」→ Open-Meteo 可达性/城市坐标是否正确(默认珠海 22.279410,113.528098) |
 | 旁路 LLM 报「未找到名为 … 的模型配置」 | `llm_model` 填了模型标识而非 task 名;改为 model_task_config 节名 |
-| 旁路调用超时 | 慢模型留空超时默认 30s;按 §8.1 配置 120000 |
+| 旁路调用超时 | 慢模型超时默认 30s(`*_timeout_ms` 填 0=默认);按 §8.1 配置 120000 |
 | 好感度一直不结算 | 检查 bot_user_id 是否配置;素材为空判定「素材为空,跳过结算」;daily 素材不足 3 条「顺延」属预期 |
 | 睡眠中一切无响应 | 绝对静默设计预期,不是故障;入站消息被拦截记入回顾缓冲,醒来生成报告 |
 | 日程不是预期作息 | 默认作息为软基准,LLM 结合当天活动自主排布;生成失败会有模板兜底告警;可用 update_schedule 工具修改 |

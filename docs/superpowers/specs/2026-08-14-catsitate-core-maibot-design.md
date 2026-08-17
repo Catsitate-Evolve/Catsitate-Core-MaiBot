@@ -4,6 +4,7 @@
 - 插件名:`catsitate_core_maibot`(目录 `MaiBot-dev/plugins/catsitate_core_maibot/`)
 - 插件 ID:`catsitate.core`
 - 状态:设计已与用户逐轮确认(grilling 收敛)
+- **修订注记(2026-08-18)**:本文为**一期设计快照**。其后裁定已改变部分表述并记录于 `2026-08-15-phase2-design.md` 全局决策:好感度**按人唯一标识**(user_id,不再按流分账,见 §4 存储 schema 按流描述已不反映当前实现)、「特别」等级全表独占、主动问候与 greeting 统一(仅特别者+私聊流)、睡眠窗口 = 可入睡时间语义(静默开关分流/窗口终点补生成)。当前行为以代码与 `docs/plugin-manual.md` 为准。
 
 ## 1. 背景与目标
 

@@ -79,7 +79,8 @@ replyer 出站 ── maisaka.replyer.after_response(BLOCKING LATE)──> goodn
 
 - **模型路由**:所有旁路请求统一经 `ctx.call_capability("llm.generate", prompt=messages, model=<task 名>)`;`model` 填**主程序 `model_task_config` 的 task 名**(节名),填模型标识会报「未找到名为 … 的模型配置」;留空=主程序默认(取首个可用 task,不可控,不推荐)。
 - **统一结构**:`[任务指令+输出格式(system,固定模板+版本化)] [稳定上下文(5 级规则/白名单/人设背景,配置数据)] [变量素材(时间正序)]`——稳定段在前、变量段在后。
-- **模板加载顺序**:主程序数据目录 `data/custom_prompts/zh-CN/catsitate_<id>.prompt`(WebUI「提示词管理」编辑产物)→ `prompts/zh-CN/catsitate_<id>.prompt`(内置层)→ 插件内置默认(`llm_provider.SIDE_TEMPLATES`)。模板缺失时告警一次并回退内置,部署后自动恢复;模板内容变化即缓存键失效。
+- **模板加载顺序**:主程序数据目录 `data/custom_prompts/zh-CN/catsitate_<id>.prompt`(WebUI「提示词管理」编辑产物)→ 主程序 `prompts/zh-CN/catsitate_<id>.prompt`(内置层)→ 插件内置默认(`llm_provider.SIDE_TEMPLATES`)。模板缺失时告警一次并回退内置,部署后自动恢复;模板内容变化即缓存键失效。
+- **WebUI 管理前提(部署要求)**:主程序「提示词管理」只扫描主程序 `prompts/` 与 `data/custom_prompts/` 目录,**不会自动扫描插件的 `prompt_templates/`**——插件模板要进 WebUI 管理页,须把 `prompt_templates/catsitate_*.prompt`(8 个)复制到主程序 `prompts/zh-CN/`(一次性部署,见 §8.1)。部署后:主程序加载为内置层 → WebUI 可编辑 → 编辑产物写 `data/custom_prompts/zh-CN/` → 插件旁路调用优先读取(闭环)。插件 `prompt_templates/` 目录保留作源模板。
 - **8 个旁路模板**:`catsitate_favorability`、`catsitate_msg_react`、`catsitate_sentinel`、`catsitate_image_relook`、`catsitate_decay`、`catsitate_schedule_generate`、`catsitate_sleep_confirm`、`catsitate_sleep_review`(与 `prompt_templates/` 下 8 个文件一一对应,含 `{{delta_max}}`/`{{decay_max}}` 占位符)。
 - **记账**:每次旁路调用写入 `llm_usage` 表(day/module/calls/tokens 按模块分列)。
 
@@ -608,11 +609,12 @@ replyer 出站
 1. 插件目录放入 `plugins/` 并重启;WebUI「插件」页确认 `catsitate.core` 已加载,日志出现 **`catsitate_core 已加载`**。
 2. 打开 `plugin.enabled = true`(总开关,默认关);按需调整各模块节。
 3. **必须配置**:`favorability.bot_user_id` = bot 自身 QQ 号(实机 3545773341)。留空则好感度判定/衰减/注入的 bot 识别全部失效。
-4. 插件旁路 LLM 使用主程序内置 task 名(如 `planner`/`memory`/`replyer`),不支持新增自定义 task;主程序 task 集合固定(replyer/planner/memory/mid_memory/utils/learner/expression_use,WebUI「功能分配」页可见),各能力 `llm_model` 填对应 task 名。
-5. 慢模型建议配置超时:utils 实测 31-53s 会触发默认 30s 超时,`image_relook.llm_timeout_ms` 建议 120000。
-6. 验收/短时测试期间改动过的临时值必须恢复基准:`early_settle_threshold`=20、`silent_sleep_minutes`=60、`decay_after_days`=7、`window_hours`=24、`daily_speak_limit`=5、`max_regenerate`=1。
-7. 热重载:WebUI 修改配置后 `on_config_update` 生效,日志「**catsitate_core 配置已刷新,派生缓存已重置**」;weather/daily_settle 调度周期随配置重注册。
-8. 复审观测建议:打开 `debug.enabled` → 数据目录 `logs/catsitate-{date}.log` 落盘插件 debug 级日志(注入构造/插入位置等),关闭/文件失败自动回退主日志。
+4. **部署旁路模板到主程序**(一次性):把 `plugins/catsitate_core_maibot/prompt_templates/catsitate_*.prompt`(8 个)复制到主程序 `prompts/zh-CN/` 后重启。此后 WebUI「提示词管理」页显示并可编辑这 8 个模板(编辑产物写 `data/custom_prompts/zh-CN/`,插件优先读取);未部署时插件回退内置默认并每模板告警一次(「旁路模板 … 未部署」),功能不受影响。
+5. 插件旁路 LLM 使用主程序内置 task 名(如 `planner`/`memory`/`replyer`),不支持新增自定义 task;主程序 task 集合固定(replyer/planner/memory/mid_memory/utils/learner/expression_use,WebUI「功能分配」页可见),各能力 `llm_model` 填对应 task 名。
+6. 慢模型建议配置超时:utils 实测 31-53s 会触发默认 30s 超时,`image_relook.llm_timeout_ms` 建议 120000。
+7. 验收/短时测试期间改动过的临时值必须恢复基准:`early_settle_threshold`=20、`silent_sleep_minutes`=60、`decay_after_days`=7、`window_hours`=24、`daily_speak_limit`=5、`max_regenerate`=1。
+8. 热重载:WebUI 修改配置后 `on_config_update` 生效,日志「**catsitate_core 配置已刷新,派生缓存已重置**」;weather/daily_settle 调度周期随配置重注册。
+9. 复审观测建议:打开 `debug.enabled` → 数据目录 `logs/catsitate-{date}.log` 落盘插件 debug 级日志(注入构造/插入位置等),关闭/文件失败自动回退主日志。
 
 ### 8.2 观察日志关键词(按功能)
 
@@ -638,6 +640,7 @@ replyer 出站
 | 无节日/农历信息 | 日志「lunar-python 未安装:农历节日/节气不可用」→ 安装依赖;「holiday-cn 数据源…获取失败」→ 网络受限时回退链自动生效(库/内置表),环境块仍含日期与城市 |
 | 无天气 | 「天气获取失败,本轮环境块省略天气」→ Open-Meteo 可达性/城市坐标是否正确(默认珠海 22.279410,113.528098) |
 | 旁路 LLM 报「未找到名为 … 的模型配置」 | `llm_model` 填了模型标识而非 task 名;改为 model_task_config 节名 |
+| WebUI「提示词管理」看不到 8 个旁路模板 | 模板未部署到主程序 `prompts/zh-CN/`(主程序不扫描插件 `prompt_templates/`);按 §8.1 第 4 步复制后重启 |
 | 旁路调用超时 | 慢模型超时默认 30s(`*_timeout_ms` 填 0=默认);按 §8.1 配置 120000 |
 | 好感度一直不结算 | 检查 bot_user_id 是否配置;素材为空判定「素材为空,跳过结算」;daily 素材不足 3 条「顺延」属预期 |
 | 睡眠中一切无响应 | 绝对静默设计预期,不是故障;入站消息被拦截记入回顾缓冲,醒来生成报告 |

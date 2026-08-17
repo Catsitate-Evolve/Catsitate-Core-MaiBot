@@ -7,6 +7,7 @@ Catsitate 的 MaiBot 核心人格行为插件。仓库地址:https://github.com/
 1. 把本目录放进 MaiBot 的 `plugins/` 并重启;WebUI「插件」页确认 `catsitate.core` 已加载
 2. 在插件配置页打开 `plugin.enabled = true`(总开关,默认关),按需调整各模块节
 3. 贴表情:内置 30 项精选 QQ 表情表(`catsitate_core/qq_emoji.py` 的 AVAILABLE_REACT_EMOJIS,联调决定替代可配置白名单),仅群聊可用
+4. **旁路模板部署**(一次性):主程序「提示词管理」只扫描主程序 `prompts/` 与 `data/custom_prompts/` 目录,不会自动扫描插件 `prompt_templates/`——把 `prompt_templates/catsitate_*.prompt`(8 个)复制到主程序 `prompts/zh-CN/` 并重启,即可在 WebUI「提示词管理」页编辑这 8 个旁路模板(编辑产物写 `data/custom_prompts/zh-CN/`,插件优先读取);未部署时插件回退内置默认并告警一次,功能不受影响
 
 ## 主程序配置(模型 task 分配)
 

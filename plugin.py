@@ -119,6 +119,7 @@ class CatsitatePlugin(MaiBotPlugin):
         self._schedule_edit_history: list[dict] = []
         self._speak_counts: dict[str, int] = {}  # date -> 已发言次数
         self._last_activity_ts: float = 0.0  # 静默入睡计时(入站/出站活动刷新)
+        self._sleep_window_settled: str = ""  # 已处理(入睡/补生成)过的睡眠窗口 end 标记(Q1 防重复)
         # 睡眠期拦截消息缓冲(回顾报告素材);持久化防重启丢失(联调发现)
         self._sleep_review_buffer_snapshot = JsonSnapshot(data_dir / "sleep_review_buffer.json")
         _loaded_buffer = self._sleep_review_buffer_snapshot.load()
@@ -534,7 +535,11 @@ class CatsitatePlugin(MaiBotPlugin):
         if not self.config.plugin.enabled or not self.config.sleep.enabled:
             return {"action": "continue", "modified_kwargs": kwargs}
         self._last_activity_ts = datetime.now().timestamp()  # 任何出站回复都算活动(静默入睡计时)
-        if self.sleep.is_sleeping() or not self._in_goodnight_window():
+        if self.sleep.is_sleeping():
+            return {"action": "continue", "modified_kwargs": kwargs}
+        # 晚安判定仅在睡眠窗口内有效(可入睡时间,联调裁定 Q2),与静默开关无关
+        _win = current_window(self._schedule_data, datetime.now().strftime("%Y-%m-%dT%H:%M"))
+        if not _win or _win.get("kind") != "sleep":
             return {"action": "continue", "modified_kwargs": kwargs}
         text = str(kwargs.get("response") or "")
         if not is_goodnight_utterance(text):
@@ -559,12 +564,6 @@ class CatsitatePlugin(MaiBotPlugin):
             await self._enter_sleep()
         return {"action": "continue", "modified_kwargs": kwargs}
 
-    def _in_goodnight_window(self) -> bool:
-        """可入睡时间:睡前语境活动期间(活动窗口 kind=greeting 且 activity 含睡眠关键词)。"""
-
-        win = current_window(self._schedule_data, datetime.now().strftime("%Y-%m-%dT%H:%M"))
-        return bool(win and win.get("kind") == "greeting" and any(k in str(win.get("activity") or "") for k in ("睡", "洗漱", "晚安", "休息", "就寝")))
-
     async def _enter_sleep(self) -> None:
         """入睡:计算 clamp 醒来时刻,状态落盘,触发生成次日日程(睡眠期间唯一 LLM 调用)。"""
 
@@ -580,6 +579,7 @@ class CatsitatePlugin(MaiBotPlugin):
             planned_wake += ":00"  # SleepManager 统一秒格式 %Y-%m-%dT%H:%M:%S
         wake_at = self.sleep.clamp_wake_time(now.strftime("%Y-%m-%dT%H:%M:%S"), planned_wake)
         self.sleep.enter_sleep(now=lambda: now, wake_at=wake_at)
+        self._sleep_window_settled = str(sleep_win.get("end") or "") if sleep_win else ""  # 入睡已生成次日日程,窗口终点不再补执行(Q1)
         self.ctx.logger.info("已入睡:醒来 %s", wake_at)
         self._spawn_background_task(self._generate_tomorrow_schedule())
 
@@ -926,17 +926,48 @@ class CatsitatePlugin(MaiBotPlugin):
                 await self._wake_up()
             return
         win = current_window(self._schedule_data, now_iso)
-        if not win:
+        if not win or win.get("kind") != "sleep":
+            # 睡眠窗口已过而未入睡(Q1 裁定):不入睡,但补执行入睡时会做的任务(次日日程生成)
+            await self._maybe_settle_passed_sleep_window(now)
             return
-        if win.get("kind") == "sleep" and now_iso >= win.get("start"):
-            self.ctx.logger.info("睡眠窗口起点已到,兜底强制入睡")
+        # 可入睡时间(睡眠窗口语义,联调裁定 2026-08-17):
+        # 静默睡眠关 = 窗口起点直接入睡;静默睡眠开 = 安静满 N 分钟入睡
+        if not self.config.sleep.silent_sleep_enabled:
+            self.ctx.logger.info("睡眠窗口起点已到(静默睡眠关闭),直接入睡")
             await self._enter_sleep()
             return
-        # 静默入睡:仅睡前语境活动期间,无任何活动满 N 分钟
-        if self.config.sleep.silent_sleep_enabled and self._in_goodnight_window():
-            if self._last_activity_ts and now.timestamp() - self._last_activity_ts >= self.config.sleep.silent_sleep_minutes * 60:
-                self.ctx.logger.info("静默入睡:安静 %d 分钟", self.config.sleep.silent_sleep_minutes)
-                await self._enter_sleep()
+        if now.timestamp() - self._quiet_since(win) >= self.config.sleep.silent_sleep_minutes * 60:
+            self.ctx.logger.info("静默入睡:安静 %d 分钟", self.config.sleep.silent_sleep_minutes)
+            await self._enter_sleep()
+
+    def _quiet_since(self, win: dict) -> float:
+        """静默入睡计时基准:max(睡眠窗口起点, 最后活动时刻);无活动记录从窗口起点起算。"""
+
+        try:
+            win_start = datetime.strptime(str(win.get("start") or ""), "%Y-%m-%dT%H:%M").timestamp()
+        except (ValueError, TypeError):
+            win_start = 0.0
+        return max(self._last_activity_ts or win_start, win_start)
+
+    async def _maybe_settle_passed_sleep_window(self, now: datetime) -> None:
+        """睡眠窗口已过而未入睡(Q1 裁定):不入睡,但执行入睡时会做的任务(次日日程生成);每窗口一次。
+
+        入睡过(入睡时已生成次日日程)则跳过;窗口结束前不触发。
+        """
+
+        sleep_win = next(
+            (w for w in (self._schedule_data.get("windows") or []) if w.get("kind") == "sleep"), None
+        )
+        if not sleep_win:
+            return
+        end = str(sleep_win.get("end") or "")
+        if not end or end > now.strftime("%Y-%m-%dT%H:%M"):
+            return  # 窗口尚未结束
+        if self._sleep_window_settled == end:
+            return  # 本窗口已入睡(入睡时已生成)或已补执行过
+        self._sleep_window_settled = end
+        self.ctx.logger.info("睡眠窗口已过未入睡:补执行次日日程生成(不入睡)")
+        self._spawn_background_task(self._generate_tomorrow_schedule())
 
     async def _wake_up(self) -> None:
         self.sleep.wake()
@@ -1108,11 +1139,10 @@ class CatsitatePlugin(MaiBotPlugin):
             if stale and stale.get("date"):
                 stale_win = current_window(stale, now.strftime("%Y-%m-%dT%H:%M"))
                 if stale_win and stale_win.get("kind") == "sleep":
-                    # 跨午夜:昨日日程的睡眠窗口仍在进行,先按旧窗口补触发强制入睡
-                    # (_enter_sleep 会读旧日程的睡眠窗口 end 作为计划醒来时刻),再换新一天
-                    # 模板——直接替换会丢失睡眠窗口,当天无法入睡(公测发现)
-                    self.ctx.logger.info("跨日仍在睡眠窗口内,按旧日程补触发强制入睡")
-                    await self._enter_sleep()
+                    # 跨午夜:旧日程睡眠窗口仍在进行,保留旧日程交给 _sleep_tick 处理
+                    # (静默关=直接睡/静默开=安静计时;窗口结束后再换新模板,公测发现)
+                    logger.debug("schedule_tick 跳过换日:旧日程睡眠窗口仍在进行")
+                    return
             self._schedule_data = _materialize_template(DEFAULT_TEMPLATE_SCHEDULE, day)  # 首日模板撑场(非生成)
             self._schedule_generated = False
         win = current_window(self._schedule_data, now.strftime("%Y-%m-%dT%H:%M"))

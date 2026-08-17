@@ -189,7 +189,7 @@ class SleepSection(PluginConfigBase):
     enabled: bool = _f(True, "睡眠模块开关", label="睡眠模块开关")
     min_sleep_minutes: int = _f(240, "最短睡眠分钟(不足顺延醒来)", label="最短睡眠分钟")
     max_sleep_minutes: int = _f(660, "最长睡眠分钟(超过提前醒)", label="最长睡眠分钟")
-    silent_sleep_enabled: bool = _f(True, "静默入睡开关(仅睡前语境活动期间生效)", label="静默入睡开关")
+    silent_sleep_enabled: bool = _f(True, "静默入睡开关(睡眠窗口内生效:关=窗口起点直接入睡,开=安静满 N 分钟入睡)", label="静默入睡开关")
     silent_sleep_minutes: int = _f(60, "静默入睡:无消息满 N 分钟", label="静默入睡分钟")
     review_enabled: bool = _f(True, "睡醒回顾开关(醒来生成聚合报告文件)", label="睡醒回顾开关")
     review_llm_model: str = _f("memory", "回顾总结模型:填主程序 task 名", label="回顾模型(task 名)")

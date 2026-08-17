@@ -550,7 +550,8 @@ def test_restore_schedule_stale_but_sleep_window_active(tmp_path):
 
 
 def test_schedule_tick_cross_midnight_sleep_window_enters_sleep(tmp_path):
-    """跨午夜(公测发现):换日时旧日程睡眠窗口仍在进行 → 先补触发强制入睡,再换新模板。"""
+    """跨午夜(公测发现,联调裁定 2026-08-17):换日时旧日程睡眠窗口仍在进行 →
+    _schedule_tick 保留旧日程不换模板;静默关闭时 _sleep_tick 按旧窗口直接入睡。"""
     import asyncio
     from datetime import datetime, timedelta
 
@@ -564,6 +565,7 @@ def test_schedule_tick_cross_midnight_sleep_window_enters_sleep(tmp_path):
     p._plugin_config_instance = CatsitateConfig()
     p.config.plugin.enabled = True
     p.config.schedule.enabled = True
+    p.config.sleep.silent_sleep_enabled = False  # 静默关:窗口起点直接睡(Q3)
     p.sleep = SleepManager(JsonSnapshot(tmp_path / "sleep_state.json"), p.config.sleep)
     p._background_tasks = set()
     p._schedule_tick_fired = {}
@@ -585,10 +587,103 @@ def test_schedule_tick_cross_midnight_sleep_window_enters_sleep(tmp_path):
     p._schedule_generated = True
 
     asyncio.run(p._schedule_tick())
+    assert p.sleep.state.state != "sleep"  # schedule_tick 不入睡:保留旧日程交给 sleep_tick
+    assert p._schedule_data.get("date") == yesterday  # 睡眠窗口进行中不换模板
 
-    assert p.sleep.state.state == "sleep"  # 补触发强制入睡
-    assert p._schedule_data.get("date") == now.strftime("%Y-%m-%d")  # 已换新一天模板
-    assert p._schedule_generated is False
+    asyncio.run(p._sleep_tick())
+    assert p.sleep.state.state == "sleep"  # 静默关闭:直接入睡
+
+
+def test_sleep_tick_silent_on_quiet_elapsed_enters_sleep(tmp_path):
+    """静默睡眠开(联调裁定 2026-08-17):睡眠窗口内安静满 N 分钟才入睡;有活动不睡。"""
+    import asyncio
+    from datetime import datetime, timedelta
+
+    import plugin as plugin_mod
+    from catsitate_core.config import CatsitateConfig
+    from catsitate_core.sleep import SleepManager
+    from catsitate_core.storage import JsonSnapshot
+
+    p = plugin_mod.CatsitatePlugin()
+    p._ctx = _StubCtx(tmp_path)
+    p._plugin_config_instance = CatsitateConfig()
+    p.config.plugin.enabled = True
+    p.config.sleep.enabled = True
+    p.config.sleep.silent_sleep_enabled = True
+    p.config.sleep.silent_sleep_minutes = 60
+    p.sleep = SleepManager(JsonSnapshot(tmp_path / "sleep_state.json"), p.config.sleep)
+    p._background_tasks = set()
+    p._sleep_window_settled = ""
+
+    async def _fake_gen():
+        pass
+    p._generate_tomorrow_schedule = _fake_gen
+
+    now = datetime.now()
+    p._schedule_data = {"date": now.strftime("%Y-%m-%d"), "windows": [{
+        "kind": "sleep",
+        "start": (now - timedelta(hours=1)).strftime("%Y-%m-%dT%H:%M"),
+        "end": (now + timedelta(hours=1)).strftime("%Y-%m-%dT%H:%M"),
+        "activity": "",
+    }]}
+
+    # 刚有活动:不睡
+    p._last_activity_ts = now.timestamp() - 60  # 1 分钟前
+    asyncio.run(p._sleep_tick())
+    assert p.sleep.state.state != "sleep"
+
+    # 安静超过 N 分钟:入睡(基准=max(窗口起点,最后活动))
+    p._last_activity_ts = now.timestamp() - 3600  # 60 分钟前,与窗口起点同刻
+    asyncio.run(p._sleep_tick())
+    assert p.sleep.state.state == "sleep"
+
+
+def test_sleep_window_passed_awake_settles_once(tmp_path):
+    """Q1 裁定:睡眠窗口已过而未入睡 → 不入睡,补执行次日日程生成;每窗口仅一次。"""
+    import asyncio
+    from datetime import datetime, timedelta
+
+    import plugin as plugin_mod
+    from catsitate_core.config import CatsitateConfig
+    from catsitate_core.sleep import SleepManager
+    from catsitate_core.storage import JsonSnapshot
+
+    p = plugin_mod.CatsitatePlugin()
+    p._ctx = _StubCtx(tmp_path)
+    p._plugin_config_instance = CatsitateConfig()
+    p.config.plugin.enabled = True
+    p.config.sleep.enabled = True
+    p.sleep = SleepManager(JsonSnapshot(tmp_path / "sleep_state.json"), p.config.sleep)
+    p._background_tasks = set()
+    p._sleep_window_settled = ""
+
+    calls = {"gen": 0}
+
+    async def _fake_gen():
+        calls["gen"] += 1
+    p._generate_tomorrow_schedule = _fake_gen
+
+    now = datetime.now()
+    p._schedule_data = {"date": (now - timedelta(days=1)).strftime("%Y-%m-%d"), "windows": [{
+        "kind": "sleep",
+        "start": (now - timedelta(hours=3)).strftime("%Y-%m-%dT%H:%M"),
+        "end": (now - timedelta(hours=1)).strftime("%Y-%m-%dT%H:%M"),
+        "activity": "",
+    }]}
+
+    asyncio.run(p._sleep_tick())
+    assert p.sleep.state.state != "sleep"  # 不入睡
+    assert calls["gen"] == 1  # 补执行次日日程生成
+
+    asyncio.run(p._sleep_tick())
+    assert calls["gen"] == 1  # 每窗口仅一次(标记去重)
+
+    # 入睡过的窗口不补执行(入睡时已生成并标记)
+    calls["gen"] = 0
+    p.sleep.wake()  # 复位状态便于构造:直接模拟已标记场景
+    p._sleep_window_settled = (now - timedelta(hours=1)).strftime("%Y-%m-%dT%H:%M")
+    asyncio.run(p._sleep_tick())
+    assert calls["gen"] == 0
 
 
 class _CollectLogger:

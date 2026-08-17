@@ -431,7 +431,7 @@ class CatsitatePlugin(MaiBotPlugin):
 
     # ---------- 命令 ----------
 
-    @Command("/记一下", description="记一条短时备忘", pattern=r"^/记一下\s+(?P<content>.+)$", aliases=["/备忘"])
+    @Command("记一下", description="记一条短时备忘", pattern=r"^/记一下\s+(?P<content>.+)$", aliases=["/备忘"])
     async def cmd_memo(self, content: str = "", stream_id: str = "", user_id: str = "", **kwargs: Any) -> str:
         del kwargs
         if not self.config.plugin.enabled or not self.config.memo.command_enabled:

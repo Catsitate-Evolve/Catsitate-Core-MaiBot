@@ -1389,7 +1389,11 @@ class CatsitatePlugin(MaiBotPlugin):
             streams = [r[0] for r in self.store.query("SELECT DISTINCT stream_id FROM batch_counter WHERE user_id = ?", (user_id,))]
             history: list[dict] = []
             for stream_id in streams:
-                history.extend(await self._fetch_recent_for_history(stream_id, 50, user_id))
+                # 单流取消息失败只跳过该流(公测发现:大附件消息可撑爆 RPC 帧),不拖垮整次结算
+                try:
+                    history.extend(await self._fetch_recent_for_history(stream_id, 50, user_id))
+                except Exception:
+                    self.ctx.logger.warning("结算取消息失败(user=%s,stream=%s),跳过该流", user_id, stream_id)
             persona, style = await self._persona_context()
             result = await self.fav_executor.settle(  # 仓库现有属性名为 fav_executor(plugin.py:85)
                 user_id, history, kind, model=self.config.favorability.llm_model,
@@ -1453,9 +1457,14 @@ class CatsitatePlugin(MaiBotPlugin):
             self.ctx.logger.warning("旁路 LLM 当日调用次数已达或超过阈值 %s,请注意用量", total)
 
     async def _fetch_recent(self, stream_id: str, limit: int) -> list[dict]:
-        """取近期消息。spike ④ 实测:返回 list;include_binary_data 透传不产生二进制(image 段仅 hash)。"""
+        """取近期消息。spike ④ 实测:返回 list;image 段仅 hash。
 
-        result = await self.ctx.call_capability("message.get_recent", chat_id=stream_id, limit=limit, include_binary_data=True)
+        公测发现:include_binary_data=True 时,含大附件(数十 MB)的消息会把 RPC
+        响应帧撑爆(主机 16MB 上限,E_UNKNOWN)——插件消费方(衰减互动判定/说话人
+        解析/结算素材)只用文本与元数据,二进制一律不取。
+        """
+
+        result = await self.ctx.call_capability("message.get_recent", chat_id=stream_id, limit=limit)
         return result if isinstance(result, list) else []
 
     async def _resolve_quote_sender(self, stream_id: str, reply_to_id: str) -> tuple[str | None, str]:

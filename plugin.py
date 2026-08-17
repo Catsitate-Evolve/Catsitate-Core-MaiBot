@@ -1104,6 +1104,15 @@ class CatsitatePlugin(MaiBotPlugin):
         day = now.strftime("%Y-%m-%d")
         self._prune_day_keys(day)
         if not self._schedule_data or self._schedule_data.get("date") != day:
+            stale = self._schedule_data
+            if stale and stale.get("date"):
+                stale_win = current_window(stale, now.strftime("%Y-%m-%dT%H:%M"))
+                if stale_win and stale_win.get("kind") == "sleep":
+                    # 跨午夜:昨日日程的睡眠窗口仍在进行,先按旧窗口补触发强制入睡
+                    # (_enter_sleep 会读旧日程的睡眠窗口 end 作为计划醒来时刻),再换新一天
+                    # 模板——直接替换会丢失睡眠窗口,当天无法入睡(公测发现)
+                    self.ctx.logger.info("跨日仍在睡眠窗口内,按旧日程补触发强制入睡")
+                    await self._enter_sleep()
             self._schedule_data = _materialize_template(DEFAULT_TEMPLATE_SCHEDULE, day)  # 首日模板撑场(非生成)
             self._schedule_generated = False
         win = current_window(self._schedule_data, now.strftime("%Y-%m-%dT%H:%M"))
@@ -1324,7 +1333,9 @@ class CatsitatePlugin(MaiBotPlugin):
         """重启恢复:schedule.json 的 date 为今天或明天时恢复日程/编辑历史/生成标记(审查 I2)。
 
         入睡当晚生成的是次日日程,夜间重启不得误删——date ∈ {今天, 明天} 均恢复;
-        仅真正过期(早于今天)的文件删除并告警;损坏/结构非法文件告警并忽略(错误显式暴露,不静默)。
+        早于今天的文件删除并告警,但**其睡眠窗口仍覆盖当前时刻**(跨午夜未睡完)时保留恢复,
+        以便首个 sleep_tick 兜底强制入睡(公测发现:直接删除会导致当天无法入睡);
+        损坏/结构非法文件告警并忽略(错误显式暴露,不静默)。
         """
 
         path = self.ctx.paths.data_dir / "schedule.json"
@@ -1345,13 +1356,22 @@ class CatsitatePlugin(MaiBotPlugin):
             return
         now = datetime.now()
         saved_date = data["data"].get("date")
-        if saved_date not in (now.strftime("%Y-%m-%d"), (now + timedelta(days=1)).strftime("%Y-%m-%d")):
+        keep_dates = (now.strftime("%Y-%m-%d"), (now + timedelta(days=1)).strftime("%Y-%m-%d"))
+        stale_sleep_active = False
+        if saved_date not in keep_dates:
+            # 跨午夜边界:过期日程的睡眠窗口若仍覆盖当前时刻(如昨夜 23:00 入睡、今晨重启),
+            # 保留恢复以便首个 sleep_tick 兜底强制入睡——直接删除会导致当天无法入睡(公测发现)
+            stale_win = current_window(data["data"], now.strftime("%Y-%m-%dT%H:%M"))
+            stale_sleep_active = bool(stale_win and stale_win.get("kind") == "sleep")
+        if saved_date not in keep_dates and not stale_sleep_active:
             self.ctx.logger.warning("schedule.json 为过期日程(%s),删除并忽略恢复", saved_date)
             try:
                 path.unlink()
             except OSError:
                 self.ctx.logger.exception("过期 schedule.json 删除失败")
             return
+        if stale_sleep_active:
+            self.ctx.logger.warning("schedule.json 为过期日程(%s)但睡眠窗口仍在进行,恢复以便强制入睡", saved_date)
         self._schedule_data = data["data"]
         if isinstance(self._schedule_data.get("windows"), list):
             self._schedule_data["windows"] = sort_windows(self._schedule_data["windows"])  # 旧数据按时间顺序重排

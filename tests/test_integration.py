@@ -495,6 +495,102 @@ def test_restore_schedule_tomorrow_date_restored_and_kept(tmp_path):
     assert path.exists()  # 明日期文件不删除(仅真正过期才 unlink)
 
 
+def test_restore_schedule_stale_but_sleep_window_active(tmp_path):
+    """跨午夜边界(公测发现):过期日程的睡眠窗口仍覆盖当前时刻 → 保留恢复,不删除。
+
+    场景:昨夜 23:00 睡、今晨 00:30 重启——直接删除旧日程会导致当天无睡眠窗口、无法入睡。
+    """
+    import json
+    from datetime import datetime, timedelta
+
+    import plugin as plugin_mod
+    from catsitate_core.config import CatsitateConfig
+
+    p = plugin_mod.CatsitatePlugin()
+    p._ctx = _StubCtx(tmp_path)
+    p._plugin_config_instance = CatsitateConfig()
+    p._schedule_data = {}
+    p._schedule_edit_history = []
+    p._schedule_generated = False
+
+    now = datetime.now()
+    yesterday = (now - timedelta(days=1)).strftime("%Y-%m-%d")
+    # 睡眠窗口覆盖当前时刻(用当前时间 ±1h 构造,测试任意时刻运行都命中)
+    stale = {"data": {
+        "date": yesterday,
+        "windows": [{
+            "kind": "sleep",
+            "start": (now - timedelta(hours=1)).strftime("%Y-%m-%dT%H:%M"),
+            "end": (now + timedelta(hours=1)).strftime("%Y-%m-%dT%H:%M"),
+            "activity": "",
+        }],
+    }, "generated": True}
+    path = p._ctx.paths.data_dir / "schedule.json"
+    p._ctx.paths.data_dir.mkdir(parents=True, exist_ok=True)
+    path.write_text(json.dumps(stale, ensure_ascii=False), encoding="utf-8")
+    p._restore_schedule()
+    assert p._schedule_data.get("date") == yesterday  # 睡眠窗口进行中:保留恢复
+    assert path.exists()  # 文件不删除
+
+    # 睡眠窗口已结束的过期日程:仍删除(原语义)
+    ended = {"data": {
+        "date": yesterday,
+        "windows": [{
+            "kind": "sleep",
+            "start": (now - timedelta(hours=3)).strftime("%Y-%m-%dT%H:%M"),
+            "end": (now - timedelta(hours=2)).strftime("%Y-%m-%dT%H:%M"),
+            "activity": "",
+        }],
+    }, "generated": True}
+    path.write_text(json.dumps(ended, ensure_ascii=False), encoding="utf-8")
+    p._schedule_data = {}
+    p._restore_schedule()
+    assert p._schedule_data == {}
+    assert not path.exists()
+
+
+def test_schedule_tick_cross_midnight_sleep_window_enters_sleep(tmp_path):
+    """跨午夜(公测发现):换日时旧日程睡眠窗口仍在进行 → 先补触发强制入睡,再换新模板。"""
+    import asyncio
+    from datetime import datetime, timedelta
+
+    import plugin as plugin_mod
+    from catsitate_core.config import CatsitateConfig
+    from catsitate_core.sleep import SleepManager
+    from catsitate_core.storage import JsonSnapshot
+
+    p = plugin_mod.CatsitatePlugin()
+    p._ctx = _StubCtx(tmp_path)
+    p._plugin_config_instance = CatsitateConfig()
+    p.config.plugin.enabled = True
+    p.config.schedule.enabled = True
+    p.sleep = SleepManager(JsonSnapshot(tmp_path / "sleep_state.json"), p.config.sleep)
+    p._background_tasks = set()
+    p._schedule_tick_fired = {}
+    p._speak_counts = {}
+    p._remind_fired = {}
+
+    async def _fake_gen():
+        pass
+    p._generate_tomorrow_schedule = _fake_gen
+
+    now = datetime.now()
+    yesterday = (now - timedelta(days=1)).strftime("%Y-%m-%d")
+    p._schedule_data = {"date": yesterday, "windows": [{
+        "kind": "sleep",
+        "start": (now - timedelta(hours=1)).strftime("%Y-%m-%dT%H:%M"),
+        "end": (now + timedelta(hours=1)).strftime("%Y-%m-%dT%H:%M"),
+        "activity": "",
+    }]}
+    p._schedule_generated = True
+
+    asyncio.run(p._schedule_tick())
+
+    assert p.sleep.state.state == "sleep"  # 补触发强制入睡
+    assert p._schedule_data.get("date") == now.strftime("%Y-%m-%d")  # 已换新一天模板
+    assert p._schedule_generated is False
+
+
 class _CollectLogger:
     """收集日志的 stub logger(断言主动问候跳过日志)。"""
 

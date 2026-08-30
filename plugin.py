@@ -494,9 +494,15 @@ class CatsitatePlugin(MaiBotPlugin):
         try:
             a = await self.ctx.person.get_id(platform=QZONE_PLATFORM, user_id="1")
             b = await self.ctx.person.get_id(platform="qq", user_id="1")
-            if a != b:
-                # 折叠失效:降级为分裂模式继续运行(每进程告警一次,spec §2.17)
-                self._qzone_warn_once("person_split", "person 别名自检失败(qzone-qq 未折叠到 qq 命名空间),空间侧记忆与 QQ 侧分裂")
+            # 折叠失效=人物分裂不可接受(用户裁定 2026-08-30):硬停用,不做降级分裂模式;
+            # 同时防假阴性——两侧同形失败(非 str 返回)不得误判为折叠正常
+            if not isinstance(a, str) or not isinstance(b, str) or not a or not b or a != b:
+                self.ctx.logger.warning(
+                    "QQ空间模块停用:person 别名折叠自检失败(qzone-qq 与 qq 未折叠到同一命名空间,"
+                    "或自检调用返回异常形态 a=%s b=%s),主程序 get_person_id 折叠机制可能已改版",
+                    type(a).__name__, type(b).__name__,
+                )
+                return False
         except Exception:
             self.ctx.logger.exception("person 别名自检调用失败,QQ空间模块停用")
             return False

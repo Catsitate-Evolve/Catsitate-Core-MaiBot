@@ -35,6 +35,7 @@ from catsitate_core.msg_react import MsgReactEngine, parse_choice_resp
 from catsitate_core.poke import PokeEngine
 from catsitate_core.prompt_deploy import sync_prompt_templates
 from catsitate_core.qzone import QZONE_GATEWAY_NAME, QZONE_PLATFORM
+from catsitate_core.qzone.protocol import parse_friend_list
 from catsitate_core.qzone.client import CookieManager, QzoneClient
 from catsitate_core.qzone.injector import FeedInjector
 from catsitate_core.qzone.messages import build_feed_message
@@ -575,18 +576,40 @@ class CatsitatePlugin(MaiBotPlugin):
         if not self.qzone_injector.window_active:
             self.qzone_injector.window_started()
             self.ctx.logger.info("QQ空间窗口开始,注入泵激活")
-        try:
-            feeds, skipped = await self.qzone_client.get_friend_feeds(num=10)
-        except Exception:
-            self.ctx.logger.exception("QQ空间动态拉取失败,本轮跳过")
+        # 拉取架构(联调修正 2026-08-30):好友列表走 adapter OneBot API,
+        # 逐好友拉最近说说(msglist_v6 为指定用户接口,无聚合端点);好友间固定间隔防风控
+        friends = await self._qzone_friend_list()
+        if not friends:
+            self.ctx.logger.warning("QQ空间好友列表为空或获取失败,本轮跳过")
             return
-        if skipped:
-            self.ctx.logger.info("QQ空间拉取:跳过 %d 条非说说类动态(appid!=311)", skipped)
-        added = [f for f in feeds if self.qzone_seen.mark_queued(f.tid, abstime=f.abstime, author_uin=f.uin, summary=f.content[:60])]
-        if added:
-            self.qzone_injector.enqueue(added)
-            self.ctx.logger.info("QQ空间新动态入队 %d 条", len(added))
+        added_total = 0
+        for friend in friends:
+            try:
+                feeds = await self.qzone_client.get_user_feeds(
+                    target_uin=friend["user_id"], nickname=friend["nickname"], num=3
+                )
+            except Exception:
+                # 单个好友失败不中止整轮(逐人隔离,显式告警)
+                self.ctx.logger.exception("QQ空间说说拉取失败(uin=%s),该好友本轮跳过", friend["user_id"])
+                continue
+            added = [f for f in feeds if self.qzone_seen.mark_queued(f.tid, abstime=f.abstime, author_uin=f.uin, summary=f.content[:60])]
+            if added:
+                self.qzone_injector.enqueue(added)
+                added_total += len(added)
+            await asyncio.sleep(2.0)  # 好友间请求间隔(防风控,Maizone 保守默认同款)
+        if added_total:
+            self.ctx.logger.info("QQ空间新动态入队 %d 条(好友 %d 人)", added_total, len(friends))
         await self._qzone_pump()
+
+    async def _qzone_friend_list(self) -> list[dict]:
+        """好友列表(adapter OneBot 通道,信封容忍解析;失败告警返回空)。"""
+
+        try:
+            result = await self.ctx.api.call("adapter.napcat.account.get_friend_list", no_cache=False)
+        except Exception:
+            self.ctx.logger.exception("QQ空间好友列表获取失败(adapter.napcat.account.get_friend_list)")
+            return []
+        return parse_friend_list(result)
 
     async def _qzone_pump(self) -> None:
         """串行注入:超时兜底 → 取队首 → 下载图片 → route_message → mark_seen。

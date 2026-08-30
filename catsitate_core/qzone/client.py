@@ -21,6 +21,10 @@ logger = logging.getLogger(__name__)
 
 COOKIE_DOMAIN = "user.qzone.qq.com"
 MSGLIST_URL = "https://user.qzone.qq.com/proxy/domain/taotao.qq.com/cgi-bin/emotion_cgi_msglist_v6"
+BROWSER_UA = (
+    "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) "
+    "Chrome/124.0.0.0 Safari/537.36"
+)
 _MISSING_PSKEY_WARNED = False  # 每进程告警一次
 
 
@@ -120,13 +124,16 @@ class QzoneClient:
         self.timeout_ms = timeout_ms
         self.max_retries = max(0, int(max_retries))
 
-    async def _request(self, method: str, url: str, *, params: dict, data: dict | None = None, binary: bool = False) -> tuple[int, Any]:
+    async def _request(self, method: str, url: str, *, params: dict, data: dict | None = None, binary: bool = False, referer: str = "https://user.qzone.qq.com/") -> tuple[int, Any]:
         cookies = await self.cookie_provider()
         if not cookies:
             raise RuntimeError("空间 cookie 不可用,跳过请求")
-        headers = {"Cookie": "; ".join(f"{k}={v}" for k, v in cookies.items())}
-        if not binary:
-            headers["Referer"] = "https://user.qzone.qq.com/"
+        # UA 必带(联调实证:无 UA 空间接口直接 500 空体)
+        headers = {
+            "Cookie": "; ".join(f"{k}={v}" for k, v in cookies.items()),
+            "User-Agent": BROWSER_UA,
+            "Referer": referer,
+        }
         params = dict(params)
         params.setdefault("g_tk", generate_gtk(cookies.get("p_skey", "")))
         status, body = await self.fetch(method, url, params=params, headers=headers, timeout_ms=self.timeout_ms)
@@ -134,37 +141,30 @@ class QzoneClient:
             return status, body
         return status, body
 
-    async def get_friend_feeds(self, *, pos: int = 0, num: int = 10) -> tuple[list, int]:
+    async def get_user_feeds(self, *, target_uin: str, nickname: str, num: int = 5) -> list:
+        """拉取指定好友最近说说(联调实证参数集:jsonp+need_comment,Referer 指向目标空间)。"""
+
         params = {
-            "ftype": "0", "sort": "0", "pos": str(pos), "num": str(num), "replynum": "100",
-            "code_version": "1", "format": "json", "need_private_comment": "1",
+            "uin": str(target_uin), "ftype": "0", "sort": "0", "pos": "0", "num": str(num),
+            "replynum": "100", "callback": "_preloadCallback", "code_version": "1",
+            "format": "jsonp", "need_comment": "1", "need_private_comment": "1",
         }
-        status, text = await self._request("GET", MSGLIST_URL, params=params)
+        status, text = await self._request(
+            "GET", MSGLIST_URL, params=params, referer=f"https://user.qzone.qq.com/{target_uin}"
+        )
         if status != 200:
-            raise RuntimeError(f"空间动态列表请求失败: HTTP {status}")
+            raise RuntimeError(f"空间说说列表请求失败(uin={target_uin}): HTTP {status}")
         payload = extract_callback_json(text)
         # 注意不可用 `code or -1`:code=0 是成功码,or 短路会误判(内部不一致最小修复)
         code = payload.get("code")
         if code is None or int(code) != 0:
-            raise RuntimeError(f"空间动态列表返回业务错误: code={payload.get('code')}")
-        return parse_msglist(payload)
+            raise RuntimeError(f"空间说说列表返回业务错误(uin={target_uin}): code={payload.get('code')}")
+        return parse_msglist(payload, target_uin=str(target_uin), nickname=nickname)
 
     async def download_image(self, url: str, *, max_kb: int) -> bytes | None:
         """下载原图;超过体积上限返回 None(调用方以占位注入)。防盗链头带上 Referer。"""
 
-        # fetch 契约的关键字是 headers,包装参数名必须一致;包装内部须引用原 fetch,
-        # 不能写 self.fetch(替换期间 self.fetch 即包装自身,会无限递归)——内部不一致最小修复
-        original_fetch = self.fetch
-
-        async def _fetch(method: str, u: str, *, params: dict, headers: dict, timeout_ms: int):
-            headers = {**headers, "Referer": "https://user.qzone.qq.com/"}
-            return await original_fetch(method, u, params=params, headers=headers, timeout_ms=timeout_ms)
-
-        self.fetch = _fetch
-        try:
-            status, body = await self._request("GET", url, params={}, binary=True)
-        finally:
-            self.fetch = original_fetch
+        status, body = await self._request("GET", url, params={}, binary=True)
         if status != 200:
             logger.warning("空间图片下载失败(HTTP %s): %s", status, url)
             return None

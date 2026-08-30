@@ -1,5 +1,8 @@
-"""QQ 空间网页 cgi 协议纯函数(蓝本 Maizone 3.0.2,自研实现;端点与鉴权见 spec §2.14/§11)。
+"""QQ 空间网页 cgi 协议纯函数(蓝本 Maizone 3.0.2 + 联调实证 2026-08-30 修正)。
 
+关键事实(联调裁定):emotion_cgi_msglist_v6 是「指定用户说说列表」(uin=目标,
+响应顶层 msglist,条目含 tid/created_time/content/pic[].url1/commentlist),
+不是好友聚合接口(vFeeds 形态不存在);好友列表经 adapter 的 OneBot API 获取。
 仅放纯函数:解析与签名。IO(QzoneClient)在 client.py,便于离线单测。
 """
 
@@ -11,12 +14,12 @@ from dataclasses import dataclass, field
 
 logger = logging.getLogger(__name__)
 
-FEED_APPID_SHUOSHUO = 311  # M1 只处理说说类动态,其余 appid 跳过并计数(spec §2.14)
+FEED_APPID_SHUOSHUO = 311  # 说说类动态(msglist 条目即说说,M2 互动路径沿用此常量)
 
 
 @dataclass
 class FeedItem:
-    """一条好友动态(说说)。"""
+    """一条好友说说(来自指定用户的 msglist)。"""
 
     tid: str
     abstime: str
@@ -37,9 +40,9 @@ def generate_gtk(p_skey: str) -> int:
 
 
 def extract_callback_json(text: str) -> dict:
-    """从 `frameElement.callback( {...} );` 包裹的响应中截取 JSON。
+    """从 `_Callback( {...} );` / `_preloadCallback( {...} );` 包裹的响应中截取 JSON。
 
-    比 Maizone 的固定偏移截取更稳:取首个 "(" 与末个 ")" 之间的片段再 strip。
+    取首个 "(" 与末个 ")" 之间的片段再 strip(对任意回调名通用)。
     解析失败抛出(调用方告警,不静默)。
     """
 
@@ -52,46 +55,55 @@ def extract_callback_json(text: str) -> dict:
     return data
 
 
-def _feed_images(feed: dict) -> list[str]:
-    pic = feed.get("pic") or {}
-    urls: list[str] = []
-    for item in pic.get("picList") or []:
-        url = str((item or {}).get("url1") or "")
-        if url:
-            urls.append(url)
-    return urls
+def parse_msglist(payload: dict, *, target_uin: str, nickname: str) -> list[FeedItem]:
+    """解析指定用户 msglist 载荷为 FeedItem 列表(空/缺 msglist 返回空列表)。
 
-
-def parse_msglist(payload: dict) -> tuple[list[FeedItem], int]:
-    """解析 emotion_cgi_msglist_v6 载荷为 FeedItem 列表。
-
-    Returns:
-        (items, skipped_non_311): 非 311 动态跳过并计数(告警统计由调用方记日志)。
+    uin/nickname 由调用方传入:响应的 logininfo 是访客(bot)信息,好友昵称
+    以 adapter 好友列表为准(remark 优先)。
     """
 
-    data = (payload or {}).get("data") or {}
+    entries = (payload or {}).get("msglist") or []
     items: list[FeedItem] = []
-    skipped = 0
-    for feed in data.get("vFeeds") or []:
+    for feed in entries:
         if not isinstance(feed, dict):
             continue
-        appid = int(feed.get("appid") or 0)
-        if appid != FEED_APPID_SHUOSHUO:
-            skipped += 1
-            continue
-        userinfo = feed.get("userinfo") or {}
-        uin = str(userinfo.get("uin") or "")
-        nickname = str((userinfo.get("user") or {}).get("nick") or "") or uin
-        summary = ((feed.get("summary") or {}).get("summary") or "").strip()
+        urls: list[str] = []
+        for pic in feed.get("pic") or []:
+            url = str((pic or {}).get("url1") or "")
+            if url:
+                urls.append(url)
         items.append(
             FeedItem(
                 tid=str(feed.get("tid") or ""),
-                abstime=str(feed.get("abstime") or ""),
-                uin=uin,
-                nickname=nickname,
-                content=summary,
-                image_urls=_feed_images(feed),
-                appid=appid,
+                abstime=str(feed.get("created_time") or ""),
+                uin=str(target_uin),
+                nickname=str(nickname or target_uin),
+                content=str(feed.get("content") or "").strip(),
+                image_urls=urls,
             )
         )
-    return items, skipped
+    return items
+
+
+def parse_friend_list(result: object) -> list[dict]:
+    """解析 adapter OneBot get_friend_list 的返回(信封容忍)。
+
+    Returns:
+        [{"user_id": str, "nickname": str}]——remark 优先于 nickname(好友备注
+        是用户对该好友的称呼,注入时更拟人);解析失败/空返回 []。
+    """
+
+    if isinstance(result, dict):
+        result = result.get("data") if isinstance(result.get("data"), list) else result.get("friends")
+    if not isinstance(result, list):
+        return []
+    out: list[dict] = []
+    for item in result:
+        if not isinstance(item, dict):
+            continue
+        uid = str(item.get("user_id") or item.get("uin") or "").strip()
+        if not uid:
+            continue
+        name = str(item.get("remark") or item.get("nickname") or "").strip() or uid
+        out.append({"user_id": uid, "nickname": name})
+    return out

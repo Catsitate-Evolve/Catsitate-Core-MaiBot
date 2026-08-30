@@ -18,7 +18,7 @@ import sys
 import time
 
 import httpx
-from maibot_sdk import Command, HookHandler, MaiBotPlugin, Tool
+from maibot_sdk import Command, HookHandler, MaiBotPlugin, MessageGateway, Tool
 from maibot_sdk.types import HookMode, HookOrder, ToolParameterInfo
 
 # spike ① 实测结论:加载器仅将 plugins 父目录临时加入 sys.path,插件目录本身不在,
@@ -34,11 +34,16 @@ from catsitate_core.memo import MemoService, validate_remind_at
 from catsitate_core.msg_react import MsgReactEngine, parse_choice_resp
 from catsitate_core.poke import PokeEngine
 from catsitate_core.prompt_deploy import sync_prompt_templates
-from catsitate_core.qzone import QZONE_PLATFORM
+from catsitate_core.qzone import QZONE_GATEWAY_NAME, QZONE_PLATFORM
+from catsitate_core.qzone.client import CookieManager, QzoneClient
+from catsitate_core.qzone.injector import FeedInjector
+from catsitate_core.qzone.messages import build_feed_message
+from catsitate_core.qzone.outbound import M1_OUTBOUND_ERROR, extract_outbound_text
 from catsitate_core.qzone.scene import (
     QZONE_SCENE_TEXT, SCENE_EMPTY_CONFIG_WARNING, SCENE_MISS_WARNING,
     apply_scene_surgery, filter_tool_definitions, is_qzone_message,
 )
+from catsitate_core.qzone.seen_store import SeenStore
 from catsitate_core.reply_guard import (
     CONTEXT_TOOLS,
     backfill_reply_items,
@@ -176,7 +181,26 @@ class CatsitatePlugin(MaiBotPlugin):
         self._stream_cache_at: float = 0.0
         self._settling: set[str] = set()  # 结算并发防护键(按人,user_id;最终审查 Important#1/M2)
         self._background_tasks: set[asyncio.Task] = set()  # 后台任务引用(最终审查 Important#2)
+        # 三期 M1:QQ空间感知模块(网关/客户端/注入泵;启动自检失败则保持停用并已告警)
+        self.qzone_seen = SeenStore(self.store)
+        self.qzone_seen.ensure_schema()
+        self.qzone_cookie = CookieManager(
+            JsonSnapshot(data_dir / "qzone_cookies.json"),
+            api_call=self.ctx.api.call,
+            refresh_minutes=self.config.qzone.cookie_refresh_minutes,
+        )
+        self.qzone_client = QzoneClient(
+            cookie_provider=self.qzone_cookie.get,
+            fetch=self._qzone_http_fetch,
+            timeout_ms=self.config.qzone.request_timeout_ms,
+            max_retries=self.config.qzone.max_retries,
+        )
+        self.qzone_injector = FeedInjector(decision_window_s=self.config.qzone.decision_window_seconds)
+        self._qzone_available = await self._qzone_selfcheck()
+        if self._qzone_available:
+            await self._qzone_gateway_ready()
         self._scheduler = Scheduler(tick_seconds=60)
+        self._scheduler.register("qzone_poll", max(self.config.qzone.poll_interval_minutes, 1) * 60, self._qzone_poll_tick)
         self._scheduler.register("weather", max(self.config.time_aware.weather_refresh_minutes, 1) * 60, self._refresh_environment)
         self._scheduler.register("holiday", 24 * 3600, self._refresh_environment)
         self._scheduler.register("memo_cleanup", 3600, self._cleanup_memos)
@@ -222,6 +246,7 @@ class CatsitatePlugin(MaiBotPlugin):
             self._scheduler.register("weather", max(self.config.time_aware.weather_refresh_minutes, 1) * 60, self._refresh_environment)
             self._scheduler.unregister("daily_settle")
             self._scheduler.register("daily_settle", max(self.config.favorability.window_hours, 1) * 3600, self._daily_settle)
+            self._qzone_available = await self._qzone_selfcheck() if self.config.qzone.enabled else False
             self._setup_debug_logging()  # debug 开关随配置热生效
             self.ctx.logger.info("catsitate_core 配置已刷新,派生缓存已重置")
         elif scope == "bot":
@@ -451,6 +476,127 @@ class CatsitatePlugin(MaiBotPlugin):
             self.ctx.logger.warning(msg)
             return msg
         return str(result.get("response") or "")
+
+    # ---------- QQ空间(M1 感知) ----------
+
+    async def _qzone_http_fetch(self, method: str, url: str, *, params: dict, headers: dict, timeout_ms: int) -> tuple[int, str]:
+        """httpx 薄封装(client.py 的 fetch 注入点;超时与异常上抛由调用方告警)。"""
+
+        async with httpx.AsyncClient(timeout=timeout_ms / 1000) as client:
+            resp = await client.request(method, url, params=params, headers=headers)
+            return resp.status_code, resp.text
+
+    async def _qzone_selfcheck(self) -> bool:
+        """启动自检:开关 → person 别名折叠(qzone-qq 与 qq 同命名空间) → focus_mode 前置。"""
+
+        if not (self.config.plugin.enabled and self.config.qzone.enabled):
+            return False
+        try:
+            a = await self.ctx.person.get_id(platform=QZONE_PLATFORM, user_id="1")
+            b = await self.ctx.person.get_id(platform="qq", user_id="1")
+            if a != b:
+                # 折叠失效:降级为分裂模式继续运行(每进程告警一次,spec §2.17)
+                self._qzone_warn_once("person_split", "person 别名自检失败(qzone-qq 未折叠到 qq 命名空间),空间侧记忆与 QQ 侧分裂")
+        except Exception:
+            self.ctx.logger.exception("person 别名自检调用失败,QQ空间模块停用")
+            return False
+        try:
+            result = await self.ctx.config.get(key="experimental.focus_mode", default=False)
+            value = result.get("value") if isinstance(result, dict) else result
+            if value:
+                self.ctx.logger.warning("QQ空间模块停用:主程序 experimental.focus_mode 开启(focus 槽会吞掉注入的强制触发,spec §2.18)")
+                return False
+        except Exception:
+            self.ctx.logger.exception("focus_mode 前置检测失败,QQ空间模块停用")
+            return False
+        return True
+
+    async def _qzone_gateway_ready(self) -> None:
+        """网关就绪上报(account 用真实 bot QQ:经别名折叠统一 bot 自身 person,spec §2.1)。"""
+
+        account = str(self.config.favorability.bot_user_id or "").strip()
+        if not account:
+            self.ctx.logger.warning("QQ空间模块停用:favorability.bot_user_id 为空,虚拟平台无法注册 bot 账号")
+            self._qzone_available = False
+            return
+        try:
+            await self.ctx.gateway.update_state(QZONE_GATEWAY_NAME, ready=True, platform=QZONE_PLATFORM, account_id=account)
+            self.ctx.logger.info("QQ空间虚拟平台就绪(platform=%s,伪群=%s)", QZONE_PLATFORM, self.config.qzone.virtual_group_id)
+        except Exception:
+            self.ctx.logger.exception("QQ空间网关就绪上报失败,模块停用(重载插件重试)")
+            self._qzone_available = False
+
+    @MessageGateway("duplex", name=QZONE_GATEWAY_NAME, description="QQ空间虚拟聊天平台(动态流入/出站路由)", platform=QZONE_PLATFORM)
+    async def qzone_gateway(self, *, message: dict, route: dict, metadata: dict) -> dict:
+        """duplex 驱动回调:M1 感知阶段一律显式拒发(spec §3.3 出站终局兜底)。"""
+
+        del route, metadata
+        text, has_binary = extract_outbound_text(message)
+        self.ctx.logger.warning("QQ空间出站被拒(%s;binary=%s,文本预览=%.30s)", M1_OUTBOUND_ERROR, has_binary, text)
+        return {"success": False, "error": M1_OUTBOUND_ERROR}
+
+    async def _qzone_poll_tick(self) -> None:
+        """空间窗口内周期拉取;窗口切换时收泵并回退未读。"""
+
+        if not self._qzone_available:
+            return
+        if self.config.sleep.enabled and self.sleep.is_sleeping():
+            return  # 睡眠绝对静默(spec §2.6)
+        win = current_window(self._schedule_data, datetime.now().strftime("%Y-%m-%dT%H:%M"))
+        in_qzone_window = bool(win and win.get("kind") == "daily" and win.get("qzone"))
+        if not in_qzone_window:
+            if self.qzone_injector.window_active:
+                self.qzone_injector.window_ended()
+                reverted = self.qzone_seen.revert_pending()
+                self.ctx.logger.info("QQ空间窗口结束,未注入队列回退未读(%d 条)", reverted)
+            return
+        if not self.qzone_injector.window_active:
+            self.qzone_injector.window_started()
+            self.ctx.logger.info("QQ空间窗口开始,注入泵激活")
+        try:
+            feeds, skipped = await self.qzone_client.get_friend_feeds(num=10)
+        except Exception:
+            self.ctx.logger.exception("QQ空间动态拉取失败,本轮跳过")
+            return
+        if skipped:
+            self.ctx.logger.info("QQ空间拉取:跳过 %d 条非说说类动态(appid!=311)", skipped)
+        added = [f for f in feeds if self.qzone_seen.mark_queued(f.tid, abstime=f.abstime, author_uin=f.uin, summary=f.content[:60])]
+        if added:
+            self.qzone_injector.enqueue(added)
+            self.ctx.logger.info("QQ空间新动态入队 %d 条", len(added))
+        await self._qzone_pump()
+
+    async def _qzone_pump(self) -> None:
+        """串行注入:超时兜底 → 取队首 → 下载图片 → route_message → mark_seen。"""
+
+        if not self._qzone_available or not self.qzone_injector.window_active:
+            return
+        now = time.monotonic()
+        if self.qzone_injector.awaiting_timed_out(now):
+            self.ctx.logger.warning("QQ空间注入等待轮完成超时(tid=%s),强制推进", self.qzone_injector.awaiting_tid)
+            self.qzone_injector.force_release(now)
+        feed = self.qzone_injector.next_to_inject(now)
+        if feed is None:
+            return
+        images: list[tuple[str, bytes]] = []
+        for url in feed.image_urls:
+            data = await self.qzone_client.download_image(url, max_kb=self.config.qzone.image_max_kb)
+            if data is not None:
+                images.append((url, data))
+        self._qzone_seq += 1
+        msg = build_feed_message(
+            feed, seq=self._qzone_seq, group_id=self.config.qzone.virtual_group_id,
+            group_name=self.config.qzone.virtual_group_name, images=images,
+            max_kb=self.config.qzone.image_max_kb, now_epoch=time.time(),
+        )
+        try:
+            await self.ctx.gateway.route_message(QZONE_GATEWAY_NAME, msg)
+        except Exception:
+            self.ctx.logger.exception("QQ空间动态注入失败(tid=%s),本轮跳过", feed.tid)
+            return
+        self.qzone_injector.mark_injected(feed.tid, time.monotonic())
+        self.qzone_seen.mark_seen(feed.tid, datetime.now().strftime("%Y-%m-%dT%H:%M:%S"))
+        self.ctx.logger.info("QQ空间动态已注入(tid=%s,作者=%s)", feed.tid, feed.nickname)
 
     # ---------- 命令 ----------
 

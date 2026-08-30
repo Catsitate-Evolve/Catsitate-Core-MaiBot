@@ -43,7 +43,8 @@
     "maisaka.proactive.trigger",
     "database.get",
     "config.get",
-    "chat.get_all_streams"
+    "chat.get_all_streams",
+    "person.get_id"
   ],
   "i18n": {
     "default_locale": "zh-CN",

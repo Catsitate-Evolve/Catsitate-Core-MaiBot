@@ -43,3 +43,15 @@ def test_build_message_empty_content_uses_placeholder():
     msg = build_feed_message(_feed(content=""), seq=1, group_id="g", group_name="n",
                              images=[], max_kb=1, now_epoch=1.0)
     assert msg["raw_message"][0]["data"] == "(无文字内容)"
+
+
+def test_gateway_declared_platform_constant():
+    """网关平台必须是常量 qzone-qq(连字符别名折叠进 qq 人物命名空间,spec §2.17)。"""
+    import inspect
+
+    import plugin as _plugin  # tests/conftest 已把插件目录加入 sys.path
+
+    src = inspect.getsource(_plugin)
+    assert 'MessageGateway(' in src and '"qzone-qq"' in src or "QZONE_PLATFORM" in src
+    # 网关回调显式拒发
+    assert "M1_OUTBOUND_ERROR" in src

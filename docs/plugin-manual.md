@@ -46,7 +46,7 @@ Catsitate 是部署在 MaiBot 上的 QQ 聊天机器人人设(伪三无猫耳少
 
 | 文件 | 职责(一句话) |
 |---|---|
-| `plugin.py` | 薄接线层:插件生命周期、6 个 Hook、6 个工具、1 个命令、8 个后台调度任务、全部 SDK 适配与日志(业务逻辑不在此)。 |
+| `plugin.py` | 薄接线层:插件生命周期、8 个 Hook、6 个工具、1 个命令、9 个后台调度任务、全部 SDK 适配与日志(业务逻辑不在此)。 |
 | `catsitate_core/config.py` | 配置模型(`PluginConfigBase` 嵌套 13 节,中文 label 供 WebUI 渲染)。 |
 | `catsitate_core/storage.py` | 存储层:`SQLiteStore`(sqlite3 薄封装,WAL 模式)+ `JsonSnapshot`(轻量 JSON 快照,原子写)。 |
 | `catsitate_core/inject.py` | 注入框架唯一出口:注入块组装、`BLOCK_ORDER` 固定排序、字节级版本化缓存复用。 |

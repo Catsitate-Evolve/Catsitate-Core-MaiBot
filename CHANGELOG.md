@@ -1,6 +1,6 @@
 # Changelog
 
-## 0.4.0(2026-08-30) 三期 M1:QQ空间感知
+## v0.4.0(2026-08-30) 三期 M1:QQ空间感知
 
 - 新增 `qzone` 配置节与 `catsitate_core/qzone/` 模块包(协议客户端/去重存储/消息构造/注入状态机/场景纯函数)。
 - QQ空间动态映射为 `qzone-qq` 虚拟群聊流(连字符别名与真实 QQ 统一 person),串行注入复用主程序 planner→replyer 链;注入带 is_mentioned 强制触发与新鲜时间戳,图片带 base64 交主流水线处理。

@@ -23,7 +23,10 @@ def test_build_message_core_fields():
     info = msg["message_info"]
     assert info["user_info"] == {"user_id": "10001", "user_nickname": "小明"}
     assert info["group_info"] == {"group_id": "qzone_feed", "group_name": "QQ空间"}
-    assert msg["additional_config"]["is_mentioned"] == 1.0  # 强制触发(spec §2.18)
+    # 强制触发标记必须在 message_info.additional_config 内(联调缺陷#3:
+    # 主程序 is_mentioned_bot_in_message 只读 message_info.additional_config,
+    # 顶层键会被丢弃,注入消息将卡在必要性评分 50<80 不触发 planner 轮)
+    assert info["additional_config"]["is_mentioned"] == 1.0
     assert msg["raw_message"] == [{"type": "text", "data": "今天天气好"}]
 
 

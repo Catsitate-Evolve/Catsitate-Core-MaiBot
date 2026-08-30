@@ -49,7 +49,9 @@ def build_feed_message(
         "message_info": {
             "user_info": {"user_id": str(feed.uin), "user_nickname": feed.nickname},
             "group_info": {"group_id": group_id, "group_name": group_name},
+            # is_mentioned 必须嵌在 message_info.additional_config 内:主程序
+            # is_mentioned_bot_in_message 只读该位置(联调缺陷#3,顶层键会被丢弃)
+            "additional_config": {"is_mentioned": 1.0},
         },
-        "additional_config": {"is_mentioned": 1.0},
         "raw_message": raw,
     }

@@ -76,6 +76,31 @@ def test_cookie_manager_persists_and_throttles(tmp_path):
     assert asyncio.run(cm2.get()) == ck and len(calls) == 1
 
 
+def test_cookie_manager_napcat_envelope_and_params(tmp_path):
+    """联调缺陷修正(2026-08-30):adapter API 形态为 params 单关键字;NapCat 返回 cookies 字符串。"""
+
+    calls = []
+
+    async def fake_api_call(method, **kw):
+        calls.append(kw)
+        return {"status": "ok", "retcode": 0, "data": {"cookies": "p_skey=SK2; uin=oq1; foo=bar"}}
+
+    cm = CookieManager(_cookie_snapshot(tmp_path), api_call=fake_api_call, refresh_minutes=60)
+    ck = asyncio.run(cm.get())
+    assert ck == {"p_skey": "SK2", "uin": "oq1", "foo": "bar"}
+    assert calls == [{"params": {"domain": "user.qzone.qq.com"}}]  # 单 params 关键字
+
+
+def test_cookie_manager_napcat_data_string(tmp_path):
+    """NapCat data 直接为 cookie 字符串的形态。"""
+
+    async def fake_api_call(method, **kw):
+        return {"retcode": 0, "data": "p_skey=SK3; uin=oq2"}
+
+    cm = CookieManager(_cookie_snapshot(tmp_path), api_call=fake_api_call, refresh_minutes=60)
+    assert asyncio.run(cm.get()) == {"p_skey": "SK3", "uin": "oq2"}
+
+
 def test_cookie_manager_missing_pskey_warns_none(tmp_path):
     async def fake_api_call(method, **params):
         return {"cookies": {"uin": "o123"}}  # 缺 p_skey

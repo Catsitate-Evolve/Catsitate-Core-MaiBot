@@ -45,7 +45,8 @@ class CookieManager:
                 self._fetched_at = now
                 return self._cookies
         try:
-            result = await self.api_call("adapter.napcat.account.get_cookies", domain=COOKIE_DOMAIN)
+            # 联调修正(2026-08-30):adapter API 形态为单 params 关键字(dict 透传给 NapCat 动作)
+            result = await self.api_call("adapter.napcat.account.get_cookies", params={"domain": COOKIE_DOMAIN})
         except Exception:
             logger.exception("空间 cookie 获取失败(adapter.napcat.account.get_cookies),本轮跳过")
             return self._cookies or None
@@ -62,22 +63,44 @@ class CookieManager:
         return cookies
 
 
-def _extract_cookies(result: Any) -> dict[str, str]:
-    """容忍 adapter 返回形态:{"cookies": {...}} / {"data": {"cookies": {...}}} / 裸 dict。
+def _parse_cookie_string(raw: str) -> dict[str, str]:
+    """解析 NapCat 形态的 cookie 字符串("k1=v1; k2=v2")。"""
 
-    具体形态优先于裸 dict 兜底:裸 dict 无 "cookies" 键,只作最后候选,
+    out: dict[str, str] = {}
+    for part in raw.split(";"):
+        if "=" not in part:
+            continue
+        key, _, value = part.strip().partition("=")
+        if key.strip():
+            out[key.strip()] = value.strip()
+    return out
+
+
+def _extract_cookies(result: Any) -> dict[str, str]:
+    """容忍 adapter/NapCat 返回形态:
+    {"cookies": {...}} / {"data": {"cookies": {...}}} / {"data": {"cookies": "k=v; ..."}}
+    / {"data": "k=v; ..."} / 裸 dict。
+
+    具体形态优先于裸 dict 兜底:裸 dict 无 "cookies"/"data" 键,只作最后候选,
     避免把 {"cookies": {...}} 整体误当 cookie 表(内部不一致最小修复)。
     """
 
     if not isinstance(result, dict):
         return {}
+    data = result.get("data")
     for candidate in (
         result.get("cookies"),
-        (result.get("data") or {}).get("cookies"),
+        data.get("cookies") if isinstance(data, dict) else None,
+        data if isinstance(data, str) else None,
+        data if isinstance(data, dict) else None,
         result,
     ):
         if isinstance(candidate, dict) and candidate:
             return {str(k): str(v) for k, v in candidate.items()}
+        if isinstance(candidate, str) and "=" in candidate:
+            parsed = _parse_cookie_string(candidate)
+            if parsed:
+                return parsed
     return {}
 
 

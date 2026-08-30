@@ -1,4 +1,4 @@
-# CLAUDE.md — catsitate_core_maibot
+# AGENTS.md — catsitate_core_maibot
 
 Catsitate 的 MaiBot 核心人格行为插件(独立 git repo,直接提交 main;主程序在父目录 `../../../`,只读)。本指南用于插件的开发、测试与审查。
 
@@ -12,7 +12,6 @@ Catsitate 的 MaiBot 核心人格行为插件(独立 git repo,直接提交 main;
 - **只改插件目录,不改 MaiBot 主程序**(含 `prompts/`、配置模板、`.meta.toml`);主程序缺陷在插件侧规避或上报,不绕道改主程序。
 - **简体中文**:日志、注释、文档、用户可见文本。
 - **错误显式暴露**:禁止静默 fallback——回退必须 `logger.warning/exception` 告警;配置错误拒绝加载;测试覆盖失败路径。
-- **禁止纯概率行为**:行为需上下文/规则/LLM 判定。
 - **只使用 maibot-plugin-sdk**:capability 必须在 `_manifest.json` 声明;不 import 主程序内部模块。
 - 生产容器根为 `/MaiMBot`(`catsitate_core/llm_provider.py` 的 `_PROJECT_ROOT`);生产部署由用户执行,本地只开发+单测+可选集成冒烟。
 

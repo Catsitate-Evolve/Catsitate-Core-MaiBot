@@ -77,3 +77,30 @@ def test_default_config_has_no_none_values():
         return found
 
     assert walk(defaults) == []
+
+
+def test_qzone_section_defaults():
+    from catsitate_core.config import CatsitateConfig
+
+    cfg = CatsitateConfig()
+    q = cfg.qzone
+    assert q.enabled is True
+    assert q.poll_interval_minutes == 15
+    assert q.decision_window_seconds == 75
+    assert q.image_max_kb == 3072
+    assert q.virtual_group_id == "qzone_feed"
+    assert q.virtual_group_name == "QQ空间"
+    assert q.summary_count == 5
+    assert q.summary_days == 3
+    assert q.request_timeout_ms == 10000
+    assert q.max_retries == 0
+    assert q.cookie_refresh_minutes == 60
+    assert "wait" in q.tool_whitelist and "reply" in q.tool_whitelist
+    assert "tool_search" not in q.tool_whitelist and "msg_react" not in q.tool_whitelist
+
+
+def test_qzone_constants():
+    from catsitate_core.qzone import QZONE_GATEWAY_NAME, QZONE_PLATFORM
+
+    assert QZONE_PLATFORM == "qzone-qq"
+    assert QZONE_GATEWAY_NAME == "catsitate_qzone"

@@ -209,6 +209,28 @@ class ScheduleSection(PluginConfigBase):
     daily_speak_limit: int = _f(5, "全天主动发言次数上限(每次发言计 1)", label="每日发言上限")
 
 
+class QzoneSection(PluginConfigBase):
+    __ui_label__ = "QQ空间"
+    __ui_order__ = 11
+
+    enabled: bool = _f(True, "QQ空间模块开关(M1:仅读动态,不发评论)", label="QQ空间模块开关")
+    poll_interval_minutes: int = _f(15, "空间窗口内动态拉取间隔(分钟)", label="拉取间隔(分钟)")
+    decision_window_seconds: int = _f(75, "注入后等待 planner 轮完成的超时兜底(秒;须大于最坏轮延迟)", label="决策窗口超时(秒)")
+    image_max_kb: int = _f(3072, "注入图片体积上限(KB,超限以 [图片] 占位注入;硬上限受 RPC 16MB 帧限制)", label="图片体积上限(KB)")
+    tool_whitelist: list[str] = _f(
+        ["wait", "reply", "query_memory", "query_person_profile", "memo_write", "memo_read", "inspect_image"],
+        "虚拟流 planner 工具白名单(按名过滤;硬门控不随此配置放松)",
+        label="虚拟流工具白名单",
+    )
+    virtual_group_id: str = _f("qzone_feed", "虚拟群聊流伪群号(勿与真实群号相同)", label="虚拟伪群号")
+    virtual_group_name: str = _f("QQ空间", "虚拟群聊流显示名", label="虚拟流显示名")
+    summary_count: int = _f(5, "真实聊天注入的近期已见动态条数", label="见闻摘要条数")
+    summary_days: int = _f(3, "见闻摘要回溯天数", label="见闻回溯天数")
+    request_timeout_ms: int = _f(10000, "空间 HTTP 请求超时(毫秒)", label="HTTP 超时(毫秒)")
+    max_retries: int = _f(0, "空间请求失败重试次数(0=失败即告警跳过,不做重试循环)", label="失败重试次数")
+    cookie_refresh_minutes: int = _f(60, "cookie 刷新节流(分钟,间隔内跳过重取)", label="cookie 刷新节流(分钟)")
+
+
 class DebugSection(PluginConfigBase):
     __ui_label__ = "调试"
     __ui_order__ = 99
@@ -234,4 +256,5 @@ class CatsitateConfig(PluginConfigBase):
     image_relook: ImageRelookSection = Field(default_factory=ImageRelookSection)
     sleep: SleepSection = Field(default_factory=SleepSection)
     schedule: ScheduleSection = Field(default_factory=ScheduleSection)
+    qzone: QzoneSection = Field(default_factory=QzoneSection)
     debug: DebugSection = Field(default_factory=DebugSection)

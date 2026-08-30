@@ -70,3 +70,9 @@ def test_reset_clears_cache():
     second = assembler.render(blocks)
     assert first == second
     assert first[0] is not second[0]
+
+
+def test_block_order_includes_qzone_between_schedule_and_memo():
+    from catsitate_core.inject import BLOCK_ORDER
+
+    assert BLOCK_ORDER == ("level_rule", "environment", "schedule", "qzone", "memo", "favorability")

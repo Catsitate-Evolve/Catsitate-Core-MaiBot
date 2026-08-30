@@ -15,6 +15,7 @@ import json
 import logging
 import os
 import sys
+import time
 
 import httpx
 from maibot_sdk import Command, HookHandler, MaiBotPlugin, Tool
@@ -34,7 +35,10 @@ from catsitate_core.msg_react import MsgReactEngine, parse_choice_resp
 from catsitate_core.poke import PokeEngine
 from catsitate_core.prompt_deploy import sync_prompt_templates
 from catsitate_core.qzone import QZONE_PLATFORM
-from catsitate_core.qzone.scene import is_qzone_message
+from catsitate_core.qzone.scene import (
+    QZONE_SCENE_TEXT, SCENE_EMPTY_CONFIG_WARNING, SCENE_MISS_WARNING,
+    apply_scene_surgery, filter_tool_definitions, is_qzone_message,
+)
 from catsitate_core.reply_guard import (
     CONTEXT_TOOLS,
     backfill_reply_items,
@@ -83,6 +87,11 @@ class CatsitatePlugin(MaiBotPlugin):
     _debug_prev_level: int = logging.NOTSET  # 开启前 logger 级别(关闭时恢复)
     _llm_warned_day: str = ""  # 旁路 LLM 用量告警的已告警日期(跨越当天只告警一次)
     _qzone_session_ids: set[str] = set()  # 虚拟流 session(运行时收集;豁免判定用)
+    _qzone_warned: set[str] = set()
+    _qzone_group_prompt_value: str = ""
+    _qzone_group_prompt_at: float = 0.0
+    _qzone_available: bool = False  # 启动自检+网关就绪后置 True(Task 12)
+    _qzone_seq: int = 0
 
     # ---------- 生命周期 ----------
 
@@ -472,6 +481,19 @@ class CatsitatePlugin(MaiBotPlugin):
             if messages is None:
                 self.ctx.logger.debug("注入跳过: messages 取不到")
                 return {"action": "continue", "modified_kwargs": kwargs}
+            stream_id = str(kwargs.get("session_id") or "")
+            new_kwargs = {**kwargs}
+            if stream_id in self._qzone_session_id_set() and self._qzone_available:
+                messages, scene_status = apply_scene_surgery(messages, await self._qzone_group_prompt())
+                if scene_status == "empty_config":
+                    self._qzone_warn_once("scene_empty", SCENE_EMPTY_CONFIG_WARNING)
+                elif scene_status == "miss":
+                    self._qzone_warn_once("scene_miss", SCENE_MISS_WARNING)
+                new_kwargs = {**new_kwargs, self._MESSAGES_KEY: messages}
+                defs = kwargs.get("tool_definitions")
+                if isinstance(defs, list):
+                    filtered = filter_tool_definitions([d for d in defs if isinstance(d, dict)], self.config.qzone.tool_whitelist)
+                    new_kwargs = {**new_kwargs, "tool_definitions": filtered}
             rendered = self.assembler.render(blocks)
             if not rendered:
                 self.ctx.logger.debug("注入跳过: render 结果为空(blocks=%d)", len(blocks))
@@ -480,7 +502,7 @@ class CatsitatePlugin(MaiBotPlugin):
             rendered = [self._to_snapshot_item(m["content"]) for m in rendered]
             insert_at = self._system_tail_index(messages)
             new_messages = messages[:insert_at] + rendered + messages[insert_at:]
-            new_kwargs = {**kwargs, self._MESSAGES_KEY: new_messages}
+            new_kwargs = {**new_kwargs, self._MESSAGES_KEY: new_messages}
             self.ctx.logger.debug("注入完成: 插入 %d 条(system 尾 %d/总 %d)", len(rendered), insert_at, len(messages))
             return {"action": "continue", "modified_kwargs": new_kwargs}
         except Exception:
@@ -657,6 +679,38 @@ class CatsitatePlugin(MaiBotPlugin):
         # 撤回动作(spike ④ 验证后实现:删除待发送项或调用撤回 API);当前先日志
         return {"action": "continue", "modified_kwargs": kwargs}
 
+    @HookHandler("maisaka.replyer.before_model_request", name="catsitate_qzone_replyer_scene", mode=HookMode.BLOCKING, order=HookOrder.LATE)
+    async def qzone_replyer_scene(self, **kwargs: Any) -> dict[str, Any]:
+        """replyer 侧场景替换(spec §2.11):before_request 不带 items,必须挂 before_model_request。"""
+
+        if not self._qzone_available or str(kwargs.get("session_id") or "") not in self._qzone_session_id_set():
+            return {"action": "continue", "modified_kwargs": kwargs}
+        items = kwargs.get(self._MESSAGES_KEY)
+        if not isinstance(items, list):
+            return {"action": "continue", "modified_kwargs": kwargs}
+        new_items, status = apply_scene_surgery(items, await self._qzone_group_prompt())
+        if status == "empty_config":
+            self._qzone_warn_once("scene_empty", SCENE_EMPTY_CONFIG_WARNING)
+        elif status == "miss":
+            self._qzone_warn_once("scene_miss", SCENE_MISS_WARNING)
+        if new_items is items:
+            return {"action": "continue", "modified_kwargs": kwargs}
+        # item_schema_version 等原键必须展平保留(丢失=修改被主程序静默丢弃,plugin.py:472 已实测此坑)
+        return {"action": "continue", "modified_kwargs": {**kwargs, self._MESSAGES_KEY: new_items}}
+
+    @HookHandler("maisaka.planner.after_response", name="catsitate_qzone_turn", mode=HookMode.OBSERVE, order=HookOrder.LATE)
+    async def qzone_turn_signal(self, **kwargs: Any) -> None:
+        """轮完成信号(spec §2.4):无 tool_calls 的 planner 响应=本轮不再有出站,释放注入泵。"""
+
+        if not self._qzone_available or str(kwargs.get("session_id") or "") not in self._qzone_session_id_set():
+            return
+        if self._called_tools(kwargs):
+            if "wait" in self._called_tools(kwargs):
+                self.qzone_injector.on_wait_state(time.monotonic())
+            return
+        self.qzone_injector.on_turn_complete(time.monotonic())
+        self._spawn_background_task(self._qzone_pump())
+
     # ---------- 内部辅助 ----------
 
     # spike ②/③/④ 结论的字段名集中于此,不符仅改此处
@@ -747,6 +801,10 @@ class CatsitatePlugin(MaiBotPlugin):
                 if due_today:
                     line += ";" + ";".join(f"备忘:{e['content']}" for e in due_today[:3])
                 blocks.append(InjectionBlock("schedule", f"sch:{win.get('start')}|{'fired' if fired else ''}", line))
+        if cfg.qzone.enabled and self._qzone_available:
+            qz = self._qzone_block(stream_id)
+            if qz:
+                blocks.append(InjectionBlock("qzone", qz[0], qz[1]))
         if cfg.inject.memo_enabled and cfg.memo.enabled:
             # 当前流维度 + 当前说话人维度各取 3 条,按 id 去重后合计 ≤ inject_max(规格 §4.4)
             by_stream = self.memo.read(stream_id, "", limit=3)
@@ -838,6 +896,46 @@ class CatsitatePlugin(MaiBotPlugin):
         if expected:
             ids.add(expected)
         return ids
+
+    def _qzone_block(self, stream_id: str) -> tuple[str, str] | None:
+        """qzone 注入块(spec §3.4):虚拟流=语义说明+当前浏览状态;真实聊天=近期见闻摘要。"""
+
+        if stream_id in self._qzone_session_id_set():
+            state = self.qzone_injector.describe_current()
+            return f"qzone:v:{state}", f"[空间] {QZONE_SCENE_TEXT};{state}"
+        entries = self.qzone_seen.recent_seen(
+            limit=self.config.qzone.summary_count, days=self.config.qzone.summary_days, now=datetime.now()
+        )
+        if not entries:
+            return None
+        text = "[空间] 近期刷到:" + ";".join((e["summary"] or "(无文字)") for e in entries)
+        key = "qzone:s:" + "|".join(e["tid"] for e in entries)
+        return key, text
+
+    async def _qzone_group_prompt(self) -> str:
+        """主程序 group_chat_prompt 当前值(1 小时缓存;读失败返回空串并告警)。"""
+
+        now = time.monotonic()
+        if self._qzone_group_prompt_at and now - self._qzone_group_prompt_at < 3600:
+            return self._qzone_group_prompt_value
+        try:
+            result = await self.ctx.config.get(key="chat.reply_style.group_chat_prompt", default="")
+            value = result.get("value") if isinstance(result, dict) else result
+            self._qzone_group_prompt_value = str(value or "")
+            self._qzone_group_prompt_at = now
+        except Exception:
+            self.ctx.logger.exception("group_chat_prompt 读取失败,场景替换按空配置处理")
+            self._qzone_group_prompt_value = ""
+            self._qzone_group_prompt_at = now
+        return self._qzone_group_prompt_value
+
+    def _qzone_warn_once(self, key: str, message: str) -> None:
+        """每进程每类告警一次(场景回退类)。"""
+
+        if key not in self._qzone_warned:
+            self._qzone_warned.add(key)
+            self.ctx.logger.warning("QQ空间场景回退:%s", message)
+
 
     def _qzone_expected_session_id(self) -> str:
         """按主程序 session_id 公式本地计算虚拟流预期值(md5(platform[+account]+group_id))。"""

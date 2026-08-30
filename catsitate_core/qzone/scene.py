@@ -62,6 +62,31 @@ def strip_deferred_reminder(items: list[dict]) -> list[dict]:
     ]
 
 
+def apply_scene_surgery(items: list[dict], group_prompt_value: str) -> tuple[list[dict], str]:
+    """对 items 做「场景替换 + deferred 剥除」手术;不原地修改,返回 (新列表, 场景状态)。
+
+    仅当命中替换时复制 system 首项(保留 meta/item_type 结构);miss/empty_config 时
+    items 原样返回(告警与追加兜底由 plugin 层负责——qzone 注入块自带语义说明)。
+    """
+
+    status = "miss"
+    out: list[dict] = list(items)
+    if items:
+        first = items[0]
+        if isinstance(first, dict) and str(first.get("item_type") or "") == "SystemMessageItem":
+            parts = first.get("parts") or []
+            if parts and isinstance(parts[0], dict):
+                text = str(parts[0].get("text") or "")
+                new_text, status = replace_scene(text, group_prompt_value)
+                if status == "replaced":
+                    new_first = {
+                        **first,
+                        "parts": [{**parts[0], "text": new_text}, *parts[1:]],
+                    }
+                    out = [new_first, *items[1:]]
+    return strip_deferred_reminder(out), status
+
+
 def is_qzone_message(msg: dict) -> bool:
     """判定消息是否来自虚拟流(顶层或 message_info 内层 platform)。"""
 

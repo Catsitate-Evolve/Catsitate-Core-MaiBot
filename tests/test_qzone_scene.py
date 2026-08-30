@@ -62,6 +62,24 @@ def test_is_qzone_message():
     assert is_qzone_message({}) is False
 
 
+def test_scene_surgery_assembly():
+    """组装函数:命中替换 system 首项 + 剥 reminder;miss 时原文返回(告警由 plugin 记)。"""
+    from catsitate_core.qzone.scene import apply_scene_surgery
+
+    items = [
+        {"item_type": "SystemMessageItem", "meta": {"item_id": "i0"}, "parts": [{"type": "text", "text": f"前段\n{GROUP_PROMPT}\n后段"}]},
+        {"item_type": "UserMessageItem", "meta": {"item_id": "r1"}, "parts": [{"type": "text", "text": "<system-reminder>暂不可用工具…</system-reminder>"}]},
+        {"item_type": "UserMessageItem", "meta": {"item_id": "h1"}, "parts": [{"type": "text", "text": "历史"}]},
+    ]
+    out, status = apply_scene_surgery(items, GROUP_PROMPT)
+    assert status == "replaced"
+    assert GROUP_PROMPT not in out[0]["parts"][0]["text"] and QZONE_SCENE_TEXT in out[0]["parts"][0]["text"]
+    assert [i["meta"]["item_id"] for i in out] == ["i0", "h1"]
+    assert items[0] is not out[0]  # 原 items 不被原地修改(深拷贝纪律)
+    out2, status2 = apply_scene_surgery(items, "不存在的配置值")
+    assert status2 == "miss" and out2[0] is items[0]
+
+
 def test_qzone_exempt_matrix():
     """豁免矩阵:虚拟流消息不进好感度计数;晚安判定按 session 豁免(引擎侧纯判定)。"""
     from catsitate_core.qzone.scene import is_qzone_message

@@ -2,9 +2,9 @@
 
 - 插件 ID:`catsitate.core`
 - 仓库:https://github.com/Catsitate-Evolve/Catsitate-Core-MaiBot(目录 `plugins/catsitate_core_maibot/`)
-- 文档日期:2026-08-18(对应 v0.3.2,公测修复集:睡眠窗口语义对齐/跨午夜保留/配置 None 修复/RPC 帧修复 + 旁路模板自动部署)
+- 文档日期:2026-08-30(对应 v0.4.0,三期 M1:QQ空间感知;前版 v0.3.2 公测修复集:睡眠窗口语义对齐/跨午夜保留/配置 None 修复/RPC 帧修复 + 旁路模板自动部署)
 - 适用对象:公测使用方、复审人员
-- 依据:设计规格(`docs/superpowers/specs/2026-08-14-catsitate-core-maibot-design.md`、`docs/superpowers/specs/2026-08-15-phase2-design.md`,其中全局决策 #7/#8/#9 为最终裁定)、`docs/acceptance-checklist.md`(全部已验收行为)、当前代码。本文内容与代码不一致处,以代码为准。
+- 依据:设计规格(`docs/superpowers/specs/2026-08-14-catsitate-core-maibot-design.md`、`docs/superpowers/specs/2026-08-15-phase2-design.md`,其中全局决策 #7/#8/#9 为最终裁定;`docs/superpowers/specs/2026-08-30-phase3-qzone-design.md` 为 QQ空间 M1 依据)、`docs/acceptance-checklist.md`(全部已验收行为)、当前代码。本文内容与代码不一致处,以代码为准。
 
 ---
 
@@ -14,8 +14,8 @@
 
 Catsitate 是部署在 MaiBot 上的 QQ 聊天机器人人设(伪三无猫耳少女,信息海意识体)。本插件是 Catsitate 的**核心人格行为插件**,负责在**不修改主程序**的前提下:
 
-- 为 bot 提供"生活感":好感度(按人)、睡眠作息、每日日程、节日/天气/时间感知、主动发言与主动问候;
-- 扩展行为能力:备忘录(工具+命令)、贴表情、主动戳一戳、图片重看、reply 上下文补传与可选哨兵层;
+- 为 bot 提供"生活感":好感度(按人)、睡眠作息、每日日程、节日/天气/时间感知、主动发言与主动问候、QQ空间好友动态见闻;
+- 扩展行为能力:备忘录(工具+命令)、贴表情、主动戳一戳、图片重看、reply 上下文补传与可选哨兵层、QQ空间动态浏览(感知,见 §3.13);
 - 优化请求结构使提示词缓存命中率尽量高(插件侧缓存纪律,见 §2.4)。
 
 ### 1.2 核心设计哲学
@@ -35,7 +35,8 @@ Catsitate 是部署在 MaiBot 上的 QQ 聊天机器人人设(伪三无猫耳少
 - v0.2.0(2026-08-15):二期(自然衰减/睡眠/日程/主动问候/备忘 remind_at)。
 - v0.3.0(2026-08-16):**按人重构**(好感度以 QQ 号唯一标识、特别独占、主动问候统一、配置清理)。
 - v0.3.1(2026-08-18):公测修复集(睡眠窗口语义对齐、跨午夜睡眠窗口保留、超时字段 None→0、RPC 帧超限修复)。
-- v0.3.2(2026-08-18):旁路模板自动部署(插件加载时同步到主程序 `prompts/zh-CN/`,WebUI「提示词管理」可编辑),即当前公测版本。
+- v0.3.2(2026-08-18):旁路模板自动部署(插件加载时同步到主程序 `prompts/zh-CN/`,WebUI「提示词管理」可编辑)。
+- v0.4.0(2026-08-30):三期 M1 QQ空间感知(日程浏览窗口内刷好友动态/`qzone-qq` 虚拟流注入/真实聊天见闻摘要,见 §3.13),即当前公测版本。
 
 ---
 
@@ -46,7 +47,7 @@ Catsitate 是部署在 MaiBot 上的 QQ 聊天机器人人设(伪三无猫耳少
 | 文件 | 职责(一句话) |
 |---|---|
 | `plugin.py` | 薄接线层:插件生命周期、6 个 Hook、6 个工具、1 个命令、8 个后台调度任务、全部 SDK 适配与日志(业务逻辑不在此)。 |
-| `catsitate_core/config.py` | 配置模型(`PluginConfigBase` 嵌套 12 节,中文 label 供 WebUI 渲染)。 |
+| `catsitate_core/config.py` | 配置模型(`PluginConfigBase` 嵌套 13 节,中文 label 供 WebUI 渲染)。 |
 | `catsitate_core/storage.py` | 存储层:`SQLiteStore`(sqlite3 薄封装,WAL 模式)+ `JsonSnapshot`(轻量 JSON 快照,原子写)。 |
 | `catsitate_core/inject.py` | 注入框架唯一出口:注入块组装、`BLOCK_ORDER` 固定排序、字节级版本化缓存复用。 |
 | `catsitate_core/favorability.py` | 好感度引擎:`BatchEngine`(按人批次账本/触发判定/apply_delta/特别独占钳制)+ `SettleExecutor`(素材构造→LLM 判定→落库/顺延)+ 好感度块渲染。 |
@@ -61,6 +62,7 @@ Catsitate 是部署在 MaiBot 上的 QQ 聊天机器人人设(伪三无猫耳少
 | `catsitate_core/image_relook.py` | 图片重看:图片段定位(按 message_id 或倒数 index)+ MIME 魔数嗅探 + VLM prompt 组装。 |
 | `catsitate_core/time_aware.py` | 时间感知:节日数据回退链(在线→库→内置)、lunar-python 农历节日/节气实算、天气码中文映射、环境块文本组装。 |
 | `catsitate_core/llm_provider.py` | 旁路 LLM 统一出口:8 个内置 prompt 模板、主程序 prompt 管理覆盖加载、稳定段前置组装、模板版本化缓存键。 |
+| `catsitate_core/qzone/` | QQ空间 M1 感知模块包:协议纯函数(g_tk 签名/ callback 解析/说说解析)、HTTP 客户端与 cookie 管理、动态去重存储(`qzone_feeds`)、注入消息构造、串行注入状态机、虚拟流场景手术与工具白名单纯函数、出站显式拒发(网关注册/启动自检/拉取调度接线在 `plugin.py`,见 §3.13)。 |
 | `catsitate_core/services/scheduler.py` | 后台 asyncio 任务引擎:60s tick,任务异常隔离(记录日志不中断主循环)。 |
 
 ### 2.2 消息数据流概览
@@ -73,7 +75,9 @@ Catsitate 是部署在 MaiBot 上的 QQ 聊天机器人人设(伪三无猫耳少
 replyer 出站 ── maisaka.replyer.after_response(BLOCKING LATE)──> goodnight_check(晚安入睡判定)
              ── maisaka.replyer.after_response(BLOCKING LATE)──> sentinel_check(LLM 哨兵,默认关)
 发送链路(proactive)── maisaka.proactive.trigger 由调度器在日程窗口调用,表达权交主程序
-后台调度器(60s tick)── 天气/节日/备忘清理/日终结算/衰减/睡眠/日程窗口/提醒兜底(见 §6.2)
+QQ空间虚拟流(qzone-qq)── 网关注入(route_message;出站一律拒发)+ planner/replyer 两侧场景手术与工具白名单(§3.13)
+                        ── planner.after_response(OBSERVE)──> qzone 轮完成信号:释放注入泵推进下一条动态
+后台调度器(60s tick)── 天气/节日/备忘清理/日终结算/衰减/睡眠/日程窗口/提醒兜底/QQ空间拉取(见 §6.2)
 ```
 
 ### 2.3 旁路 LLM prompt 纪律(§4.10)
@@ -87,8 +91,8 @@ replyer 出站 ── maisaka.replyer.after_response(BLOCKING LATE)──> goodn
 
 ### 2.4 主链路注入纪律(§4.1)
 
-- 注入点:**system 之后、历史之前**前插(目标顺序:`[system][环境块][日程块][备忘块][好感度块][历史][主程序动态注入][时间][tail][注意事项]`),绝不改动 system prompt 与历史。
-- 注入块按波动频率分层排序(`BLOCK_ORDER = level_rule → environment → schedule → memo → favorability`,等级规则块在实现上并入好感度块首行);任一后部块变化不影响前部块缓存。
+- 注入点:**system 之后、历史之前**前插(目标顺序:`[system][环境块][日程块][空间见闻块][备忘块][好感度块][历史][主程序动态注入][时间][tail][注意事项]`),绝不改动 system prompt 与历史。
+- 注入块按波动频率分层排序(`BLOCK_ORDER = level_rule → environment → schedule → qzone → memo → favorability`,等级规则块在实现上并入好感度块首行;qzone 块为三期新增,插日程块之后);任一后部块变化不影响前部块缓存。
 - 空块跳过;同 `(module, content_key, text)` 内容未变时字节级复用上一轮渲染结果;每模块每轮仅允许一块(重复即抛错,显式暴露)。
 - 长度在源头控制(注入管线不截断):备忘 ≤80 字符/合计 ≤5 条,注记 ≤40 字符,环境块天然短小,规则文本由配置自控。
 - 任一注入源出错仅记录日志并跳过该小节,不阻塞主链路。
@@ -204,7 +208,7 @@ replyer 出站 ── maisaka.replyer.after_response(BLOCKING LATE)──> goodn
 
 - 次日日程 = **恰好 1 个睡眠窗口 + 1~8 个活动窗口**(时间段+活动描述+是否计划发言+发言主题+kind 标注 `greeting`=问候类/`daily`=日常),窗口按活动排列、**允许空白时间**(空白=自由时间)、不重叠;默认作息 23:00/7:30 为软基准(模板提示,LLM 可结合当天活动调整)。
 - **生成 prompt 输入**:人设+行为风格(主程序 `personality.*`,非硬编码)+ 今天执行情况回顾(最新睡醒回顾前 200 字)+ 明天天气/节日(weather_snapshot 快照)+ 重要用户好感度概况(全表按等级降序)+ **日程对应日到期的备忘提醒(remind_at)** + 睡眠约束(min/max)+ 目标日。
-- **校验规则**(与工具修改共用):恰好 1 睡眠窗口、活动 1~8、窗口不重叠、睡眠时长在 [min,max]、kind ∈ {greeting, daily}、时间精确到分钟(带秒容忍解析后归一化)。
+- **校验规则**(与工具修改共用):恰好 1 睡眠窗口、活动 1~8、窗口不重叠、睡眠时长在 [min,max]、kind ∈ {greeting, daily}、时间精确到分钟(带秒容忍解析后归一化)、`qzone` 标记仅 daily 窗口合法(非 daily 窗口的 qzone 标记校验拒绝,钳制修复时清除,见 §3.13)。
 - **失败兜底链**:LLM 失败 → 默认模板+告警;JSON 解析失败/校验失败 → 重生成(`max_regenerate` 次,默认 1)→ 确定性钳制修复(`fix_schedule`:缺睡眠窗口插模板睡眠段、多睡眠窗口只留第一个、活动裁到 8、睡眠时长钳边界、重叠顺延)→ 仍无效 → 默认模板+告警。
 - 日志:「次日日程已生成:{JSON 前 200 字}」「次日日程生成:{err}(模板兜底)」「次日日程生成异常,使用默认作息模板」。
 - 重启恢复:`schedule.json` 的 date == 今天时恢复日程/编辑历史/生成标记;过期文件删除并告警;损坏/结构非法告警忽略。
@@ -267,10 +271,10 @@ replyer 出站 ── maisaka.replyer.after_response(BLOCKING LATE)──> goodn
 
 ## 3.7 注入框架(`inject.py`)
 
-- 固定顺序 `BLOCK_ORDER = ("level_rule", "environment", "schedule", "memo", "favorability")`;实现上等级规则块并入好感度块首行(联调决定),实际渲染顺序 = 环境 → 日程 → 备忘 → 好感度。
+- 固定顺序 `BLOCK_ORDER = ("level_rule", "environment", "schedule", "qzone", "memo", "favorability")`;实现上等级规则块并入好感度块首行(联调决定),实际渲染顺序 = 环境 → 日程 → 空间 → 备忘 → 好感度(qzone 块见 §3.13)。
 - 每模块每轮仅允许一块(重复抛错,显式暴露);空块跳过;内容未变字节级复用(`InjectAssembler._cache`),热重载时 `reset()`。
 - 块文本示例:`[环境] 今天 8月16日 周日,珠海:晴,29°C;节日:…;临近:…。` / `[日程] …` / `[备忘] 内容1;内容2` / `[好感度] …`。
-- 各块独立开关:`inject.level_rule_enabled / environment_enabled / memo_enabled / favorability_enabled`(等级规则开关=好感度块首行规则条)。
+- 各块独立开关:`inject.level_rule_enabled / environment_enabled / memo_enabled / favorability_enabled`(等级规则开关=好感度块首行规则条);qzone 块开关在 `qzone` 节且要求模块自检通过(见 §3.13)。
 
 ## 3.8 时间/节日/天气感知(`time_aware.py`)
 
@@ -312,7 +316,70 @@ replyer 出站 ── maisaka.replyer.after_response(BLOCKING LATE)──> goodn
 - 执行链:`message.get_recent(include_binary_data=True)` 解析 image 段(实机仅 hash 无 data)→ 经 `database.get`(Images 表按 image_hash)补读 `full_path` → 读 `/MaiMBot` 下文件补 base64 → 按字节魔数嗅探 MIME(PNG/JPEG/GIF/WEBP,兜底 png)→ 旁路 VLM 回答(文本前缀稳定;图片块追加尾部,无前缀缓存意义)。
 - 目标太旧/取不到/补图失败均**显式报错并记录日志**(不静默)。默认模型 `utils`(轻量任务;VLM 较慢建议超时 120000)。
 
-## 3.13 LLM 用量记账与旁路调用(`plugin.py`)
+## 3.13 QQ空间(感知)(`catsitate_core/qzone/`)
+
+三期 M1 范围 = **感知**:bot 在日程标记的浏览窗口内"刷"好友动态(拉取说说 → 虚拟流注入 → 主链自主反应),不评论、不点赞、不发布(虚拟流出站一律显式拒发,评论路由是 M2 交付)。
+
+### 3.13.1 功能概览
+
+- **浏览窗口内刷好友动态**:日程生成模板 v3 支持为 daily 窗口标记 `qzone=true`(通常一天 1~2 个,适合搭配轻松的独处活动如「窝着刷手机」);`qzone_poll` 调度(默认 15 分钟)在标记窗口内拉取好友说说(每轮 num=10)。窗口切换时收泵,未注入的队列**回退未读**(queued 行删除,下个窗口重新可见,不丢动态)。
+- **虚拟流注入(主链可引用)**:每条动态构造为一条消息注入 `qzone-qq` 虚拟群聊流,复用主程序 planner→replyer 链;注入带 `is_mentioned=1.0` 强制触发与新鲜时间戳(保证「一动态一轮」的串行模型);「刷到但懒得理」由 planner 自主沉默(无工具调用轮)表达——意愿判断权归模型。图片带 base64 交主流水线处理(描述/落 Images 表/可 `inspect_image` 重看),超 `image_max_kb` 上限或下载失败的图以 `[图片]` 占位。
+- **真实聊天见闻摘要注入**:真实聊天流的注入块附带 `[空间] 近期刷到:…`(近 `summary_days` 天已 seen 的 `summary_count` 条动态摘要)——bot 在真实聊天中可自然引用「我看到你发的说说」类见闻。
+- **串行注入**:一次只允许一条动态处于「已注入待主链处理」状态;推进信号 = 轮完成(planner 响应无工具调用);超时兜底 `decision_window_seconds`(默认 75 秒,须大于最坏轮延迟),wait 态延长至 3 倍硬上限(自注入时刻起算,防 wait 期间注入下一条并入批处理导致出站意图错靶)。
+
+### 3.13.2 虚拟流与 person 统一(`qzone-qq`)
+
+- 虚拟平台名常量 `qzone-qq`,伪群号 `virtual_group_id`(默认 `qzone_feed`,勿与真实群号相同)、显示名 `virtual_group_name`(默认「QQ空间」)。
+- **person 统一(连字符别名)**:主程序 `get_person_id` 对含 `-` 的平台名取首段计算命名空间,`qzone-qq` 与真实 `qq` 折叠为**同一 person**——好友画像/人物记忆跨空间与聊天聚合共享(空间流 `query_person_profile` 直接命中统一账本;内容来自好友真实说说,是统一而非混杂)。路由/账号按原始字符串 `qzone-qq` 分键,与真实 qq 平台零接触。
+- **启动自检**(任一硬性失败则模块停用并显式告警):① `person.get_id("qzone-qq", 探针)` 与 `person.get_id("qq", 探针)` 折叠一致性——不等则每进程告警一次并**降级为分裂模式继续运行**(主程序改版检测兜底),调用异常则停用;② 主程序 `experimental.focus_mode` 必须关闭(focus 槽会吞掉注入的强制触发);③ `favorability.bot_user_id` 非空(虚拟平台 bot 账号注册依赖);网关就绪上报失败同样停用(重载插件重试)。
+
+### 3.13.3 拉取链路与去重
+
+- **cookie(唯一合规路径)**:空间 cookie 经 adapter 能力 `adapter.napcat.account.get_cookies`(domain=`user.qzone.qq.com`)获取;持久化 `qzone_cookies.json` + `cookie_refresh_minutes`(默认 60 分钟)节流;获取失败或响应缺 `p_skey` 显式告警并跳过本轮拉取(有旧 cookie 时沿用旧值)。
+- **协议**:经典空间网页 cgi(`emotion_cgi_msglist_v6`;g_tk=hash33(p_skey) 签名;`frameElement.callback({...})` 响应截取解析);仅处理**说说类动态(appid=311)**,其余(转发/相册/视频等)跳过并计数(日志可见)。
+- **失败不重试**:`max_retries` 默认 0——协议动作失败直接告警跳过本轮,不做重试循环;`request_timeout_ms` 默认 10000。
+- **去重(`qzone_feeds` 表,tid 主键)**:入队=queued,注入成功=seen;同 tid 任意状态存在即跳过(不重复注入)。
+- 睡眠期不拉取不注入(绝对静默);`qzone.enabled` 关闭或模块停用(`_qzone_available=False`)时一切拉取/注入/场景手术/见闻注入跳过。
+
+### 3.13.4 虚拟流专属处理(场景手术与模块豁免)
+
+- **场景替换**:planner(`before_request`)与 replyer(`before_model_request`)两侧,把 system 文本中的群聊场景提示词(主程序 `chat.reply_style.group_chat_prompt` 当前值,1 小时缓存)**原位精确替换**为空间场景文案(按配置值匹配,用户改过配置也能命中)。配置为空 / 未命中(主程序模板改版风险)→ 每类每进程告警一次,回退**注入块语义说明**(qzone 注入块自带场景解释,功能不失效)。
+- **工具白名单**:虚拟流 planner 轮按 `tool_whitelist` 过滤工具定义,默认 `wait/reply/query_memory/query_person_profile/memo_write/memo_read/inspect_image`(**不含 tool_search/msg_react/poke_user**);硬门控不随此配置放松。
+- **deferred reminder 剥除**:剥除主程序追加的 deferred 工具提醒 user 项(`<system-reminder>` 开头)。
+- **模块豁免**:虚拟流消息**不计好感度**(好友发说说 ≠ 与 bot 互动,空间互动走 M2 显式事件路径);虚拟流出站文本**不进晚安判定**(防深夜短评论触发全局入睡);daily 窗口主动发言候选**排除虚拟流**(空间表达走 qzone 窗口本身);流缓存纳入 `qzone-qq` 平台;贴表情/戳一戳工具在虚拟流平台自检拒用(返回「当前是QQ空间动态流,这个动作用不上哦」)。
+
+### 3.13.5 配置与数据
+
+配置见 §4.12(`qzone` 节全字段);数据文件见 §5.1(`qzone_feeds` 表)与 §5.2(`qzone_cookies.json`)。
+
+### 3.13.6 日志关键词
+
+- `QQ空间窗口开始,注入泵激活` / `QQ空间窗口结束,未注入队列回退未读(N 条)`
+- `QQ空间新动态入队 N 条`;`QQ空间拉取:跳过 N 条非说说类动态(appid!=311)`
+- `QQ空间动态已注入(tid=…,作者=…)`;`QQ空间注入等待轮完成超时(tid=…),强制推进`
+- `QQ空间出站被拒(M1 感知阶段:QQ空间出站未实现(评论路由见 M2);…)`
+- `QQ空间场景回退:…`(「群聊场景提示词配置为空…」/「群聊场景提示词替换未命中…」)
+- `person 别名自检失败(qzone-qq 未折叠到 qq 命名空间),空间侧记忆与 QQ 侧分裂`;`person 别名自检调用失败,QQ空间模块停用`
+- `QQ空间模块停用:…`(focus_mode 开启 / bot_user_id 为空 / 网关就绪上报失败)
+- `QQ空间动态拉取失败,本轮跳过`;`QQ空间虚拟平台就绪(platform=qzone-qq,伪群=…)`
+
+### 3.13.7 已知限制
+
+1. **M1 无评论/点赞/发布**:虚拟流出站一律显式拒发(`M1 感知阶段:QQ空间出站未实现(评论路由见 M2)`);点赞/评论/评论轮询/发布属 M2/M3 交付。
+2. **cookie 依赖 adapter**:空间 cookie 只经 `adapter.napcat.account.get_cookies` 获取,NapCat 不响应该 API(或响应缺 `p_skey`)时无法拉取,显式告警跳过,不做重试循环。
+3. **仅说说类动态**:只处理 appid=311;转发/相册/视频等其它动态跳过并计数。
+4. **注入图片受 RPC 16MB 帧限制**:`image_max_kb` 默认 3072(KB),超限/下载失败以 `[图片]` 占位注入。
+
+### 3.13.8 生产部署注意事项
+
+- **NapCat 需可响应 `adapter.napcat.account.get_cookies`**(domain=`user.qzone.qq.com`):不可用时模块只能依赖持久化旧 cookie,过期即拉取失败。
+- **`experimental.focus_mode` 必须关闭**:开启时启动自检直接停用 qzone 模块(focus 槽会吞掉注入的 is_mentioned 强制触发)。
+- **建议回复频率 talk_value>0**:talk_value=0 时注入消息可能被主程序静默消费(bot「刷到但永不理」),感知效果退化。
+- **`favorability.bot_user_id` 必须配置(非空)**:虚拟平台 bot 账号注册与虚拟流 session_id 计算依赖它,为空则模块停用。
+- **勿配置 `*:*` 全局表达共享组**:虚拟流学习落在自身 session(对真实流无污染),全局共享组会把空间流表达泄入真实流;不希望空间评论喂养虚拟流表达库时,可在主程序 WebUI 对该会话关学习(插件无法代设)。
+- **`schedule_generate` 模板升 v3 后,WebUI 自定义过的该模板需手动同步**:插件自动部署只覆盖主程序 `prompts/zh-CN/` 内置层,`data/custom_prompts/` 下的 WebUI 编辑产物优先级更高且不会被覆盖——旧版自定义模板不含 `qzone` 属性说明,日程将不产生 qzone 浏览窗口(需在 WebUI 手动更新或删除该自定义模板)。
+
+## 3.14 LLM 用量记账与旁路调用(`plugin.py`)
 
 - `_side_llm_call` 是全部旁路 LLM 统一出口:经 `llm.generate` 能力直调,`model` = 主程序 task 名,超时由各能力节 `*_timeout_ms` 传入(填 0=主程序默认 30s;联调实测 utils 模型 31-53s 会触发默认超时,慢模型建议 120000)。
 - 每次调用按模块记账 `llm_usage(day, module, calls, tokens)`;模块分列:`favorability` / `decay` / `msg_react` / `image_relook` / `sentinel` / `schedule_generate` / `sleep_confirm` / `sleep_review`。
@@ -452,13 +519,32 @@ replyer 出站 ── maisaka.replyer.after_response(BLOCKING LATE)──> goodn
 | schedule_llm_timeout_ms | 0 | 日程生成超时(毫秒;0=主程序默认) |
 | daily_speak_limit | 5 | 全天主动发言次数上限(每次 trigger 计 1,主程序沉默也计) |
 
-### 4.12 debug 节(调试)
+### 4.12 qzone 节(QQ空间)
+
+| 字段 | 默认 | 说明 |
+|---|---|---|
+| enabled | true | QQ空间模块开关(M1:仅读动态,不发评论);关闭或启动自检失败时拉取/注入/见闻注入全部跳过 |
+| poll_interval_minutes | 15 | 空间窗口内动态拉取间隔(分钟) |
+| decision_window_seconds | 75 | 注入后等待 planner 轮完成的超时兜底(秒;须大于最坏轮延迟;wait 态延长至 3 倍硬上限) |
+| image_max_kb | 3072 | 注入图片体积上限(KB,超限以 `[图片]` 占位注入;硬上限受 RPC 16MB 帧限制) |
+| tool_whitelist | ["wait","reply","query_memory","query_person_profile","memo_write","memo_read","inspect_image"] | 虚拟流 planner 工具白名单(按名过滤;硬门控不随此配置放松,默认不含 tool_search/msg_react/poke_user) |
+| virtual_group_id | "qzone_feed" | 虚拟群聊流伪群号(勿与真实群号相同) |
+| virtual_group_name | "QQ空间" | 虚拟群聊流显示名 |
+| summary_count | 5 | 真实聊天注入的近期已见动态条数 |
+| summary_days | 3 | 见闻摘要回溯天数 |
+| request_timeout_ms | 10000 | 空间 HTTP 请求超时(毫秒) |
+| max_retries | 0 | 空间请求失败重试次数(0=失败即告警跳过,不做重试循环) |
+| cookie_refresh_minutes | 60 | cookie 刷新节流(分钟,间隔内跳过重取) |
+
+注:QQ空间无独立旁路 LLM 调用(动态注入复用主程序 planner→replyer 链,不占 `llm_usage` 记账)。
+
+### 4.13 debug 节(调试)
 
 | 字段 | 默认 | 说明 |
 |---|---|---|
 | enabled | false | debug 日志开关:开启后 `catsitate.core` 的 debug 级日志写入数据目录 `logs/catsitate-{YYYYMMDD}.log`(公测复审用),热生效;文件权限 0600(日志含用户标识,仅属主可读),关闭时恢复 logger 原级别 |
 
-### 4.13 已删除字段(历史遗留,勿再配置)
+### 4.14 已删除字段(历史遗留,勿再配置)
 
 | 字段 | 归属 | 删除原因 |
 |---|---|---|
@@ -485,6 +571,7 @@ replyer 出站 ── maisaka.replyer.after_response(BLOCKING LATE)──> goodn
 | memo | id, content, stream_id, user_id, expires_at, created_at, remind_at | 备忘录;remind_at 为二期加列(可选) |
 | llm_usage | day, module, calls, tokens(PK 联合) | 旁路 LLM 用量按日/模块分列 |
 | weather_snapshot | id(=1), city, fetched_at, data | 天气快照(JSON),供日程生成联动 |
+| qzone_feeds | tid(PK), abstime, author_uin, summary, state, interacted, injected_at, created_at | QQ空间动态去重:state=queued(已入队)/seen(已成功注入);interacted=点赞评论过(M2 标记);窗口结束 queued 行删除回退未读 |
 
 ### 5.2 JSON 快照(JsonSnapshot,原子写)
 
@@ -495,6 +582,7 @@ replyer 出站 ── maisaka.replyer.after_response(BLOCKING LATE)──> goodn
 | sleep_state.json | `{state, sleep_at, wake_at}` | 睡眠状态持久化(重启恢复不依赖日程) |
 | sleep_review_buffer.json | `{"messages": [拦截消息…]}` | 睡眠期拦截消息缓冲(dict 包装,防重启丢失) |
 | remind_fired.json | `{"remind:{memo_id}": 触发时刻}` | 备忘兜底注入去重(防重启重复注入) |
+| qzone_cookies.json | `{"cookies": {…}, "saved_at": …}` | QQ空间 cookie 持久化(进程重启垫底,按 cookie_refresh_minutes 节流重取) |
 
 ### 5.3 schedule.json(日程落盘)
 
@@ -551,6 +639,7 @@ replyer 出站
 | sleep_tick | 60s | 睡眠状态机:自然醒(now≥wake_at→wake+回顾+补跑结算)/ 静默关=窗口起点直接入睡 / 静默开=安静满 N 分钟入睡检查 / 窗口终点未入睡→补生成次日日程 | 「自然醒来: {t}」「睡眠窗口起点已到(静默睡眠关闭),直接入睡」「静默入睡:安静 {n} 分钟」「睡眠窗口已过未入睡:补执行次日日程生成(不入睡)」 |
 | schedule_tick | 60s | 日程窗口触发:greeting→主动问候;daily→门槛过滤+候选流排序→proactive.trigger | 「主动问候触发[{day}] -> {user}」「主动触发[{day}] -> {stream}:{活动}」 |
 | remind_fallback | 5 分钟 | 备忘提醒兜底注入(仅无生成日程日;睡眠期跳过) | 「备忘提醒兜底注入(stream={id}):{content}」 |
+| qzone_poll | max(poll_interval_minutes,1)×60 s(默认 15 分钟) | 空间窗口(kind=daily 且 qzone=true)内拉取好友说说→去重入队→串行注入 `qzone-qq` 虚拟流;窗口切换收泵回退未读;睡眠期/模块停用跳过 | 「QQ空间窗口开始,注入泵激活」「QQ空间新动态入队 {n} 条」「QQ空间动态已注入(tid=…,作者=…)」「QQ空间窗口结束,未注入队列回退未读({n} 条)」 |
 
 ### 6.3 睡眠全链路
 
@@ -632,6 +721,7 @@ replyer 出站
 | reply 补传/哨兵 | `reply 补传:[…]`;`哨兵判定:放行回复` / `哨兵判定:撤回回复:{reason}` |
 | 旁路记账 | `旁路 LLM 当日调用次数已达或超过阈值 {n},请注意用量`;llm_usage 表按模块分列 |
 | quote 解析 | `quote 发送者解析: 成功 {n}/{m}(stream=…)`;`quote 发送者解析失败(stream=…):…` |
+| QQ空间 | `QQ空间窗口开始,注入泵激活`;`QQ空间新动态入队 {n} 条`;`QQ空间动态已注入(tid=…,作者=…)`;告警/停用:`QQ空间模块停用:…`、`person 别名自检失败(qzone-qq 未折叠到 qq 命名空间)…`、`QQ空间出站被拒(…)`、`QQ空间场景回退:…`、`QQ空间动态拉取失败,本轮跳过` |
 
 ### 8.3 常见问题排查
 
@@ -648,8 +738,9 @@ replyer 出站
 | 日程不是预期作息 | 默认作息为软基准,LLM 结合当天活动自主排布;生成失败会有模板兜底告警;可用 update_schedule 工具修改 |
 | 主动发言没有出现 | 检查 speak_threshold_level 门槛(默认熟悉)、近 24h 活跃流、daily_speak_limit 配额、当日是否模板撑场、睡眠期跳过 |
 | 数据异常想重置 | 删除 `data/plugins/catsitate.core/catsitate.db` 与各 JSON 快照(重启重建);注意 favorability 重建即清零(开发期裁定不做迁移) |
+| QQ空间没有动态注入 | 查启动日志有无「QQ空间模块停用」(focus_mode 开启 / bot_user_id 为空 / person 自检失败)与「QQ空间虚拟平台就绪」;确认日程有 qzone 标记的 daily 窗口且当前处于窗口内;「QQ空间动态拉取失败,本轮跳过」→ NapCat 可否响应 `adapter.napcat.account.get_cookies`;仅说说类(appid=311)动态会被注入;WebUI 自定义过 schedule_generate 旧模板需手动同步(§3.13.8) |
 | 复审证据链 | 打开 debug.enabled 落盘日志;`catsitate.db` 查 `llm_usage`/`favorability_log` 核旁路记账与结算/衰减记录;`schedule.json` 查日程修改历史;`sleep_review/reports/` 查回顾报告 |
 
 ---
 
-*本文档面向公测使用方与复审人员;功能描述以当前代码为最终依据,规格文档(两期设计)与实现存在差异处(如等级规则块并入好感度块、poke 门槛取消、表情内置表、sleep_confirm 固定模型等)以本文与代码为准。*
+*本文档面向公测使用方与复审人员;功能描述以当前代码为最终依据,规格文档(各期设计)与实现存在差异处以本文与代码为准。*

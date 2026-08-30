@@ -1,5 +1,15 @@
 # Changelog
 
+## 0.4.0(2026-08-30) 三期 M1:QQ空间感知
+
+- 新增 `qzone` 配置节与 `catsitate_core/qzone/` 模块包(协议客户端/去重存储/消息构造/注入状态机/场景纯函数)。
+- QQ空间动态映射为 `qzone-qq` 虚拟群聊流(连字符别名与真实 QQ 统一 person),串行注入复用主程序 planner→replyer 链;注入带 is_mentioned 强制触发与新鲜时间戳,图片带 base64 交主流水线处理。
+- 日程窗口新增 `qzone` 属性(仅 daily 合法),`schedule_generate` 模板升 v3;标记窗口内按 `poll_interval_minutes` 拉取。
+- 虚拟流专属:群聊场景提示词原位替换(planner+replyer 两侧,失败告警回退注入块语义说明)、工具白名单过滤(默认不含 tool_search/msg_react/poke_user)、deferred reminder 剥除。
+- 模块豁免:好感度计数/晚安判定/daily 窗口候选排除虚拟流;流缓存纳入 qzone-qq;贴表情/戳一戳平台自检拒用。
+- 出站一律显式拒发(评论路由 M2 交付);协议动作失败不重试循环。
+- 生产注意:NapCat 需可响应 `adapter.napcat.account.get_cookies`;`experimental.focus_mode` 必须关闭(否则模块自检停用);建议 talk_value>0;虚拟流学习落在自身 session,勿配置 `*:*` 全局表达共享组;模板 v3 变更后 WebUI 自定义的 schedule_generate 需手动同步。
+
 ## v0.3.2(2026-08-18,旁路模板自动部署)
 
 - **旁路模板自动部署**:插件加载时(`on_load`)自动把 `prompt_templates/catsitate_*.prompt`(8 个)同步到主程序 `prompts/zh-CN/`(内容一致跳过、变更覆盖;主程序 `load_prompts()` 在插件启动后调用,同次启动即生效,无需手动复制/重启)。WebUI「提示词管理」即可查看/编辑这 8 个模板(编辑产物写 `data/custom_prompts/zh-CN/`,插件优先读取)。插件不在 `plugins/` 下或主程序 `prompts/zh-CN/` 缺失时显式告警跳过,不阻断加载,插件回退内置默认

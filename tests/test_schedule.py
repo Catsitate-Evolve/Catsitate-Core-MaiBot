@@ -2,7 +2,8 @@
 import copy as _copy
 
 from catsitate_core.schedule import (
-    DEFAULT_TEMPLATE_SCHEDULE, current_window, fix_schedule, next_window, schedule_from_json, validate_schedule,
+    DEFAULT_TEMPLATE_SCHEDULE, current_window, fix_schedule, next_window, schedule_from_json,
+    schedule_overview_text, validate_schedule,
 )
 
 GOOD = {
@@ -499,3 +500,43 @@ def test_edit_sleep_time_respects_min_max():
         [], min_sleep=240, max_sleep=660,
     )
     assert "最短" in err  # 2h < 240min 拒绝
+
+
+def test_validate_qzone_attr_only_on_daily():
+    good = _copy.deepcopy(GOOD)
+    good["windows"][1]["qzone"] = True  # daily 窗口标记 → 合法
+    data, err = validate_schedule(good, min_sleep=240, max_sleep=660)
+    assert err == "" and data is not None
+    bad = _copy.deepcopy(GOOD)
+    bad["windows"][2]["qzone"] = True  # greeting 窗口标记 → 拒绝
+    data, err = validate_schedule(bad, min_sleep=240, max_sleep=660)
+    assert data is None and "qzone" in err
+    bad2 = _copy.deepcopy(GOOD)
+    bad2["windows"][0]["qzone"] = True  # 睡眠窗口标记 → 拒绝
+    data, err = validate_schedule(bad2, min_sleep=240, max_sleep=660)
+    assert data is None and "qzone" in err
+
+
+def test_fix_schedule_strips_illegal_qzone_attr():
+    bad = _copy.deepcopy(GOOD)
+    bad["windows"][0]["qzone"] = True  # 睡眠窗口的非法标记
+    bad["windows"][1]["qzone"] = True  # daily 窗口的合法标记(应保留;brief 用例漏写此行,按断言注释意图补上)
+    bad["windows"][2]["qzone"] = True  # greeting 窗口的非法标记
+    fixed = fix_schedule(bad, min_sleep=240, max_sleep=660)
+    w0, w1, w2 = fixed["windows"][0], fixed["windows"][1], fixed["windows"][2]
+    assert not w0.get("qzone") and not w2.get("qzone")
+    assert w1.get("qzone") is True  # daily 的合法标记保留
+
+
+def test_overview_marks_qzone_window():
+    data = _copy.deepcopy(GOOD)
+    data["windows"][1]["qzone"] = True
+    text = schedule_overview_text(data)
+    assert "刷空间" in text
+
+
+def test_schedule_generate_template_v3_mentions_qzone():
+    from catsitate_core.llm_provider import SIDE_TEMPLATES
+
+    assert SIDE_TEMPLATES["schedule_generate"]["version"] == 3
+    assert "qzone" in SIDE_TEMPLATES["schedule_generate"]["system"]

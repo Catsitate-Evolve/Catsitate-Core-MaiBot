@@ -52,16 +52,17 @@ SIDE_TEMPLATES: dict[str, dict] = {
         ),
     },
     "schedule_generate": {
-        "version": 2,
+        "version": 3,
         "system": (
             "你是日程规划助手。为 bot 规划目标日的生活日程,输出 JSON:\n"
             "通常作息:晚上 23:00 左右入睡、早上 7:30 左右自然醒;当天活动可适度挤占睡眠(推迟入睡),但醒来时间尽量保持稳定;睡眠时长不得短于给定约束。\n"
             '{"date": "YYYY-MM-DD", "windows": [窗口列表]}。\n'
             "窗口结构:\n"
             '- 睡眠窗口:{"kind": "sleep", "start": "YYYY-MM-DDTHH:MM", "end": "YYYY-MM-DDTHH:MM"}\n'
-            '- 活动窗口(1~8 个):{"kind": "greeting" 或 "daily", "start": "...", "end": "...", "activity": "活动描述", "plan_speak": true/false, "topic": "发言主题(计划发言时)"}\n'
+            '- 活动窗口(1~8 个):{"kind": "greeting" 或 "daily", "start": "...", "end": "...", "activity": "活动描述", "plan_speak": true/false, "topic": "发言主题(计划发言时)", "qzone": true/false(仅 daily 可标)}\n'
             "要求:恰好 1 个睡眠窗口;活动窗口 1~8 个;窗口不重叠;时间可留空隙;睡眠时长符合给定约束;\n"
             "kind=greeting 为问候/陪伴类活动(早安/晚安问候等,窗口起点触发主动问候);kind=daily 为日常活动;活动描述贴合猫耳少女人设(发呆/看雨/散步/听音乐等)。\n"
+            "qzone=true 标记该窗口会刷QQ空间(浏览好友动态):仅 kind=daily 窗口可标记,通常一天标记 1~2 个,适合搭配轻松的独处活动(如「窝着刷手机」)。\n"
             "不要输出其它内容。"
         ),
     },

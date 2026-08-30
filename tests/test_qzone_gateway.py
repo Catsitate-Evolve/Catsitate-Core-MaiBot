@@ -52,6 +52,6 @@ def test_gateway_declared_platform_constant():
     import plugin as _plugin  # tests/conftest 已把插件目录加入 sys.path
 
     src = inspect.getsource(_plugin)
-    assert 'MessageGateway(' in src and '"qzone-qq"' in src or "QZONE_PLATFORM" in src
+    assert 'MessageGateway(' in src and 'qzone-qq' in src
     # 网关回调显式拒发
     assert "M1_OUTBOUND_ERROR" in src

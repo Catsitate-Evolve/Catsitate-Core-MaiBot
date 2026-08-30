@@ -330,7 +330,7 @@ QQ空间虚拟流(qzone-qq)── 网关注入(route_message;出站一律拒发)
 ### 3.13.2 虚拟流与 person 统一(`qzone-qq`)
 
 - 虚拟平台名常量 `qzone-qq`,伪群号 `virtual_group_id`(默认 `qzone_feed`,勿与真实群号相同)、显示名 `virtual_group_name`(默认「QQ空间」)。
-- **person 统一(连字符别名)**:主程序 `get_person_id` 对含 `-` 的平台名取首段计算命名空间,`qzone-qq` 与真实 `qq` 折叠为**同一 person**——好友画像/人物记忆跨空间与聊天聚合共享(空间流 `query_person_profile` 直接命中统一账本;内容来自好友真实说说,是统一而非混杂)。路由/账号按原始字符串 `qzone-qq` 分键,与真实 qq 平台零接触。
+- **person 统一(连字符别名)**:主程序 `get_person_id` 对含 `-` 的平台名取连字符后段(split 后第 2 段,如 `qzone-qq` → `qq`)计算命名空间,`qzone-qq` 与真实 `qq` 折叠为**同一 person**——好友画像/人物记忆跨空间与聊天聚合共享(空间流 `query_person_profile` 直接命中统一账本;内容来自好友真实说说,是统一而非混杂)。路由/账号按原始字符串 `qzone-qq` 分键,与真实 qq 平台零接触。
 - **启动自检**(任一硬性失败则模块停用并显式告警):① `person.get_id("qzone-qq", 探针)` 与 `person.get_id("qq", 探针)` 折叠一致性——**不等/返回异常形态/调用异常均硬停用模块并告警**(用户裁定 2026-08-30:人物分裂不可接受,折叠失效宁可不用,不降级为分裂模式;自检校验返回为非空 str,防双侧同形失败的假阴性);② 主程序 `experimental.focus_mode` 必须关闭(focus 槽会吞掉注入的强制触发);③ `favorability.bot_user_id` 非空(虚拟平台 bot 账号注册依赖);网关就绪上报失败同样停用(重载插件重试)。
 
 ### 3.13.3 拉取链路与去重

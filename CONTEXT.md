@@ -34,6 +34,6 @@
 ## QQ空间
 
 - **qzone 属性**:日程活动窗口的可选标记(true/false),仅 daily 窗口可标记的空间浏览开关——标记的窗口内 bot 会刷QQ空间(拉取好友动态并注入虚拟流);非 daily 窗口的 qzone 标记非法(校验拒绝/钳制清除)。
-- **虚拟流**:platform=`qzone-qq` 的伪群聊流——QQ空间动态以消息形式注入此流,复用主程序 planner→replyer 链;person 经主程序连字符别名机制(含 `-` 的平台名取首段命名空间)与真实 QQ 聊天统一为同一人,路由/账号仍按 `qzone-qq` 原始字符串分键。
+- **虚拟流**:platform=`qzone-qq` 的伪群聊流——QQ空间动态以消息形式注入此流,复用主程序 planner→replyer 链;person 经主程序连字符别名机制(含 `-` 的平台名取连字符后段命名空间,split 后第 2 段,如 qzone-qq → qq)与真实 QQ 聊天统一为同一人,路由/账号仍按 `qzone-qq` 原始字符串分键。
 - **seen/interacted**:动态两层状态——注入成功(进入过 planner 上下文)= seen;点赞/评论过 = interacted(M2)。seen ≠ 互动;窗口结束仍未注入的 queued 行回退未读。
 - **场景替换**:读主程序 `chat.reply_style.group_chat_prompt` 当前值,在 planner 与 replyer 两侧的 system 文本中**原位精确替换**为QQ空间场景文案(按配置值匹配,用户改过配置也能命中);未命中/配置为空则告警并回退注入块语义说明。

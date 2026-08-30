@@ -60,3 +60,13 @@ def test_is_qzone_message():
     assert is_qzone_message({"platform": "qq", "message_info": {}}) is False
     assert is_qzone_message({"message_info": {"platform": QZONE_PLATFORM}}) is True  # 兼容内层
     assert is_qzone_message({}) is False
+
+
+def test_qzone_exempt_matrix():
+    """豁免矩阵:虚拟流消息不进好感度计数;晚安判定按 session 豁免(引擎侧纯判定)。"""
+    from catsitate_core.qzone.scene import is_qzone_message
+
+    assert is_qzone_message({"platform": "qzone-qq", "session_id": "s1"}) is True
+    # 好感度豁免 = is_qzone_message;晚安豁免 = session_id ∈ qzone 集合(集合由 plugin 运行时维护)
+    # 这里锁定判定函数的行为契约,plugin 接线在审查清单核验(见 Step 3 注)
+    assert is_qzone_message({"platform": "qq", "session_id": "s2"}) is False

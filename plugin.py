@@ -33,6 +33,8 @@ from catsitate_core.memo import MemoService, validate_remind_at
 from catsitate_core.msg_react import MsgReactEngine, parse_choice_resp
 from catsitate_core.poke import PokeEngine
 from catsitate_core.prompt_deploy import sync_prompt_templates
+from catsitate_core.qzone import QZONE_PLATFORM
+from catsitate_core.qzone.scene import is_qzone_message
 from catsitate_core.reply_guard import (
     CONTEXT_TOOLS,
     backfill_reply_items,
@@ -80,6 +82,7 @@ class CatsitatePlugin(MaiBotPlugin):
     _debug_handler: logging.Handler | None = None  # debug 日志文件 handler(配置开关控制)
     _debug_prev_level: int = logging.NOTSET  # 开启前 logger 级别(关闭时恢复)
     _llm_warned_day: str = ""  # 旁路 LLM 用量告警的已告警日期(跨越当天只告警一次)
+    _qzone_session_ids: set[str] = set()  # 虚拟流 session(运行时收集;豁免判定用)
 
     # ---------- 生命周期 ----------
 
@@ -324,6 +327,8 @@ class CatsitatePlugin(MaiBotPlugin):
         visibility="visible",
     )
     async def msg_react(self, message_id: str = "", intent: str = "", **kwargs: Any) -> str:
+        if str(kwargs.get("platform") or "") == QZONE_PLATFORM:
+            return "当前是QQ空间动态流,这个动作用不上哦。"
         if not self.config.plugin.enabled or not self.config.msg_react.enabled:
             return "贴表情工具未启用。"
         if not str(kwargs.get("group_id") or ""):
@@ -359,6 +364,8 @@ class CatsitatePlugin(MaiBotPlugin):
         visibility="visible",
     )
     async def poke_user(self, user_id: str = "", group_id: str = "", **kwargs: Any) -> str:
+        if str(kwargs.get("platform") or "") == QZONE_PLATFORM:
+            return "当前是QQ空间动态流,这个动作用不上哦。"
         del kwargs
         if not self.config.plugin.enabled or not self.config.poke.poke_tool_enabled:
             return "主动戳工具未启用。"
@@ -494,6 +501,13 @@ class CatsitatePlugin(MaiBotPlugin):
         # 通知类消息(戳一戳等)不参与好感度计数(审查 Minor#7)
         if msg.get("is_notify"):
             return
+        # 三期豁免(spec §2.19②):虚拟流注入消息不计好感度(好友发说说≠与 bot 互动;
+        # 空间互动走 M2 显式事件路径);顺带收集虚拟流 session 供晚安/白名单豁免
+        if is_qzone_message(msg):
+            sid = str(msg.get("session_id") or "")
+            if sid:
+                self._qzone_session_ids.add(sid)
+            return
         # spike ③ 实测:user/stream 在 message 内(user_info 与 session_id;user_id 字段名以实机联调为准)
         msg_info = msg.get("message_info") or {}
         user_info = msg_info.get("user_info") or {}
@@ -539,6 +553,9 @@ class CatsitatePlugin(MaiBotPlugin):
         """晚安短句判定(可入睡时间内):SLEEP → 入睡并触发生成次日日程。"""
 
         if not self.config.plugin.enabled or not self.config.sleep.enabled:
+            return {"action": "continue", "modified_kwargs": kwargs}
+        # 三期豁免(spec §2.19①):虚拟流的评论文本不进晚安判定(防深夜短评论触发全局入睡)
+        if str(kwargs.get("session_id") or "") in self._qzone_session_id_set():
             return {"action": "continue", "modified_kwargs": kwargs}
         self._last_activity_ts = datetime.now().timestamp()  # 任何出站回复都算活动(静默入睡计时)
         if self.sleep.is_sleeping():
@@ -768,15 +785,15 @@ class CatsitatePlugin(MaiBotPlugin):
         if self._stream_cache and now - self._stream_cache_at <= 600:
             return
         try:
-            result = await self.ctx.chat.get_all_streams()
-            # SDK 对 chat.get_all_streams 解包后返回裸 list;兼容 dict 包装形状(实机 2.3 验收发现)
-            if isinstance(result, list):
-                raw = result
-            elif isinstance(result, dict) and result.get("success"):
-                raw = result.get("streams") or []
-            else:
-                self.ctx.logger.warning("聊天流列表形状异常(%s),沿用旧缓存", type(result).__name__)
-                return
+            raw: list[dict] = []
+            for platform in ("qq", QZONE_PLATFORM):
+                result = await self.ctx.chat.get_all_streams(platform=platform)
+                if isinstance(result, list):
+                    raw.extend(result)
+                elif isinstance(result, dict) and result.get("success"):
+                    raw.extend(result.get("streams") or [])
+                else:
+                    self.ctx.logger.warning("聊天流列表形状异常(platform=%s,%s),该平台沿用旧缓存", platform, type(result).__name__)
             self._stream_cache = {
                 str(st.get("session_id") or ""): st
                 for st in raw if isinstance(st, dict) and st.get("session_id")
@@ -812,6 +829,25 @@ class CatsitatePlugin(MaiBotPlugin):
             if uid and uid != bot_id:
                 return uid
         return str(info.get("user_id") or "")
+
+    def _qzone_session_id_set(self) -> set[str]:
+        """虚拟流 session 集合 = 运行时收集 ∪ 本地按公式计算的预期值。"""
+
+        ids = set(self._qzone_session_ids)
+        expected = self._qzone_expected_session_id()
+        if expected:
+            ids.add(expected)
+        return ids
+
+    def _qzone_expected_session_id(self) -> str:
+        """按主程序 session_id 公式本地计算虚拟流预期值(md5(platform[+account]+group_id))。"""
+
+        account = str(self.config.favorability.bot_user_id or "").strip()
+        parts = [QZONE_PLATFORM]
+        if account:
+            parts.append(f"account:{account}")
+        parts.append(self.config.qzone.virtual_group_id)
+        return hashlib.md5("_".join(parts).encode()).hexdigest()
 
     def _environment_block(self, stream_id: str) -> tuple[str, str] | None:
         """环境块:节日+天气;缓存 45 分钟(规格 §4.2)。"""
@@ -1209,6 +1245,8 @@ class CatsitatePlugin(MaiBotPlugin):
         candidates = []
         threshold = self.config.schedule.speak_threshold_level
         for stream_id, last_bump in rows:
+            if stream_id in self._qzone_session_id_set():
+                continue  # 虚拟流不做 daily 窗口主动发言目标(空间表达走 qzone 窗口触发)
             user_id = await self._resolve_speaker(stream_id)
             if not user_id:
                 continue  # 无当前说话人则跳过

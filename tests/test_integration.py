@@ -54,7 +54,8 @@ class _StubCtx:
         ]
         self.chat = type("_C", (), {"get_all_streams": self._get_all_streams})()
 
-    async def _get_all_streams(self):
+    async def _get_all_streams(self, platform="qq"):
+        del platform  # 桩与 SDK 签名对齐(get_all_streams(platform=...),Task 10 双平台取数)
         return list(self._streams)
 
     async def call_capability(self, name, **kw):

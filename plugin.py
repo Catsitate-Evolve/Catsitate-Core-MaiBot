@@ -1300,10 +1300,11 @@ class CatsitatePlugin(MaiBotPlugin):
 
         if not self.config.plugin.enabled or not self.config.sleep.enabled:
             return {"action": "continue", "modified_kwargs": kwargs}
+        self._last_activity_ts = datetime.now().timestamp()  # 任何出站回复都算活动(含空间评论,与一二期语义一致)
         # 三期豁免(spec §2.19①):虚拟流的评论文本不进晚安判定(防深夜短评论触发全局入睡)
+        # 注意:活动计时刷新在豁免之前——空间活动同样延迟静默入睡(用户裁定 2026-08-31)
         if str(kwargs.get("session_id") or "") in self._qzone_session_id_set():
             return {"action": "continue", "modified_kwargs": kwargs}
-        self._last_activity_ts = datetime.now().timestamp()  # 任何出站回复都算活动(静默入睡计时)
         if self.sleep.is_sleeping():
             return {"action": "continue", "modified_kwargs": kwargs}
         # 晚安判定仅在睡眠窗口内有效(可入睡时间,联调裁定 Q2),与静默开关无关

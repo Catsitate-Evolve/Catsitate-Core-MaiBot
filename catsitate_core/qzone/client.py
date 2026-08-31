@@ -230,8 +230,8 @@ class QzoneClient:
         # 联调缺陷#16:找 callback( 而非首 60 字符判定
         try:
             marker = "frameElement.callback("
-            idx = text.rindex(marker)
-            if idx >= 0:
+            if marker in text:
+                idx = text.rindex(marker)
                 payload = json.loads(text[idx + len(marker): text.rindex(")")])
             elif "(" in text[:60]:
                 payload = extract_callback_json(text)

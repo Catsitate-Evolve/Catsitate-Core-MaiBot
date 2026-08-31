@@ -596,6 +596,11 @@ class CatsitatePlugin(MaiBotPlugin):
             return f"消息 {message_id} 不是当前浏览的说说,只能对当前说说点赞。"
         try:
             await self.qzone_client.do_like(fid=feed.tid, target_qq=feed.uin)
+        except QzoneAuthError:
+            # 与网关/轮询同款自愈链:作废 cookie 下轮重取,点赞留给下次浏览
+            self.qzone_cookie.invalidate()
+            self.ctx.logger.warning("QQ空间点赞遇登录态失效,cookie 已作废,下轮重取")
+            return "点赞失败:登录态失效已重置,稍后再试。"
         except Exception:
             self.ctx.logger.exception("QQ空间点赞失败(tid=%s)", feed.tid)
             return "点赞失败,已记录日志。"
@@ -700,14 +705,10 @@ class CatsitatePlugin(MaiBotPlugin):
         try:
             if action == "comment":
                 await self.qzone_client.do_comment(fid=intent.tid, target_qq=intent.target_qq, content=text)
-                self.qzone_seen.mark_interacted(intent.tid)
-                self.qzone_comment_seen.note_bot_comment(intent.tid, text, datetime.now().strftime("%Y-%m-%dT%H:%M:%S"))
-                self.qzone_comment_seen.fav_event(intent.target_qq, "OUT_COMMENT", f"你评论了 {intent.target_qq} 的说说: {text[:40]}")
             else:
                 await self.qzone_client.do_reply(fid=intent.tid, target_qq=intent.target_qq,
                                                  comment_tid=intent.comment_tid, comment_uin=intent.comment_uin,
                                                  comment_nick=intent.comment_nick, content=text)
-                self.qzone_comment_seen.fav_event(intent.comment_uin, "COMMENT", f"{intent.comment_nick} 评论你被你回复: {text[:40]}")
         except QzoneAuthError:
             self.qzone_cookie.invalidate()
             self.ctx.logger.warning("QQ空间登录态失效,cookie 已作废,下轮重取")
@@ -715,8 +716,21 @@ class CatsitatePlugin(MaiBotPlugin):
         except Exception:
             self.ctx.logger.exception("QQ空间出站动作失败(kind=%s,tid=%s),跳过", action, intent.tid)
             return {"success": False, "error": "动作失败,详见插件日志"}
-        # 意图一次性消费:成功发出即置 None(防下一条出站误路由到旧目标;失败保留待下轮)
-        self._qzone_outbound_intent = None
+        # 意图一次性消费(审查必修):远端成功即刻清——若等本地记账后再清,记账抛错会
+        # 走 except 且意图仍在,下一条出站将向同一目标重复发评论;失败路径保留意图待下轮
+        self._qzone_outbound_intent = None  # 远端成功即刻消费
+        # 本地记账(seen/评论登记/好感度事件)独立容错:远端已成功,记账失败仅告警,
+        # 不影响驱动回执 success=True(错误显式暴露,不静默也不误报失败)
+        now_iso = datetime.now().strftime("%Y-%m-%dT%H:%M:%S")
+        try:
+            if action == "comment":
+                self.qzone_seen.mark_interacted(intent.tid)
+                self.qzone_comment_seen.note_bot_comment(intent.tid, text, now_iso)
+                self.qzone_comment_seen.fav_event(intent.target_qq, "OUT_COMMENT", f"你评论了 {intent.target_qq} 的说说: {text[:40]}")
+            else:
+                self.qzone_comment_seen.fav_event(intent.comment_uin, "COMMENT", f"{intent.comment_nick} 评论你被你回复: {text[:40]}")
+        except Exception:
+            self.ctx.logger.exception("QQ空间出站本地记账失败(kind=%s,tid=%s),仅告警", action, intent.tid)
         self.ctx.logger.info("QQ空间出站成功(kind=%s,tid=%s,文本预览=%.30s)", action, intent.tid, text)
         return {"success": True, "external_message_id": f"qzone_{action}_{intent.tid}_{int(time.time())}"}
 
@@ -736,7 +750,12 @@ class CatsitatePlugin(MaiBotPlugin):
                 self.qzone_injector.window_ended()
                 reverted = self.qzone_seen.revert_pending()
                 self.ctx.logger.info("QQ空间窗口结束,未注入队列回退未读(%d 条)", reverted)
-            self._qzone_outbound_intent = None  # 收泵清意图(窗口外残留 reaction 会误路由下一次出站)
+            if self._qzone_outbound_intent is not None:
+                self.ctx.logger.info(
+                    "QQ空间窗口结束,未消费出站意图作废(kind=%s,tid=%s)",
+                    self._qzone_outbound_intent.kind, self._qzone_outbound_intent.tid,
+                )
+                self._qzone_outbound_intent = None  # 收泵清意图(窗口外残留 reaction 会误路由下一次出站)
             return
         if not self.qzone_injector.window_active:
             self.qzone_injector.window_started()
@@ -904,7 +923,7 @@ class CatsitatePlugin(MaiBotPlugin):
                 if not accepted:
                     # 注入被宿主拒绝:评论键已在 is_new 登记(发现即登记,store 契约),
                     # 下轮判重跳过不重试——重注入会有重复回复风险,损失单条注入可接受
-                    self.ctx.logger.warning("QQ空间评论注入被宿主拒绝(%s),跳过且不标记", c.comment_tid)
+                    self.ctx.logger.warning("QQ空间评论注入被宿主拒绝(%s),跳过(该评论不重试)", c.comment_tid)
                     return
                 self._qzone_outbound_intent = OutboundIntent(
                     kind="comment_reply", tid=feed_tid, target_qq=bot_uin,

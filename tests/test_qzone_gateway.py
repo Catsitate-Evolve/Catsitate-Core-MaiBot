@@ -120,6 +120,8 @@ def test_m2_wiring_source_assertions():
     assert '"qzone_like"' in src and "do_like(fid=" in src
     assert "_qzone_comment_poll_tick" in src and "comment_reply" in src
     assert 'self._qzone_outbound_intent = None' in src  # 意图一次性消费
+    # 审查必修:远端成功即刻消费意图(记账失败不得把意图留到下一条出站→重复评论)
+    assert 'self._qzone_outbound_intent = None  # 远端成功即刻消费' in src
 
 
 def test_selfcheck_blocks_talk_value_zero():

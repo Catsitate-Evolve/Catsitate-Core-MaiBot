@@ -298,6 +298,10 @@ class _StubCommentClient:
         self.calls += 1
         return self._comments, self._ctx_map
 
+    async def get_unified_timeline(self, *, count=20):
+        del count
+        return []
+
 
 def _make_notify_poll_plugin(tmp_path, comments, ctx_map):
     """离线装配 _qzone_notify_poll_tick 所需最小插件实例(注入窗口开启,泵可推进)。"""

@@ -86,6 +86,7 @@ QQ 空间四功能（阅读好友动态 / 点赞 / 评论 / 发说说 + 记日�
 
 - **统一通知通道（M2.1,联调修正 2026-08-31）**：替代原「评论轮询」设计。模拟推送通知——高频短间隔(默认 120 秒,`notification_interval_seconds`)双源检测：源A=自己说说下的新评论(msglist commentlist);源B=自己在他人说说下的评论收到的新回复(commentlist→list_3 楼中楼)。通知走双优先级队列 P1(插队于浏览动态 P2 之前),模拟「刷着动态→弹通知→先看通知→回完继续刷」注意力模型。始终运行(醒着即可,与浏览窗口无关);单轮≤3 条;新鲜度截断(复用 summary_days);阅读顺序新→旧(信息流降序,QQ 空间 App 实际形态)。工具双向隔离:qzone 流白名单 / 非 qzone 流隐藏 qzone_* 工具。
 - 通知以「(通知) …」形态 FeedItem(source="notify")注入虚拟流(同样带 is_mentioned=1.0;发布时间前缀由注入泵 build_feed_message 从 abstime 统一承载)→ planner 回复 → 意图 `comment_reply` → 楼中楼 API——源A commentId=好友评论 tid(自己说说,target=bot)/源B commentId=回复 tid(好友说说,friend_uin 留痕反查定位);源B正文附带 bot 原评论留痕(note_bot_comment 键剥出)作上下文。上一条通知的意图未消费时不取新通知(不叠加);睡眠窗口内绝对静默拦截沿用。
+- **统一时间线架构（M3,2026-08-31 用户裁定 Q7/Q8=a）**：浏览流从「逐好友拉取」重构为「发现层+充实层」两层混合——发现层 1 次 `feeds3_html_more` 调用返回全好友统一时间线（FeedDiscovery 轻量索引:tid/uin/nickname/abstime/appid），充实层仅对「发现层标记为新的 tid」按 uin 分组拉 `emotion_cgi_msglist_v6`（典型 0-3 次/周期）。API 量从 O(N好友) 降为 O(1+新动态数)，好友数 24 或 240 不影响。发现层失败告警回退逐好友旧路径。源B搭发现层便车——仅对「发现层有新活动 ∩ bot 评论过该好友」的说说拉评论，零交集时零源B API。硬上限 QZONE_SOURCE_B_FRIEND_CAP 已删除。
 
 ### 3.8 发布（M3）
 

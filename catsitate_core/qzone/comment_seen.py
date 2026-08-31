@@ -1,0 +1,121 @@
+"""评论观察存储(spec §3.7/§3.9):窗口外评论轮询的去重登记 + 好感度显式事件表。
+
+两张表:qzone_comments(评论去重,幂等主键 comment_key)/ qzone_fav_events
+(好感度显式事件——fav_count 已豁免虚拟流,空间互动不依赖 batch_counter)。
+风格对齐 seen_store.py(SQLiteStore 薄封装,异常直接抛出不静默)。
+"""
+
+from __future__ import annotations
+
+from datetime import datetime, timedelta
+
+from catsitate_core.storage import SQLiteStore
+
+_ISO = "%Y-%m-%dT%H:%M:%S"
+_DAY = "%Y-%m-%d"
+
+
+class CommentSeenStore:
+    """qzone_comments / qzone_fav_events 两表的薄封装。"""
+
+    def __init__(self, store: SQLiteStore) -> None:
+        self.store = store
+
+    def ensure_schema(self) -> None:
+        self.store.execute(
+            """
+            CREATE TABLE IF NOT EXISTS qzone_comments (
+                comment_key TEXT PRIMARY KEY,
+                created_at TEXT NOT NULL DEFAULT ''
+            )
+            """
+        )
+        self.store.execute(
+            """
+            CREATE TABLE IF NOT EXISTS qzone_fav_events (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                day TEXT NOT NULL DEFAULT '',
+                user_id TEXT NOT NULL DEFAULT '',
+                kind TEXT NOT NULL DEFAULT '',
+                text TEXT NOT NULL DEFAULT '',
+                created_at TEXT NOT NULL DEFAULT ''
+            )
+            """
+        )
+
+    def is_new(self, comment_key: str) -> bool:
+        """新评论登记;comment_key=f"{feed_tid}:{comment_tid}:{uin}" 已存在返回
+        False=重复,由轮询侧跳过(键缺省同样 False=跳过,与 SeenStore 一致)。"""
+
+        if not comment_key:
+            return False
+        rows = self.store.query("SELECT 1 FROM qzone_comments WHERE comment_key = ?", (comment_key,))
+        if rows:
+            return False
+        self.store.execute(
+            "INSERT INTO qzone_comments (comment_key, created_at) VALUES (?, ?)",
+            (comment_key, datetime.now().strftime(_ISO)),
+        )
+        return True
+
+    def note_bot_comment(self, feed_tid: str, bot_text: str, at_iso: str) -> None:
+        """登记 bot 自己发出的评论(发出成功后/轮询再见到时调用)。
+
+        键用独立命名空间 "{feed_tid}:bot:{text}",不与好友评论键
+        ({feed}:{tid}:{uin})冲突——bot 评论的服务端 tid 发出时不可知,防回环
+        消费自己的评论由轮询侧 uin==bot_uin 前置判定承担(T6),本登记留存
+        供核查与保留期清理。重复登记刷新时间戳(轮询每轮都会重见仍在
+        commentlist 里的自评,幂等)。
+        """
+
+        self.store.execute(
+            "INSERT OR REPLACE INTO qzone_comments (comment_key, created_at) VALUES (?, ?)",
+            (f"{feed_tid}:bot:{bot_text}", at_iso),
+        )
+
+    def prune(self, days: int = 30, now: datetime | None = None) -> int:
+        """评论登记保留期清理(默认 30 天),返回删除条数。
+
+        只清 qzone_comments;qzone_fav_events 不清——last_fav_interaction 是
+        衰减计时基准(T8),清历史事件会把基准误回退到 batch 计时。
+        """
+
+        now = now or datetime.now()
+        cutoff = (now - timedelta(days=max(days, 1))).strftime(_ISO)
+        rows = self.store.query("SELECT COUNT(*) FROM qzone_comments WHERE created_at < ?", (cutoff,))
+        n = int(rows[0][0]) if rows else 0
+        if n:
+            self.store.execute("DELETE FROM qzone_comments WHERE created_at < ?", (cutoff,))
+        return n
+
+    def fav_event(self, user_id: str, kind: str, text: str) -> None:
+        """好感度显式事件(spec §3.9):评论/点赞/出站互动统一入表,日终结算
+        素材与衰减计时基准的数据源;day=当天。"""
+
+        now = datetime.now()
+        self.store.execute(
+            "INSERT INTO qzone_fav_events (day, user_id, kind, text, created_at) VALUES (?, ?, ?, ?, ?)",
+            (now.strftime(_DAY), user_id, kind, text, now.strftime(_ISO)),
+        )
+
+    def fav_events_on(self, day: str, user_id: str) -> list[dict]:
+        """某日某人的全部事件,按写入顺序(id 升序)。"""
+
+        rows = self.store.query(
+            "SELECT id, day, user_id, kind, text, created_at FROM qzone_fav_events "
+            "WHERE day = ? AND user_id = ? ORDER BY id",
+            (day, user_id),
+        )
+        return [
+            {"id": r[0], "day": r[1], "user_id": r[2], "kind": r[3], "text": r[4], "created_at": r[5]}
+            for r in rows
+        ]
+
+    def last_fav_interaction(self, user_id: str) -> str:
+        """该人最近一次任一类事件的 created_at(ISO);无事件返回空串。"""
+
+        rows = self.store.query(
+            "SELECT created_at FROM qzone_fav_events WHERE user_id = ? ORDER BY created_at DESC LIMIT 1",
+            (user_id,),
+        )
+        return str(rows[0][0]) if rows else ""

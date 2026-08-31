@@ -224,8 +224,13 @@ class QzoneClient:
         if status != 200:
             raise RuntimeError(f"空间写请求失败: HTTP {status}")
         text = raw.decode("utf-8") if isinstance(raw, (bytes, bytearray)) else str(raw)
-        payload = extract_callback_json(text) if "(" in text[:60] else json.loads(text)
-        code = payload.get("code")
+        # 批①遗留加固:畸形 200 响应(网关错误页/截断或非对象 JSON)统一 RuntimeError,
+        # 不让原始解析异常类型(JSONDecodeError/AttributeError)泄漏到调用方
+        try:
+            payload = extract_callback_json(text) if "(" in text[:60] else json.loads(text)
+            code = payload.get("code")
+        except (ValueError, AttributeError) as e:
+            raise RuntimeError(f"空间写响应不可解析: {text[:120]}") from e
         if code is not None and int(code) in AUTH_ERROR_CODES:
             raise QzoneAuthError(f"空间登录态失效: code={code}")
         if code is None or int(code) != 0:

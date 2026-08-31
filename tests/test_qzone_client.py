@@ -254,7 +254,6 @@ def test_client_download_image_no_size_cap_and_no_extra_params():
 
 
 # ---- 写路径(fake 注入,无网络) ----
-from catsitate_core.qzone.wire import CommentItem
 
 
 def _post_client(responses):
@@ -298,6 +297,19 @@ def test_write_failure_raises_no_retry():
     except RuntimeError:
         raised = True
     assert raised and len(seen) == 1  # 不重试
+
+
+def test_write_garbage_200_raises_unparseable():
+    """批①遗留加固:HTTP 200 + 畸形响应体(网关错误页/非对象 JSON)→
+    RuntimeError 且文案含「不可解析」,不泄漏原始解析异常类型。"""
+    for garbage in (b"<html>gateway error</html>", b"123"):
+        client, _ = _post_client([(200, garbage)])
+        try:
+            asyncio.run(client.do_comment(fid="t", target_qq="8", content="x"))
+            raised = ""
+        except RuntimeError as e:
+            raised = str(e)
+        assert "不可解析" in raised, garbage
 
 
 def test_write_auth_error_invalidates_cookie():

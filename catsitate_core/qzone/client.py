@@ -225,9 +225,18 @@ class QzoneClient:
             raise RuntimeError(f"空间写请求失败: HTTP {status}")
         text = raw.decode("utf-8") if isinstance(raw, (bytes, bytearray)) else str(raw)
         # 批①遗留加固:畸形 200 响应(网关错误页/截断或非对象 JSON)统一 RuntimeError,
-        # 不让原始解析异常类型(JSONDecodeError/AttributeError)泄漏到调用方
+        # 不让原始解析异常类型(JSONDecodeError/AttributeError)泄漏到调用方。
+        # format=fs 响应为 HTML 包裹 frameElement.callback({...}),前缀超 60 字符——
+        # 联调缺陷#16:找 callback( 而非首 60 字符判定
         try:
-            payload = extract_callback_json(text) if "(" in text[:60] else json.loads(text)
+            marker = "frameElement.callback("
+            idx = text.rindex(marker)
+            if idx >= 0:
+                payload = json.loads(text[idx + len(marker): text.rindex(")")])
+            elif "(" in text[:60]:
+                payload = extract_callback_json(text)
+            else:
+                payload = json.loads(text)
             code = payload.get("code")
         except (ValueError, AttributeError) as e:
             raise RuntimeError(f"空间写响应不可解析: {text[:120]}") from e

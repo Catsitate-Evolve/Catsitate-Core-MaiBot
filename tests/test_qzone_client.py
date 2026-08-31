@@ -154,6 +154,22 @@ def test_cookie_manager_invalidate_forces_refetch(tmp_path):
     assert asyncio.run(cm.get()) == {"p_skey": "NEW", "uin": "o1"} and len(calls) == 2  # 立即重取(不受节流/快照)
 
 
+def test_client_download_image_retries_once_on_transient_failure():
+    """图片下载瞬态失败(联调实证 CDN 偶发 404)单次重试;两次都败才返回 None。"""
+    attempts = []
+
+    async def fake_fetch(method, url, *, params, headers, timeout_ms):
+        attempts.append(url)
+        return (404, "") if len(attempts) == 1 else (200, b"img".decode("latin-1"))
+
+    async def fake_cookie():
+        return {"p_skey": "SK"}
+
+    client = QzoneClient(cookie_provider=fake_cookie, fetch=fake_fetch, timeout_ms=1000, max_retries=0)
+    assert asyncio.run(client.download_image("https://img/x.jpg", max_kb=100)) == b"img"
+    assert len(attempts) == 2
+
+
 def test_client_raises_auth_error_on_neg3000():
     """code=-3000(登录态失效)抛 QzoneAuthError,由调用方触发 cookie 失效重取。"""
     from catsitate_core.qzone.client import QzoneAuthError

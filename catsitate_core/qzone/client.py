@@ -180,14 +180,23 @@ class QzoneClient:
         return parse_msglist(payload, target_uin=str(target_uin), nickname=nickname)
 
     async def download_image(self, url: str, *, max_kb: int) -> bytes | None:
-        """下载原图;超过体积上限返回 None(调用方以占位注入)。防盗链头带上 Referer。"""
+        """下载原图;超过体积上限返回 None(调用方以占位注入)。防盗链头带上 Referer。
 
-        status, body = await self._request("GET", url, params={}, binary=True)
-        if status != 200:
-            logger.warning("空间图片下载失败(HTTP %s): %s", status, url)
-            return None
-        data = body.encode("latin-1") if isinstance(body, str) else body
-        if len(data) > max_kb * 1024:
-            logger.warning("空间图片超体积上限(%d KB): %s", max_kb, url)
-            return None
-        return data
+        读路径例外:CDN 偶发瞬态失败(联调实证 404),单次重试;动作 API 的
+        「失败不重试」纪律不适用于此。
+        """
+
+        import asyncio as _asyncio
+
+        for attempt in (1, 2):
+            status, body = await self._request("GET", url, params={}, binary=True)
+            if status == 200:
+                data = body.encode("latin-1") if isinstance(body, str) else body
+                if len(data) > max_kb * 1024:
+                    logger.warning("空间图片超体积上限(%d KB): %s", max_kb, url)
+                    return None
+                return data
+            if attempt == 1:
+                await _asyncio.sleep(1.0)
+        logger.warning("空间图片下载失败(重试后仍失败): %s", url)
+        return None

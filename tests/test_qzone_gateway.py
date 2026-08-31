@@ -124,6 +124,10 @@ def test_m2_wiring_source_assertions():
     assert 'self._qzone_outbound_intent = None  # 远端成功即刻消费' in src
     # T7 接线:好感度显式事件消费(结算素材并入 + 衰减计时基准)
     assert "fav_events_on(" in src and "last_fav_interaction(" in src
+    # T7 审查必修:事件合成消息 ts 用原始时刻(created_at)防同日 early→daily 重判;
+    # 事件标签按 kind 三分(审查顺手)
+    assert '"ts": e["created_at"] or' in src
+    assert "你评论了TA" in src and "你点赞了TA" in src
     # T7 M-1:快照缓存 LRU 上限
     assert "SNAPSHOT_CACHE_MAX" in src and "popitem(last=False)" in src
     # T7 M-2:见闻摘要带作者昵称

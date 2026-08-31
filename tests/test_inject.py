@@ -94,3 +94,25 @@ def test_assembler_cache_lru_eviction():
     inj.render([InjectionBlock("memo", "k-latest", "t-latest")])
     assert len(inj._cache) <= CACHE_MAX
     assert "memo|k-latest|t-latest" in inj._cache
+
+
+def test_assembler_cache_hit_refreshes_recency():
+    """M-1 补全:命中路径 move_to_end——同键重复渲染不增长,且新近度刷新后逐最旧。"""
+
+    from catsitate_core.inject import CACHE_MAX
+
+    inj = InjectAssembler()
+    inj.render([InjectionBlock("memo", "k-hit", "t-hit")])
+    inj.render([InjectionBlock("memo", "k-hit", "t-hit")])  # 命中路径:len 不变
+    assert len(inj._cache) == 1
+    # 灌满至 CACHE_MAX(k-hit 为最旧但未超限,不逐出)
+    for i in range(CACHE_MAX - 1):
+        inj.render([InjectionBlock("memo", f"k{i}", f"t{i}")])
+    assert len(inj._cache) == CACHE_MAX
+    # 命中刷新新近度(k-hit 变最新,k0 变最旧)后再插 1 条 → 逐出 k0 而非 k-hit
+    inj.render([InjectionBlock("memo", "k-hit", "t-hit")])
+    inj.render([InjectionBlock("memo", "k-new", "t-new")])
+    assert len(inj._cache) == CACHE_MAX
+    assert "memo|k-hit|t-hit" in inj._cache  # 若无 move_to_end,这里被逐出的会是 k-hit
+    assert "memo|k0|t0" not in inj._cache
+    assert "memo|k-new|t-new" in inj._cache

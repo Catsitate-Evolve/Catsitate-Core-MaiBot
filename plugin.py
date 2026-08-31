@@ -85,6 +85,13 @@ logger = logging.getLogger("catsitate.core")
 
 SNAPSHOT_CACHE_MAX = 256  # 快照项缓存条数上限(背包 M-1,超限 LRU 逐最旧)
 
+# 空间互动事件 kind → 结算素材标签(spec §3.9;未知 kind 兜底「空间互动」)
+QZONE_FAV_EVENT_LABELS = {
+    "COMMENT": "评论了你的说说",
+    "OUT_COMMENT": "你评论了TA",
+    "OUT_LIKE": "你点赞了TA",
+}
+
 
 class _ModuleLogForwarder(logging.Handler):
     """把 catsitate_core.* 模块日志转发到插件 ctx logger(联调缺陷#10)。
@@ -2101,8 +2108,11 @@ class CatsitatePlugin(MaiBotPlugin):
             persona, style = await self._persona_context()
             # 空间互动事件并入结算素材(spec §3.9,LLM 计权无硬编码数值)。
             # 本方法素材形态是 history 列表(build_material 的输入 list[dict]),
-            # 事件按合成 user 消息追加:role/user_id=目标保证进入素材锚点,
-            # ts=now+seq 取大保证渲染后落在素材文本末尾;stream_id 用合成流隔离邻居
+            # 事件按合成 user 消息追加:role/user_id=目标保证进入素材锚点;
+            # stream_id 用合成流隔离邻居,seq 取大且逐条唯一(build_material 以
+            # (stream,seq) 去重)。ts 用事件原始时刻——同日多次结算(early→daily)时
+            # 首次结算已把 window_start 前移,已判事件被窗口过滤排除(真实消息同机制),
+            # 防同一事件反复并入素材重判(审查必修)
             today = datetime.now().strftime("%Y-%m-%d")
             try:
                 events = self.qzone_comment_seen.fav_events_on(today, user_id)
@@ -2110,13 +2120,14 @@ class CatsitatePlugin(MaiBotPlugin):
                 events = []
                 self.ctx.logger.warning("空间互动事件读取失败,本次结算不含事件素材(user=%s):%s", user_id, type(exc).__name__)
             for i, e in enumerate(events[:5]):
+                label = QZONE_FAV_EVENT_LABELS.get(e["kind"], "空间互动")
                 history.append({
                     "role": "user",
                     "user_id": user_id,
                     "stream_id": "qzone-events",  # 合成流:不与真实流撞 id,事件互为邻居
-                    "text": f"[空间互动] {'评论了你的说说' if e['kind'] == 'COMMENT' else '你评论/点赞了TA'}: {e['text'][:60]}",
-                    "seq": 10 ** 9 + i,  # 排序键取大且逐条唯一(build_material 以 (stream,seq) 去重),保证全量落在素材末尾
-                    "ts": datetime.now().strftime("%Y-%m-%dT%H:%M:%S"),
+                    "text": f"[空间互动] {label}: {e['text'][:60]}",
+                    "seq": 10 ** 9 + i,  # 排序键取大且逐条唯一,保证全量保留
+                    "ts": e["created_at"] or datetime.now().strftime("%Y-%m-%dT%H:%M:%S"),
                     "is_group": False,
                     "addressed": None,
                 })

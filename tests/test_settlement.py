@@ -40,6 +40,29 @@ def test_settle_empty_material_fails(tmp_path):
     assert not calls  # 未调 LLM
 
 
+def test_settle_material_excludes_already_judged_events(tmp_path):
+    """T7 审查必修:事件合成消息 ts=事件原始时刻(created_at)——首次结算落库后
+    window_start 前移,同日第二次结算(early→daily)素材不再含已判事件
+    (与真实消息同窗口过滤;旧接法 ts=结算时刻会漏过窗口反复重判)。"""
+    _, engine, _ = make_executor(tmp_path)
+
+    def history_with_event(event_created_at, real_ts, real_text):
+        # 如实复刻 plugin._settle_and_log 的事件合成消息(含审查后的 ts 选择)
+        return [
+            {"role": "user", "user_id": "u1", "stream_id": "s1", "text": real_text, "seq": 0, "ts": real_ts, "is_group": False, "addressed": None},
+            {"role": "user", "user_id": "u1", "stream_id": "qzone-events", "text": "[空间互动] 评论了你的说说: 小明的评论", "seq": 10 ** 9, "ts": event_created_at, "is_group": False, "addressed": None},
+        ]
+
+    # 首次结算(early,10:30 判定):事件(09:00 发生)与真实消息(10:00)均在素材内
+    material1 = engine.build_material("u1", history_with_event("2026-08-31T09:00:00", "2026-08-31T10:00:00", "早上聊过"))
+    assert any("[空间互动]" in m for m in material1)
+    engine.apply_delta("u1", 2, "聊得不错", judged_at="2026-08-31T10:30:00")  # window_start → 10:30
+    # 同日第二次结算(daily):fav_events_on 仍返回同日事件,ts=created_at(09:00)被窗口过滤排除
+    material2 = engine.build_material("u1", history_with_event("2026-08-31T09:00:00", "2026-08-31T11:30:00", "下午又聊"))
+    assert not any("[空间互动]" in m for m in material2)
+    assert any("下午又聊" in m for m in material2)  # 窗口后的新消息正常进入素材
+
+
 def test_settle_includes_persona(tmp_path):
     import asyncio
     executor, engine, calls = make_executor(tmp_path)

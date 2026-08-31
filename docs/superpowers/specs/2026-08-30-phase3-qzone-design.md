@@ -148,7 +148,7 @@ QQ 空间四功能（阅读好友动态 / 点赞 / 评论 / 发说说 + 记日�
 - 场景替换文案（空间语义说明的措辞）、注入摘要行格式——M1 实施时提案评审。
 - 好感度空间互动权重（提案：评论≈私聊消息 0.5 倍、点赞≈0.2 倍，入日终结算素材）。
 - memo 附带 QQ 上限（提案 5）与写入来源细则。
-- ~~`inspect_image` 在虚拟流的可用性~~ **已实证可用**（组件对齐 napcat-adapter:data 留空+sha256 hash;hours 放宽保障老动态可取）。
+- ~~`inspect_image` 在虚拟流的可用性~~ **已实证可用**（图片组件对齐 napcat-adapter;timestamp=阅读时刻(方案 B)天然落在宿主 24h 默认窗内）。
 - image 组件注入格式的字段细节（对齐 `message_utils.py` 构造器，实现时核对）。
 - 虚拟流 session_id 的获取方式：本地按公式计算（md5(platform[+account]+group_id)，需与 `_attach_inbound_route_metadata` 写入的 account 维度一致）或注入后经 `get_all_streams(platform="qzone-qq")` 查询——plan 阶段定，二者皆可。
 - `_manifest.json` capabilities 增补核对：gateway（MessageGateway 组件）、`person.get_id`（别名自检）、`config.get`（场景替换与前置检测）——以 SDK 能力声明清单为准逐一核对。

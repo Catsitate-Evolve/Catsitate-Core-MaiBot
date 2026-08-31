@@ -148,11 +148,10 @@ def build_feed_message(
     if not raw and feed.image_urls and not images:
         text += " [图片]"  # 有图但全未下载成功的占位
 
-    if post_epoch is None:
-        logger.debug("空间动态 abstime 非法/缺失(tid=%s),正文不加发布时间前缀", feed.tid)
     if post_epoch is not None:
         prefix = _time_prefix(datetime.fromtimestamp(post_epoch), datetime.fromtimestamp(now_epoch))
     else:
+        logger.debug("空间动态 abstime 非法/缺失(tid=%s),正文不加发布时间前缀", feed.tid)
         prefix = ""
     # 文本段:正文→前缀+正文;纯图→仅时间前缀(无时间则整段省略,图段承载内容);
     # 无正文无图→前缀+占位

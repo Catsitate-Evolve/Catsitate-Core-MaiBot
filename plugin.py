@@ -1056,8 +1056,8 @@ class CatsitatePlugin(MaiBotPlugin):
         # planner.before_request payload 无 user_id/stream_id 键(实机确认):
         # 流 = session_id;说话人 = 私聊流对端 / 群聊最近非 bot 消息发送者
         stream_id = str(kwargs.get("session_id") or "")
-        # 虚拟流说话人 = 注入泵当前动态作者(spec §2.16 交叉校验)——注入时间戳已改为
-        # 发布时间(联调缺陷#5),get_recent 的 24h 默认窗对老动态不可靠,不再回溯解析
+        # 虚拟流说话人 = 注入泵当前动态作者——注入 timestamp=阅读时刻(方案 B),
+        # 宿主 24h 窗天然可靠;说话人仍取注入泵当前作者(spec §2.16 交叉校验)
         if stream_id and stream_id in self._qzone_session_id_set() and self._qzone_available:
             speaker = self.qzone_injector.awaiting_author
         else:

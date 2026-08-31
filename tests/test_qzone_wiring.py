@@ -13,6 +13,7 @@ from datetime import datetime, timedelta
 
 from catsitate_core.config import CatsitateConfig
 from catsitate_core.qzone.comment_seen import CommentSeenStore
+from catsitate_core.qzone.discovery import FeedDiscovery
 from catsitate_core.qzone.injector import FeedInjector
 from catsitate_core.qzone.protocol import FeedItem
 from catsitate_core.qzone.routing import OutboundIntent
@@ -122,8 +123,22 @@ def _make_plugin(tmp_path):
     p.qzone_comment_seen.ensure_schema()
     p.qzone_injector = FeedInjector(decision_window_s=75)
     p._qzone_session_ids = set()  # 实例级覆盖(类属性为共享 set,防测试间状态泄漏)
+    p.qzone_client = _StubUnifiedClient([])  # 默认发现层桩:空时间线(各测试按需覆盖)
     p.logs = logs  # 测试侧便捷引用(非插件属性约定)
     return p
+
+
+class _StubUnifiedClient:
+    """发现层输入桩:get_unified_timeline 返回固定列表(默认空),记录调用参数。"""
+
+    def __init__(self, discoveries):
+        self._discoveries = discoveries
+        self.discovery_calls = 0
+
+    async def get_unified_timeline(self, *, count=20):
+        del count
+        self.discovery_calls += 1
+        return list(self._discoveries)
 
 
 def _patch_sleep(monkeypatch, record: list) -> None:
@@ -151,10 +166,7 @@ def test_poll_tick_voids_pending_comment_intent_on_window_start(tmp_path):
         comment_tid="ct1", comment_uin="20000", comment_nick="小红",
     )
 
-    async def _no_friends():
-        return []  # 好友列表空:窗口开始分支后本轮提前返回,足以断言意图处置
-
-    p._qzone_friend_list = _no_friends
+    # 发现层空时间线(默认桩):窗口开始分支后本轮提前返回,足以断言意图处置
     asyncio.run(p._qzone_poll_feeds())
     assert p._qzone_outbound_intent is None  # 残留评论意图作废
     assert p.qzone_injector.window_active is True  # 窗口正常开启(不跳过注入)
@@ -630,19 +642,21 @@ def _active_qzone_schedule() -> dict:
 
 
 def test_poll_tick_returns_before_long_io_completes(tmp_path):
-    """深度审查 A-2 行为:tick 派发后台拉取后立即返回——好友列表还在拉(长 IO
+    """深度审查 A-2 行为:tick 派发后台拉取后立即返回——统一时间线还在拉(长 IO
     未完成)时 tick 协程已 done,调度器不被阻塞。"""
 
     started, release = asyncio.Event(), asyncio.Event()
 
-    async def _slow_friend_list():
-        started.set()
-        await release.wait()  # 模拟逐好友 2s sleep+HTTP 的长 IO
-        return []
+    class _SlowDiscoveryClient:
+        async def get_unified_timeline(self, *, count=20):
+            del count
+            started.set()
+            await release.wait()  # 模拟发现层 HTTP 的长 IO
+            return []
 
     p = _make_plugin(tmp_path)
     p._schedule_data = _active_qzone_schedule()
-    p._qzone_friend_list = _slow_friend_list
+    p.qzone_client = _SlowDiscoveryClient()
 
     async def scenario():
         tick_task = asyncio.create_task(p._qzone_poll_tick())
@@ -658,18 +672,20 @@ def test_poll_tick_returns_before_long_io_completes(tmp_path):
 
 def test_poll_tick_reentrancy_guard(tmp_path):
     """深度审查 A-2 行为:上一轮后台拉取还在跑(_qzone_poll_running=True)时,
-    tick 防重入直接返回——不派发第二轮,不重复拉好友列表;标记清位只由后台
+    tick 防重入直接返回——不派发第二轮,不重复拉统一时间线;标记清位只由后台
     feeds 的 finally 负责(tick 早退不动它)。"""
 
     calls: list = []
 
-    async def _friend_list():
-        calls.append(1)
-        return []
+    class _CountingDiscoveryClient:
+        async def get_unified_timeline(self, *, count=20):
+            del count
+            calls.append(1)
+            return []
 
     p = _make_plugin(tmp_path)
     p._schedule_data = _active_qzone_schedule()
-    p._qzone_friend_list = _friend_list
+    p.qzone_client = _CountingDiscoveryClient()
 
     async def scenario():
         p._qzone_poll_running = True  # 模拟上一轮仍在跑
@@ -880,3 +896,95 @@ def test_turn_signal_does_not_advance_pump_when_sleeping(tmp_path):
     asyncio.run(p._qzone_pump())
     assert len(p._ctx.gateway.calls) == 1  # 下一条正常注入(恰一次)
     assert p._ctx.gateway.calls[0][1]["message_id"].startswith("qzone_t_next_")
+
+
+# ---- M3 T3:浏览流统一时间线架构(发现层→过滤→充实层) ----
+
+
+def test_poll_feeds_unified_timeline_enriches_new_only_and_injects(tmp_path, monkeypatch):
+    """M3 T3-①:统一时间线发现→仅新 tid 充实→入队注入——非说说(appid≠311)与
+    seen 已登记的旧 tid 被过滤;充实层只对含新动态的作者调用且 num=组大小+2;
+    充实页返回的同好友旧动态/未发现动态不注入;新动态恰好经泵注入一次。"""
+
+    sleeps: list = []
+    _patch_sleep(monkeypatch, sleeps)
+    p = _make_plugin(tmp_path)
+    p._schedule_data = _active_qzone_schedule()
+    # 预登记旧动态为已见(发现层 is_new_candidate 判非新;queued 会被窗口开始的
+    # revert_pending 回收,seen 才是稳定的判重基准)
+    p.qzone_seen.mark_queued("oldtid", abstime="1750000000", author_uin="10001", summary="旧动态")
+    p.qzone_seen.mark_seen("oldtid", "2026-08-31T10:00:00")
+
+    discoveries = [
+        FeedDiscovery(tid="newtid", uin="10001", nickname="小明", abstime="1750000200", appid=311),
+        FeedDiscovery(tid="oldtid", uin="10001", nickname="小明", abstime="1750000000", appid=311),
+        # 非说说(如分享/音乐):发现层保留全量条目,浏览流只认 appid=311
+        FeedDiscovery(tid="shareid", uin="10002", nickname="小红", abstime="1750000100", appid=2023106),
+    ]
+    enrich_calls: list = []
+
+    class _StubEnrichClient(_StubUnifiedClient):
+        async def get_user_feeds(self, *, target_uin, nickname, num=5):
+            enrich_calls.append((target_uin, nickname, num))
+            # 充实页含同好友的旧动态与发现层之外的说说:均不得注入
+            return [
+                FeedItem(tid="othertid", abstime="1749000000", uin="10001", nickname="小明", content="更旧的说说"),
+                FeedItem(tid="newtid", abstime="1750000200", uin="10001", nickname="小明", content="新动态正文"),
+            ]
+
+    p.qzone_client = _StubEnrichClient(discoveries)
+    asyncio.run(p._qzone_poll_feeds())
+
+    # ①发现层 1 次调用;②充实层只对 uin=10001(唯一含新 tid 的作者)调用
+    assert p.qzone_client.discovery_calls == 1
+    assert enrich_calls == [("10001", "小明", 3)]  # num=组大小(1)+2,昵称取发现层
+    # ③新动态入队并经泵注入恰一次(一动态一轮);旧/未发现/非说说不注入
+    assert len(p._ctx.gateway.calls) == 1
+    assert p._ctx.gateway.calls[0][1]["message_id"].startswith("qzone_newtid_")
+    states = dict(p.store.query("SELECT tid, state FROM qzone_feeds"))
+    # newtid 已注入成功(泵 mark_seen);othertid/shareid 未登记
+    assert states == {"oldtid": "seen", "newtid": "seen"}
+    # ④入队计数日志(统一时间线口径:入队 1 条/发现 1 条)
+    assert any(
+        level == "info" and "新动态入队" in str(a[0]) and "统一时间线发现" in str(a[0])
+        and list(a[1:]) == [1, 1]
+        for level, a in p.logs
+    )
+
+
+def test_poll_feeds_falls_back_to_legacy_on_discovery_failure(tmp_path, monkeypatch):
+    """M3 T3-②:发现层失败(非登录态异常)→显式告警+回退旧逐好友路径——好友列表
+    →get_user_feeds→mark_queued→注入链照常工作,错误不静默。"""
+
+    sleeps: list = []
+    _patch_sleep(monkeypatch, sleeps)
+    p = _make_plugin(tmp_path)
+    p._schedule_data = _active_qzone_schedule()
+    legacy_pulls: list = []
+
+    class _ExplodingDiscoveryClient:
+        async def get_unified_timeline(self, *, count=20):
+            del count
+            raise RuntimeError("空间统一时间线请求失败: HTTP 502")
+
+        async def get_user_feeds(self, *, target_uin, nickname, num=5):
+            legacy_pulls.append((target_uin, num))
+            return [FeedItem(tid="lt1", abstime="1750000000", uin=target_uin,
+                             nickname=nickname, content="旧路径动态")]
+
+    p.qzone_client = _ExplodingDiscoveryClient()
+
+    async def _friends():
+        return [{"user_id": "10001", "nickname": "小明"}]
+
+    p._qzone_friend_list = _friends
+    asyncio.run(p._qzone_poll_feeds())
+
+    assert any(
+        level == "exception" and "统一时间线拉取失败" in str(a[0]) and "回退逐好友旧路径" in str(a[0])
+        for level, a in p.logs
+    )
+    assert legacy_pulls == [("10001", 3)]  # legacy 路径逐好友拉取(num=3 原口径)
+    assert len(p._ctx.gateway.calls) == 1  # 旧路径动态仍注入
+    assert p._ctx.gateway.calls[0][1]["message_id"].startswith("qzone_lt1_")
+    assert p.qzone_seen.is_new_candidate("lt1") is False  # 已登记

@@ -39,6 +39,7 @@ from catsitate_core.qzone import QZONE_GATEWAY_NAME, QZONE_PLATFORM
 from catsitate_core.qzone.protocol import FeedItem, parse_friend_list
 from catsitate_core.qzone.client import CookieManager, QzoneAuthError, QzoneClient
 from catsitate_core.qzone.comment_seen import CommentSeenStore
+from catsitate_core.qzone.discovery import FeedDiscovery
 from catsitate_core.qzone.injector import FeedInjector
 from catsitate_core.qzone.messages import build_feed_message, fit_images_to_rpc_budget
 from catsitate_core.qzone.outbound import extract_outbound_text, extract_quote_target
@@ -801,7 +802,14 @@ class CatsitatePlugin(MaiBotPlugin):
         self._spawn_background_task(self._qzone_poll_feeds())
 
     async def _qzone_poll_feeds(self) -> None:
-        """空间窗口内周期拉取(原 _qzone_poll_tick 主体);窗口切换时收泵并回退未读。"""
+        """空间窗口内周期拉取(M3 统一时间线架构);窗口切换时收泵并回退未读。
+
+        浏览流三段式:①发现层 get_unified_timeline(1 次调用覆盖全好友)→
+        ②过滤(说说 appid=311 且 seen 未登记的新 tid,is_new_candidate 纯查)→
+        ③充实层按作者 uin 分组、每组 1 次 get_user_feeds 只拉有新动态的好友
+        (1+N 次调用,N=有新动态的作者数,与好友总数无关)。
+        发现层非登录态失败回退 _qzone_poll_feeds_legacy 旧逐好友路径。
+        """
 
         try:
             if not self._qzone_available:
@@ -848,43 +856,105 @@ class CatsitatePlugin(MaiBotPlugin):
                     self.ctx.logger.info("QQ空间窗口开始,注入泵激活;回收跨启动 queued 残留 %d 条(重新拉取)", stale)
                 else:
                     self.ctx.logger.info("QQ空间窗口开始,注入泵激活")
-            # 拉取架构(联调修正 2026-08-30):好友列表走 adapter OneBot API,
-            # 逐好友拉最近说说(msglist_v6 为指定用户接口,无聚合端点);好友间固定间隔防风控
-            friends = await self._qzone_friend_list()
-            if not friends:
-                self.ctx.logger.warning("QQ空间好友列表为空或获取失败,本轮跳过")
+            # ① 发现层:统一时间线 1 次调用(feeds3_html_more,全好友聚合端点)
+            try:
+                discoveries = await self.qzone_client.get_unified_timeline(count=20)
+            except QzoneAuthError:
+                # 登录态失效自愈链(联调缺陷#7):作废 cookie 下轮重取;不回退
+                # legacy——cookie 失效对两路径同源,回退只会重复失败多打一轮 API
+                self.qzone_cookie.invalidate()
+                self.ctx.logger.warning("QQ空间登录态失效(统一时间线),cookie 已作废,下轮重取")
                 return
+            except Exception:
+                self.ctx.logger.exception("QQ空间统一时间线拉取失败,回退逐好友旧路径")
+                await self._qzone_poll_feeds_legacy()
+                return
+            if not discoveries:
+                return
+            # ② 过滤:说说(appid=311)且 seen 未登记——is_new_candidate 纯查不登记
+            # (发现≠注入,登记留给充实层 mark_queued,防预占主键判重跳过)
+            new_items = [d for d in discoveries if d.appid == 311 and self.qzone_seen.is_new_candidate(d.tid)]
+            if not new_items:
+                return
+            # ③ 充实层:按作者分组(保发现顺序),每组 1 次 get_user_feeds 拉完整实体
+            by_uin: dict[str, list[FeedDiscovery]] = {}
+            for d in new_items:
+                by_uin.setdefault(d.uin, []).append(d)
             added_total = 0
-            for friend in friends:
+            for uin, group in by_uin.items():
                 try:
                     feeds = await self.qzone_client.get_user_feeds(
-                        target_uin=friend["user_id"], nickname=friend["nickname"], num=3
+                        target_uin=uin, nickname=group[0].nickname, num=len(group) + 2
                     )
                 except QzoneAuthError:
                     # 登录态失效:立即作废 cookie 缓存(下轮重取),本轮终止(联调缺陷#7 自愈链)
                     self.qzone_cookie.invalidate()
-                    self.ctx.logger.warning("QQ空间登录态失效(code=-3000/-10005),cookie 已作废,下轮重取")
+                    self.ctx.logger.warning("QQ空间登录态失效(充实层 uin=%s),cookie 已作废,本轮终止", uin)
                     return
                 except Exception:
                     # 单个好友失败不中止整轮(逐人隔离,显式告警)
-                    self.ctx.logger.exception("QQ空间说说拉取失败(uin=%s),该好友本轮跳过", friend["user_id"])
+                    self.ctx.logger.exception("QQ空间充实层拉取失败(uin=%s),该好友本轮跳过", uin)
                     continue
-                added = [
-                    f for f in feeds
+                # 匹配发现层 tid → 只注入发现层认定的这条新动态(充实页含同好友旧动态)
+                discovered_tids = {d.tid for d in group}
+                for f in feeds:
+                    if f.tid not in discovered_tids:
+                        continue
                     if self.qzone_seen.mark_queued(
                         f.tid, abstime=f.abstime, author_uin=f.uin, summary=f.content[:60],
-                        author_nickname=friend["nickname"],
-                    )
-                ]
-                if added:
-                    self.qzone_injector.enqueue(added)
-                    added_total += len(added)
+                        author_nickname=f.nickname,
+                    ):
+                        self.qzone_injector.enqueue([f])
+                        added_total += 1
                 await asyncio.sleep(2.0)  # 好友间请求间隔(防风控,Maizone 保守默认同款)
             if added_total:
-                self.ctx.logger.info("QQ空间新动态入队 %d 条(好友 %d 人)", added_total, len(friends))
+                self.ctx.logger.info("QQ空间新动态入队 %d 条(统一时间线发现 %d 条)", added_total, len(new_items))
             await self._qzone_pump()
         finally:
             self._qzone_poll_running = False
+
+    async def _qzone_poll_feeds_legacy(self) -> None:
+        """旧逐好友浏览路径(M3 前架构):好友列表→每人 get_user_feeds(num=3)。
+
+        仅作发现层失败的回退路径(窗口守卫已由 _qzone_poll_feeds 完成);保留
+        OneBot 好友列表通道——统一时间线端点不可用时仍可逛空间。
+        """
+
+        # 拉取架构(联调修正 2026-08-30):好友列表走 adapter OneBot API,
+        # 逐好友拉最近说说(msglist_v6 为指定用户接口);好友间固定间隔防风控
+        friends = await self._qzone_friend_list()
+        if not friends:
+            self.ctx.logger.warning("QQ空间好友列表为空或获取失败,本轮跳过")
+            return
+        added_total = 0
+        for friend in friends:
+            try:
+                feeds = await self.qzone_client.get_user_feeds(
+                    target_uin=friend["user_id"], nickname=friend["nickname"], num=3
+                )
+            except QzoneAuthError:
+                # 登录态失效:立即作废 cookie 缓存(下轮重取),本轮终止(联调缺陷#7 自愈链)
+                self.qzone_cookie.invalidate()
+                self.ctx.logger.warning("QQ空间登录态失效(code=-3000/-10005),cookie 已作废,下轮重取")
+                return
+            except Exception:
+                # 单个好友失败不中止整轮(逐人隔离,显式告警)
+                self.ctx.logger.exception("QQ空间说说拉取失败(uin=%s),该好友本轮跳过", friend["user_id"])
+                continue
+            added = [
+                f for f in feeds
+                if self.qzone_seen.mark_queued(
+                    f.tid, abstime=f.abstime, author_uin=f.uin, summary=f.content[:60],
+                    author_nickname=friend["nickname"],
+                )
+            ]
+            if added:
+                self.qzone_injector.enqueue(added)
+                added_total += len(added)
+            await asyncio.sleep(2.0)  # 好友间请求间隔(防风控,Maizone 保守默认同款)
+        if added_total:
+            self.ctx.logger.info("QQ空间新动态入队 %d 条(好友 %d 人)", added_total, len(friends))
+        await self._qzone_pump()
 
     async def _qzone_friend_list(self) -> list[dict]:
         """好友列表(adapter OneBot 通道,信封容忍解析;失败告警返回空)。"""

@@ -57,6 +57,16 @@ class SeenStore:
         )
         return True
 
+    def is_new_candidate(self, tid: str) -> bool:
+        """纯查存在性(不登记)——统一时间线发现层用(发现≠注入,不提前标 queued)。
+
+        与 mark_queued 的「登记并返回是否新」相对:发现层阶段只读判重,登记留给
+        充实层 mark_queued(否则发现层预占主键会让充实层判重跳过,动态永不出队)。
+        """
+
+        rows = self.store.query("SELECT 1 FROM qzone_feeds WHERE tid = ?", (tid,))
+        return not rows
+
     def mark_seen(self, tid: str, injected_at_iso: str) -> None:
         self.store.execute("UPDATE qzone_feeds SET state = 'seen', injected_at = ? WHERE tid = ?", (injected_at_iso, tid))
 

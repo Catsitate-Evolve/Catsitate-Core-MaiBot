@@ -18,6 +18,21 @@ def test_mark_queued_dedup(tmp_path):
     assert s.mark_queued("t2", abstime="1750000001", author_uin="10002", summary="") is True
 
 
+def test_is_new_candidate_pure_query_no_registration(tmp_path):
+    """M3 发现层:is_new_candidate 纯查存在性不登记——发现≠注入,提前标 queued
+    会让充实层 mark_queued 判重跳过(发现层阶段不得有副作用)。"""
+    s = SeenStore(_store(tmp_path))
+    s.ensure_schema()
+    assert s.is_new_candidate("t1") is True
+    assert s.is_new_candidate("t1") is True  # 重复查询仍新:查询本身不写行
+    # 查过的 tid 仍可正常登记(证明 is_new_candidate 未预占主键)
+    assert s.mark_queued("t1", abstime="1750000000", author_uin="10001", summary="a") is True
+    assert s.is_new_candidate("t1") is False  # 已登记(任意状态)→ 不是新候选
+    s.mark_seen("t1", "2026-08-31T10:00:00")
+    assert s.is_new_candidate("t1") is False  # seen 状态同样判非新
+    assert s.is_new_candidate("") is True  # 空 tid 不存在行(与 mark_queued 空 tid 拒登记对称)
+
+
 def test_seen_only_after_injection_and_revert(tmp_path):
     s = SeenStore(_store(tmp_path))
     s.ensure_schema()

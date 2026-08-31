@@ -97,9 +97,11 @@ def test_qzone_section_defaults():
     assert "wait" in q.tool_whitelist and "reply" in q.tool_whitelist
     assert "qzone_like" in q.tool_whitelist  # M2:虚拟流点赞工具默认可用
     assert "tool_search" not in q.tool_whitelist and "msg_react" not in q.tool_whitelist
-    # M2 评论轮询两字段(spec §5)
+    # M2 评论轮询两字段(spec §5;间隔字段 T11 起废弃,由 notification_interval_seconds 替代)
     assert q.comment_poll_enabled is True
     assert q.comment_poll_interval_minutes == 30
+    # M2.1 统一通知轮询间隔(T11:高频短间隔模拟推送通知,注册下限 30s)
+    assert q.notification_interval_seconds == 120
 
 
 def test_qzone_constants():

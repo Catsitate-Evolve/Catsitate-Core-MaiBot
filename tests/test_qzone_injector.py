@@ -68,9 +68,10 @@ def _tf(tid):
     return FeedItem(tid=tid, abstime=str(tid[-1]), uin="u" + tid[0], nickname="n", content="c")
 
 
-def test_enqueue_keeps_global_ascending_time_order():
-    """联调缺陷#6(队列无序):入队即全局按发布时间升序(补叙式阅读,从旧到新),
-    跨好友/跨轮次合并保序——按好友分组入队会让 bot 先读完 A 的全部再读 B。"""
+def test_enqueue_keeps_global_descending_time_order():
+    """T11 阅读顺序改降序:信息流降序——QQ 空间 App 实际形态,最新在上。
+    入队即全局按发布时间降序(新→旧),跨好友/跨轮次合并保序——按好友分组
+    入队会让 bot 先读完 A 的全部再读 B(联调缺陷#6 的保序要求不变)。"""
     inj = FeedInjector(decision_window_s=75)
     inj.window_started()
     inj.enqueue([_tf("a3"), _tf("a1"), _tf("a2")])  # 同好友乱序
@@ -84,7 +85,7 @@ def test_enqueue_keeps_global_ascending_time_order():
             break
         order.append(f.tid)
         inj.mark_injected(f.tid, 3.0)
-    assert order == ["a1", "b1", "a2", "b2", "a3"]  # 全局按 abstime 升序(尾号即时间,同刻按入队稳定序)
+    assert order == ["a3", "a2", "b2", "a1", "b1"]  # 全局按 abstime 降序(尾号即时间,同刻按入队稳定序)
 
 
 def test_awaiting_feed_and_author():
@@ -122,18 +123,18 @@ def test_priority_queue_preempts_browse():
     assert f3.tid == "a2"
 
 
-def test_priority_queue_sorted_by_abstime():
-    """P1(通知)按发布时间升序,与 P2 同款补叙式阅读(计划裁定:非 FIFO——
-    多条通知积压时从旧到新读,与浏览流阅读顺序一致)。"""
+def test_priority_queue_sorted_by_abstime_descending():
+    """P1(通知)按发布时间降序(新→旧),与 P2 阅读顺序一致(T11 计划裁定:
+    非按到达 FIFO——多条通知积压时最新先看,信息流降序同款语义)。"""
     inj = FeedInjector(decision_window_s=75)
     inj.window_started()
     inj.enqueue_priority([FeedItem(tid="late", abstime="200", uin="u", nickname="n", content="c")])   # 先到(abstime 晚)
     inj.enqueue_priority([FeedItem(tid="early", abstime="1", uin="u", nickname="n", content="c")])    # 后到但 abstime 更早
     f = inj.next_to_inject(now=1.0)
-    assert f.tid == "early"  # P1 内按 abstime 升序,不按到达序
-    inj.mark_injected("early", 1.0)
+    assert f.tid == "late"  # P1 内按 abstime 降序(最新在上),不按到达序
+    inj.mark_injected("late", 1.0)
     inj.on_turn_complete(now=2.0)
-    assert inj.next_to_inject(now=3.0).tid == "late"
+    assert inj.next_to_inject(now=3.0).tid == "early"
 
 
 def test_priority_preempts_mid_browse_and_late_arrivals_wait():

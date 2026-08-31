@@ -226,8 +226,9 @@ class QzoneSection(PluginConfigBase):
         "虚拟流 planner 工具白名单(按名过滤;硬门控不随此配置放松)",
         label="虚拟流工具白名单",
     )
-    comment_poll_enabled: bool = _f(True, "窗口外评论轮询开关(仅轮询自己说说下的新评论)", label="评论轮询开关")
-    comment_poll_interval_minutes: int = _f(30, "评论轮询间隔(分钟;注册时下限 5 分钟防风控)", label="评论轮询间隔(分钟)")
+    comment_poll_enabled: bool = _f(True, "统一通知轮询开关(双源:自己说说新评论+他人说说楼中楼新回复,始终运行醒着即可)", label="通知轮询开关")
+    comment_poll_interval_minutes: int = _f(30, "评论轮询间隔(分钟;废弃,由 notification_interval_seconds 替代,不再消费)", label="评论轮询间隔(分钟)")
+    notification_interval_seconds: int = _f(120, "统一通知轮询间隔(秒,模拟推送通知的检查频率;最小30)", label="通知间隔(秒)")
     virtual_group_id: str = _f("qzone_feed", "虚拟群聊流伪群号(勿与真实群号相同)", label="虚拟伪群号")
     virtual_group_name: str = _f("QQ空间", "虚拟群聊流显示名", label="虚拟流显示名")
     summary_count: int = _f(5, "真实聊天注入的近期已见动态条数", label="见闻摘要条数")

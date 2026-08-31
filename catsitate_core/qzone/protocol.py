@@ -19,7 +19,13 @@ FEED_APPID_SHUOSHUO = 311  # 说说类动态(msglist 条目即说说,M2 互动�
 
 @dataclass
 class FeedItem:
-    """一条好友说说(来自指定用户的 msglist)。"""
+    """一条好友说说(来自指定用户的 msglist)。
+
+    M2.1 统一通知通道扩展:source 区分队列来源("feed"=浏览动态 P2 /
+    "notify"=通知 P1,泵注入后据此设定出站意图);friend_uin 为通知源B
+    (他人说说楼中楼回复)的说说主人 uin——楼中楼回复 API 的 target_qq,
+    源A(自己说说评论)留空,泵侧回退 bot 自己。
+    """
 
     tid: str
     abstime: str
@@ -28,6 +34,8 @@ class FeedItem:
     content: str
     image_urls: list[str] = field(default_factory=list)
     appid: int = FEED_APPID_SHUOSHUO
+    source: str = "feed"  # "feed"=浏览动态 / "notify"=通知(T11 统一通知通道)
+    friend_uin: str = ""  # 通知源B:说说主人(楼中楼 target_qq);源A/浏览动态为空
 
 
 def generate_gtk(p_skey: str) -> int:

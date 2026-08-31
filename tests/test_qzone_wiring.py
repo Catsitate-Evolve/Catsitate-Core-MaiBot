@@ -2,7 +2,7 @@
 
 _StubCtx 模式参照 test_integration.py:离线装配插件实例,依赖全部注入桩,
 只验证「组合层」行为——窗口开启作废残留评论意图 / 网关出站意图消费 /
-评论轮询三重守卫(自评跳过+判重+意图占用)。
+统一通知轮询三重守卫(自评跳过+判重+意图占用,T11 重写)与源B楼中楼路由。
 """
 
 from __future__ import annotations
@@ -109,6 +109,7 @@ def _make_plugin(tmp_path):
     p._qzone_available = True
     p._qzone_outbound_intent = None
     p._qzone_seq = 0
+    p._qzone_pump_lock = asyncio.Lock()  # 泵互斥锁(on_load 装配,离线测试手工补)
     p.qzone_seen = SeenStore(SQLiteStore(tmp_path / "seen.db"))
     p.qzone_seen.ensure_schema()
     p.qzone_comment_seen = CommentSeenStore(SQLiteStore(tmp_path / "comments.db"))
@@ -193,9 +194,9 @@ def test_gateway_rejects_when_intent_consumed(tmp_path):
     assert p.qzone_client.comment_calls == [] and p.qzone_client.reply_calls == []  # 零写调用
 
 
-def test_comment_poll_self_skip_dedup_and_intent_occupied(tmp_path):
-    """I4-3:评论轮询三重守卫一组断言——①bot 自评跳过不注入;②is_new 判重
-    (二次轮询不重注入);③意图占用时不注入(且不再取数)。"""
+def test_notify_poll_self_skip_dedup_and_intent_occupied(tmp_path):
+    """I4-3(承 T11 重写):统一通知轮询三重守卫——①bot 自评跳过不注入;
+    ②is_new 判重(二次轮询不重注入);③意图占用时不取数(上一条还在等回复)。"""
 
     import time as _time
 
@@ -205,21 +206,69 @@ def test_comment_poll_self_skip_dedup_and_intent_occupied(tmp_path):
                     create_time=str(int(_time.time()))),
     ]}
     p = _make_plugin(tmp_path)
-    p._schedule_data = {"date": "2000-01-01", "windows": []}  # 窗口外(评论轮询工作区)
+    p.qzone_injector.window_started()  # 通知经泵注入需窗口开启
     p.qzone_client = _StubCommentClient(comments, {"feed1": "今天的心情"})
 
-    # ①首轮:自评跳过(登记不注入),好友评论注入恰好 1 条
-    asyncio.run(p._qzone_comment_poll_tick())
+    # ①首轮:自评跳过(登记不注入),好友评论通知经泵注入恰好 1 条
+    asyncio.run(p._qzone_notify_poll_tick())
     assert len(p._ctx.gateway.calls) == 1
     assert p._ctx.gateway.calls[0][1]["message_info"]["user_info"]["user_id"] == "20000"
-    assert p._qzone_outbound_intent is not None and p._qzone_outbound_intent.kind == "comment_reply"
+    intent = p._qzone_outbound_intent
+    assert intent is not None and intent.kind == "comment_reply"
+    assert (intent.tid, intent.target_qq, intent.comment_tid) == ("feed1", BOT_UIN, "c1")
 
-    # ②意图占用:不注入且不再取数(上一条还在等回复,不叠加)
-    asyncio.run(p._qzone_comment_poll_tick())
+    # ②意图占用:不取数不注入(上一条通知还在等回复,不叠加)
+    asyncio.run(p._qzone_notify_poll_tick())
     assert len(p._ctx.gateway.calls) == 1 and p.qzone_client.fetches == 1
 
     # ③意图释放后重扫:自评仍跳过,好友评论 is_new 判重 → 不重注入(只多了一次取数)
     p._qzone_outbound_intent = None
-    asyncio.run(p._qzone_comment_poll_tick())
+    asyncio.run(p._qzone_notify_poll_tick())
     assert len(p._ctx.gateway.calls) == 1
     assert p.qzone_client.fetches == 2  # 取数发生(判重生效,不是早退)
+    assert p.qzone_comment_seen.is_new("feed1:c1:20000") is False  # 已登记,判重依据
+
+
+def test_notify_poll_source_b_reply_routes_to_friend_thread(tmp_path):
+    """T11 源B:bot 在好友说说下的评论收到楼中楼回复(list_3)→ 通知注入 →
+    意图 comment_reply 指向好友说说(target_qq=好友,commentId=回复 tid)。"""
+
+    import time as _time
+
+    p = _make_plugin(tmp_path)
+    p.qzone_injector.window_started()
+    # 源B目标圈定:bot 曾在好友 30000 的说说下发过评论(note_bot_comment 留痕)
+    p.qzone_comment_seen.note_bot_comment("ffeed1", "30000", "我的评论", "2026-08-31T10:00:00")
+    raw = {"usrinfo": {"uin": "30000"}, "msglist": [{"tid": "ffeed1", "commentlist": [
+        {"tid": "bc1", "uin": BOT_UIN, "list_3": [
+            {"tid": "rr1", "uin": "30000", "name": "阿好", "content": "说得对",
+             "create_time": str(int(_time.time()))},
+        ]},
+    ]}]}
+
+    class _StubNotifyClient:
+        """源B输入桩:源A无评论,好友 30000 的原始载荷带一条楼中楼回复。"""
+
+        async def get_own_feed_comments(self, *, bot_uin, num=10):
+            del bot_uin, num
+            return {}, {}
+
+        async def get_user_feeds_raw(self, *, target_uin, num=5):
+            assert target_uin == "30000"  # 只拉 bot 评论过的好友
+            return raw
+
+    p.qzone_client = _StubNotifyClient()
+    asyncio.run(p._qzone_notify_poll_tick())
+    assert len(p._ctx.gateway.calls) == 1
+    msg = p._ctx.gateway.calls[0][1]
+    assert msg["message_info"]["user_info"]["user_id"] == "30000"
+    text = msg["raw_message"][0]["data"]
+    assert "(通知) 阿好 回复了你在他人说说下的评论" in text and "阿好: 说得对" in text
+    assert "notify_reply_ffeed1_rr1" in msg["message_id"]
+    intent = p._qzone_outbound_intent
+    assert intent is not None and intent.kind == "comment_reply"
+    # 源B 意图对位:fid=好友说说,target_qq=好友(说说主人),commentId=回复 tid
+    assert (intent.tid, intent.target_qq, intent.comment_tid, intent.comment_uin) == \
+        ("ffeed1", "30000", "rr1", "30000")
+    # 楼中楼回复键已登记(下轮判重,不重复通知)
+    assert p.qzone_comment_seen.is_new("ffeed1:bc1:reply:rr1") is False

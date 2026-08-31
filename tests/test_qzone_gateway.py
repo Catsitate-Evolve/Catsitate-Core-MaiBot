@@ -110,7 +110,7 @@ def test_gateway_declared_platform_constant():
 
 
 def test_m2_wiring_source_assertions():
-    """M2 接线源码级断言:驱动路由/点赞工具/评论轮询/意图消费。"""
+    """M2 接线源码级断言:驱动路由/点赞工具/统一通知轮询/意图消费。"""
     import inspect
 
     import plugin as _plugin
@@ -118,7 +118,14 @@ def test_m2_wiring_source_assertions():
     src = inspect.getsource(_plugin)
     assert "route_outbound(" in src and "do_comment(fid=" in src and "do_reply(fid=" in src
     assert '"qzone_like"' in src and "do_like(fid=" in src
-    assert "_qzone_comment_poll_tick" in src and "comment_reply" in src
+    assert "comment_reply" in src
+    # T11 统一通知通道:双源检测(自己说说评论+他人说说楼中楼回复)+P1 插队
+    assert "_qzone_notify_poll_tick" in src and "_qzone_comment_poll_tick" not in src
+    assert "enqueue_priority(" in src and "parse_feed_replies(" in src
+    assert "get_user_feeds_raw(" in src and "notification_interval_seconds" in src
+    assert 'source="notify"' in src  # 通知 FeedItem 标记(泵按 source 区分意图)
+    # T11 工具双向隔离:非 qzone 流隐藏 qzone_ 前缀专属工具(防模型误调)
+    assert 'startswith("qzone_")' in src
     assert 'self._qzone_outbound_intent = None' in src  # 意图一次性消费
     # 审查必修:远端成功即刻消费意图(记账失败不得把意图留到下一条出站→重复评论)
     assert 'self._qzone_outbound_intent = None  # 远端成功即刻消费' in src
@@ -132,6 +139,10 @@ def test_m2_wiring_source_assertions():
     assert "SNAPSHOT_CACHE_MAX" in src and "popitem(last=False)" in src
     # T7 M-2:见闻摘要带作者昵称
     assert 'author_nickname=friend["nickname"]' in src and "author_nickname" in src
+    # T11 场景文案:通知回应→楼中楼回复
+    from catsitate_core.qzone.scene import QZONE_SCENE_TEXT as _scene_text
+
+    assert "通知" in _scene_text and "楼中楼" in _scene_text
 
 
 def test_selfcheck_blocks_talk_value_zero():
@@ -216,13 +227,15 @@ def test_module_log_forwarder_routes_levels():
     assert captured[1] == ("error", "catsitate_core.x: boom")
 
 
-# ---- 评论轮询注入行为测试(终审 I2:_StubCtx 模式,时间前缀+新鲜度截断) ----
+# ---- 统一通知轮询行为测试(T11:_StubCtx 模式,P1 入队→泵注入→意图楼中楼) ----
 
 import asyncio as _asyncio
 import time as _time
 
 from catsitate_core.config import CatsitateConfig as _CatsitateConfig
 from catsitate_core.qzone.comment_seen import CommentSeenStore as _CommentSeenStore
+from catsitate_core.qzone.injector import FeedInjector as _FeedInjector
+from catsitate_core.qzone.seen_store import SeenStore as _SeenStore
 from catsitate_core.qzone.wire import CommentItem as _CommentItem
 from catsitate_core.storage import SQLiteStore as _SQLiteStore
 
@@ -264,7 +277,7 @@ class _StubGateway2:
 
 
 class _StubCtx2:
-    """评论轮询测试的最小 ctx 面:logger + gateway。"""
+    """统一通知轮询测试的最小 ctx 面:logger + gateway。"""
 
     def __init__(self, logs):
         self.logger = _CollectLogger2(logs)
@@ -272,7 +285,7 @@ class _StubCtx2:
 
 
 class _StubCommentClient:
-    """评论轮询输入桩:get_own_feed_comments 返回固定 (comments, feed 上下文)。"""
+    """通知轮询输入桩:get_own_feed_comments 返回固定 (comments, feed 上下文)。"""
 
     def __init__(self, comments, ctx_map):
         self._comments = comments
@@ -285,8 +298,8 @@ class _StubCommentClient:
         return self._comments, self._ctx_map
 
 
-def _make_comment_poll_plugin(tmp_path, comments, ctx_map):
-    """离线装配 _qzone_comment_poll_tick 所需最小插件实例(窗口外状态)。"""
+def _make_notify_poll_plugin(tmp_path, comments, ctx_map):
+    """离线装配 _qzone_notify_poll_tick 所需最小插件实例(注入窗口开启,泵可推进)。"""
 
     import plugin as plugin_mod
 
@@ -296,55 +309,67 @@ def _make_comment_poll_plugin(tmp_path, comments, ctx_map):
     p._plugin_config_instance = _CatsitateConfig()
     p._qzone_available = True
     p.config.sleep.enabled = False  # 不依赖 self.sleep
-    # 日程含一个非 qzone 的 daily 窗口不覆盖当前 → 窗口外(评论轮询工作区)
-    p._schedule_data = {"date": "2000-01-01", "windows": []}
     p.config.favorability.bot_user_id = "10000"
     p._qzone_outbound_intent = None
     p._qzone_seq = 0
-    p.qzone_client = _StubCommentClient(comments, ctx_map)
-    p.qzone_comment_seen = _CommentSeenStore(_SQLiteStore(tmp_path / "comment_poll.db"))
+    p._qzone_pump_lock = _asyncio.Lock()
+    p.qzone_seen = _SeenStore(_SQLiteStore(tmp_path / "seen.db"))
+    p.qzone_seen.ensure_schema()
+    p.qzone_comment_seen = _CommentSeenStore(_SQLiteStore(tmp_path / "notify.db"))
     p.qzone_comment_seen.ensure_schema()
+    p.qzone_injector = _FeedInjector(decision_window_s=75)
+    p.qzone_injector.window_started()  # 通知经泵注入需窗口开启(窗口外静置 P1)
+    p.qzone_client = _StubCommentClient(comments, ctx_map)
     return p
 
 
-def test_comment_poll_stale_comment_skipped_and_registered(tmp_path):
-    """终审 I2①:早于 summary_days 的过旧评论跳过注入(不注入不占意图),
+def test_notify_poll_stale_comment_skipped_and_registered(tmp_path):
+    """T11 新鲜度截断(承终审 I2):早于 summary_days 的过旧评论不入队不注入,
     且 is_new 已登记——下轮判重不再重扫(发现即登记的 store 契约)。"""
 
     stale = str(int(_time.time()) - 10 * 86400)  # 默认 summary_days=3,10 天前必过旧
     comments = {"feed1": [_CommentItem(
         comment_tid="ct1", uin="20000", nickname="小红", content="好棒", create_time=stale,
     )]}
-    p = _make_comment_poll_plugin(tmp_path, comments, {"feed1": "今天的心情"})
-    _asyncio.run(p._qzone_comment_poll_tick())
+    p = _make_notify_poll_plugin(tmp_path, comments, {"feed1": "今天的心情"})
+    _asyncio.run(p._qzone_notify_poll_tick())
     assert p._ctx.gateway.calls == []  # 不注入
     assert p._qzone_outbound_intent is None  # 不占意图
+    assert p.qzone_injector.queue_size() == 0  # 未入队(不是入队后没泵出)
     # 已登记:is_new 对该键返回 False(下轮判重跳过,不重扫)
     assert p.qzone_comment_seen.is_new("feed1:ct1:20000") is False
     assert any(level == "info" and "评论过旧跳过" in str(a[0]) for level, a in p._ctx.logger._logs)
 
 
-def test_comment_poll_injects_with_time_prefix_or_fallback(tmp_path):
-    """终审 I2②:新评论注入正文含「(评 」;create_time 可解析带相对时间前缀
-    (同日=今天HH:MM),create_time 空则前缀为空(回退形态,正文直接以「(评 」开头)。"""
+def test_notify_poll_injects_with_time_prefix_or_fallback(tmp_path):
+    """T11 源A注入:新评论经泵注入,正文含「(通知) XX 评论了你的说说」;发布时间
+    前缀由 build_feed_message 从 abstime 承载(同日=今天HH:MM),create_time 空
+    则无前缀(回退形态)。意图=comment_reply(target_qq 回退 bot 自己)。"""
 
     fresh = {"feed2": [_CommentItem(
         comment_tid="ct2", uin="20001", nickname="小明", content="写得好",
         create_time=str(int(_time.time())),
     )]}
-    p = _make_comment_poll_plugin(tmp_path, fresh, {"feed2": "今天的心情"})
-    _asyncio.run(p._qzone_comment_poll_tick())
+    p = _make_notify_poll_plugin(tmp_path, fresh, {"feed2": "今天的心情"})
+    _asyncio.run(p._qzone_notify_poll_tick())
     assert len(p._ctx.gateway.calls) == 1
-    text = p._ctx.gateway.calls[0][1]["raw_message"][0]["data"]
-    assert "(评 小明) 写得好" in text and "来自你的说说" in text
+    msg = p._ctx.gateway.calls[0][1]
+    text = msg["raw_message"][0]["data"]
+    assert "(通知) 小明 评论了你的说说「今天的心情」" in text and "小明: 写得好" in text
     assert text.startswith("(今天")  # 时间前缀承载发布时间(方案 B 同款语义)
+    assert "notify_comment_feed2_ct2" in msg["message_id"]  # 通知 tid 形态(泵据此拆意图)
+    intent = p._qzone_outbound_intent
+    assert intent is not None and intent.kind == "comment_reply"
+    assert (intent.tid, intent.target_qq, intent.comment_tid, intent.comment_uin) == \
+        ("feed2", "10000", "ct2", "20001")  # 源A:说说主人=bot,commentId=好友评论
 
-    # 回退形态:create_time 空 → 无前缀,正文直接以「(评 」开头
+    # 回退形态:create_time 空 → 无前缀,正文直接以「(通知)」开头
     no_time = {"feed3": [_CommentItem(
         comment_tid="ct3", uin="20002", nickname="小刚", content="加油", create_time="",
     )]}
-    p2 = _make_comment_poll_plugin(tmp_path / "b", no_time, {"feed3": "今天的心情"})
-    _asyncio.run(p2._qzone_comment_poll_tick())
+    p2 = _make_notify_poll_plugin(tmp_path / "b", no_time, {"feed3": "今天的心情"})
+    _asyncio.run(p2._qzone_notify_poll_tick())
     assert len(p2._ctx.gateway.calls) == 1
     text2 = p2._ctx.gateway.calls[0][1]["raw_message"][0]["data"]
-    assert text2.startswith("(评 小刚)") and not text2.startswith("(今天")
+    assert text2.startswith("(通知) 小刚") and not text2.startswith("(今天")
+    assert p2._qzone_outbound_intent is not None and p2._qzone_outbound_intent.comment_tid == "ct3"

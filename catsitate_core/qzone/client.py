@@ -201,6 +201,14 @@ class QzoneClient:
         payload = await self._fetch_msglist(target_uin=target_uin, num=num)
         return parse_msglist(payload, target_uin=str(target_uin), nickname=nickname)
 
+    async def get_user_feeds_raw(self, *, target_uin: str, num: int = 5) -> dict:
+        """返回 msglist 原始 payload(含 commentlist/list_3),供 parse_feed_replies 消费。
+
+        统一通知通道源B(T11):楼中楼解析需要原始载荷(parse_msglist 会丢
+        commentlist),薄封装 _fetch_msglist 不重复实现请求与校验。
+        """
+        return await self._fetch_msglist(target_uin=target_uin, num=num)
+
     async def _post(self, url: str, *, form: dict, referer_uin: str) -> dict:
         """写路径 POST 通道(独立于 _request:读路径为 GET 语义,参数全进 query;
         写路径为 params=g_tk + form 表单,且需 Origin/Content-Type 头)。

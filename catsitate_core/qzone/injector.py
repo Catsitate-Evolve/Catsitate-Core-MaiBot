@@ -2,8 +2,8 @@
 
 双优先级队列(M2.1 统一通知通道):P1=通知(评论/楼中楼回复)、
 P2=浏览动态。next_to_inject 优先弹 P1——模拟「刷着动态→弹通知→
-先看通知→回完继续刷」的注意力模型;两队列各自按发布时间升序
-(补叙式阅读,联调缺陷#6 同款语义)。串行注入语义不变:一次只允许
+先看通知→回完继续刷」的注意力模型;两队列各自按发布时间降序
+(T11 阅读顺序修订:信息流降序,QQ 空间 App 实际形态,最新在上)。串行注入语义不变:一次只允许
 一条动态处于 awaiting(已注入待轮完成),推进条件 = 轮完成信号
 (planner.after_response 无 tool_calls,由 plugin 转发 on_turn_complete)。
 超时兜底:常规 decision_window_s;wait 态(wait 是 tool_call,其响应不满足完成信号)
@@ -27,7 +27,7 @@ class _Awaiting:
 
 
 def _abstime_key(abstime: str) -> float:
-    """发布时间排序键(数值;非法/缺失按 0 排最前)。"""
+    """发布时间排序键(数值;非法/缺失按 0,降序下排最尾)。"""
     try:
         return float(str(abstime or "").strip() or 0)
     except ValueError:
@@ -38,8 +38,8 @@ class FeedInjector:
     def __init__(self, *, decision_window_s: int, hard_cap_multiplier: int = 3) -> None:
         self.decision_window_s = max(int(decision_window_s), 1)
         self.hard_cap = max(int(hard_cap_multiplier), 1) * self.decision_window_s
-        self._queue_p1: list[FeedItem] = []  # P1:通知(评论/楼中楼回复,按发布时间升序)
-        self._queue_p2: list[FeedItem] = []  # P2:浏览动态(全局按发布时间升序)
+        self._queue_p1: list[FeedItem] = []  # P1:通知(评论/楼中楼回复,按发布时间降序)
+        self._queue_p2: list[FeedItem] = []  # P2:浏览动态(全局按发布时间降序)
         self._awaiting: _Awaiting | None = None
         self._window_active = False
         self._injected_count = 0
@@ -62,26 +62,26 @@ class FeedInjector:
 
     # ---- 队列 ----
     def enqueue(self, feeds: list[FeedItem]) -> int:
-        """浏览动态入队(P2)并保持全局按发布时间升序(联调缺陷#6:补叙式
-        阅读,从旧到新)。跨好友/跨轮次合并保序:每次入队后整体重排
-        (abstime 数值升序,非法/缺失 abstime 排最前按 0 处理)。"""
+        """浏览动态入队(P2)并保持全局按发布时间降序(T11:信息流降序,
+        QQ 空间 App 实际形态,最新在上)。跨好友/跨轮次合并保序:每次入队后
+        整体重排(abstime 数值降序,非法/缺失 abstime 排最尾按 0 处理)。"""
         return self._enqueue_into(self._queue_p2, feeds)
 
     def enqueue_priority(self, items: list[FeedItem]) -> int:
-        """通知入队(P1):优先于浏览动态注入;队内同样按发布时间升序——
-        多条通知积压时从旧到新读(与 P2 阅读顺序一致,计划裁定非 FIFO)。"""
+        """通知入队(P1):优先于浏览动态注入;队内同样按发布时间降序——
+        多条通知积压时最新先看(与 P2 阅读顺序一致,计划裁定非 FIFO)。"""
         return self._enqueue_into(self._queue_p1, items)
 
     @staticmethod
     def _enqueue_into(queue: list[FeedItem], feeds: list[FeedItem]) -> int:
-        """共用入队:空 tid 跳过,入队后按 abstime 升序整体重排,返回实入数。"""
+        """共用入队:空 tid 跳过,入队后按 abstime 降序整体重排,返回实入数。"""
         added = 0
         for f in feeds:
             if f.tid:
                 queue.append(f)
                 added += 1
         if added:
-            queue.sort(key=lambda f: _abstime_key(f.abstime))
+            queue.sort(key=lambda f: _abstime_key(f.abstime), reverse=True)
         return added
 
     def queue_size(self) -> int:

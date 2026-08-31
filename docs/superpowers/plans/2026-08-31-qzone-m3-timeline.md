@@ -22,7 +22,7 @@ QzoneClient（API 封装层）
 
 ---
 
-### Task N1: 统一时间线解析器（纯函数）
+### Task 1: 统一时间线解析器（纯函数）
 
 **Files:** Create `catsitate_core/qzone/discovery.py`; Test `tests/test_qzone_discovery.py`
 
@@ -43,7 +43,7 @@ key:'{tid}', appid:{int}, abstime:{int}, opuin:'{uin}', nickname:'{name}'
 - [ ] Step 4: PASS
 - [ ] Step 5: Commit
 
-### Task N2: QzoneClient API 封装重构
+### Task 2: QzoneClient API 封装重构
 
 **Files:** Modify `catsitate_core/qzone/client.py`; Test `tests/test_qzone_client.py`
 
@@ -60,7 +60,7 @@ key:'{tid}', appid:{int}, abstime:{int}, opuin:'{uin}', nickname:'{name}'
 - [ ] Step 1: 失败测试（fake fetch 断言 URL/参数/Referer；返回 FeedDiscovery 列表）
 - [ ] Step 2: FAIL → Step 3: 实现 → Step 4: PASS → Step 5: Commit
 
-### Task N3: 浏览流重构（plugin.py `_qzone_poll_feeds`）
+### Task 3: 浏览流重构（plugin.py `_qzone_poll_feeds`）
 
 **Files:** Modify `plugin.py`; Test `tests/test_qzone_wiring.py`（追加行为测试）
 
@@ -117,7 +117,7 @@ async def _qzone_poll_feeds(self) -> None:
 - [ ] Step 1: 行为测试（统一时间线→新 tid→充实→入队；发现失败→回退 legacy）
 - [ ] Step 2: FAIL → Step 3: 实现 → Step 4: PASS+全量 → Step 5: Commit
 
-### Task N4: 源B重构——搭发现层便车
+### Task 4: 源B重构——搭发现层便车
 
 **Files:** Modify `plugin.py` `_qzone_notify_scan`; Test `tests/test_qzone_wiring.py`
 
@@ -149,7 +149,7 @@ async def _qzone_poll_feeds(self) -> None:
 - [ ] Step 1: 行为测试（发现层有活跃被评论好友→源B拉取；无→零 API 调用）
 - [ ] Step 2: FAIL → Step 3: 实现 → Step 4: PASS → Step 5: Commit
 
-### Task N5: 收尾——清理+文档+版本
+### Task 5: 收尾——清理+文档+版本
 
 **Files:** Modify spec/manual/CHANGELOG/_manifest; Test 全量
 

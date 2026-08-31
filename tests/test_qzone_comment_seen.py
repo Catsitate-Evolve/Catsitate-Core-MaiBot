@@ -38,18 +38,29 @@ def test_note_bot_comment_stores_friend_uin(tmp_path):
     s.ensure_schema()
     s.note_bot_comment("f1", "3298178030", "bot评论", "2026-08-31T12:00:00")
     s.note_bot_comment("f2", "3341299096", "另一条", "2026-08-31T12:01:00")
-    uins = s.commented_friend_uins()
+    uins = s.bot_commented_friends()
     assert set(uins) == {"3298178030", "3341299096"}
 
 
-def test_commented_friend_uins_migration(tmp_path):
+def test_bot_commented_friends_excludes_plain_comments(tmp_path):
+    """反查只认 bot 评论键:is_new 登记的好友评论行(friend_uin 空串)与
+    friend_uin 为空的自评登记都不进结果(空 target 无法圈定楼中楼轮询目标)。"""
+    s = CommentSeenStore(SQLiteStore(tmp_path / "t.db"))
+    s.ensure_schema()
+    s.is_new("f1:c1:10001")                       # 好友评论(friend_uin 默认空串)
+    s.note_bot_comment("f2", "", "旧格式自评", "2026-08-31T12:00:00")  # 空主人
+    s.note_bot_comment("f3", "3298178030", "有效", "2026-08-31T12:01:00")
+    assert s.bot_commented_friends() == ["3298178030"]
+
+
+def test_bot_commented_friends_migration(tmp_path):
     # 旧表无 friend_uin 列 → ensure_schema 迁移补列
     store = SQLiteStore(tmp_path / "old.db")
     store.execute("CREATE TABLE qzone_comments (comment_key TEXT PRIMARY KEY, created_at TEXT NOT NULL)")
     s = CommentSeenStore(store)
     s.ensure_schema()
     s.note_bot_comment("f1", "123", "x", "2026-08-31T12:00:00")
-    assert "123" in s.commented_friend_uins()
+    assert "123" in s.bot_commented_friends()
 
 
 def test_prune(tmp_path):

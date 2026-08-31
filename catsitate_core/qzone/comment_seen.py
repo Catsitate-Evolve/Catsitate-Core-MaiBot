@@ -79,7 +79,7 @@ class CommentSeenStore:
             (f"{feed_tid}:bot:{bot_text}", friend_uin, at_iso),
         )
 
-    def commented_friend_uins(self) -> list[str]:
+    def bot_commented_friends(self) -> list[str]:
         """bot 评论过的说说主人去重列表(楼中楼轮询的目标圈定,T9)。
 
         只认 bot 评论键({feed}:bot:{text});is_new 登记的好友评论行

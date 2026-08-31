@@ -55,7 +55,10 @@ def test_parse_feed_comments_empty():
 
 def test_parse_feed_replies():
     from catsitate_core.qzone.wire import ReplyItem, parse_feed_replies
-    payload = {"msglist": [{"tid": "f1", "commentlist": [
+    # usrinfo=被拉取者(说说主人),logininfo=访客(bot)——联调实测样本形态(test_qzone_client.MSGLIST_JSONP)
+    payload = {"code": 0, "logininfo": {"name": "Catsitate-dev", "uin": 3545773341},
+               "usrinfo": {"name": "好友甲", "uin": 8888},
+               "msglist": [{"tid": "f1", "commentlist": [
         {"tid": "c1", "uin": 3545773341, "name": "bot", "content": "bot的评论", "list_3": [
             {"tid": "r1", "uin": 10001, "name": "小明", "content": "回复bot", "create_time": 1750000001},
             {"tid": "r2", "uin": 3545773341, "name": "bot", "content": "bot自己回的", "create_time": 1750000002},
@@ -64,14 +67,51 @@ def test_parse_feed_replies():
             {"tid": "r3", "uin": 10001, "name": "小明", "content": "不相关", "create_time": 1750000003},
         ]},
     ]}]}
-    items = parse_feed_replies(payload, bot_uin="3545773341", friend_uin="3298178030")
+    items = parse_feed_replies(payload, bot_uin="3545773341")
     assert len(items) == 1  # 只有 r1(bot 自己的 r2 被跳过,c2 不是 bot 的评论)
     r = items[0]
     assert isinstance(r, ReplyItem)
-    assert (r.reply_tid, r.parent_comment_tid, r.feed_tid, r.friend_uin) == ("r1", "c1", "f1", "3298178030")
+    assert (r.reply_tid, r.parent_comment_tid, r.feed_tid, r.friend_uin) == ("r1", "c1", "f1", "8888")
     assert (r.uin, r.nickname, r.content) == ("10001", "小明", "回复bot")
+    assert r.create_time == "1750000001"
+
+
+def test_parse_feed_replies_numeric_tid_normalized():
+    """数值 tid/uin 归一字符串;bot 评论 uin 为数值时与字符串 bot_uin 可比对。"""
+    from catsitate_core.qzone.wire import parse_feed_replies
+    payload = {"usrinfo": {"uin": 8888}, "msglist": [{"tid": "f1", "commentlist": [
+        {"tid": 55, "uin": 3545773341, "name": "bot", "content": "x", "list_3": [
+            {"tid": 77, "uin": 10001, "name": "小明", "content": "hi", "create_time": 1750000001},
+        ]},
+    ]}]}
+    items = parse_feed_replies(payload, bot_uin="3545773341")
+    assert len(items) == 1
+    r = items[0]
+    assert (r.reply_tid, r.parent_comment_tid) == ("77", "55")
+    assert (r.uin, r.friend_uin) == ("10001", "8888")
+
+
+def test_parse_feed_replies_missing_usrinfo_degrades_friend_uin(caplog):
+    """载荷缺 usrinfo(非实测形态):回复仍解析,friend_uin 降级空串并告警(不静默)。"""
+    import logging
+
+    from catsitate_core.qzone.wire import parse_feed_replies
+    payload = {"msglist": [{"tid": "f1", "commentlist": [
+        {"tid": "c1", "uin": 3545773341, "name": "bot", "content": "x", "list_3": [
+            {"tid": "r1", "uin": 10001, "name": "小明", "content": "回复", "create_time": 1750000001},
+        ]},
+    ]}]}
+    with caplog.at_level(logging.WARNING, logger="catsitate_core.qzone.wire"):
+        items = parse_feed_replies(payload, bot_uin="3545773341")
+    assert len(items) == 1 and items[0].friend_uin == ""
+    assert "usrinfo" in caplog.text  # 告警显式暴露,不静默降级
 
 
 def test_parse_feed_replies_empty():
     from catsitate_core.qzone.wire import parse_feed_replies
-    assert parse_feed_replies({"msglist": None}, bot_uin="3545773341", friend_uin="x") == []
+    assert parse_feed_replies({"msglist": None}, bot_uin="3545773341") == []
+    assert parse_feed_replies({}, bot_uin="3545773341") == []
+    # bot 评论存在但无 list_3:无楼中楼,空列表
+    assert parse_feed_replies({"usrinfo": {"uin": "8"}, "msglist": [
+        {"tid": "f1", "commentlist": [{"tid": "c1", "uin": 3545773341, "name": "bot", "content": "x"}]}
+    ]}, bot_uin="3545773341") == []

@@ -6,7 +6,10 @@ protocol.extract_callback_json 通用截取。仅纯函数,IO 在 client.py。
 
 from __future__ import annotations
 
+import logging
 from dataclasses import dataclass
+
+logger = logging.getLogger(__name__)
 
 
 @dataclass
@@ -113,15 +116,23 @@ class ReplyItem:
     create_time: str
 
 
-def parse_feed_replies(payload: dict, *, bot_uin: str, friend_uin: str) -> list[ReplyItem]:
+def parse_feed_replies(payload: dict, *, bot_uin: str) -> list[ReplyItem]:
     """解析 msglist 载荷中 bot 评论的楼中楼回复(list_3)。
 
     在 commentlist 中找 uin==bot_uin 的条目(即 bot 自己的评论),
-    解析其 list_3 数组中的每条回复为 ReplyItem。
-    无 bot 评论/无 list_3/字段缺失容错跳过。
+    解析其 list_3 数组中的每条回复为 ReplyItem。无 bot 评论/无 list_3/
+    字段缺失容错跳过;bot 自己的楼中楼回复跳过(不通知自己)。
+
+    friend_uin(说说主人,意图路由 target_qq)取自载荷 usrinfo.uin——
+    联调实测(test_qzone_client.MSGLIST_JSONP):usrinfo 是被拉取者,
+    logininfo 是访客(bot)自身。usrinfo 缺失时降级空串并告警(调用方
+    不得用空 target 发楼中楼)。
     """
+    p = payload or {}
+    info = p.get("usrinfo")
+    friend_uin = str((info.get("uin") or "")) if isinstance(info, dict) else ""
     out: list[ReplyItem] = []
-    for feed in (payload or {}).get("msglist") or []:
+    for feed in p.get("msglist") or []:
         if not isinstance(feed, dict):
             continue
         feed_tid = str(feed.get("tid") or "")
@@ -145,4 +156,8 @@ def parse_feed_replies(payload: dict, *, bot_uin: str, friend_uin: str) -> list[
                     content=str(r.get("content") or "").strip(),
                     create_time=str(r.get("create_time") or ""),
                 ))
+    if out and not friend_uin:
+        logger.warning(
+            "楼中楼解析:载荷缺 usrinfo.uin(说说主人未知),%d 条回复 friend_uin 降级空串", len(out)
+        )
     return out

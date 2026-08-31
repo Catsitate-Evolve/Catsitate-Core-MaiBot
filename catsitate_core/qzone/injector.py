@@ -1,11 +1,15 @@
 """串行注入决策核心(纯状态机,IO 由 plugin 接线;spec §2.4)。
 
-一次只允许一条动态处于 awaiting(已注入待轮完成)。推进条件 = 轮完成信号
+双优先级队列(M2.1 统一通知通道):P1=通知(评论/楼中楼回复)、
+P2=浏览动态。next_to_inject 优先弹 P1——模拟「刷着动态→弹通知→
+先看通知→回完继续刷」的注意力模型;两队列各自按发布时间升序
+(补叙式阅读,联调缺陷#6 同款语义)。串行注入语义不变:一次只允许
+一条动态处于 awaiting(已注入待轮完成),推进条件 = 轮完成信号
 (planner.after_response 无 tool_calls,由 plugin 转发 on_turn_complete)。
 超时兜底:常规 decision_window_s;wait 态(wait 是 tool_call,其响应不满足完成信号)
 延长到 hard_cap_multiplier×decision_window_s(自注入时刻起算,wait 不重置起点),
 防止 wait 期间注入下一条并入批处理导致出站意图错靶(spec §2.4 回顾修订)。
-窗口结束:队列状态丢弃(SeenStore.revert_pending 由 plugin 调用回退未读)。
+窗口结束:两队列状态一并丢弃(SeenStore.revert_pending 由 plugin 调用回退未读)。
 """
 
 from __future__ import annotations
@@ -34,8 +38,8 @@ class FeedInjector:
     def __init__(self, *, decision_window_s: int, hard_cap_multiplier: int = 3) -> None:
         self.decision_window_s = max(int(decision_window_s), 1)
         self.hard_cap = max(int(hard_cap_multiplier), 1) * self.decision_window_s
-        self._queue: list[FeedItem] = []        # P2:浏览动态(全局按发布时间升序)
-        self._prio_queue: list[FeedItem] = []   # P1:通知(评论/回复,按到达序 FIFO)
+        self._queue_p1: list[FeedItem] = []  # P1:通知(评论/楼中楼回复,按发布时间升序)
+        self._queue_p2: list[FeedItem] = []  # P2:浏览动态(全局按发布时间升序)
         self._awaiting: _Awaiting | None = None
         self._window_active = False
         self._injected_count = 0
@@ -47,8 +51,8 @@ class FeedInjector:
 
     def window_ended(self) -> None:
         self._window_active = False
-        self._queue.clear()
-        self._prio_queue.clear()  # 通知队列随窗口一并清(plugin 侧 SeenStore 回退)
+        self._queue_p2.clear()
+        self._queue_p1.clear()  # 通知队列随窗口一并清(plugin 侧 SeenStore 回退)
         self._awaiting = None
         self._popped = None
 
@@ -58,35 +62,53 @@ class FeedInjector:
 
     # ---- 队列 ----
     def enqueue(self, feeds: list[FeedItem]) -> int:
-        """入队并保持全局按发布时间升序(联调缺陷#6:补叙式阅读,从旧到新)。
+        """浏览动态入队(P2)并保持全局按发布时间升序(联调缺陷#6:补叙式
+        阅读,从旧到新)。跨好友/跨轮次合并保序:每次入队后整体重排
+        (abstime 数值升序,非法/缺失 abstime 排最前按 0 处理)。"""
+        return self._enqueue_into(self._queue_p2, feeds)
 
-        跨好友/跨轮次合并保序:每次入队后整体重排(abstime 数值升序,
-        非法/缺失 abstime 排最前按 0 处理)。
-        """
+    def enqueue_priority(self, items: list[FeedItem]) -> int:
+        """通知入队(P1):优先于浏览动态注入;队内同样按发布时间升序——
+        多条通知积压时从旧到新读(与 P2 阅读顺序一致,计划裁定非 FIFO)。"""
+        return self._enqueue_into(self._queue_p1, items)
+
+    @staticmethod
+    def _enqueue_into(queue: list[FeedItem], feeds: list[FeedItem]) -> int:
+        """共用入队:空 tid 跳过,入队后按 abstime 升序整体重排,返回实入数。"""
         added = 0
         for f in feeds:
             if f.tid:
-                self._queue.append(f)
+                queue.append(f)
                 added += 1
         if added:
-            self._queue.sort(key=lambda f: _abstime_key(f.abstime))
+            queue.sort(key=lambda f: _abstime_key(f.abstime))
         return added
 
     def queue_size(self) -> int:
-        return len(self._queue)
+        return len(self._queue_p1) + len(self._queue_p2)
 
     # ---- 串行推进 ----
     def next_to_inject(self, now: float) -> FeedItem | None:
-        if not self._window_active or self._awaiting is not None or not self._queue:
+        """弹出下一条注入项:P1(通知)非空优先,P1 空取 P2(浏览)。
+
+        awaiting 逻辑不变:awaiting 未释放/窗口未开/两队列皆空返回 None。
+        """
+        if not self._window_active or self._awaiting is not None:
             return None
-        self._popped = self._queue.pop(0)
+        if self._queue_p1:
+            self._popped = self._queue_p1.pop(0)
+        elif self._queue_p2:
+            self._popped = self._queue_p2.pop(0)
+        else:
+            return None
         return self._popped
 
     def mark_injected(self, tid: str, now: float) -> None:
         """标记 tid 已注入:保留完整 FeedItem 供 describe_current 呈现 tid 与内容摘要。
 
-        引用解析顺序:next_to_inject 刚弹出的暂存(tid 一致时)→ 队列按 tid 移除
-        (支持不经弹出的直接标记)→ 轻量占位(仅 tid,调用方未走弹出流程时)。
+        引用解析顺序:next_to_inject 刚弹出的暂存(tid 一致时)→ 两队列按
+        tid 移除(支持不经弹出的直接标记,P1/P2 都查)→ 轻量占位(仅 tid,
+        调用方未走弹出流程时)。
         """
         if self._awaiting is not None:
             return
@@ -95,9 +117,12 @@ class FeedInjector:
             feed = self._popped
             self._popped = None
         else:
-            for i, f in enumerate(self._queue):
-                if f.tid == tid:
-                    feed = self._queue.pop(i)
+            for queue in (self._queue_p1, self._queue_p2):
+                for i, f in enumerate(queue):
+                    if f.tid == tid:
+                        feed = queue.pop(i)
+                        break
+                if feed is not None:
                     break
         if feed is None:
             feed = FeedItem(tid=tid, abstime="", uin="", nickname="", content="")
@@ -145,10 +170,14 @@ class FeedInjector:
             wait = "(等待中-wait)" if self._awaiting.wait_extension else ""
             content = self._awaiting.feed.content or "(无正文)"
             return f"当前看到:tid={self._awaiting.feed.tid}{wait} 内容={content[:50]}"
-        if self._queue:
-            return f"队列中还有 {len(self._queue)} 条待看"
-        return "暂无新动态"
+        parts = []
+        if self._queue_p1:
+            parts.append(f"通知队列 {len(self._queue_p1)} 条")
+        if self._queue_p2:
+            parts.append(f"浏览队列 {len(self._queue_p2)} 条")
+        return "/".join(parts) + "待看" if parts else "暂无新动态"
 
     def stats(self) -> dict:
-        return {"injected": self._injected_count, "queued": len(self._queue),
+        return {"injected": self._injected_count, "queued": self.queue_size(),
+                "p1_queued": len(self._queue_p1), "p2_queued": len(self._queue_p2),
                 "awaiting": bool(self._awaiting), "window_active": self._window_active}

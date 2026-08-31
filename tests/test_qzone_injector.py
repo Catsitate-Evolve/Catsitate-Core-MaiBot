@@ -122,14 +122,89 @@ def test_priority_queue_preempts_browse():
     assert f3.tid == "a2"
 
 
-def test_priority_queue_fifo_not_sorted():
-    """P1 按到达序(FIFO),不按 abstime 排序——通知天然按时间到达。"""
+def test_priority_queue_sorted_by_abstime():
+    """P1(通知)按发布时间升序,与 P2 同款补叙式阅读(计划裁定:非 FIFO——
+    多条通知积压时从旧到新读,与浏览流阅读顺序一致)。"""
     inj = FeedInjector(decision_window_s=75)
     inj.window_started()
     inj.enqueue_priority([FeedItem(tid="late", abstime="200", uin="u", nickname="n", content="c")])   # 先到(abstime 晚)
     inj.enqueue_priority([FeedItem(tid="early", abstime="1", uin="u", nickname="n", content="c")])    # 后到但 abstime 更早
     f = inj.next_to_inject(now=1.0)
-    assert f.tid == "late"  # 先入队的先出(FIFO),不按 abstime
+    assert f.tid == "early"  # P1 内按 abstime 升序,不按到达序
+    inj.mark_injected("early", 1.0)
+    inj.on_turn_complete(now=2.0)
+    assert inj.next_to_inject(now=3.0).tid == "late"
+
+
+def test_priority_preempts_mid_browse_and_late_arrivals_wait():
+    """混合场景:P1 到达即插队;awaiting 未释放时新 P1 只入队不抢当前;
+    P1 连续清空后才回到 P2,且 P2 原有顺序不受 P1 插队影响。"""
+    inj = FeedInjector(decision_window_s=75)
+    inj.window_started()
+    inj.enqueue([_f("a1"), _f("a2")])            # P2:两条浏览动态
+    f = inj.next_to_inject(now=1.0)
+    assert f.tid == "a1"                          # P1 尚空:浏览照常
+    inj.mark_injected("a1", 1.0)
+    inj.enqueue_priority([_f("n1")])              # awaiting 中:入队不抢 a1 的回复轮
+    assert inj.next_to_inject(now=2.0) is None    # 串行语义不变:awaiting 未释放
+    inj.on_turn_complete(now=3.0)
+    assert inj.next_to_inject(now=4.0).tid == "n1"  # 轮完成即插队
+    inj.mark_injected("n1", 4.0)
+    inj.enqueue_priority([_f("n0")])              # 二条通知再插队
+    inj.on_turn_complete(now=5.0)
+    assert inj.next_to_inject(now=6.0).tid == "n0"
+    inj.mark_injected("n0", 6.0)
+    inj.on_turn_complete(now=7.0)
+    assert inj.next_to_inject(now=8.0).tid == "a2"  # P1 清空回到 P2,a2 保序未丢
+    inj.mark_injected("a2", 8.0)
+    inj.on_turn_complete(now=9.0)
+    assert inj.next_to_inject(now=10.0) is None
+
+
+def test_queue_size_counts_both_queues():
+    inj = FeedInjector(decision_window_s=75)
+    inj.window_started()
+    inj.enqueue([_f("a1"), _f("a2")])
+    assert inj.queue_size() == 2
+    inj.enqueue_priority([_f("n1")])
+    assert inj.queue_size() == 3  # P1+P2 合计
+
+
+def test_describe_current_distinguishes_queues():
+    inj = FeedInjector(decision_window_s=75)
+    inj.window_started()
+    assert inj.describe_current() == "暂无新动态"
+    inj.enqueue([_f("a1"), _f("a2")])
+    inj.enqueue_priority([_f("n1")])
+    d = inj.describe_current()
+    assert "通知队列 1 条" in d and "浏览队列 2 条" in d  # 双队列分计呈现
+    inj2 = FeedInjector(decision_window_s=75)
+    inj2.window_started()
+    inj2.enqueue([_f("a1")])
+    assert "浏览队列 1 条" in inj2.describe_current()  # 仅 P2 时不虚报通知队列
+
+
+def test_stats_p1_p2_breakdown():
+    inj = FeedInjector(decision_window_s=75)
+    inj.window_started()
+    inj.enqueue([_f("a1"), _f("a2")])
+    inj.enqueue_priority([_f("n1")])
+    st = inj.stats()
+    assert st["queued"] == 3           # 合计(与 queue_size 一致)
+    assert st["p1_queued"] == 1 and st["p2_queued"] == 2
+
+
+def test_mark_injected_resolves_item_from_priority_queue():
+    """不经弹出的直接标记(mark_injected 回退路径)也要能从 P1 找到条目。"""
+    inj = FeedInjector(decision_window_s=75)
+    inj.window_started()
+    inj.enqueue([_f("a1")])
+    inj.enqueue_priority([_f("n1")])
+    inj.mark_injected("n1", 1.0)  # 未走 next_to_inject 弹出
+    assert inj.awaiting_tid == "n1" and inj.awaiting_feed is not None
+    assert inj.queue_size() == 1  # n1 已从 P1 移除,剩 P2 的 a1
+    inj.on_turn_complete(now=2.0)
+    assert inj.next_to_inject(now=3.0).tid == "a1"
 
 
 def test_window_end_clears_both_queues():
@@ -139,4 +214,4 @@ def test_window_end_clears_both_queues():
     inj.enqueue_priority([_f("n")])
     inj.window_ended()
     assert inj.queue_size() == 0
-    assert inj.stats()["prio_queued"] == 0
+    assert inj.stats()["p1_queued"] == 0 and inj.stats()["p2_queued"] == 0

@@ -22,6 +22,14 @@ class _Awaiting:
     wait_extension: bool = False
 
 
+def _abstime_key(abstime: str) -> float:
+    """发布时间排序键(数值;非法/缺失按 0 排最前)。"""
+    try:
+        return float(str(abstime or "").strip() or 0)
+    except ValueError:
+        return 0.0
+
+
 class FeedInjector:
     def __init__(self, *, decision_window_s: int, hard_cap_multiplier: int = 3) -> None:
         self.decision_window_s = max(int(decision_window_s), 1)
@@ -48,11 +56,18 @@ class FeedInjector:
 
     # ---- 队列 ----
     def enqueue(self, feeds: list[FeedItem]) -> int:
+        """入队并保持全局按发布时间升序(联调缺陷#6:补叙式阅读,从旧到新)。
+
+        跨好友/跨轮次合并保序:每次入队后整体重排(abstime 数值升序,
+        非法/缺失 abstime 排最前按 0 处理)。
+        """
         added = 0
         for f in feeds:
             if f.tid:
                 self._queue.append(f)
                 added += 1
+        if added:
+            self._queue.sort(key=lambda f: _abstime_key(f.abstime))
         return added
 
     def queue_size(self) -> int:
@@ -101,6 +116,16 @@ class FeedInjector:
     @property
     def awaiting_tid(self) -> str:
         return self._awaiting.feed.tid if self._awaiting else ""
+
+    @property
+    def awaiting_feed(self) -> FeedItem | None:
+        """当前 awaiting 动态的完整引用(无 awaiting 时 None)。"""
+        return self._awaiting.feed if self._awaiting else None
+
+    @property
+    def awaiting_author(self) -> str:
+        """当前动态作者 uin(注入块按人上下文/说话人交叉校验用,spec §2.16)。"""
+        return self._awaiting.feed.uin if self._awaiting else ""
 
     def awaiting_timed_out(self, now: float) -> bool:
         if self._awaiting is None:

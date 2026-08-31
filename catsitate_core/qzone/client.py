@@ -25,7 +25,13 @@ BROWSER_UA = (
     "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) "
     "Chrome/124.0.0.0 Safari/537.36"
 )
+# 登录态/g_tk 失效业务码(联调实证 -3000):命中即抛 QzoneAuthError 触发 cookie 重取
+AUTH_ERROR_CODES = {-3000, -10005}
 _MISSING_PSKEY_WARNED = False  # 每进程告警一次
+
+
+class QzoneAuthError(RuntimeError):
+    """空间登录态失效(p_skey/g_tk 过期)——调用方应使 cookie 缓存失效并重取。"""
 
 
 class CookieManager:
@@ -37,17 +43,26 @@ class CookieManager:
         self.refresh_seconds = max(refresh_minutes, 0) * 60
         self._fetched_at: float = 0.0
         self._cookies: dict[str, str] = {}
+        self._invalidated = False
+
+    def invalidate(self) -> None:
+        """登录态失效标记(联调缺陷#7):清内存态并置失效——下次 get() 跳过
+        节流与持久化快照,强制经 adapter 重取;重取失败不回退旧值。"""
+        self._cookies = {}
+        self._fetched_at = 0.0
+        self._invalidated = True
 
     async def get(self) -> dict[str, str] | None:
         now = time.monotonic()
         if self._cookies and now - self._fetched_at < self.refresh_seconds:
             return self._cookies
-        cached = self.snapshot.load().get("cookies")
-        if isinstance(cached, dict) and cached.get("p_skey"):
-            if not self._cookies:  # 进程内首次:用持久化值垫底,仍按节流窗口尝试刷新
-                self._cookies = {str(k): str(v) for k, v in cached.items()}
-                self._fetched_at = now
-                return self._cookies
+        if not self._invalidated:
+            cached = self.snapshot.load().get("cookies")
+            if isinstance(cached, dict) and cached.get("p_skey"):
+                if not self._cookies:  # 进程内首次:用持久化值垫底,仍按节流窗口尝试刷新
+                    self._cookies = {str(k): str(v) for k, v in cached.items()}
+                    self._fetched_at = now
+                    return self._cookies
         try:
             # 联调修正(2026-08-30):adapter API 形态为单 params 关键字(dict 透传给 NapCat 动作)
             result = await self.api_call("adapter.napcat.account.get_cookies", params={"domain": COOKIE_DOMAIN})
@@ -63,6 +78,7 @@ class CookieManager:
             return self._cookies or None
         self._cookies = cookies
         self._fetched_at = now
+        self._invalidated = False
         self.snapshot.save({"cookies": cookies, "saved_at": now})
         return cookies
 
@@ -157,6 +173,8 @@ class QzoneClient:
         payload = extract_callback_json(text)
         # 注意不可用 `code or -1`:code=0 是成功码,or 短路会误判(内部不一致最小修复)
         code = payload.get("code")
+        if code is not None and int(code) in AUTH_ERROR_CODES:
+            raise QzoneAuthError(f"空间登录态失效(uin={target_uin}): code={code}")
         if code is None or int(code) != 0:
             raise RuntimeError(f"空间说说列表返回业务错误(uin={target_uin}): code={payload.get('code')}")
         return parse_msglist(payload, target_uin=str(target_uin), nickname=nickname)

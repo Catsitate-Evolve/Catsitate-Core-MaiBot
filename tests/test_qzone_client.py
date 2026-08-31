@@ -53,6 +53,25 @@ def test_parse_msglist_null_or_missing():
     assert parse_msglist({"code": 0}, target_uin="1", nickname="n") == []
 
 
+def test_parse_msglist_forward_and_video_fallback( ):
+    """特殊动态(联调缺陷#4 实证形态):转发→rt_con.content+rt_uinname;视频→占位。"""
+    payload = {"code": 0, "msglist": [
+        # 转发说说(content 空,rt_con 携带原文,rt_uinname=原作者)
+        {"tid": "f1", "created_time": 100, "content": "",
+         "rt_con": {"conlist": [{"con": "想和所有人暂停在关系最好最舒服的那一刻", "type": 2}],
+                    "content": "想和所有人暂停在关系最好最舒服的那一刻"},
+         "rt_uinname": "负能墙。", "rt_uin": 281401888},
+        # 纯图说说(content 空,pic 非空——文本留空,由消息构造层省略文本段)
+        {"tid": "f2", "created_time": 200, "content": "", "pic": [{"url1": "https://img/x.jpg"}]},
+    ]}
+    items = parse_msglist(payload, target_uin="9", nickname="n")
+    assert items[0].content == "[转发自负能墙。]想和所有人暂停在关系最好最舒服的那一刻"
+    assert items[1].content == ""  # 纯图:文本保持空,图段承载内容
+    payload2 = {"code": 0, "msglist": [{"tid": "v1", "created_time": 1, "content": "", "video": [{"url": "u"}]}]}
+    items2 = parse_msglist(payload2, target_uin="9", nickname="n")
+    assert items2[0].content == "[视频]"
+
+
 def test_parse_friend_list_shapes():
     # OneBot get_friend_list 形态:裸 list / {"data": [...]}(信封容忍)
     raw = [{"user_id": 10001, "nickname": "小明", "remark": "明仔"}, {"user_id": 10002, "nickname": "小红", "remark": ""}]
@@ -117,6 +136,36 @@ def test_cookie_manager_napcat_data_string(tmp_path):
 
     cm = CookieManager(_cookie_snapshot(tmp_path), api_call=fake_api_call, refresh_minutes=60)
     assert asyncio.run(cm.get()) == {"p_skey": "SK3", "uin": "oq2"}
+
+
+def test_cookie_manager_invalidate_forces_refetch(tmp_path):
+    """联调缺陷#7:失效标记后跳过快照与节流,强制重取;失败不回退旧值。"""
+    calls = []
+
+    async def fake_api_call(method, **kw):
+        calls.append(1)
+        if len(calls) == 1:
+            return {"cookies": {"p_skey": "OLD", "uin": "o1"}}
+        return {"cookies": {"p_skey": "NEW", "uin": "o1"}}
+
+    cm = CookieManager(_cookie_snapshot(tmp_path), api_call=fake_api_call, refresh_minutes=60)
+    assert asyncio.run(cm.get()) == {"p_skey": "OLD", "uin": "o1"}
+    cm.invalidate()
+    assert asyncio.run(cm.get()) == {"p_skey": "NEW", "uin": "o1"} and len(calls) == 2  # 立即重取(不受节流/快照)
+
+
+def test_client_raises_auth_error_on_neg3000():
+    """code=-3000(登录态失效)抛 QzoneAuthError,由调用方触发 cookie 失效重取。"""
+    from catsitate_core.qzone.client import QzoneAuthError
+
+    body = '_preloadCallback(' + _json.dumps({"code": -3000, "message": "登录态失效"}) + ');'
+    client, _ = _make_client([(200, body)])
+    try:
+        asyncio.run(client.get_user_feeds(target_uin="1", nickname="n"))
+        raised = False
+    except QzoneAuthError:
+        raised = True
+    assert raised
 
 
 def test_cookie_manager_missing_pskey_warns_none(tmp_path):

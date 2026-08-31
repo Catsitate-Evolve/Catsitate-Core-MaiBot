@@ -1,16 +1,29 @@
 """虚拟流注入消息构造(message_dict 对齐主程序 plugin_runtime/host/message_utils.py 格式)。
 
-纪律(spec §2.2):timestamp=当前时刻(新鲜,get_recent 24h 窗);message_id 全局唯一
-(tid+序号);additional_config.is_mentioned=1.0 强制触发;图片段带 binary_data_base64
-(主流水线描述/落 Images 表的前提),超限图以 [图片] 占位。
+纪律(联调修正 2026-08-31):timestamp=**发布时间**(原时间,防 bot 把老说说当成刚发生——
+联调缺陷#5);正文带相对时间前缀(今天 HH:MM / M月d日 HH:MM)使模型可感知动态新旧;
+message_id 全局唯一(tid+序号);is_mentioned 嵌在 message_info.additional_config
+(主程序只读该位置);图片段带 binary_data_base64,超限图以 [图片] 占位;
+纯图说说省略空文本段(图段承载内容,联调缺陷#4)。
 """
 
 from __future__ import annotations
 
 import base64
+from datetime import datetime
 
 from catsitate_core.qzone import QZONE_PLATFORM
 from catsitate_core.qzone.protocol import FeedItem
+
+
+def _time_prefix(post_dt: datetime, now_dt: datetime) -> str:
+    """相对时间前缀:同日=今天HH:MM,不同日=M月d日HH:MM,跨年补年份。"""
+
+    if (post_dt.year, post_dt.month, post_dt.day) == (now_dt.year, now_dt.month, now_dt.day):
+        return f"(今天{post_dt:%H:%M})"
+    if post_dt.year != now_dt.year:
+        return f"({post_dt:%Y年%m月%d日 %H:%M})"
+    return f"({post_dt:%m月%d日 %H:%M})"
 
 
 def build_feed_message(
@@ -23,9 +36,20 @@ def build_feed_message(
     max_kb: int,
     now_epoch: float,
 ) -> dict:
-    """构造一条说说注入消息。images 为 (url, bytes) 列表,超限/缺失的图以占位呈现。"""
+    """构造一条说说注入消息。images 为 (url, bytes) 列表,超限/缺失的图以占位呈现。
 
-    text = feed.content.strip() or "(无文字内容)"
+    timestamp 取 feed.abstime(发布时间);abstime 非法/缺失时回退注入时刻且不加前缀。
+    """
+
+    text = feed.content.strip()
+    post_epoch: float | None = None
+    try:
+        candidate = float(str(feed.abstime or "").strip())
+        if candidate > 0:
+            post_epoch = candidate
+    except ValueError:
+        post_epoch = None
+
     raw: list[dict] = []
     for url, data in images:
         if data is None:
@@ -41,11 +65,26 @@ def build_feed_message(
         })
     if not raw and feed.image_urls and not images:
         text += " [图片]"  # 有图但全未下载成功的占位
-    raw.insert(0, {"type": "text", "data": text})
+
+    timestamp = post_epoch if post_epoch is not None else now_epoch
+    if post_epoch is not None:
+        prefix = _time_prefix(datetime.fromtimestamp(post_epoch), datetime.fromtimestamp(now_epoch))
+    else:
+        prefix = ""
+    # 文本段:正文→前缀+正文;纯图→仅时间前缀(无时间则整段省略,图段承载内容);
+    # 无正文无图→前缀+占位
+    if text:
+        body = f"{prefix}{text}".strip()
+    elif raw:
+        body = prefix
+    else:
+        body = f"{prefix}(无文字内容)".strip()
+    if body:
+        raw.insert(0, {"type": "text", "data": body})
     return {
         "message_id": f"qzone_{feed.tid}_{seq}",
         "platform": QZONE_PLATFORM,
-        "timestamp": str(int(now_epoch)),
+        "timestamp": str(int(timestamp)),
         "message_info": {
             "user_info": {"user_id": str(feed.uin), "user_nickname": feed.nickname},
             "group_info": {"group_id": group_id, "group_name": group_name},

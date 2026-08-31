@@ -78,11 +78,30 @@ def parse_msglist(payload: dict, *, target_uin: str, nickname: str) -> list[Feed
                 abstime=str(feed.get("created_time") or ""),
                 uin=str(target_uin),
                 nickname=str(nickname or target_uin),
-                content=str(feed.get("content") or "").strip(),
+                content=_feed_display_text(feed),
                 image_urls=urls,
             )
         )
     return items
+
+
+def _feed_display_text(feed: dict) -> str:
+    """动态正文回退链(联调缺陷#4 实证形态):content → 转发原文(rt_con) → [视频]。
+
+    纯图说说(content 空且带 pic)正文保持空——由消息构造层省略文本段,图段承载内容。
+    """
+
+    content = str(feed.get("content") or "").strip()
+    if not content:
+        rt = feed.get("rt_con")
+        if isinstance(rt, dict):
+            rt_content = str(rt.get("content") or "").strip()
+            if rt_content:
+                src = str(feed.get("rt_uinname") or "").strip()
+                content = f"[转发自{src}]{rt_content}" if src else f"[转发]{rt_content}"
+    if not content and (feed.get("video") or []):
+        content = "[视频]"
+    return content
 
 
 def parse_friend_list(result: object) -> list[dict]:

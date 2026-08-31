@@ -36,7 +36,7 @@ from catsitate_core.poke import PokeEngine
 from catsitate_core.prompt_deploy import sync_prompt_templates
 from catsitate_core.qzone import QZONE_GATEWAY_NAME, QZONE_PLATFORM
 from catsitate_core.qzone.protocol import parse_friend_list
-from catsitate_core.qzone.client import CookieManager, QzoneClient
+from catsitate_core.qzone.client import CookieManager, QzoneAuthError, QzoneClient
 from catsitate_core.qzone.injector import FeedInjector
 from catsitate_core.qzone.messages import build_feed_message
 from catsitate_core.qzone.outbound import M1_OUTBOUND_ERROR, extract_outbound_text
@@ -588,6 +588,11 @@ class CatsitatePlugin(MaiBotPlugin):
                 feeds = await self.qzone_client.get_user_feeds(
                     target_uin=friend["user_id"], nickname=friend["nickname"], num=3
                 )
+            except QzoneAuthError:
+                # 登录态失效:立即作废 cookie 缓存(下轮重取),本轮终止(联调缺陷#7 自愈链)
+                self.qzone_cookie.invalidate()
+                self.ctx.logger.warning("QQ空间登录态失效(code=-3000/-10005),cookie 已作废,下轮重取")
+                return
             except Exception:
                 # 单个好友失败不中止整轮(逐人隔离,显式告警)
                 self.ctx.logger.exception("QQ空间说说拉取失败(uin=%s),该好友本轮跳过", friend["user_id"])
@@ -978,7 +983,12 @@ class CatsitatePlugin(MaiBotPlugin):
         # planner.before_request payload 无 user_id/stream_id 键(实机确认):
         # 流 = session_id;说话人 = 私聊流对端 / 群聊最近非 bot 消息发送者
         stream_id = str(kwargs.get("session_id") or "")
-        speaker = await self._resolve_speaker(stream_id) if stream_id else ""
+        # 虚拟流说话人 = 注入泵当前动态作者(spec §2.16 交叉校验)——注入时间戳已改为
+        # 发布时间(联调缺陷#5),get_recent 的 24h 默认窗对老动态不可靠,不再回溯解析
+        if stream_id and stream_id in self._qzone_session_id_set() and self._qzone_available:
+            speaker = self.qzone_injector.awaiting_author
+        else:
+            speaker = await self._resolve_speaker(stream_id) if stream_id else ""
         blocks: list[InjectionBlock] = []
         if cfg.inject.environment_enabled and cfg.time_aware.enabled:
             env = self._environment_block(stream_id)

@@ -56,7 +56,7 @@ QQ 空间四功能（阅读好友动态 / 点赞 / 评论 / 发说说 + 记日�
 - 网关组件声明（duplex）；`on_load` 后 `update_state(ready=True)`，失败显式告警。
 - 注入泵（qzone 窗口期激活）：拉取 → seen 去重（msglist 条目即说说,转发/视频走回退链——[转发自XX]原文/[视频] 占位）→ 图片下载（失败占位+告警；带 `binary_data_base64`，体积治理=压缩到 RPC 帧预算（§2.3））→ 入队（全局按发布时间升序）→ **串行注入**（等上一条的**轮完成信号**——`planner.after_response` 无 tool_calls；wait 暂停视为延长；`decision_window_seconds` 为超时兜底）。
 - `message_dict` 构造对齐主程序格式（message_id=稳定去重 id（tid 派生+序号）、platform="qzone-qq"、user_info{user_id=好友QQ, user_nickname=好友昵称}、group_info{group_id=伪群号, group_name=显示名}、is_mentioned 嵌于 message_info.additional_config（主程序只读该位置）、raw_message 组件列表（text+image 段，image 组件结构实现时对齐 `message_utils.py` 的构造器））；**timestamp=发布时间+相对时间前缀**（abstime 非法回退注入时刻,debug 日志可观测）。
-- 动态发布时间不在正文加前缀，并入 qzone 注入块的「当前浏览状态」行（如「当前看到：XX 3 小时前发的说说」）。
+- 发布时间以相对时间前缀写入正文（联调修正 2026-08-31,原「并入注入块『当前浏览状态』行」设计废弃——与 timestamp=发布时间的消息本体对齐使正文自带时间感知）；注入块「当前浏览状态」行不再承载时间。
 
 ### 3.3 出站意图状态机 + duplex 驱动（`catsitate_core/qzone/outbound.py`）
 

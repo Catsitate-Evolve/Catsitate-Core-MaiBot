@@ -6,6 +6,7 @@ cookie 获取失败/缺 p_skey → 显式告警并返回 None(调用方跳过本
 
 from __future__ import annotations
 
+import json
 import logging
 import time
 from typing import Any, Awaitable, Callable
@@ -14,6 +15,13 @@ from catsitate_core.qzone.protocol import (
     extract_callback_json,
     generate_gtk,
     parse_msglist,
+)
+from catsitate_core.qzone.wire import (
+    CommentItem,
+    build_comment_form,
+    build_like_form,
+    build_reply_form,
+    parse_feed_comments,
 )
 from catsitate_core.storage import JsonSnapshot
 
@@ -125,20 +133,26 @@ def _extract_cookies(result: Any) -> dict[str, str]:
 
 
 class QzoneClient:
-    """空间接口客户端(读路径:M1 仅好友动态列表与图片下载)。"""
+    """空间接口客户端(读路径:M1 好友动态列表与图片下载;写路径:M2 点赞/评论/楼中楼)。"""
+
+    DOLIKE_URL = "https://user.qzone.qq.com/proxy/domain/w.qzone.qq.com/cgi-bin/likes/internal_dolike_app"
+    COMMENT_URL = "https://user.qzone.qq.com/proxy/domain/taotao.qzone.qq.com/cgi-bin/emotion_cgi_re_feeds"
 
     def __init__(
         self,
         *,
         cookie_provider: Callable[[], Awaitable[dict[str, str] | None]],
-        fetch: Callable[..., Awaitable[tuple[int, str]]],
+        fetch: Callable[..., Awaitable[tuple[int, Any]]],
         timeout_ms: int,
         max_retries: int,
+        bot_uin: str = "",
     ) -> None:
         self.cookie_provider = cookie_provider
         self.fetch = fetch
         self.timeout_ms = timeout_ms
         self.max_retries = max(0, int(max_retries))
+        # 写路径身份参数(opuin/qzreferrer/topicId.uin)——装配时传 favorability.bot_user_id
+        self.bot_uin = str(bot_uin or "")
 
     async def _request(self, method: str, url: str, *, params: dict, data: dict | None = None, binary: bool = False, referer: str = "https://user.qzone.qq.com/") -> tuple[int, Any]:
         cookies = await self.cookie_provider()
@@ -157,8 +171,8 @@ class QzoneClient:
         status, body = await self.fetch(method, url, params=params, headers=headers, timeout_ms=self.timeout_ms)
         return status, body
 
-    async def get_user_feeds(self, *, target_uin: str, nickname: str, num: int = 5) -> list:
-        """拉取指定好友最近说说(联调实证参数集:jsonp+need_comment,Referer 指向目标空间)。"""
+    async def _fetch_msglist(self, *, target_uin: str, num: int) -> dict:
+        """拉取指定用户说说列表的原始 msglist 载荷(get_user_feeds 与自评拉取共用请求+校验)。"""
 
         params = {
             "uin": str(target_uin), "ftype": "0", "sort": "0", "pos": "0", "num": str(num),
@@ -179,7 +193,82 @@ class QzoneClient:
             raise QzoneAuthError(f"空间登录态失效(uin={target_uin}): code={code}")
         if code is None or int(code) != 0:
             raise RuntimeError(f"空间说说列表返回业务错误(uin={target_uin}): code={payload.get('code')}")
+        return payload
+
+    async def get_user_feeds(self, *, target_uin: str, nickname: str, num: int = 5) -> list:
+        """拉取指定好友最近说说(联调实证参数集:jsonp+need_comment,Referer 指向目标空间)。"""
+
+        payload = await self._fetch_msglist(target_uin=target_uin, num=num)
         return parse_msglist(payload, target_uin=str(target_uin), nickname=nickname)
+
+    async def _post(self, url: str, *, form: dict, referer_uin: str) -> dict:
+        """写路径 POST 通道(独立于 _request:读路径为 GET 语义,参数全进 query;
+        写路径为 params=g_tk + form 表单,且需 Origin/Content-Type 头)。
+
+        失败直接抛出由调用方告警跳过,不重试(max_retries 语义=动作 API 失败即告警)。
+        """
+        cookies = await self.cookie_provider()
+        if not cookies:
+            raise RuntimeError("空间 cookie 不可用,跳过请求")
+        # g_tk 保持 int(与 _request 读路径一致,httpx 对 params 原生值直接编码)
+        params = {"g_tk": generate_gtk(cookies.get("p_skey", ""))}
+        headers = {
+            "Cookie": "; ".join(f"{k}={v}" for k, v in cookies.items()),
+            "User-Agent": BROWSER_UA,
+            "Referer": f"https://user.qzone.qq.com/{referer_uin}",
+            "Origin": "https://user.qzone.qq.com",
+            "Content-Type": "application/x-www-form-urlencoded",
+        }
+        status, raw = await self.fetch("POST", url, params=params, headers=headers,
+                                       timeout_ms=self.timeout_ms, data=form)
+        if status != 200:
+            raise RuntimeError(f"空间写请求失败: HTTP {status}")
+        text = raw.decode("utf-8") if isinstance(raw, (bytes, bytearray)) else str(raw)
+        payload = extract_callback_json(text) if "(" in text[:60] else json.loads(text)
+        code = payload.get("code")
+        if code is not None and int(code) in AUTH_ERROR_CODES:
+            raise QzoneAuthError(f"空间登录态失效: code={code}")
+        if code is None or int(code) != 0:
+            raise RuntimeError(f"空间写请求业务错误: code={payload.get('code')} 响应={text[:120]}")
+        return payload
+
+    async def do_like(self, *, fid: str, target_qq: str) -> bool:
+        """点赞指定好友说说(internal_dolike_app,表单由 wire.build_like_form 构造)。"""
+        form = build_like_form(fid=fid, target_qq=target_qq,
+                               bot_uin=self.bot_uin, now_epoch=time.time())
+        await self._post(self.DOLIKE_URL, form=form, referer_uin=self.bot_uin)
+        return True
+
+    async def do_comment(self, *, fid: str, target_qq: str, content: str) -> bool:
+        """评论指定好友说说(emotion_cgi_re_feeds,响应为 format=fs 的 callback 包裹)。"""
+        form = build_comment_form(fid=fid, target_qq=target_qq, bot_uin=self.bot_uin, content=content)
+        await self._post(self.COMMENT_URL, form=form, referer_uin=self.bot_uin)
+        return True
+
+    async def do_reply(self, *, fid: str, target_qq: str, comment_tid: str, comment_uin: str,
+                       comment_nick: str, content: str) -> bool:
+        """楼中楼回复自己说说下的好友评论(同评论端点 + commentId/commentUin)。"""
+        form = build_reply_form(fid=fid, target_qq=target_qq, bot_uin=self.bot_uin,
+                                comment_tid=comment_tid, comment_uin=comment_uin,
+                                comment_nick=comment_nick, content=content)
+        await self._post(self.COMMENT_URL, form=form, referer_uin=self.bot_uin)
+        return True
+
+    async def get_own_feed_comments(
+        self, *, bot_uin: str, num: int = 10
+    ) -> tuple[dict[str, list[CommentItem]], dict[str, str]]:
+        """拉取自己说说下的好友评论(评论回复轮询的输入)。
+
+        单次 msglist 请求产出两视图:评论映射(feed_tid → [CommentItem],
+        wire.parse_feed_comments)与正文上下文(feed_tid → 显示文本,转发/视频
+        回退链沿用 parse_msglist——get_user_feeds 解析会丢 commentlist,故两用
+        共用 _fetch_msglist 的原始载荷,不再发第二次请求)。
+        """
+        payload = await self._fetch_msglist(target_uin=bot_uin, num=num)
+        comments = parse_feed_comments(payload)
+        feeds = parse_msglist(payload, target_uin=str(bot_uin), nickname="我")
+        ctx = {f.tid: f.content for f in feeds}
+        return comments, ctx
 
     async def download_image(self, url: str) -> bytes | None:
         """下载原图,失败返回 None(调用方以占位注入)。防盗链头带上 Referer。

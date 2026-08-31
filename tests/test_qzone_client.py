@@ -158,7 +158,7 @@ def test_client_download_image_retries_once_on_transient_failure():
     """图片下载瞬态失败(联调实证 CDN 偶发 404)单次重试;两次都败才返回 None。"""
     attempts = []
 
-    async def fake_fetch(method, url, *, params, headers, timeout_ms):
+    async def fake_fetch(method, url, *, params, headers, timeout_ms, data=None):
         attempts.append(url)
         return (404, b"") if len(attempts) == 1 else (200, b"img")
 
@@ -199,7 +199,7 @@ def _make_client(fetch_responses, cookies=None):
     async def fake_cookie():
         return cookies
 
-    async def fake_fetch(method, url, *, params, headers, timeout_ms):
+    async def fake_fetch(method, url, *, params, headers, timeout_ms, data=None):
         seen_params.append({"url": url, "params": dict(params), "headers": dict(headers)})
         assert params.get("g_tk") == generate_gtk("SK")  # cgi 请求自动携带 g_tk
         return fetch_responses.pop(0)
@@ -241,7 +241,7 @@ def test_client_download_image_no_size_cap_and_no_extra_params():
     big = b"x" * (2048 * 1024 + 1)
     seen = []
 
-    async def fake_fetch(method, url, *, params, headers, timeout_ms):
+    async def fake_fetch(method, url, *, params, headers, timeout_ms, data=None):
         seen.append((url, dict(params)))
         return 200, big
 
@@ -251,3 +251,89 @@ def test_client_download_image_no_size_cap_and_no_extra_params():
     client = QzoneClient(cookie_provider=fake_cookie, fetch=fake_fetch, timeout_ms=1000, max_retries=0)
     assert asyncio.run(client.download_image("https://img/x.jpg")) == big  # 不设上限,原样返回
     assert all(p == {} for _, p in seen)  # 无 g_tk 等附加参数
+
+
+# ---- 写路径(fake 注入,无网络) ----
+from catsitate_core.qzone.wire import CommentItem
+
+
+def _post_client(responses):
+    cookies = {"p_skey": "SK", "uin": "o3545773341"}
+    seen = []
+
+    async def fake_cookie():
+        return cookies
+
+    async def fake_fetch(method, url, *, params, headers, timeout_ms, data=None):
+        seen.append({"method": method, "url": url, "params": dict(params), "data": dict(data or {}), "headers": dict(headers)})
+        return responses.pop(0)
+
+    client = QzoneClient(cookie_provider=fake_cookie, fetch=fake_fetch, timeout_ms=1000, max_retries=0)
+    return client, seen
+
+
+def test_do_like_posts_form_and_parses_plain_json():
+    client, seen = _post_client([(200, b'{"code":0}')])
+    assert asyncio.run(client.do_like(fid="tidA", target_qq="8888")) is True
+    req = seen[0]
+    assert req["method"] == "POST"
+    assert "internal_dolike_app" in req["url"]
+    assert req["params"]["g_tk"] == generate_gtk("SK")
+    assert req["data"]["unikey"].endswith("/mood/tidA")
+    assert req["headers"]["Origin"] == "https://user.qzone.qq.com"
+
+
+def test_do_comment_parses_fs_wrapper():
+    client, seen = _post_client([(200, 'frameElement.callback({"code":0,"subcode":0});'.encode())])
+    assert asyncio.run(client.do_comment(fid="tidA", target_qq="8888", content="好看!")) is True
+    assert "emotion_cgi_re_feeds" in seen[0]["url"]
+    assert seen[0]["data"]["topicId"] == "8888_tidA__1"
+
+
+def test_write_failure_raises_no_retry():
+    client, seen = _post_client([(200, b'{"code":-3}')])  # 业务错
+    try:
+        asyncio.run(client.do_comment(fid="t", target_qq="8", content="x"))
+        raised = False
+    except RuntimeError:
+        raised = True
+    assert raised and len(seen) == 1  # 不重试
+
+
+def test_write_auth_error_invalidates_cookie():
+    from catsitate_core.qzone.client import QzoneAuthError
+
+    async def fake_cookie():
+        return {"p_skey": "SK"}
+
+    calls = []
+
+    async def fake_fetch(method, url, *, params, headers, timeout_ms, data=None):
+        calls.append(1)
+        return 200, '_CB({"code":-3000})'.encode()
+
+    invalidated = []
+
+    class _Client(QzoneClient):
+        async def do_comment(self, **kw):
+            try:
+                return await super().do_comment(**kw)
+            except QzoneAuthError:
+                invalidated.append(1)
+                raise
+
+    client = _Client(cookie_provider=fake_cookie, fetch=fake_fetch, timeout_ms=1000, max_retries=0)
+    try:
+        asyncio.run(client.do_comment(fid="t", target_qq="8", content="x"))
+    except QzoneAuthError:
+        pass
+    assert invalidated == [1] and len(calls) == 1
+
+
+def test_get_own_feed_comments():
+    body = '_preloadCallback({"code":0,"msglist":[{"tid":"f1","content":"我的说说","commentlist":[{"tid":"c1","uin":10001,"name":"小明","content":"hi","create_time":1750000001}]}]});'.encode()
+    client, seen = _post_client([(200, body)])
+    comments, ctx = asyncio.run(client.get_own_feed_comments(bot_uin="3545773341"))
+    assert comments["f1"][0].comment_tid == "c1"
+    assert ctx["f1"] == "我的说说"
+    assert seen[0]["params"]["uin"] == "3545773341"  # 原占位防误删,换真锚:msglist 请求以 bot_uin 为目标

@@ -220,6 +220,8 @@ class CatsitatePlugin(MaiBotPlugin):
             fetch=self._qzone_http_fetch,
             timeout_ms=self.config.qzone.request_timeout_ms,
             max_retries=self.config.qzone.max_retries,
+            # 写路径身份参数(opuin/qzreferrer/topicId.uin);为空时自检已停用模块,不会走到写路径
+            bot_uin=str(self.config.favorability.bot_user_id or "").strip(),
         )
         self.qzone_injector = FeedInjector(decision_window_s=self.config.qzone.decision_window_seconds)
         # seq 以当前秒播种:重启归零会让 qzone_{tid}_{seq} 与上一轮运行撞车,
@@ -525,17 +527,19 @@ class CatsitatePlugin(MaiBotPlugin):
 
     # ---------- QQ空间(M1 感知) ----------
 
-    async def _qzone_http_fetch(self, method: str, url: str, *, params: dict, headers: dict, timeout_ms: int) -> tuple[int, bytes]:
+    async def _qzone_http_fetch(self, method: str, url: str, *, params: dict, headers: dict, timeout_ms: int, data: dict | None = None) -> tuple[int, bytes]:
         """httpx 薄封装(client.py 的 fetch 注入点;超时与异常上抛由调用方告警)。
 
         统一返回 **bytes**:二进制图片经 resp.text 的 UTF-8 解码会失真,
         再 encode('latin-1') 必炸(联调缺陷#13);文本/JSON 由 client 侧显式
         utf-8 解码。params 为空时必须传 None:httpx 的 params={} 会把 URL
         既有 query 整体清空(联调缺陷#9 根因)——签名 URL 由此被剥签名致 404。
+        data 为 M2 写路径表单(dict 时 httpx 自动 form-encode,
+        Content-Type 由调用方 headers 指定);读路径保持 None。
         """
 
         async with httpx.AsyncClient(timeout=timeout_ms / 1000) as client:
-            resp = await client.request(method, url, params=params or None, headers=headers)
+            resp = await client.request(method, url, params=params or None, headers=headers, data=data)
             return resp.status_code, resp.content
 
     async def _qzone_selfcheck(self) -> bool:

@@ -29,6 +29,15 @@ def replace_scene(system_text: str, group_prompt_value: str, *, scene_text: str 
     return system_text, "miss"
 
 
+def _tool_name(d: dict) -> str:
+    """取工具定义名:function.name(OpenAI 形态)优先,回退顶层 name(扁平形态)。"""
+
+    fn = d.get("function")
+    if isinstance(fn, dict):
+        return str(fn.get("name") or "")
+    return str(d.get("name") or "")
+
+
 def filter_tool_definitions(defs: list[dict], whitelist: list[str]) -> list[dict]:
     """按 function.name(OpenAI 形态)或 name(扁平形态)过滤;通过项原样保留。"""
 
@@ -37,11 +46,23 @@ def filter_tool_definitions(defs: list[dict], whitelist: list[str]) -> list[dict
     for d in defs:
         if not isinstance(d, dict):
             continue
-        fn = d.get("function")
-        name = str(fn.get("name") or "") if isinstance(fn, dict) else str(d.get("name") or "")
+        name = _tool_name(d)
         if name and name in allowed:
             out.append(d)
     return out
+
+
+def filter_qzone_tools_for_stream(defs: list[dict], *, is_qzone: bool, whitelist: list[str]) -> list[dict]:
+    """双向工具隔离:qzone 流走白名单;非 qzone 流剥离 qzone_* 工具。
+
+    qzone 流正向隔离(硬门控不随白名单配置放松);非 qzone 流反向隔离——
+    qzone_like 等工具在真实聊天流不可见,防模型误调(T11/终审 I4)。
+    """
+
+    if is_qzone:
+        return filter_tool_definitions(defs, whitelist)
+    return [d for d in defs if isinstance(d, dict)
+            and not _tool_name(d).startswith("qzone_")]
 
 
 def _item_text(item: dict) -> str:

@@ -124,8 +124,9 @@ def test_m2_wiring_source_assertions():
     assert "enqueue_priority(" in src and "parse_feed_replies(" in src
     assert "get_user_feeds_raw(" in src and "notification_interval_seconds" in src
     assert 'source="notify"' in src  # 通知 FeedItem 标记(泵按 source 区分意图)
-    # T11 工具双向隔离:非 qzone 流隐藏 qzone_ 前缀专属工具(防模型误调)
-    assert 'startswith("qzone_")' in src
+    # T11 工具双向隔离:非 qzone 流隐藏 qzone_ 前缀专属工具(防模型误调);
+    # 终审 I4 抽纯函数 filter_qzone_tools_for_stream(scene.py),plugin 侧接线断言随之更新
+    assert "filter_qzone_tools_for_stream(" in src
     assert 'self._qzone_outbound_intent = None' in src  # 意图一次性消费
     # 审查必修:远端成功即刻消费意图(记账失败不得把意图留到下一条出站→重复评论)
     assert 'self._qzone_outbound_intent = None  # 远端成功即刻消费' in src

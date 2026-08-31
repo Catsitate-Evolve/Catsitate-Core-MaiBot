@@ -3,6 +3,7 @@
 _StubCtx 模式参照 test_integration.py:离线装配插件实例,依赖全部注入桩,
 只验证「组合层」行为——窗口开启作废残留评论意图 / 网关出站意图消费 /
 统一通知轮询三重守卫(自评跳过+判重+意图占用,T11 重写)与源B楼中楼路由。
+终审修复波追加:qzone_like 通知隔离(I1)/源B请求间隔(I2)/窗口尾通知残留告警(I3)。
 """
 
 from __future__ import annotations
@@ -13,6 +14,7 @@ from datetime import datetime, timedelta
 from catsitate_core.config import CatsitateConfig
 from catsitate_core.qzone.comment_seen import CommentSeenStore
 from catsitate_core.qzone.injector import FeedInjector
+from catsitate_core.qzone.protocol import FeedItem
 from catsitate_core.qzone.routing import OutboundIntent
 from catsitate_core.qzone.seen_store import SeenStore
 from catsitate_core.qzone.wire import CommentItem
@@ -115,8 +117,18 @@ def _make_plugin(tmp_path):
     p.qzone_comment_seen = CommentSeenStore(SQLiteStore(tmp_path / "comments.db"))
     p.qzone_comment_seen.ensure_schema()
     p.qzone_injector = FeedInjector(decision_window_s=75)
+    p._qzone_session_ids = set()  # 实例级覆盖(类属性为共享 set,防测试间状态泄漏)
     p.logs = logs  # 测试侧便捷引用(非插件属性约定)
     return p
+
+
+def _patch_sleep(monkeypatch, record: list) -> None:
+    """把 asyncio.sleep 换成记录桩(源B请求间隔断言用;不让测试真等 2 秒)。"""
+
+    async def _fake_sleep(delay, *a, **k):
+        record.append(float(delay))
+
+    monkeypatch.setattr(asyncio, "sleep", _fake_sleep)
 
 
 def test_poll_tick_voids_pending_comment_intent_on_window_start(tmp_path):
@@ -232,11 +244,14 @@ def test_notify_poll_self_skip_dedup_and_intent_occupied(tmp_path):
     assert p.qzone_comment_seen.is_new("feed1:c1:20000") is False  # 已登记,判重依据
 
 
-def test_notify_poll_source_b_reply_routes_to_friend_thread(tmp_path):
+def test_notify_poll_source_b_reply_routes_to_friend_thread(tmp_path, monkeypatch):
     """T11 源B:bot 在好友说说下的评论收到楼中楼回复(list_3)→ 通知注入 →
     意图 comment_reply 指向好友说说(target_qq=好友,commentId=回复 tid)。"""
 
     import time as _time
+
+    sleeps: list = []
+    _patch_sleep(monkeypatch, sleeps)  # 源A无结果→首个源B请求前有 2 秒间隔(I2),桩掉不真等
 
     p = _make_plugin(tmp_path)
     p.qzone_injector.window_started()
@@ -281,3 +296,132 @@ def test_notify_poll_source_b_reply_routes_to_friend_thread(tmp_path):
         ("ffeed1", "30000", "rr1", "30000")
     # 楼中楼回复键已登记(下轮判重,不重复通知)
     assert p.qzone_comment_seen.is_new("ffeed1:bc1:reply:rr1") is False
+
+
+# ---- 终审修复波 I1/I2/I3:组合层行为测试 ----
+
+
+class _StubLikeClient:
+    """点赞路径桩:记录 do_like 调用,恒成功。"""
+
+    def __init__(self):
+        self.like_calls = []
+
+    async def do_like(self, *, fid, target_qq):
+        self.like_calls.append((fid, target_qq))
+        return True
+
+
+def test_qzone_like_rejects_notify_awaiting(tmp_path):
+    """终审 I1:awaiting 是 P1 通知(合成 tid)时 qzone_like 显式拒绝——
+    不向 qzone 发畸形点赞请求(写客户端零调用),返回通知不可点赞提示。"""
+
+    import time as _time
+
+    p = _make_plugin(tmp_path)
+    p.qzone_client = _StubLikeClient()
+    p._qzone_session_ids.add("s1")
+    # 通知项经真实入队→弹出→注入链进入 awaiting(source="notify" 完整保留)
+    p.qzone_injector.window_started()
+    p.qzone_injector.enqueue_priority([FeedItem(
+        tid="notify_comment_feed1_c1", abstime="1750000000", uin="20000",
+        nickname="小红", content="(通知) 小红 评论了你的说说", source="notify",
+    )])
+    popped = p.qzone_injector.next_to_inject(_time.monotonic())
+    assert popped is not None and popped.source == "notify"
+    p.qzone_injector.mark_injected(popped.tid, _time.monotonic())
+
+    res = asyncio.run(p.qzone_like(message_id="", stream_id="s1"))
+    assert res == "当前是互动通知,不是说说,无法点赞。"
+    assert p.qzone_client.like_calls == []  # 零写调用(不对合成 tid 发畸形请求)
+
+
+def test_notify_poll_source_b_spaces_friend_requests(tmp_path, monkeypatch):
+    """终审 I2:源B逐好友拉取带 2 秒防风控间隔——源A无结果时首个请求前也间隔
+    (与源A的 HTTP 拉取拉开);好友之间固定间隔。拉取顺序按反查好友圈定。"""
+
+    sleeps: list = []
+    _patch_sleep(monkeypatch, sleeps)
+
+    p = _make_plugin(tmp_path)
+    # bot 曾在两位好友说说下评论:源B反查圈定 30000/30001
+    p.qzone_comment_seen.note_bot_comment("ffeed1", "30000", "评论一", "2026-08-31T10:00:00")
+    p.qzone_comment_seen.note_bot_comment("ffeed2", "30001", "评论二", "2026-08-31T10:05:00")
+
+    pulls: list = []
+
+    class _StubSpacingClient:
+        """源A空结果;源B记录拉取顺序,载荷无楼中楼回复(只断言间隔行为)。"""
+
+        async def get_own_feed_comments(self, *, bot_uin, num=10):
+            del bot_uin, num
+            return {}, {}
+
+        async def get_user_feeds_raw(self, *, target_uin, num=5):
+            del num
+            pulls.append(target_uin)
+            return {"usrinfo": {"uin": target_uin}, "msglist": []}
+
+    p.qzone_client = _StubSpacingClient()
+    asyncio.run(p._qzone_notify_poll_tick())
+    assert sorted(pulls) == ["30000", "30001"]  # 逐好友各拉一次
+    assert sleeps == [2.0, 2.0]  # 源A无结果:首个请求前 + 好友间,各 2 秒
+
+
+def test_notify_poll_source_b_first_pull_no_wait_when_source_a_has_result(tmp_path, monkeypatch):
+    """终审 I2 补充:源A已有通知结果时,首个源B请求前不额外等待(仅好友间间隔)。"""
+
+    import time as _time
+
+    sleeps: list = []
+    _patch_sleep(monkeypatch, sleeps)
+
+    p = _make_plugin(tmp_path)
+    p.qzone_comment_seen.note_bot_comment("ffeed1", "30000", "评论一", "2026-08-31T10:00:00")
+    comments = {"myfeed": [
+        CommentItem(comment_tid="c1", uin="20000", nickname="小红", content="好友评论",
+                    create_time=str(int(_time.time()))),
+    ]}
+
+    class _StubSourceAClient:
+        async def get_own_feed_comments(self, *, bot_uin, num=10):
+            del bot_uin, num
+            return comments, {"myfeed": "我的说说"}
+
+        async def get_user_feeds_raw(self, *, target_uin, num=5):
+            del num, target_uin
+            return {"usrinfo": {"uin": target_uin}, "msglist": []}
+
+    p.qzone_client = _StubSourceAClient()
+    asyncio.run(p._qzone_notify_poll_tick())
+    assert sleeps == []  # 单好友且源A有结果:无任何额外等待
+
+
+def test_poll_tick_warns_p1_notifications_dropped_at_window_end(tmp_path):
+    """终审 I3:窗口结束时未注入的 P1 通知被清空须显式告警(通知 is_new 发现即
+    登记,清空后不重检)——告警含条数,清空后 p1_queued 归零。"""
+
+    p = _make_plugin(tmp_path)
+    now = datetime.now()
+    # 日程窗口已结束(1 小时前收尾)→ poll_tick 走非窗口收泵分支
+    p._schedule_data = {"date": now.strftime("%Y-%m-%d"), "windows": [{
+        "kind": "daily", "start": (now - timedelta(hours=2)).strftime("%Y-%m-%dT%H:%M"),
+        "end": (now - timedelta(hours=1)).strftime("%Y-%m-%dT%H:%M"),
+        "activity": "逛空间", "plan_speak": False, "topic": "", "qzone": True,
+    }]}
+    p.qzone_injector.window_started()
+    p.qzone_injector.enqueue_priority([
+        FeedItem(tid="notify_comment_f1_c1", abstime="1750000000", uin="20000",
+                 nickname="小红", content="(通知) 一", source="notify"),
+        FeedItem(tid="notify_comment_f2_c2", abstime="1750000100", uin="20001",
+                 nickname="小蓝", content="(通知) 二", source="notify"),
+    ])
+    assert p.qzone_injector.stats()["p1_queued"] == 2
+
+    asyncio.run(p._qzone_poll_tick())
+    assert p.qzone_injector.window_active is False
+    assert p.qzone_injector.stats()["p1_queued"] == 0  # 队列已清空
+    assert any(
+        level == "warning" and "%d 条未注入通知被清空(已登记不重试)" in str(a[0]) and a[1] == 2
+        for level, a in p.logs
+    )

@@ -1,7 +1,8 @@
 """场景替换/工具白名单过滤/deferred reminder 剥除测试(spec §2.11/§2.12)。"""
 from catsitate_core.qzone import QZONE_PLATFORM
 from catsitate_core.qzone.scene import (
-    QZONE_SCENE_TEXT, filter_tool_definitions, is_qzone_message, replace_scene, strip_deferred_reminder,
+    QZONE_SCENE_TEXT, filter_qzone_tools_for_stream, filter_tool_definitions, is_qzone_message,
+    replace_scene, strip_deferred_reminder,
 )
 
 GROUP_PROMPT = "你正在qq群里聊天,下面是群里正在聊的内容……请注意群聊礼仪。"
@@ -42,6 +43,41 @@ def test_filter_tool_definitions_openai_and_flat_forms():
     out = filter_tool_definitions(defs, ["wait", "reply"])
     assert [d.get("function", {}).get("name") or d.get("name") for d in out] == ["reply", "wait"]
     assert out[0] is defs[0]  # 原样保留(重建缺键会炸整轮请求)
+
+
+# ---- 终审 I4:双向工具隔离(filter_qzone_tools_for_stream) ----
+
+
+def _mixed_defs():
+    """qzone 流与真实流混合形态的典型工具集(OpenAI 形态 + 扁平形态)。"""
+
+    return [
+        {"type": "function", "function": {"name": "qzone_like", "description": "d", "parameters": {}}},
+        {"type": "function", "function": {"name": "wait", "description": "d", "parameters": {}}},
+        {"type": "function", "function": {"name": "memo_write", "description": "d", "parameters": {}}},
+        {"type": "function", "function": {"name": "tool_search", "description": "d", "parameters": {}}},
+        {"name": "qzone_view", "description": "d", "parameters_schema": {}},  # 扁平形态的 qzone_* 也须剥离
+    ]
+
+
+def test_filter_qzone_tools_for_stream_qzone_whitelist():
+    """I4-1:qzone 流走白名单——白名单外工具(含 memo_write)剥离,白名单内原样保留。"""
+
+    defs = _mixed_defs()
+    out = filter_qzone_tools_for_stream(defs, is_qzone=True, whitelist=["wait", "qzone_like"])
+    names = [d.get("function", {}).get("name") or d.get("name") for d in out]
+    assert names == ["qzone_like", "wait"]  # memo_write/tool_search/qzone_view 均被白名单剥离
+    assert out[0] is defs[0]  # 原样保留(重建缺键会炸整轮请求)
+
+
+def test_filter_qzone_tools_for_stream_non_qzone_strips_qzone_tools():
+    """I4-2:非 qzone 流剥离全部 qzone_* 工具(OpenAI 与扁平形态),memo_write 等保留。"""
+
+    defs = _mixed_defs() + ["非 dict 条目容忍"]
+    out = filter_qzone_tools_for_stream(defs, is_qzone=False, whitelist=[])
+    names = [d.get("function", {}).get("name") or d.get("name") for d in out]
+    assert names == ["wait", "memo_write", "tool_search"]  # qzone_like/qzone_view 剥离,memo_write 保留
+    assert out[0] is defs[1]
 
 
 def test_strip_deferred_reminder_only_removes_standalone_reminder():

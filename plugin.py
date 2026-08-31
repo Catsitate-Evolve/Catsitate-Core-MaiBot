@@ -45,7 +45,7 @@ from catsitate_core.qzone.outbound import extract_outbound_text
 from catsitate_core.qzone.routing import OutboundIntent, route_outbound
 from catsitate_core.qzone.scene import (
     QZONE_SCENE_TEXT, SCENE_EMPTY_CONFIG_WARNING, SCENE_MISS_WARNING,
-    apply_scene_surgery, filter_tool_definitions, is_qzone_message,
+    apply_scene_surgery, filter_qzone_tools_for_stream, is_qzone_message,
 )
 from catsitate_core.qzone.seen_store import SeenStore
 from catsitate_core.qzone.wire import parse_feed_replies
@@ -609,6 +609,10 @@ class CatsitatePlugin(MaiBotPlugin):
         feed = self.qzone_injector.awaiting_feed
         if feed is None:
             return "当前没有正在浏览的说说,无法点赞。"
+        if feed.source == "notify":
+            # 通知项隔离(终审 I1):awaiting 可能是 P1 通知(合成 tid,非真实说说 tid),
+            # 对其点赞会向 qzone 发畸形请求——显式拒绝
+            return "当前是互动通知,不是说说,无法点赞。"
         if message_id and not message_id.startswith(f"qzone_{feed.tid}_"):
             return f"消息 {message_id} 不是当前浏览的说说,只能对当前说说点赞。"
         try:
@@ -764,9 +768,14 @@ class CatsitatePlugin(MaiBotPlugin):
         in_qzone_window = bool(win and win.get("kind") == "daily" and win.get("qzone"))
         if not in_qzone_window:
             if self.qzone_injector.window_active:
+                # 通知残留须在 window_ended 清队前读取(其后 p1_queued 恒 0,终审 I3)
+                p1_left = self.qzone_injector.stats().get("p1_queued", 0)
                 self.qzone_injector.window_ended()
                 reverted = self.qzone_seen.revert_pending()
                 self.ctx.logger.info("QQ空间窗口结束,未注入队列回退未读(%d 条)", reverted)
+                if p1_left:
+                    # 通知项 is_new 发现即登记,清空后不会重检——显式告警不静默(终审 I3)
+                    self.ctx.logger.warning("QQ空间窗口结束,%d 条未注入通知被清空(已登记不重试)", p1_left)
             if self._qzone_outbound_intent is not None:
                 self.ctx.logger.info(
                     "QQ空间窗口结束,未消费出站意图作废(kind=%s,tid=%s)",
@@ -1000,11 +1009,20 @@ class CatsitatePlugin(MaiBotPlugin):
                 # 反查失败显式告警后按空处理(源B 仅是增量来源,不阻断源A 已得通知)
                 self.ctx.logger.exception("QQ空间通知轮询源B好友反查失败,本轮跳过源B")
                 friends = []
+            first_source_b_pull = True
             for friend_uin in friends:
                 if friend_uin == bot_uin:
                     continue  # 自己说说已在源A覆盖
                 if len(notifications) >= 3:
                     break
+                # 请求间隔(终审 I2 防风控,与浏览流同款 2 秒):首个源B请求前
+                # 仅在源A无结果时补间隔(源A 刚发过一次 HTTP 拉取);此后每个好友前固定等待
+                if first_source_b_pull:
+                    if not notifications:
+                        await asyncio.sleep(2.0)
+                    first_source_b_pull = False
+                else:
+                    await asyncio.sleep(2.0)
                 try:
                     raw = await self.qzone_client.get_user_feeds_raw(target_uin=friend_uin, num=10)
                 except QzoneAuthError:
@@ -1100,18 +1118,12 @@ class CatsitatePlugin(MaiBotPlugin):
                 new_kwargs = {**new_kwargs, self._MESSAGES_KEY: messages}
             defs = kwargs.get("tool_definitions")
             if isinstance(defs, list):
-                if is_qzone_session:
-                    # 正向隔离:qzone 流只留白名单工具(硬门控不随配置放松)
-                    filtered = filter_tool_definitions(
-                        [d for d in defs if isinstance(d, dict)], self.config.qzone.tool_whitelist
-                    )
-                else:
-                    # 双向隔离(T11):非 qzone 流隐藏 qzone 专属工具(qzone_like 等),防模型误调
-                    filtered = [
-                        d for d in defs if isinstance(d, dict)
-                        and not (isinstance(d.get("function"), dict) and str(d["function"].get("name", "")).startswith("qzone_"))
-                        and not str(d.get("name", "")).startswith("qzone_")
-                    ]
+                # 双向隔离(T11/终审 I4):qzone 流走白名单(硬门控不随配置放松);
+                # 非 qzone 流剥离 qzone_* 工具(qzone_like 等),防模型误调
+                filtered = filter_qzone_tools_for_stream(
+                    [d for d in defs if isinstance(d, dict)],
+                    is_qzone=is_qzone_session, whitelist=self.config.qzone.tool_whitelist,
+                )
                 new_kwargs = {**new_kwargs, "tool_definitions": filtered}
             rendered = self.assembler.render(blocks)
             if not rendered:

@@ -38,7 +38,7 @@ from catsitate_core.qzone import QZONE_GATEWAY_NAME, QZONE_PLATFORM
 from catsitate_core.qzone.protocol import parse_friend_list
 from catsitate_core.qzone.client import CookieManager, QzoneAuthError, QzoneClient
 from catsitate_core.qzone.injector import FeedInjector
-from catsitate_core.qzone.messages import build_feed_message
+from catsitate_core.qzone.messages import build_feed_message, fit_images_to_rpc_budget
 from catsitate_core.qzone.outbound import M1_OUTBOUND_ERROR, extract_outbound_text
 from catsitate_core.qzone.scene import (
     QZONE_SCENE_TEXT, SCENE_EMPTY_CONFIG_WARNING, SCENE_MISS_WARNING,
@@ -639,6 +639,11 @@ class CatsitatePlugin(MaiBotPlugin):
                 data = await self.qzone_client.download_image(url)
                 if data is not None:
                     images.append((url, data))
+            # RPC 帧预算(用户裁定 2026-08-31):体积治理=压缩而非拒收,压到帧限内
+            images = fit_images_to_rpc_budget(
+                images,
+                on_drop=lambda u: self.ctx.logger.warning("QQ空间图片压缩后仍超 RPC 帧预算,丢弃保帧: %s", u),
+            )
             self._qzone_seq += 1
             msg = build_feed_message(
                 feed, seq=self._qzone_seq, group_id=self.config.qzone.virtual_group_id,

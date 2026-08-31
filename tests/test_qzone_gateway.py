@@ -100,3 +100,43 @@ def test_gateway_declared_platform_constant():
     assert 'MessageGateway(' in src and 'qzone-qq' in src
     # 网关回调显式拒发
     assert "M1_OUTBOUND_ERROR" in src
+
+
+# ---- RPC 帧预算压缩(用户裁定 2026-08-31:体积治理=压缩到帧限内,非拒收) ----
+
+from catsitate_core.qzone.messages import RPC_IMAGE_BUDGET_BYTES, fit_images_to_rpc_budget
+
+
+def test_fit_images_under_budget_unchanged():
+    imgs = [("u1", b"a" * 100), ("u2", b"b" * 50)]
+    out = fit_images_to_rpc_budget(imgs, budget_bytes=RPC_IMAGE_BUDGET_BYTES)
+    assert out == imgs  # 预算内原样返回(不白压缩)
+
+
+def test_fit_images_compresses_via_ladder_until_fit():
+    """超预算→压缩阶梯逐级收紧至达标(注入 fake 压缩器,离线可测)。"""
+    big = b"x" * 3000
+    calls = []
+
+    def fake_compress(data, max_dim, quality):
+        calls.append((max_dim, quality))
+        return data[: len(data) // 4]  # 每级缩到 1/4
+
+    out = fit_images_to_rpc_budget([("u", big)], budget_bytes=1000, compress=fake_compress)
+    assert len(out[0][1]) == 750  # 3000→750(base64≈1000)一级达标
+    assert calls and calls[0] == (4096, 85)  # 从最轻档开始
+
+
+def test_fit_images_extreme_case_drops_largest():
+    """压缩永不达标(极端)→丢弃最大图保帧限,并逐次回调告警。"""
+    dropped = []
+
+    def no_shrink(data, max_dim, quality):
+        return data  # 压缩无效(模拟已是极限)
+
+    out = fit_images_to_rpc_budget(
+        [("small", b"a" * 100), ("huge", b"b" * 5000)],
+        budget_bytes=200, compress=no_shrink, on_drop=lambda u: dropped.append(u),
+    )
+    assert ("huge", None) in out and ("small", b"a" * 100) in out
+    assert dropped == ["huge"]

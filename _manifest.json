@@ -32,6 +32,11 @@
       "type": "python_package",
       "name": "lunar-python",
       "version_spec": ">=1.4.0"
+    },
+    {
+      "type": "python_package",
+      "name": "Pillow",
+      "version_spec": ">=10.0.0"
     }
   ],
   "capabilities": [

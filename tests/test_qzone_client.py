@@ -166,7 +166,7 @@ def test_client_download_image_retries_once_on_transient_failure():
         return {"p_skey": "SK"}
 
     client = QzoneClient(cookie_provider=fake_cookie, fetch=fake_fetch, timeout_ms=1000, max_retries=0)
-    assert asyncio.run(client.download_image("https://img/x.jpg", max_kb=100)) == b"img"
+    assert asyncio.run(client.download_image("https://img/x.jpg")) == b"img"
     assert len(attempts) == 2
 
 
@@ -201,7 +201,7 @@ def _make_client(fetch_responses, cookies=None):
 
     async def fake_fetch(method, url, *, params, headers, timeout_ms):
         seen_params.append({"url": url, "params": dict(params), "headers": dict(headers)})
-        assert params.get("g_tk") == generate_gtk("SK")  # 请求自动携带 g_tk
+        assert params.get("g_tk") == generate_gtk("SK")  # cgi 请求自动携带 g_tk
         return fetch_responses.pop(0)
 
     client = QzoneClient(cookie_provider=fake_cookie, fetch=fake_fetch, timeout_ms=1000, max_retries=0)
@@ -235,15 +235,19 @@ def test_client_failure_raises_no_retry_loop():
     assert raised  # max_retries=0:失败直接抛,由调用方告警跳过
 
 
-def test_client_download_image_respects_size_cap():
-    big = b"x" * (2048 * 1024 + 1)  # 2048KB+1 超 2048KB 上限
+def test_client_download_image_no_size_cap_and_no_extra_params():
+    """图片下载不加体积上限(用户裁定 2026-08-31:主程序入站链路自有压缩/丢弃);
+    且签名 URL 不得附加 g_tk 等查询参数(破坏签名致 404,联调缺陷#8)。"""
+    big = b"x" * (2048 * 1024 + 1)
+    seen = []
 
     async def fake_fetch(method, url, *, params, headers, timeout_ms):
+        seen.append((url, dict(params)))
         return 200, big.decode("latin-1")
 
     async def fake_cookie():
         return {"p_skey": "SK"}
 
     client = QzoneClient(cookie_provider=fake_cookie, fetch=fake_fetch, timeout_ms=1000, max_retries=0)
-    assert asyncio.run(client.download_image("https://img/x.jpg", max_kb=2048)) is None  # 超限→None(占位)
-    assert asyncio.run(client.download_image("https://img/x.jpg", max_kb=4096)) == big
+    assert asyncio.run(client.download_image("https://img/x.jpg")) == big  # 不设上限,原样返回
+    assert all(p == {} for _, p in seen)  # 无 g_tk 等附加参数

@@ -323,7 +323,7 @@ QQ空间虚拟流(qzone-qq)── 网关注入(route_message;出站一律拒发)
 ### 3.13.1 功能概览
 
 - **浏览窗口内刷好友动态**:日程生成模板 v3 支持为 daily 窗口标记 `qzone=true`(通常一天 1~2 个,适合搭配轻松的独处活动如「窝着刷手机」);`qzone_poll` 调度(默认 15 分钟)在标记窗口内拉取好友说说——**拉取架构(联调修正 2026-08-30)**:好友列表走 adapter OneBot API(`adapter.napcat.account.get_friend_list`,remark 优先作昵称),逐好友拉最近 3 条说说(空间接口 `emotion_cgi_msglist_v6` 为指定用户接口,无聚合端点),好友间固定 2 秒间隔防风控。窗口切换时收泵,未注入的队列**回退未读**(queued 行删除,下个窗口重新可见,不丢动态)。
-- **虚拟流注入(主链可引用)**:每条动态构造为一条消息注入 `qzone-qq` 虚拟群聊流,复用主程序 planner→replyer 链;注入带 `is_mentioned=1.0` 强制触发与新鲜时间戳(保证「一动态一轮」的串行模型);「刷到但懒得理」由 planner 自主沉默(无工具调用轮)表达——意愿判断权归模型。图片带 base64 交主流水线处理(描述/落 Images 表/可 `inspect_image` 重看),超 `image_max_kb` 上限或下载失败的图以 `[图片]` 占位。
+- **虚拟流注入(主链可引用)**:每条动态构造为一条消息注入 `qzone-qq` 虚拟群聊流,复用主程序 planner→replyer 链;注入带 `is_mentioned=1.0` 强制触发与新鲜时间戳(保证「一动态一轮」的串行模型);「刷到但懒得理」由 planner 自主沉默(无工具调用轮)表达——意愿判断权归模型。图片带 base64 交主流水线处理(描述/落 Images 表/可 `inspect_image` 重看),体积不加插件侧上限(主程序入站链路自有压缩/丢弃,用户裁定 2026-08-31),下载失败的图以 `[图片]` 占位。
 - **真实聊天见闻摘要注入**:真实聊天流的注入块附带 `[空间] 近期刷到:…`(近 `summary_days` 天已 seen 的 `summary_count` 条动态摘要)——bot 在真实聊天中可自然引用「我看到你发的说说」类见闻。
 - **串行注入**:一次只允许一条动态处于「已注入待主链处理」状态;推进信号 = 轮完成(planner 响应无工具调用);超时兜底 `decision_window_seconds`(默认 75 秒,须大于最坏轮延迟),wait 态延长至 3 倍硬上限(自注入时刻起算,防 wait 期间注入下一条并入批处理导致出站意图错靶)。
 
@@ -368,7 +368,7 @@ QQ空间虚拟流(qzone-qq)── 网关注入(route_message;出站一律拒发)
 1. **M1 无评论/点赞/发布**:虚拟流出站一律显式拒发(`M1 感知阶段:QQ空间出站未实现(评论路由见 M2)`);点赞/评论/评论轮询/发布属 M2/M3 交付。
 2. **cookie 依赖 adapter**:空间 cookie 只经 `adapter.napcat.account.get_cookies` 获取,NapCat 不响应该 API(或响应缺 `p_skey`)时无法拉取,显式告警跳过,不做重试循环。
 3. **仅说说类动态**:只处理 appid=311;转发/相册/视频等其它动态跳过并计数。
-4. **注入图片受 RPC 16MB 帧限制**:`image_max_kb` 默认 3072(KB),超限/下载失败以 `[图片]` 占位注入。
+4. **注入图片体积不设插件侧上限**(用户裁定 2026-08-31:主程序入站链路自有压缩/丢弃);下载失败以 `[图片]` 占位注入。RPC 16MB 帧为物理硬限,极罕见超大单图理论可撞限。
 
 ### 3.13.8 生产部署注意事项
 
@@ -527,7 +527,6 @@ QQ空间虚拟流(qzone-qq)── 网关注入(route_message;出站一律拒发)
 | enabled | true | QQ空间模块开关(M1:仅读动态,不发评论);关闭或启动自检失败时拉取/注入/见闻注入全部跳过 |
 | poll_interval_minutes | 15 | 空间窗口内动态拉取间隔(分钟) |
 | decision_window_seconds | 75 | 注入后等待 planner 轮完成的超时兜底(秒;须大于最坏轮延迟;wait 态延长至 3 倍硬上限) |
-| image_max_kb | 3072 | 注入图片体积上限(KB,超限以 `[图片]` 占位注入;硬上限受 RPC 16MB 帧限制) |
 | tool_whitelist | ["wait","reply","query_memory","query_person_profile","memo_write","memo_read","inspect_image"] | 虚拟流 planner 工具白名单(按名过滤;硬门控不随此配置放松,默认不含 tool_search/msg_react/poke_user) |
 | virtual_group_id | "qzone_feed" | 虚拟群聊流伪群号(勿与真实群号相同) |
 | virtual_group_name | "QQ空间" | 虚拟群聊流显示名 |

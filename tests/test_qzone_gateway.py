@@ -16,7 +16,7 @@ def _feed(**kw):
 
 def test_build_message_core_fields():
     msg = build_feed_message(_feed(), seq=3, group_id="qzone_feed", group_name="QQ空间",
-                             images=[], max_kb=3072, now_epoch=1750000100.0)
+                             images=[], now_epoch=1750000100.0)
     assert msg["platform"] == QZONE_PLATFORM
     assert msg["message_id"] == "qzone_t1_3"  # 全局唯一去重键(tid+序号)
     assert msg["timestamp"] == "1750000000"  # 发布时间(原时间,联调缺陷#5)
@@ -32,20 +32,20 @@ def test_build_message_core_fields():
 
 
 def test_build_message_image_segments_and_placeholder():
+    """图片段带 base64;下载失败(None)的图以 [图片] 占位;体积不限(交主程序入站链路)。"""
     small = b"imagedata"
-    oversized = b"x" * (1024 * 1024 + 1)  # 1MB+1 超 1KB 上限
     msg = build_feed_message(_feed(abstime="", image_urls=["u1", "u2"]), seq=1, group_id="g", group_name="n",
-                             images=[("u1", small), ("u2", oversized)], max_kb=1, now_epoch=1.0)
+                             images=[("u1", small), ("u2", None)], now_epoch=1.0)
     text = msg["raw_message"][0]
-    assert text == {"type": "text", "data": "今天天气好 [图片]"}  # 超限图占位(abstime 空→无前缀)
+    assert text == {"type": "text", "data": "今天天气好 [图片]"}  # 下载失败的图占位(abstime 空→无前缀)
     img = msg["raw_message"][1]
     assert img["type"] == "image"
-    assert base64.b64decode(img["binary_data_base64"]) == small  # 未超限图带 base64(主流水线落盘/描述前提)
+    assert base64.b64decode(img["binary_data_base64"]) == small  # 成功图带 base64(主流水线落盘/描述前提)
 
 
 def test_build_message_empty_content_uses_placeholder():
     msg = build_feed_message(_feed(abstime="", content=""), seq=1, group_id="g", group_name="n",
-                             images=[], max_kb=1, now_epoch=1.0)
+                             images=[], now_epoch=1.0)
     assert msg["raw_message"][0]["data"] == "(无文字内容)"
 
 
@@ -58,19 +58,19 @@ def test_build_message_uses_post_time_and_prefix():
     clock = f"{post_dt:%H:%M}"
     same_day_evening = _dt.datetime(post_dt.year, post_dt.month, post_dt.day, 22, 0).timestamp()
     msg = build_feed_message(_feed(abstime=str(post)), seq=1, group_id="g", group_name="n",
-                             images=[], max_kb=1, now_epoch=same_day_evening)
+                             images=[], now_epoch=same_day_evening)
     assert msg["timestamp"] == str(post)  # 原时间(非注入时刻)
     text = msg["raw_message"][0]["data"]
     assert text.startswith("(今天") and clock in text and text.endswith("今天天气好")
     # 老动态(约 2 个月后阅读)→ 日期前缀
     later = _dt.datetime(post_dt.year, post_dt.month + 2, 1, 9, 0).timestamp()
     msg2 = build_feed_message(_feed(abstime=str(post)), seq=2, group_id="g", group_name="n",
-                              images=[], max_kb=1, now_epoch=later)
+                              images=[], now_epoch=later)
     t2 = msg2["raw_message"][0]["data"]
     assert t2.startswith(f"({post_dt:%m月%d日}") and clock in t2
     # abstime 缺失:回退注入时刻,无前缀
     msg3 = build_feed_message(_feed(abstime=""), seq=3, group_id="g", group_name="n",
-                              images=[], max_kb=1, now_epoch=123456.0)
+                              images=[], now_epoch=123456.0)
     assert msg3["timestamp"] == "123456"
     assert msg3["raw_message"][0]["data"] == "今天天气好"
 
@@ -79,14 +79,14 @@ def test_build_message_pure_image_text_policy():
     """纯图说说:带时间→文本段仅含时间前缀;无时间→省略文本段(图段承载内容,联调缺陷#4)。"""
     msg = build_feed_message(_feed(abstime="1750000000", content="", image_urls=["u1"]),
                              seq=1, group_id="g", group_name="n",
-                             images=[("u1", b"imgdata")], max_kb=1, now_epoch=1750000100.0)
+                             images=[("u1", b"imgdata")], now_epoch=1750000100.0)
     assert msg["raw_message"][0]["type"] == "text"
     assert msg["raw_message"][0]["data"].startswith("(今天")  # 仅时间前缀
     assert msg["raw_message"][1]["type"] == "image"
     # 无时间纯图:首段即图片
     msg2 = build_feed_message(_feed(abstime="", content="", image_urls=["u1"]),
                               seq=2, group_id="g", group_name="n",
-                              images=[("u1", b"imgdata")], max_kb=1, now_epoch=1.0)
+                              images=[("u1", b"imgdata")], now_epoch=1.0)
     assert msg2["raw_message"][0]["type"] == "image"
 
 

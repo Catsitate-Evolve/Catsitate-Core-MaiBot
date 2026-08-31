@@ -3,8 +3,9 @@
 纪律(联调修正 2026-08-31):timestamp=**发布时间**(原时间,防 bot 把老说说当成刚发生——
 联调缺陷#5);正文带相对时间前缀(今天 HH:MM / M月d日 HH:MM)使模型可感知动态新旧;
 message_id 全局唯一(tid+序号);is_mentioned 嵌在 message_info.additional_config
-(主程序只读该位置);图片段带 binary_data_base64,超限图以 [图片] 占位;
-纯图说说省略空文本段(图段承载内容,联调缺陷#4)。
+(主程序只读该位置);图片段带 binary_data_base64,下载失败的图以 [图片] 占位;
+纯图说说省略空文本段(图段承载内容,联调缺陷#4)。图片体积不加插件侧上限
+(用户裁定 2026-08-31:主程序入站链路对过大图片自有压缩/丢弃处理)。
 """
 
 from __future__ import annotations
@@ -33,10 +34,9 @@ def build_feed_message(
     group_id: str,
     group_name: str,
     images: list[tuple[str, bytes]],
-    max_kb: int,
     now_epoch: float,
 ) -> dict:
-    """构造一条说说注入消息。images 为 (url, bytes) 列表,超限/缺失的图以占位呈现。
+    """构造一条说说注入消息。images 为 (url, bytes) 列表,下载失败(None)的图以占位呈现。
 
     timestamp 取 feed.abstime(发布时间);abstime 非法/缺失时回退注入时刻且不加前缀。
     """
@@ -53,9 +53,6 @@ def build_feed_message(
     raw: list[dict] = []
     for url, data in images:
         if data is None:
-            text += " [图片]"
-            continue
-        if len(data) > max_kb * 1024:
             text += " [图片]"
             continue
         raw.append({

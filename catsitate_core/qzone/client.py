@@ -151,7 +151,9 @@ class QzoneClient:
             "Referer": referer,
         }
         params = dict(params)
-        params.setdefault("g_tk", generate_gtk(cookies.get("p_skey", "")))
+        if not binary:
+            # g_tk 只用于空间 cgi 接口;图片 CDN 是签名 URL,附加查询参数会破坏签名致 404(联调缺陷#8)
+            params.setdefault("g_tk", generate_gtk(cookies.get("p_skey", "")))
         status, body = await self.fetch(method, url, params=params, headers=headers, timeout_ms=self.timeout_ms)
         if binary:
             return status, body
@@ -179,11 +181,12 @@ class QzoneClient:
             raise RuntimeError(f"空间说说列表返回业务错误(uin={target_uin}): code={payload.get('code')}")
         return parse_msglist(payload, target_uin=str(target_uin), nickname=nickname)
 
-    async def download_image(self, url: str, *, max_kb: int) -> bytes | None:
-        """下载原图;超过体积上限返回 None(调用方以占位注入)。防盗链头带上 Referer。
+    async def download_image(self, url: str) -> bytes | None:
+        """下载原图,失败返回 None(调用方以占位注入)。防盗链头带上 Referer。
 
-        读路径例外:CDN 偶发瞬态失败(联调实证 404),单次重试;动作 API 的
-        「失败不重试」纪律不适用于此。
+        体积不加插件侧上限(用户裁定 2026-08-31):主程序入站链路对过大图片
+        自有压缩/丢弃处理。读路径例外:CDN 偶发瞬态失败(联调实证 404),
+        单次重试;动作 API 的「失败不重试」纪律不适用于此。
         """
 
         import asyncio as _asyncio
@@ -191,11 +194,7 @@ class QzoneClient:
         for attempt in (1, 2):
             status, body = await self._request("GET", url, params={}, binary=True)
             if status == 200:
-                data = body.encode("latin-1") if isinstance(body, str) else body
-                if len(data) > max_kb * 1024:
-                    logger.warning("空间图片超体积上限(%d KB): %s", max_kb, url)
-                    return None
-                return data
+                return body.encode("latin-1") if isinstance(body, str) else body
             if attempt == 1:
                 await _asyncio.sleep(1.0)
         logger.warning("空间图片下载失败(重试后仍失败): %s", url)

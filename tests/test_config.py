@@ -87,7 +87,6 @@ def test_qzone_section_defaults():
     assert q.enabled is True
     assert q.poll_interval_minutes == 15
     assert q.decision_window_seconds == 75
-    assert q.image_max_kb == 3072
     assert q.virtual_group_id == "qzone_feed"
     assert q.virtual_group_name == "QQ空间"
     assert q.summary_count == 5

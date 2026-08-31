@@ -636,14 +636,14 @@ class CatsitatePlugin(MaiBotPlugin):
                 return
             images: list[tuple[str, bytes]] = []
             for url in feed.image_urls:
-                data = await self.qzone_client.download_image(url, max_kb=self.config.qzone.image_max_kb)
+                data = await self.qzone_client.download_image(url)
                 if data is not None:
                     images.append((url, data))
             self._qzone_seq += 1
             msg = build_feed_message(
                 feed, seq=self._qzone_seq, group_id=self.config.qzone.virtual_group_id,
                 group_name=self.config.qzone.virtual_group_name, images=images,
-                max_kb=self.config.qzone.image_max_kb, now_epoch=time.time(),
+                now_epoch=time.time(),
             )
             try:
                 # SDK route_message 返回 bool accepted(不抛异常):宿主 adapter policy

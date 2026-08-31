@@ -216,7 +216,6 @@ class QzoneSection(PluginConfigBase):
     enabled: bool = _f(True, "QQ空间模块开关(M1:仅读动态,不发评论)", label="QQ空间模块开关")
     poll_interval_minutes: int = _f(15, "空间窗口内动态拉取间隔(分钟)", label="拉取间隔(分钟)")
     decision_window_seconds: int = _f(75, "注入后等待 planner 轮完成的超时兜底(秒;须大于最坏轮延迟)", label="决策窗口超时(秒)")
-    image_max_kb: int = _f(3072, "注入图片体积上限(KB,超限以 [图片] 占位注入;硬上限受 RPC 16MB 帧限制)", label="图片体积上限(KB)")
     tool_whitelist: list[str] = _f(
         ["wait", "reply", "query_memory", "query_person_profile", "memo_write", "memo_read", "inspect_image"],
         "虚拟流 planner 工具白名单(按名过滤;硬门控不随此配置放松)",

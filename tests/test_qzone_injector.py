@@ -100,3 +100,43 @@ def test_awaiting_feed_and_author():
     assert inj.awaiting_author == "ux"
     inj.on_turn_complete(now=2.0)
     assert inj.awaiting_feed is None and inj.awaiting_author == ""
+
+
+def test_priority_queue_preempts_browse():
+    """P1(通知)插队 P2(浏览):P1 非空时优先弹出,P1 清空后回到 P2。"""
+    inj = FeedInjector(decision_window_s=75)
+    inj.window_started()
+    inj.enqueue([_f("a1"), _f("a2")])           # P2:两条浏览动态
+    inj.enqueue_priority([_f("n1")])             # P1:一条通知
+    # 第一条应是 P1 的 n1(通知优先)
+    f = inj.next_to_inject(now=1.0)
+    assert f.tid == "n1"
+    inj.mark_injected("n1", 1.0)
+    inj.on_turn_complete(now=2.0)
+    # P1 清空后回到 P2
+    f2 = inj.next_to_inject(now=3.0)
+    assert f2.tid == "a1"
+    inj.mark_injected("a1", 3.0)
+    inj.on_turn_complete(now=4.0)
+    f3 = inj.next_to_inject(now=5.0)
+    assert f3.tid == "a2"
+
+
+def test_priority_queue_fifo_not_sorted():
+    """P1 按到达序(FIFO),不按 abstime 排序——通知天然按时间到达。"""
+    inj = FeedInjector(decision_window_s=75)
+    inj.window_started()
+    inj.enqueue_priority([FeedItem(tid="late", abstime="200", uin="u", nickname="n", content="c")])   # 先到(abstime 晚)
+    inj.enqueue_priority([FeedItem(tid="early", abstime="1", uin="u", nickname="n", content="c")])    # 后到但 abstime 更早
+    f = inj.next_to_inject(now=1.0)
+    assert f.tid == "late"  # 先入队的先出(FIFO),不按 abstime
+
+
+def test_window_end_clears_both_queues():
+    inj = FeedInjector(decision_window_s=75)
+    inj.window_started()
+    inj.enqueue([_f("a")])
+    inj.enqueue_priority([_f("n")])
+    inj.window_ended()
+    assert inj.queue_size() == 0
+    assert inj.stats()["prio_queued"] == 0

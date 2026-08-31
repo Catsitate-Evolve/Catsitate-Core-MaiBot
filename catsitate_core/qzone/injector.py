@@ -34,7 +34,8 @@ class FeedInjector:
     def __init__(self, *, decision_window_s: int, hard_cap_multiplier: int = 3) -> None:
         self.decision_window_s = max(int(decision_window_s), 1)
         self.hard_cap = max(int(hard_cap_multiplier), 1) * self.decision_window_s
-        self._queue: list[FeedItem] = []
+        self._queue: list[FeedItem] = []        # P2:浏览动态(全局按发布时间升序)
+        self._prio_queue: list[FeedItem] = []   # P1:通知(评论/回复,按到达序 FIFO)
         self._awaiting: _Awaiting | None = None
         self._window_active = False
         self._injected_count = 0
@@ -47,6 +48,7 @@ class FeedInjector:
     def window_ended(self) -> None:
         self._window_active = False
         self._queue.clear()
+        self._prio_queue.clear()  # 通知队列随窗口一并清(plugin 侧 SeenStore 回退)
         self._awaiting = None
         self._popped = None
 

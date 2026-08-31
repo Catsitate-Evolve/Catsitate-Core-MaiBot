@@ -91,3 +91,61 @@ def test_memo_remind_at_invalid_format_rejected(tmp_path):
     ok, msg = svc.write("内容", stream_id="s1", user_id="u1", ttl_hours=None, remind_at="2026-08-16T19:00:00", now=lambda: NOW)
     assert ok, msg
     assert [e["content"] for e in svc.due_on("2026-08-16", now=lambda: NOW)] == ["内容"]
+
+
+# ---------- §3.10 memo 按人重构:主 QQ + 附带 QQ 人维度,流维度保留为元数据 ----------
+
+
+def test_write_with_extra_user_ids_and_cross_stream_visibility(tmp_path):
+    """§3.10:条目=主QQ+附带QQ 列表;任一牵连 QQ 命中当前对话对象即可见(跨流);流维度保留;无关人不可见。"""
+
+    svc, _ = make_service(tmp_path)
+    ok, msg = svc.write("A 和 B 一起出去玩", stream_id="s_qq_group", user_id="10001", ttl_hours=None, extra_user_ids=["10002"], now=lambda: NOW)
+    assert ok, msg
+    # 主 QQ 在别的流可见(跨流);附带 QQ 同样可见(跨流)
+    assert any("出去玩" in e["content"] for e in svc.read("s_private_10001", "10001", 10, now=lambda: NOW))
+    assert any("出去玩" in e["content"] for e in svc.read("s_private_10002", "10002", 10, now=lambda: NOW))
+    # 流维度保留(元数据,流内仍可见)
+    assert any("出去玩" in e["content"] for e in svc.read("s_qq_group", "", 10, now=lambda: NOW))
+    # 无关人不可见
+    assert all("出去玩" not in e["content"] for e in svc.read("s_x", "99999", 10, now=lambda: NOW))
+
+
+def test_extra_user_ids_dedup_and_self_removal(tmp_path):
+    """§3.10:附带 QQ 去重且剔除主 QQ 自身(同一条目不重复牵连)。"""
+
+    svc, _ = make_service(tmp_path)
+    ok, msg = svc.write("约饭", stream_id="s", user_id="10001", ttl_hours=None, extra_user_ids=["10001", "10002", "10002"], now=lambda: NOW)
+    assert ok, msg
+    rows = svc.store.query("SELECT extra_user_ids FROM memo")
+    import json
+
+    assert json.loads(rows[0][0]) == ["10002"]
+
+
+def test_extra_user_ids_limit_and_invalid(tmp_path):
+    """§3.10:附带 QQ 上限 5 个,超出截断并在返回消息中提示。"""
+
+    svc, _ = make_service(tmp_path)
+    ok, msg = svc.write("x", stream_id="s", user_id="1", ttl_hours=None, extra_user_ids=["2", "3", "4", "5", "6", "7"], now=lambda: NOW)
+    assert ok
+    assert "附带" in msg and "5" in msg  # 超出 5 个截断并提示
+    import json
+
+    stored = json.loads(svc.store.query("SELECT extra_user_ids FROM memo")[0][0])
+    assert stored == ["2", "3", "4", "5", "6"]  # 截断为前 5 个
+
+
+def test_migration_adds_extra_user_ids_column(tmp_path):
+    """§3.10:旧库 memo 表缺 extra_user_ids 列时 ensure_schema 自动补列,不抛异常。"""
+
+    store = SQLiteStore(tmp_path / "m.db")
+    store.execute(
+        "CREATE TABLE memo (id INTEGER PRIMARY KEY AUTOINCREMENT, content TEXT, stream_id TEXT, "
+        "user_id TEXT, expires_at TEXT, created_at TEXT, remind_at TEXT)"
+    )
+    svc = MemoService(store, MemoSection())
+    svc.ensure_schema()  # 不抛,补列
+    cols = {r[1] for r in store.query("PRAGMA table_info(memo)")}
+    assert "extra_user_ids" in cols
+

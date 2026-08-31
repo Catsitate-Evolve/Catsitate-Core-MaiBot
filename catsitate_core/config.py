@@ -117,6 +117,11 @@ class MemoSection(PluginConfigBase):
     max_ttl_hours: int = _f(168, "单条备忘有效期上限(小时)", label="有效期上限(小时)")
     entry_max_chars: int = _f(80, "备忘内容最大字符数(写入时强制)", label="内容最大字符数")
     inject_max: int = _f(5, "备忘注入合计条数上限", label="注入合计条数上限")
+    speaker_lookup_hours: int = _f(
+        72,
+        "说话人回溯时间窗(小时,群聊备忘归属兜底;预留:当前说话人经消息映射解析,此窗暂未消费)",
+        label="说话人回溯窗(小时)",
+    )
 
 
 class MsgReactSection(PluginConfigBase):

@@ -118,6 +118,7 @@ class CatsitatePlugin(MaiBotPlugin):
     _module_log_forwarder: logging.Handler | None = None  # 模块日志转发(on_load 挂载,unload 清理)
     _llm_warned_day: str = ""  # 旁路 LLM 用量告警的已告警日期(跨越当天只告警一次)
     _qzone_session_ids: set[str] = set()  # 虚拟流 session(运行时收集;豁免判定用)
+    _last_speaker_map: dict[str, str] = {}  # 流→最近真实说话人(§3.10 群聊 memo 归属兜底;内存映射,重启丢失可接受)
     _qzone_warned: set[str] = set()
     _qzone_group_prompt_value: str = ""
     _qzone_group_prompt_at: float = 0.0
@@ -308,24 +309,51 @@ class CatsitatePlugin(MaiBotPlugin):
         "memo_write",
         description="为当前用户或聊天流记一条短时备忘。内容需简明(≤80 字符);ttl_hours 为单条有效期(小时,≤168),缺省用默认 24 小时;按内容需要可延长(如『周四交作业』可设到周四)。",
         brief_description="记短时备忘",
-        detailed_description="写入后会在后续对话中注入(当前流+当前说话人两个维度,合计上限见配置),过期自动清理。",
+        detailed_description="写入后按人跨流注入(备忘对主QQ与附带QQ在任何聊天流均可见,条目所在流也可见),过期自动清理。",
         parameters=[
             ToolParameterInfo(name="content", param_type="string", description="备忘内容,≤80 字符", required=True),
             ToolParameterInfo(name="stream_id", param_type="string", description="关联聊天流,默认当前流", required=False),
-            ToolParameterInfo(name="user_id", param_type="string", description="关联用户,默认当前说话人", required=False),
+            ToolParameterInfo(name="user_id", param_type="string", description="关联用户(主QQ),默认当前说话人", required=False),
             ToolParameterInfo(name="ttl_hours", param_type="number", description="单条有效期小时数,缺省用默认", required=False),
             ToolParameterInfo(name="remind_at", param_type="string",
                               description="可选提醒时刻,ISO 格式如 2026-08-16T19:00。重要:备忘内容含时间要求时(如「5分钟后」「今晚8点」)必须换算为绝对时间传入本参数,否则到期不会提醒", required=False),
+            ToolParameterInfo(name="related_user_ids", param_type="string",
+                              description="可附带相关人的QQ号列表(逗号分隔,≤5个,超出截断),备忘对这些人同样可见(跨流)", required=False),
         ],
         visibility="visible",
     )
-    async def memo_write(self, content: str = "", stream_id: str = "", user_id: str = "", ttl_hours: float | None = None, **kwargs: Any) -> str:
+    async def memo_write(
+        self,
+        content: str = "",
+        stream_id: str = "",
+        user_id: str = "",
+        ttl_hours: float | None = None,
+        related_user_ids: str = "",
+        **kwargs: Any,
+    ) -> str:
         if not self.config.plugin.enabled or not self.config.memo.tool_enabled:
             return "备忘录工具未启用。"
         remind_at = str(kwargs.get("remind_at") or "")
         if err := validate_remind_at(remind_at):
             return err  # 非法提醒时间显式返回给 LLM(审查 M-10)
-        ok, msg = self.memo.write(content, stream_id or str(kwargs.get("stream_id") or ""), user_id or str(kwargs.get("user_id") or ""), ttl_hours, remind_at=remind_at)
+        sid = stream_id or str(kwargs.get("stream_id") or "")
+        # 私聊流官方 kwargs 自动注入可靠;群聊 user_id 常为空——以 fav_count 维护的
+        # 最近说话人映射兜底(§3.10 取数点;重启丢失可接受,_resolve_speaker 回退仍在)
+        uid = (
+            user_id
+            or str(kwargs.get("user_id") or "")
+            or self._last_speaker_map.get(sid, "")
+        )
+        # 附带 QQ:逗号分隔字符串(兼容中文逗号/顿号)→ 列表;清洗去重交 MemoService.write
+        related_raw = related_user_ids or str(kwargs.get("related_user_ids") or "")
+        extra: list[str] | None = None
+        if related_raw.strip():
+            extra = [
+                part.strip()
+                for part in related_raw.replace("，", ",").replace("、", ",").split(",")
+                if part.strip()
+            ]
+        ok, msg = self.memo.write(content, sid, uid, ttl_hours, remind_at=remind_at, extra_user_ids=extra)
         return msg if ok else f"备忘写入失败:{msg}"
 
     @Tool(
@@ -823,6 +851,9 @@ class CatsitatePlugin(MaiBotPlugin):
         stream_id = str(msg.get("session_id") or "")
         if not user_id or not stream_id:
             return
+        # §3.10 取数点:记录流→最近真实说话人(群聊 memo_write 工具 user_id 空时兜底;
+        # 纯内存映射,重启丢失可接受——_resolve_speaker 的 get_recent 回退仍在)
+        self._last_speaker_map[stream_id] = user_id
         # 计数与触发判定按人:先 bump 活跃账本,再判定(check_trigger 不再内部计数,审查 ⚠️ 裁决)
         self.fav_engine.count_message(user_id, stream_id)
         trigger = self.fav_engine.check_trigger(user_id)
@@ -1098,12 +1129,12 @@ class CatsitatePlugin(MaiBotPlugin):
             if qz:
                 blocks.append(InjectionBlock("qzone", qz[0], qz[1]))
         if cfg.inject.memo_enabled and cfg.memo.enabled:
-            # 当前流维度 + 当前说话人维度各取 3 条,按 id 去重后合计 ≤ inject_max(规格 §4.4)
-            by_stream = self.memo.read(stream_id, "", limit=3)
-            by_user = self.memo.read("", speaker, limit=3) if speaker else []
+            # §3.10 read 为 OR 语义(流 ∪ 主QQ ∪ 附带QQ),一次查询即含原「流+说话人」两维度;
+            # 单查询无重复,按 id 去重保留为防御;合计 ≤ inject_max(规格 §4.4)
+            merged = self.memo.read(stream_id, speaker, limit=3)
             seen: set[int] = set()
             entries = []
-            for entry in by_stream + by_user:
+            for entry in merged:
                 if entry["id"] not in seen:
                     seen.add(entry["id"])
                     entries.append(entry)

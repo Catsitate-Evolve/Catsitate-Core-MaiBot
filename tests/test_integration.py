@@ -1138,3 +1138,76 @@ def test_sleep_review_report_file_permission(tmp_path):
     reports = list((tmp_path / "sleep_review" / "reports").glob("sleep_review_*.md"))
     assert len(reports) == 1
     assert stat.S_IMODE(os.stat(reports[0]).st_mode) == 0o600  # 仅属主可读(安全复审)
+
+
+def test_memo_write_tool_related_ids_and_speaker_fallback(tmp_path):
+    """§3.10 接线:memo_write 解析 related_user_ids(逗号分隔,兼容中文逗号)传附带 QQ;
+    群聊 user_id 空时以 fav_count 维护的最近说话人映射兜底为主 QQ。"""
+    import asyncio
+    import json
+
+    import plugin as plugin_mod
+    from catsitate_core.config import CatsitateConfig
+    from catsitate_core.storage import SQLiteStore
+
+    p = plugin_mod.CatsitatePlugin()
+    p._ctx = _StubCtx(tmp_path)
+    p._plugin_config_instance = CatsitateConfig()
+    p.config.plugin.enabled = True
+    p.store = SQLiteStore(tmp_path / "memo_tool.db")
+    p.memo = MemoService(p.store, p.config.memo)
+    p.memo.ensure_schema()
+    p._last_speaker_map["g1"] = "10001"  # fav_count hook 维护的 流→最近真实说话人
+
+    out = asyncio.run(p.memo_write(content="周末一起看电影", stream_id="g1", ttl_hours=None, related_user_ids="10002，10003"))
+    assert "已记下" in out
+    rows = p.store.query("SELECT user_id, extra_user_ids FROM memo")
+    assert rows[0][0] == "10001"  # 说话人映射兜底为主 QQ(群聊 kwargs 无 user_id)
+    assert json.loads(rows[0][1]) == ["10002", "10003"]  # 中文逗号分隔正确解析
+
+
+def test_inject_blocks_memo_single_read_or_semantics(tmp_path):
+    """§3.10 注入块:备忘原「流+说话人」两查合并为一次 read(stream_id, speaker)
+    (OR 语义单次含两维度),去重与 inject_max 截断保留。"""
+    import asyncio
+
+    import plugin as plugin_mod
+    from catsitate_core.config import CatsitateConfig
+    from catsitate_core.storage import SQLiteStore
+
+    p = plugin_mod.CatsitatePlugin()
+    p._ctx = _StubCtx(tmp_path)
+    p._plugin_config_instance = CatsitateConfig()
+    p.config.plugin.enabled = True
+    calls = []
+
+    class _Memo:
+        def read(self, stream_id, user_id, limit=10):
+            calls.append((stream_id, user_id, limit))
+            return [
+                {"id": 2, "content": "跨流备忘", "remaining_hours": 10.0},
+                {"id": 1, "content": "流内备忘", "remaining_hours": 20.0},
+            ]
+
+        def due_on(self, day):
+            del day
+            return []
+
+    p.memo = _Memo()
+    # _build_inject_blocks 依赖的实例状态(on_load 才初始化,离线补齐)
+    p._snapshot_cache = {}
+    p._env_cache = {}
+    p._env_fetched_at = None
+    p._stream_cache = {}
+    p._stream_cache_at = 0.0
+    p._schedule_data = {}
+    p._schedule_tick_fired = {}
+    p._qzone_available = False
+    p.fav_engine = BatchEngine(SQLiteStore(tmp_path / "fav.db"), p.config.favorability)
+    p.fav_engine.ensure_schema()
+
+    blocks = asyncio.run(p._build_inject_blocks({"session_id": "p1"}))
+    assert calls == [("p1", "u1", 3)]  # 仅一次查询,说话人取私聊流对端 u1(流缓存桩)
+    memo_blocks = [b for b in blocks if b.module == "memo"]
+    assert len(memo_blocks) == 1
+    assert "跨流备忘" in memo_blocks[0].text and "流内备忘" in memo_blocks[0].text

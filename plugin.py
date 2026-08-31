@@ -740,7 +740,7 @@ class CatsitatePlugin(MaiBotPlugin):
         try:
             if action == "comment":
                 self.qzone_seen.mark_interacted(intent.tid)
-                self.qzone_comment_seen.note_bot_comment(intent.tid, text, now_iso)
+                self.qzone_comment_seen.note_bot_comment(intent.tid, intent.target_qq, text, now_iso)
                 self.qzone_comment_seen.fav_event(intent.target_qq, "OUT_COMMENT", f"你评论了 {intent.target_qq} 的说说: {text[:40]}")
             else:
                 self.qzone_comment_seen.fav_event(intent.comment_uin, "COMMENT", f"{intent.comment_nick} 评论你被你回复: {text[:40]}")
@@ -926,8 +926,11 @@ class CatsitatePlugin(MaiBotPlugin):
         for feed_tid, items in comments.items():
             for c in items:
                 if str(c.uin) == bot_uin:
-                    # 自己发出的评论:重见即登记(幂等,note_bot_comment 独立键空间),不注入
-                    self.qzone_comment_seen.note_bot_comment(feed_tid, c.content, datetime.now().strftime("%Y-%m-%dT%H:%M:%S"))
+                    # 自己发出的评论:重见即登记(幂等,note_bot_comment 独立键空间;自己说说
+                    # 的主人即 bot,friend_uin 记 bot_uin),不注入
+                    self.qzone_comment_seen.note_bot_comment(
+                        feed_tid, bot_uin, c.content, datetime.now().strftime("%Y-%m-%dT%H:%M:%S")
+                    )
                     continue
                 if not self.qzone_comment_seen.is_new(f"{feed_tid}:{c.comment_tid}:{c.uin}"):
                     continue

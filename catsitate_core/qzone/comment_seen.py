@@ -26,10 +26,15 @@ class CommentSeenStore:
             """
             CREATE TABLE IF NOT EXISTS qzone_comments (
                 comment_key TEXT PRIMARY KEY,
+                friend_uin TEXT NOT NULL DEFAULT '',
                 created_at TEXT NOT NULL DEFAULT ''
             )
             """
         )
+        # 幂等迁移(T9):旧表无 friend_uin 列则补列(存量行取默认空串)
+        cols = {r[1] for r in self.store.query("PRAGMA table_info(qzone_comments)")}
+        if "friend_uin" not in cols:
+            self.store.execute("ALTER TABLE qzone_comments ADD COLUMN friend_uin TEXT NOT NULL DEFAULT ''")
         self.store.execute(
             """
             CREATE TABLE IF NOT EXISTS qzone_fav_events (
@@ -58,20 +63,34 @@ class CommentSeenStore:
         )
         return True
 
-    def note_bot_comment(self, feed_tid: str, bot_text: str, at_iso: str) -> None:
+    def note_bot_comment(self, feed_tid: str, friend_uin: str, bot_text: str, at_iso: str) -> None:
         """登记 bot 自己发出的评论(发出成功后/轮询再见到时调用)。
 
         键用独立命名空间 "{feed_tid}:bot:{text}",不与好友评论键
         ({feed}:{tid}:{uin})冲突——bot 评论的服务端 tid 发出时不可知,防回环
         消费自己的评论由轮询侧 uin==bot_uin 前置判定承担(T6),本登记留存
         供核查与保留期清理。重复登记刷新时间戳(轮询每轮都会重见仍在
-        commentlist 里的自评,幂等)。
+        commentlist 里的自评,幂等)。friend_uin=说说主人(T9):楼中楼轮询
+        据此圈定该去哪些好友的说说下找 bot 评论的回复。
         """
 
         self.store.execute(
-            "INSERT OR REPLACE INTO qzone_comments (comment_key, created_at) VALUES (?, ?)",
-            (f"{feed_tid}:bot:{bot_text}", at_iso),
+            "INSERT OR REPLACE INTO qzone_comments (comment_key, friend_uin, created_at) VALUES (?, ?, ?)",
+            (f"{feed_tid}:bot:{bot_text}", friend_uin, at_iso),
         )
+
+    def commented_friend_uins(self) -> list[str]:
+        """bot 评论过的说说主人去重列表(楼中楼轮询的目标圈定,T9)。
+
+        只认 bot 评论键({feed}:bot:{text});is_new 登记的好友评论行
+        friend_uin 恒为默认空串,被 friend_uin != '' 排除。
+        """
+
+        rows = self.store.query(
+            "SELECT DISTINCT friend_uin FROM qzone_comments "
+            "WHERE comment_key LIKE '%:bot:%' AND friend_uin != ''"
+        )
+        return [str(r[0]) for r in rows]
 
     def prune(self, days: int = 30, now: datetime | None = None) -> int:
         """评论登记保留期清理(默认 30 天),返回删除条数。

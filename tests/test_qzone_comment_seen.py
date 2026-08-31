@@ -16,7 +16,7 @@ def test_is_new_dedup(tmp_path):
 def test_note_bot_comment_prevents_echo(tmp_path):
     s = CommentSeenStore(SQLiteStore(tmp_path / "t.db"))
     s.ensure_schema()
-    s.note_bot_comment("f1", "我自己的评论", "2026-08-31T12:00:00")
+    s.note_bot_comment("f1", "3545773341", "我自己的评论", "2026-08-31T12:00:00")
     # bot 评论登记用独立键命名空间,不污染好友评论键({feed}:{tid}:{uin})
     assert s.is_new(f"f1:999:3545773341") is True  # 其它 tid 仍新
 
@@ -31,6 +31,25 @@ def test_fav_events_roundtrip(tmp_path):
     assert len(rows) == 2 and rows[0]["kind"] == "COMMENT"
     assert s.last_fav_interaction("10001") >= "2026-08-31"
     assert s.last_fav_interaction("99999") == ""
+
+
+def test_note_bot_comment_stores_friend_uin(tmp_path):
+    s = CommentSeenStore(SQLiteStore(tmp_path / "t.db"))
+    s.ensure_schema()
+    s.note_bot_comment("f1", "3298178030", "bot评论", "2026-08-31T12:00:00")
+    s.note_bot_comment("f2", "3341299096", "另一条", "2026-08-31T12:01:00")
+    uins = s.commented_friend_uins()
+    assert set(uins) == {"3298178030", "3341299096"}
+
+
+def test_commented_friend_uins_migration(tmp_path):
+    # 旧表无 friend_uin 列 → ensure_schema 迁移补列
+    store = SQLiteStore(tmp_path / "old.db")
+    store.execute("CREATE TABLE qzone_comments (comment_key TEXT PRIMARY KEY, created_at TEXT NOT NULL)")
+    s = CommentSeenStore(store)
+    s.ensure_schema()
+    s.note_bot_comment("f1", "123", "x", "2026-08-31T12:00:00")
+    assert "123" in s.commented_friend_uins()
 
 
 def test_prune(tmp_path):

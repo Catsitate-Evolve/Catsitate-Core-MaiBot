@@ -51,3 +51,27 @@ def test_parse_feed_comments():
 
 def test_parse_feed_comments_empty():
     assert parse_feed_comments({"code": 0, "msglist": None}) == {}
+
+
+def test_parse_feed_replies():
+    from catsitate_core.qzone.wire import ReplyItem, parse_feed_replies
+    payload = {"msglist": [{"tid": "f1", "commentlist": [
+        {"tid": "c1", "uin": 3545773341, "name": "bot", "content": "bot的评论", "list_3": [
+            {"tid": "r1", "uin": 10001, "name": "小明", "content": "回复bot", "create_time": 1750000001},
+            {"tid": "r2", "uin": 3545773341, "name": "bot", "content": "bot自己回的", "create_time": 1750000002},
+        ]},
+        {"tid": "c2", "uin": 10002, "name": "别人", "content": "不是bot的评论", "list_3": [
+            {"tid": "r3", "uin": 10001, "name": "小明", "content": "不相关", "create_time": 1750000003},
+        ]},
+    ]}]}
+    items = parse_feed_replies(payload, bot_uin="3545773341", friend_uin="3298178030")
+    assert len(items) == 1  # 只有 r1(bot 自己的 r2 被跳过,c2 不是 bot 的评论)
+    r = items[0]
+    assert isinstance(r, ReplyItem)
+    assert (r.reply_tid, r.parent_comment_tid, r.feed_tid, r.friend_uin) == ("r1", "c1", "f1", "3298178030")
+    assert (r.uin, r.nickname, r.content) == ("10001", "小明", "回复bot")
+
+
+def test_parse_feed_replies_empty():
+    from catsitate_core.qzone.wire import parse_feed_replies
+    assert parse_feed_replies({"msglist": None}, bot_uin="3545773341", friend_uin="x") == []

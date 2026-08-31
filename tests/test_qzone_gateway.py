@@ -32,7 +32,10 @@ def test_build_message_core_fields():
 
 
 def test_build_message_image_segments_and_placeholder():
-    """图片段带 base64;下载失败(None)的图以 [图片] 占位;体积不限(交主程序入站链路)。"""
+    """图片段形态对齐 napcat-adapter(data 留空=描述槽,hash 显式 sha256,联调缺陷#15);
+    下载失败(None)的图以 [图片] 占位;体积不限(交主程序入站链路)。"""
+    import hashlib
+
     small = b"imagedata"
     msg = build_feed_message(_feed(abstime="", image_urls=["u1", "u2"]), seq=1, group_id="g", group_name="n",
                              images=[("u1", small), ("u2", None)], now_epoch=1.0)
@@ -40,6 +43,8 @@ def test_build_message_image_segments_and_placeholder():
     assert text == {"type": "text", "data": "今天天气好 [图片]"}  # 下载失败的图占位(abstime 空→无前缀)
     img = msg["raw_message"][1]
     assert img["type"] == "image"
+    assert img["data"] == ""  # 描述槽必须留空:填占位文本会令主程序跳过 VLM 描述
+    assert img["hash"] == hashlib.sha256(small).hexdigest()
     assert base64.b64decode(img["binary_data_base64"]) == small  # 成功图带 base64(主流水线落盘/描述前提)
 
 

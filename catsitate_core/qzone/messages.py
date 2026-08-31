@@ -12,6 +12,7 @@ RPC 帧预算以内**(用户裁定 2026-08-31:主程序入站压缩发生在 RPC
 from __future__ import annotations
 
 import base64
+import hashlib
 import io
 import logging
 from datetime import datetime
@@ -125,9 +126,13 @@ def build_feed_message(
         if data is None:
             text += " [图片]"
             continue
+        # 组件形态对齐 napcat-adapter(联调缺陷#15):data 必须**留空**——它是描述槽,
+        # 填占位文本会被主程序当成已有描述入库存证,VLM 视觉管线永不运行;
+        # hash 显式给 sha256(与 adapter 一致)
         raw.append({
             "type": "image",
-            "data": "QQ空间动态图片",
+            "data": "",
+            "hash": hashlib.sha256(data).hexdigest(),
             "binary_data_base64": base64.b64encode(data).decode("ascii"),
         })
     if not raw and feed.image_urls and not images:

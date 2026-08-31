@@ -8,10 +8,12 @@ from __future__ import annotations
 
 import json
 import logging
+import re
 import time
 from typing import Any, Awaitable, Callable
 from urllib.parse import urlparse
 
+from catsitate_core.qzone.discovery import FeedDiscovery, parse_unified_timeline
 from catsitate_core.qzone.protocol import (
     extract_callback_json,
     generate_gtk,
@@ -30,6 +32,8 @@ logger = logging.getLogger(__name__)
 
 COOKIE_DOMAIN = "user.qzone.qq.com"
 MSGLIST_URL = "https://user.qzone.qq.com/proxy/domain/taotao.qq.com/cgi-bin/emotion_cgi_msglist_v6"
+# 统一时间线(发现层):1 次调用覆盖全好友动态,与好友数无关(M3 架构)
+UNIFIED_TIMELINE_URL = "https://user.qzone.qq.com/proxy/domain/ic2.qzone.qq.com/cgi-bin/feeds/feeds3_html_more"
 BROWSER_UA = (
     "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) "
     "Chrome/124.0.0.0 Safari/537.36"
@@ -144,7 +148,16 @@ def _is_qq_image_host(host: str) -> bool:
 
 
 class QzoneClient:
-    """空间接口客户端(读路径:M1 好友动态列表与图片下载;写路径:M2 点赞/评论/楼中楼)。"""
+    """空间接口客户端——按 API 分层组织(M3 重构):
+
+    - 发现层:get_unified_timeline(feeds3_html_more 统一时间线,1 次调用
+      覆盖全好友动态,返回轻量索引 FeedDiscovery)
+    - 内容层:get_user_feeds / get_user_feeds_raw / get_own_feed_comments
+      (emotion_cgi_msglist_v6 指定用户说说,返回完整实体 FeedItem / 原始载荷)
+    - 写路径:do_like / do_comment / do_reply(点赞 / 评论 / 楼中楼回复)
+    - 基础通道:_request(读 GET)/ _post(写 POST)/ download_image(图片 CDN);
+      cookie 经 CookieManager 注入,身份参数(bot_uin)由装配层传入
+    """
 
     DOLIKE_URL = "https://user.qzone.qq.com/proxy/domain/w.qzone.qq.com/cgi-bin/likes/internal_dolike_app"
     COMMENT_URL = "https://user.qzone.qq.com/proxy/domain/taotao.qzone.qq.com/cgi-bin/emotion_cgi_re_feeds"
@@ -223,6 +236,47 @@ class QzoneClient:
         commentlist),薄封装 _fetch_msglist 不重复实现请求与校验。
         """
         return await self._fetch_msglist(target_uin=target_uin, num=num)
+
+    async def _fetch_unified(self, *, count: int) -> str:
+        """拉取统一时间线原始响应文本(feeds3_html_more,发现层基础通道)。
+
+        响应外层 JSON、内层为 JS 对象字面量(见 discovery 模块)——不走
+        callback 截取/JSON 解码,原文直返交 parse_unified_timeline 消费。
+        外层 code 校验与读/写路径同一纪律:登录态失效抛 QzoneAuthError
+        (触发 cookie 失效重取),非 0 业务码/畸形 200 显式 RuntimeError,
+        不静默当空时间线。
+        """
+        params = {
+            "uin": self.bot_uin, "format": "json", "begin": "0", "count": str(count),
+            "update": "1", "scope": "0", "filter": "all",
+        }
+        status, raw = await self._request(
+            "GET", UNIFIED_TIMELINE_URL, params=params,
+            referer=f"https://user.qzone.qq.com/{self.bot_uin}/home",
+        )
+        if status != 200:
+            raise RuntimeError(f"空间统一时间线请求失败(uin={self.bot_uin}): HTTP {status}")
+        text = raw.decode("utf-8") if isinstance(raw, (bytes, bytearray)) else str(raw)
+        # 外层 JSON 壳以 "code":0 起头,首个匹配即外层业务码(内层 JS 数据在其后)
+        code_match = re.search(r'"code":\s*(-?\d+)', text)
+        if code_match is None:
+            raise RuntimeError(f"空间统一时间线响应不可解析: {text[:120]}")
+        code = int(code_match.group(1))
+        if code in AUTH_ERROR_CODES:
+            raise QzoneAuthError(f"空间登录态失效(统一时间线): code={code}")
+        if code != 0:
+            raise RuntimeError(f"空间统一时间线返回业务错误: code={code} 响应={text[:120]}")
+        return text
+
+    async def get_unified_timeline(self, *, count: int = 20) -> list[FeedDiscovery]:
+        """发现层 API:统一时间线(1 次调用覆盖全好友动态,与好友数无关)。
+
+        返回轻量索引 FeedDiscovery 列表,appid 不过滤——说说(311)筛选
+        与新 tid 判重由调用方决定;完整正文/图片由充实层 get_user_feeds
+        按作者 uin 分组拉取(1+N 次调用,N=有新动态的作者数)。
+        """
+        text = await self._fetch_unified(count=count)
+        return parse_unified_timeline(text)
 
     async def _post(self, url: str, *, form: dict, referer_uin: str) -> dict:
         """写路径 POST 通道(独立于 _request:读路径为 GET 语义,参数全进 query;

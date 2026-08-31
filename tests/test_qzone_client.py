@@ -375,3 +375,94 @@ def test_get_own_feed_comments():
     assert comments["f1"][0].comment_tid == "c1"
     assert ctx["f1"] == "我的说说"
     assert seen[0]["params"]["uin"] == "3545773341"  # 原占位防误删,换真锚:msglist 请求以 bot_uin 为目标
+
+
+# ---- 统一时间线发现层(M3:feeds3_html_more,fake 注入,无网络) ----
+from catsitate_core.qzone.discovery import FeedDiscovery
+
+# 实证结构简化样本:外层 JSON + 内层 JS 对象(opuin 为生产实证的单引号形态)
+UNIFIED_SAMPLE = '''{"code":0,"data":{main:{
+  html:'<div>template</div>',
+  key:'ee3396c4d238956ac2f90b00',
+  appid:311,
+  abstime:1788164306,
+  opuin:'3298178030',
+  nickname:'Hesitate_P',
+}}}'''
+
+
+def _unified_client(responses):
+    """带 bot_uin 的客户端(发现层以 bot 自己的身份拉好友时间线)。"""
+    seen = []
+
+    async def fake_cookie():
+        return {"p_skey": "SK", "uin": "o3545773341"}
+
+    async def fake_fetch(method, url, *, params, headers, timeout_ms, data=None):
+        seen.append({"url": url, "params": dict(params), "headers": dict(headers)})
+        return responses.pop(0)
+
+    client = QzoneClient(cookie_provider=fake_cookie, fetch=fake_fetch,
+                         timeout_ms=1000, max_retries=0, bot_uin="3545773341")
+    return client, seen
+
+
+def test_client_get_unified_timeline_request_and_parse():
+    """发现层 API:feeds3_html_more 端点/实证参数集/bot 空间首页 Referer,
+    响应经 parse_unified_timeline 返回 FeedDiscovery 列表。"""
+    client, seen = _unified_client([(200, UNIFIED_SAMPLE.encode("utf-8"))])
+    items = asyncio.run(client.get_unified_timeline(count=20))
+    assert len(items) == 1 and isinstance(items[0], FeedDiscovery)
+    assert (items[0].tid, items[0].uin, items[0].nickname, items[0].abstime, items[0].appid) == (
+        "ee3396c4d238956ac2f90b00", "3298178030", "Hesitate_P", "1788164306", 311)
+    req = seen[0]
+    assert req["url"].endswith("/cgi-bin/feeds/feeds3_html_more")
+    p = req["params"]
+    assert p["uin"] == "3545773341"  # uin=bot 自己(以自己视角看全好友时间线)
+    assert p["format"] == "json"  # 非 jsonp:响应无 callback 包裹
+    assert p["begin"] == "0" and p["count"] == "20"
+    assert p["update"] == "1" and p["scope"] == "0" and p["filter"] == "all"
+    assert p["g_tk"] == generate_gtk("SK")  # cgi 读路径自动携带
+    assert req["headers"]["Referer"] == "https://user.qzone.qq.com/3545773341/home"
+    assert req["headers"]["User-Agent"].startswith("Mozilla/")  # 无 UA 空间接口 500(联调实证)
+
+
+def test_client_unified_default_count():
+    client, seen = _unified_client([(200, UNIFIED_SAMPLE.encode("utf-8"))])
+    asyncio.run(client.get_unified_timeline())
+    assert seen[0]["params"]["count"] == "20"
+
+
+def test_client_unified_auth_error_raises():
+    """code=-3000 → QzoneAuthError(触发 cookie 失效重取,与读/写路径一致)。"""
+    from catsitate_core.qzone.client import QzoneAuthError
+
+    client, _ = _unified_client([(200, b'{"code":-3000,"message":"no login"}')])
+    try:
+        asyncio.run(client.get_unified_timeline())
+        raised = None
+    except QzoneAuthError:
+        raised = "auth"
+    assert raised == "auth"
+
+
+def test_client_unified_business_error_and_garbage_raise():
+    """非 0 业务码 / 畸形 200 响应 → RuntimeError 显式暴露(不静默当空时间线)。"""
+    for body, needle in ((b'{"code":-4001}', "业务错误"), (b"<html>gateway error</html>", "不可解析")):
+        client, _ = _unified_client([(200, body)])
+        try:
+            asyncio.run(client.get_unified_timeline())
+            raised = ""
+        except RuntimeError as e:
+            raised = str(e)
+        assert needle in raised, body
+
+
+def test_client_unified_http_failure_raises_no_retry():
+    client, seen = _unified_client([(500, b"err")])
+    try:
+        asyncio.run(client.get_unified_timeline())
+        raised = False
+    except RuntimeError:
+        raised = True
+    assert raised and len(seen) == 1  # 读路径失败不重试,由调用方告警/回退

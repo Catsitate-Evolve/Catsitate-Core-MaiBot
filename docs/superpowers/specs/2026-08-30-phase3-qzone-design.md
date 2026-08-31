@@ -18,7 +18,7 @@ QQ 空间四功能（阅读好友动态 / 点赞 / 评论 / 发说说 + 记日�
 ## 2. 架构基石与全局决策
 
 1. **虚拟聊天平台**：`@MessageGateway(route_type="duplex", platform="qzone-qq")` 声明网关组件（**平台名为常量 `qzone-qq`，不入配置**——连字符别名经 `get_person_id` 折叠进 `qq` 人物命名空间，实现与真实 QQ 聊天的 person 统一，见 §2.17）；`on_load` 后 `ctx.gateway.update_state(ready=True, account_id=<bot 真实 QQ>)`。每条说说经 `ctx.gateway.route_message()` 注入——与真实 adapter 消息**同一入口**（`chat_bot.receive_message`），完整走 hook→heartflow→planner→replyer 链。`update_state` 的 account_id 会将虚拟平台记为 bot 账号，`is_bot_self` 对虚拟流生效（bot 回注自己的说说可正确标记 self）；account 用真实 bot QQ，经同样折叠统一 bot 自身 person。
-2. **单一虚拟群聊流**：全部好友动态按时间线交错进同一个伪群流（`is_group_session=bool(group_id)` 判群，主程序不校验平台真实性）；流内消息 user_id=好友 QQ、昵称=好友昵称；好友在他人说说下的评论以「评 XX：」前缀的独立消息呈现；bot 自己的说说以 self 消息回注。**注入时间戳必须新鲜**（当前时刻；get_recent 默认 24h 窗口，回填旧时间戳会漏读）。**注入消息必须带 `additional_config.is_mentioned=1.0` 强制触发**（见 §2.18）；message_id 全局唯一（tid+序号派生，去重键=driver_id:message_id）；网关须声明 supports_receive 且 ready 后才可注入；虚拟流由首条消息建立后 proactive 能力才可用。
+2. **单一虚拟群聊流**：全部好友动态按时间线交错进同一个伪群流（`is_group_session=bool(group_id)` 判群，主程序不校验平台真实性）；流内消息 user_id=好友 QQ、昵称=好友昵称；好友在他人说说下的评论以「评 XX：」前缀的独立消息呈现；队列全局按发布时间升序（补叙式阅读）；bot 自己的说说以 self 消息回注。**注入时间戳=动态发布时间**（联调修正 2026-08-31：防 bot 把老说说当刚发生）；正文带相对时间前缀（今天 HH:MM / M月d日 HH:MM）；宿主 get_recent 默认 24h 窗由此成为插件侧职责——虚拟流取数放宽 hours（inspect_image 已接），说话人解析改用注入泵当前作者（§2.16）。**注入消息必须带 `additional_config.is_mentioned=1.0` 强制触发**（见 §2.18）；message_id 全局唯一（tid+序号派生，去重键=driver_id:message_id）；网关须声明 supports_receive 且 ready 后才可注入；虚拟流由首条消息建立后 proactive 能力才可用。
 3. **图片交主程序**：适配器拉取动态图片后作为消息图片段随说说注入，主程序图片摘要/重看链路原生接管（比 Maizone 的旁路 VLM 描述多拿到重看级能力）。**注入 dict 的 image 组件必须带 `binary_data_base64`**——只给 hash 时主流水线静默不描述、不落 Images 表（inspect_image 前提失效）；**体积治理=压缩到 RPC 帧限内（用户裁定 2026-08-31 终案）**：不设质量上限,但图片 base64 总量超过 RPC 帧预算（12MB,物理帧 16MB 留开销）时按压缩阶梯（PIL 降分辨率×降质量）收紧至达标;极端不达标丢弃最大图保帧并告警;下载失败的图以 `[图片]` 占位。主程序入站链路的压缩/丢弃仍在其后兜底。
 4. **串行注入 + 出站意图状态机**：浏览窗口内**一次只注入一条动态**，注入后等**轮完成信号**（见下），期间 planner 自由沉默/回复/点赞；轮完成后（或超时兜底）再注入下一条。插件在每个阶段前置设定出站意图，duplex 驱动按意图调空间 API（详见 §3.3）。同决策窗口内多次出站 = 对同一条动态多次评论（人类合法行为，放行）；窗口结束未消费意图作废并记日志。
    **轮完成信号（冲突审计修订）**：`maisaka.planner.after_response` 且 `output_items` 中无 tool_calls——此后本轮不再有模型调用/出站；wait/switch_chat 暂停是「假结束」（timeout 后同 logical_turn_id 续轮），视为决策窗口延长；`decision_window_seconds` 从固定间隔**降级为超时兜底上限**（默认 75s，需大于最坏 planner 轮延迟）。**wait 态精确规则（回顾修订）**：`wait` 本身是 tool_call，其所在响应不满足完成信号；超时兜底触发时若流处于 wait 态→**不注入下一条**，继续等 wait 超时后续轮的完成信号，硬上限 `3×decision_window_seconds` 后才强制推进并告警（防错靶：wait 期间注入的消息不触发轮、只会在 wait 结束后并入批处理）。planner 打断默认关闭（`planner_interrupt_max_consecutive_count=0`），「等上一轮结束再注入」与主程序天然兼容。
@@ -34,7 +34,7 @@ QQ 空间四功能（阅读好友动态 / 点赞 / 评论 / 发说说 + 记日�
     - **执行层**：我方 QQ 专属工具（msg_react/poke_user）体内加平台自检（`platform=="qzone-qq"` 即拒绝）；我方空间工具声明 `allowed_session=["qzone-qq:<伪群号>"]`（注册表级硬门控，列举/执行两侧生效——执行侧不校验广告集，此为唯一防「猜名绕过」的现成机制）；
     - **终局层**：duplex 驱动对「无出站意图或非文本消息」一律告警拒发，兜住内置工具（send_emoji 等）的越界输出。
     - 白名单本身为配置项 `qzone.tool_whitelist`（默认值见 §5）；**执行层硬门控与自检不随配置放松**（安全下限不交给配置）。
-13. **cookie 链路**：主路径经 adapter API `ctx.api.call("adapter.napcat.account.get_cookies", domain="user.qzone.qq.com")`（与现有 napcat API 调用同款通路）；cookie 持久化插件 data 目录（JsonSnapshot 模式），刷新节流（1 小时内跳过）；获取/失效**显式告警**（Maizone 静默降级为反面教材），失效后下轮拉取前重取。不实现扫码/直连 HTTP 降级链（如生产需要另行评审）。
+13. **cookie 链路**：主路径经 adapter API `ctx.api.call("adapter.napcat.account.get_cookies", params={"domain": "user.qzone.qq.com"})`（单关键字透传,adapter API 形态，联调实证）；返回 cookies 容忍 dict/字符串两种形态；业务码 -3000/-10005 → QzoneAuthError → cookie invalidate 下轮重取（失效自愈）；cookie 持久化插件 data 目录（JsonSnapshot 模式），刷新节流（1 小时内跳过）；获取/失效**显式告警**（Maizone 静默降级为反面教材），失效后下轮拉取前重取。不实现扫码/直连 HTTP 降级链（如生产需要另行评审）。
 14. **协议层自研**（蓝本 Maizone 3.0.2，2025-10 停更，仅作参考不作依赖；**联调实证修正 2026-08-30**）：`emotion_cgi_msglist_v6` 为**指定用户说说列表**（`uin=目标`、jsonp+`need_comment=1`、Referer 指向目标空间，响应顶层 `msglist`，条目含 tid/created_time/content/pic[].url1/commentlist）——**不存在好友聚合 JSON 端点**（vFeeds 形态系调查期误记，Maizone 的 read_feed 本就是逐指定人读取）；好友列表走 adapter OneBot API `adapter.napcat.account.get_friend_list`（remark 优先作昵称），拉取=逐好友 `get_user_feeds(num=3)`+好友间 2s 间隔（防风控）；发布 `emotion_cgi_publish_v6`、评论/楼中楼 `emotion_cgi_re_feeds`、点赞/取消 `internal_dolike_app`、传图 `cgi_upload_image`；鉴权=`p_skey` cookie + `g_tk`(hash33)+**浏览器 UA**（无 UA 空间 500 空体，联调实证）；响应 `callback(...)` 包裹截取解析。HTML 聚合路径（feeds3_html_more）**弃用**。msglist 条目即说说（appid=311 语义由 M2 互动路径沿用）。
 15. **去重两层状态（回顾修订：seen=成功注入进 planner 上下文）**：注入成功才标 `seen`（此后进主聊天摘要注入、不重复注入）；拉取时仅标 `queued`；**qzone 窗口结束仍未注入的队列条目回退为未读**（下个窗口可见）并记日志计数——若拉取即标 seen，窗口尾被丢弃的动态会永久丢失（既没看也没机会再看）。点赞/评论过另记 `interacted`。键=`tid`（辅助 `abstim`），存 SQLiteStore 新表（on_load 建表惯例，幂等主键）。
 16. **memo 按人重构（M2，全模块语义变更）**：备忘条目**不再依赖 stream_id**，以「主 QQ + 附带 QQ 列表」的人维度组织；可见性=任一牵连 QQ 命中当前对话对象。取数点：私聊用官方工具 kwargs `user_id`（可靠=对端 QQ）；群聊/虚拟流自建——`chat.receive` hook 维护 `stream_id → 最近发言者QQ` 映射（payload 原始消息含 `user_info.user_id`，群聊不抹除；插件 fav_count/sleep_gate 已走此链路），`get_recent` 回溯（现有 `_resolve_speaker`）作兜底（时间窗放大，§9）；qzone 串行注入的意图状态机天然知道当前动态作者，作交叉校验。
@@ -47,15 +47,15 @@ QQ 空间四功能（阅读好友动态 / 点赞 / 评论 / 发说说 + 记日�
 ### 3.1 协议客户端（`catsitate_core/qzone/client.py`）
 
 - 纯 httpx 逆向网页 cgi（六端点见 §2.14），请求带 cookie + `g_tk`；响应 callback 截取 + JSON 解析；解析失败显式告警（**禁 eval 式解析**，Maizone 反面教材）。
-- `get_friend_feeds(pos, num)`：好友动态列表（含 tid/abstim/uin/正文/图片 URL 列表/评论摘要）；`get_own_feed_comments()`：自己说说下的新评论（M2 评论轮询用）；`do_comment(tid, content, replyid=0)`、`do_like(tid)` / `undo_like(tid)`、`do_publish(content)`（M3）；`download_image(url)`（注意 qzone 图床防盗链 headers）。
+- `get_user_feeds(*, target_uin, nickname, num=3)`：指定好友说说列表（含 tid/abstim/uin/正文/图片 URL 列表/评论摘要,联调实证参数集）；`get_own_feed_comments()`：自己说说下的新评论（M2 评论轮询用）；`do_comment(tid, content, replyid=0)`、`do_like(tid)` / `undo_like(tid)`、`do_publish(content)`（M3）；`download_image(url)`（注意 qzone 图床防盗链 headers;体积治理=压缩到 RPC 预算,见 §2.3）。
 - cookie 管理：`adapter.napcat.account.get_cookies` → 持久化 → 节流刷新 → 失效告警。
 - 配置：`request_timeout_ms`（默认 10000）、`max_retries`（默认 0，失败即告警跳过）。
 
 ### 3.2 虚拟流网关与注入器（`catsitate_core/qzone/gateway.py` + `feed_injector.py`）
 
 - 网关组件声明（duplex）；`on_load` 后 `update_state(ready=True)`，失败显式告警。
-- 注入泵（qzone 窗口期激活）：拉取 → appid=311 过滤 → seen 去重 → 图片下载（失败占位+告警；带 `binary_data_base64`，体积不限——主程序入站链路治理）→ 入队 → **串行注入**（等上一条的**轮完成信号**——`planner.after_response` 无 tool_calls；wait 暂停视为延长；`decision_window_seconds` 为超时兜底）。
-- `message_dict` 构造对齐主程序格式（message_id=稳定去重 id（tid 派生+序号）、platform="qzone-qq"、user_info{user_id=好友QQ, user_nickname=好友昵称}、group_info{group_id=伪群号, group_name=显示名}、additional_config{**is_mentioned=1.0**}、raw_message 组件列表（text+image 段，image 组件结构实现时对齐 `message_utils.py` 的构造器））；**timestamp=当前时刻**（新鲜度要求）。
+- 注入泵（qzone 窗口期激活）：拉取 → seen 去重（msglist 条目即说说,转发/视频走回退链——[转发自XX]原文/[视频] 占位）→ 图片下载（失败占位+告警；带 `binary_data_base64`，体积治理=压缩到 RPC 帧预算（§2.3））→ 入队（全局按发布时间升序）→ **串行注入**（等上一条的**轮完成信号**——`planner.after_response` 无 tool_calls；wait 暂停视为延长；`decision_window_seconds` 为超时兜底）。
+- `message_dict` 构造对齐主程序格式（message_id=稳定去重 id（tid 派生+序号）、platform="qzone-qq"、user_info{user_id=好友QQ, user_nickname=好友昵称}、group_info{group_id=伪群号, group_name=显示名}、is_mentioned 嵌于 message_info.additional_config（主程序只读该位置）、raw_message 组件列表（text+image 段，image 组件结构实现时对齐 `message_utils.py` 的构造器））；**timestamp=发布时间+相对时间前缀**（abstime 非法回退注入时刻,debug 日志可观测）。
 - 动态发布时间不在正文加前缀，并入 qzone 注入块的「当前浏览状态」行（如「当前看到：XX 3 小时前发的说说」）。
 
 ### 3.3 出站意图状态机 + duplex 驱动（`catsitate_core/qzone/outbound.py`）
@@ -84,7 +84,7 @@ QQ 空间四功能（阅读好友动态 / 点赞 / 评论 / 发说说 + 记日�
 
 ### 3.7 评论轮询（M2）
 
-- 醒着且不在 qzone 窗口时，周期任务仅拉「自己说说下的新评论」；新评论→注入（「评 XX：」形态，指向 bot 的那条说说作上下文，**同样带 is_mentioned=1.0 与新鲜时间戳**）→ planner 回复 → 意图 `AWAIT_COMMENT_REPLY` → 楼中楼 API。睡眠窗口内绝对静默拦截沿用。
+- 醒着且不在 qzone 窗口时，周期任务仅拉「自己说说下的新评论」；新评论→注入（「评 XX：」形态，指向 bot 的那条说说作上下文，**同样带 is_mentioned=1.0 与发布时间戳**）→ planner 回复 → 意图 `AWAIT_COMMENT_REPLY` → 楼中楼 API。睡眠窗口内绝对静默拦截沿用。
 
 ### 3.8 发布（M3）
 
@@ -122,14 +122,14 @@ QQ 空间四功能（阅读好友动态 / 点赞 / 评论 / 发说说 + 记日�
 
 ## 6. 错误处理原则（沿用一期 §7）
 
-- 空间 API/HTTP/LLM 失败：显式日志 + 跳过本轮（下窗口/下轮重试）；**不自动重试循环**。
+- 空间 API/HTTP/LLM 失败：显式日志 + 跳过本轮（下窗口/下轮重试）；**不自动重试循环**。读路径例外：图片下载固定单次重试（CDN 瞬态失败实证）；动作 API 的不重试纪律由 max_retries 约束（M2 生效）。
 - cookie 失效：告警 + 下轮拉取前重取；持续失败保持告警（每进程节流），不静默停摆。
 - 场景替换失败：告警 + 回退追加覆盖块（明示回退路径）。
 - 注入/hook 路径异常放行（不阻断主链路）并记录。
 
 ## 7. 测试方式
 
-- 引擎层单测（pytest，不依赖主程序）：客户端响应解析（callback 截取/异常）、cookie 节流与失效路径、seen 去重（**注入成功才 seen/窗口尾回退未读**）、注入泵串行节奏（轮完成信号/超时兜底/**wait 态不推进与硬上限**）与时间戳新鲜度、注入 dict 构造（is_mentioned/base64/唯一 message_id/platform="qzone-qq"/体积限流）、意图状态机全迁移（含 IDLE 出站拒发/**text+reply 混合组件取文本/二进制段拒发**/未消费作废）、场景替换（命中/未命中回退/**空配置走追加且告警**/保留 schema 键）、白名单过滤（元素结构合法/空列表/tools=None）、日程 qzone 属性校验、评论轮询窗口外/睡眠拦截、发布路径（沉默不发布/表达触发不依赖新动态存在）、**日记路径（入睡任务双调用/补生成路径含日记/回注延迟且无 is_mentioned）**、模块豁免（晚安判定豁免虚拟流/fav_count 豁免/daily 候选排除）、**person 别名自检（折叠生效/失效告警停用）**、memo 重构后读写与全量回归。
+- 引擎层单测（pytest，不依赖主程序）：客户端响应解析（callback 截取/异常）、cookie 节流与失效路径、seen 去重（**注入成功才 seen/窗口尾回退未读**）、注入泵串行节奏（轮完成信号/超时兜底/**wait 态不推进与硬上限**）与时间戳=发布时间/相对时间前缀/回退可观测（debug 日志）、注入 dict 构造（is_mentioned/base64/唯一 message_id/platform="qzone-qq"/体积限流）、hours 放宽接线的源码级断言用例、意图状态机全迁移（含 IDLE 出站拒发/**text+reply 混合组件取文本/二进制段拒发**/未消费作废）、场景替换（命中/未命中回退/**空配置走追加且告警**/保留 schema 键）、白名单过滤（元素结构合法/空列表/tools=None）、日程 qzone 属性校验、评论轮询窗口外/睡眠拦截、发布路径（沉默不发布/表达触发不依赖新动态存在）、**日记路径（入睡任务双调用/补生成路径含日记/回注延迟且无 is_mentioned）**、模块豁免（晚安判定豁免虚拟流/fav_count 豁免/daily 候选排除）、**person 别名自检（折叠生效/失效告警停用）**、memo 重构后读写与全量回归。
 - 已知工程坑必测：`item_schema_version` 回传、工具元素原样保留、deferred reminder 剥除、`tool_search` 排除。
 - 实机验收清单追加三期条目（cookie 获取、虚拟流建流、评论落地、说说/日记发布与回注、真实聊天见闻摘要、生产前置检测告警）。
 
@@ -148,7 +148,7 @@ QQ 空间四功能（阅读好友动态 / 点赞 / 评论 / 发说说 + 记日�
 - 场景替换文案（空间语义说明的措辞）、注入摘要行格式——M1 实施时提案评审。
 - 好感度空间互动权重（提案：评论≈私聊消息 0.5 倍、点赞≈0.2 倍，入日终结算素材）。
 - memo 附带 QQ 上限（提案 5）与写入来源细则。
-- `inspect_image` 在虚拟流的可用性（注入带 base64 后主流水线自动落盘写 Images 表，重看应可用——M1 实测确认；不可用则从默认白名单移除并告警说明）。
+- ~~`inspect_image` 在虚拟流的可用性~~ **已实证可用**（组件对齐 napcat-adapter:data 留空+sha256 hash;hours 放宽保障老动态可取）。
 - image 组件注入格式的字段细节（对齐 `message_utils.py` 构造器，实现时核对）。
 - 虚拟流 session_id 的获取方式：本地按公式计算（md5(platform[+account]+group_id)，需与 `_attach_inbound_route_metadata` 写入的 account 维度一致）或注入后经 `get_all_streams(platform="qzone-qq")` 查询——plan 阶段定，二者皆可。
 - `_manifest.json` capabilities 增补核对：gateway（MessageGateway 组件）、`person.get_id`（别名自检）、`config.get`（场景替换与前置检测）——以 SDK 能力声明清单为准逐一核对。
@@ -177,3 +177,4 @@ QQ 空间四功能（阅读好友动态 / 点赞 / 评论 / 发说说 + 记日�
 - 入站轮触发（调查⑦）：`maisaka/turn_scheduler.py:63-132`（四道门：focus 槽 65/wait 态 72/频率 0 静默 90/强制触发 98/退避 106/阈值 111-132）；强制触发（@/提及）绕过阈值与退避但不穿 focus/wait/频率 0；去抖窗 1.0s（runtime.py:178）；空闲退避（idle_backoff.py:41-95，15s→300s）；轮完成=`planner.after_response` 无 tool_calls（reasoning_engine.py:610-694），无整轮结束 hook；planner 打断默认关（official_configs.py:616-629）。
 - 出站链路（调查⑧）：typing=host 侧 sleep（send_service.py:674-679），驱动无需回调；出站双写历史（storage_message+sync_to_maisaka_history，send_service.py:915-931/runtime.py:491-537）；驱动成功契约 `{success, external_message_id}`（plugin_driver.py:174-205）；驱动序列化默认 include_binary_data=True（plugin_driver.py:112）；账号校验 preferred 直通（utils.py:70-81），update_state/入站元数据两路写 BotPlatformAccount 同源（supervisor.py:1611-1624/1698-1708）；图片落盘前提=组件带 binary_data（message_utils.py:341-364、image_manager.py:313-370）。
 - 记忆机制（调查⑨）：**person 别名折叠 `get_person_id`：含 `-` 的平台名取连字符后段（split 后第 2 段，如 qzone-qq → qq）后命名空间（person_info.py:48-54，`"qzone-qq"`→qq 命名空间，person 统一的机制依据）**；无跨平台合并（除折叠外）；画像按 person_id 跨流聚合（person_profile_service.py:1096-1229，证据绑定只看 person）；query_memory 硬 chat 隔离（query_memory.py:234-245、search_hit_processing_service.py:466-514）；学习器全带 session 维度、读取限本流+NULL 全局（maisaka_expression_selector.py:95-116、utils_config.py 默认开）；方案 B 否决依据：observed 短路（bot_account_service.py:103-120）+ 路由回退劫持（platform_io/manager.py:399-429、types.py:66-87）。
+- 图片组件形态对齐 napcat-adapter：codecs/inbound/message_codec.py:384-411（data 留空+sha256）；data 非空短路 VLM：src/chat/message_receive/message.py:300-303；get_recent hours 参数：src/plugin_runtime/capabilities/data.py:498-505。

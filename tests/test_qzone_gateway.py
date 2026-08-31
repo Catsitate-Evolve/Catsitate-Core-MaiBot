@@ -107,6 +107,21 @@ def test_gateway_declared_platform_constant():
     assert "M1_OUTBOUND_ERROR" in src
 
 
+def test_selfcheck_blocks_talk_value_zero():
+    """spec §2.18 硬性要求:talk_value=0 前置检测(注入消息会被主程序静默消费)。"""
+    import inspect
+
+    import plugin as _plugin
+
+    assert "talk_value" in inspect.getsource(_plugin)
+    selfcheck_src = inspect.getsource(_plugin.CatsitatePlugin._qzone_selfcheck)
+    # 键路径核对(official_configs.py):talk_value 归属 ChatConfig.reply_timing
+    assert "chat.reply_timing.talk_value" in selfcheck_src
+    # 停用文案关键词(talk_value=0 → 告警并 return False)
+    assert "talk_value=0" in selfcheck_src and "静默消费" in selfcheck_src
+    assert "return False" in selfcheck_src
+
+
 # ---- RPC 帧预算压缩(用户裁定 2026-08-31:体积治理=压缩到帧限内,非拒收) ----
 
 from catsitate_core.qzone.messages import RPC_IMAGE_BUDGET_BYTES, fit_images_to_rpc_budget

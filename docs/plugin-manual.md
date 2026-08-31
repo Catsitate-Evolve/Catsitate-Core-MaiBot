@@ -323,7 +323,7 @@ QQ空间虚拟流(qzone-qq)── 网关注入(route_message;出站一律拒发)
 ### 3.13.1 功能概览
 
 - **浏览窗口内刷好友动态**:日程生成模板 v3 支持为 daily 窗口标记 `qzone=true`(通常一天 1~2 个,适合搭配轻松的独处活动如「窝着刷手机」);`qzone_poll` 调度(默认 15 分钟)在标记窗口内拉取好友说说——**拉取架构(联调修正 2026-08-30)**:好友列表走 adapter OneBot API(`adapter.napcat.account.get_friend_list`,remark 优先作昵称),逐好友拉最近 3 条说说(空间接口 `emotion_cgi_msglist_v6` 为指定用户接口,无聚合端点),好友间固定 2 秒间隔防风控。窗口切换时收泵,未注入的队列**回退未读**(queued 行删除,下个窗口重新可见,不丢动态)。
-- **虚拟流注入(主链可引用)**:每条动态构造为一条消息注入 `qzone-qq` 虚拟群聊流,复用主程序 planner→replyer 链;注入带 `is_mentioned=1.0` 强制触发与新鲜时间戳(保证「一动态一轮」的串行模型);「刷到但懒得理」由 planner 自主沉默(无工具调用轮)表达——意愿判断权归模型。图片带 base64 交主流水线处理(描述/落 Images 表/可 `inspect_image` 重看);体积治理=压缩到 RPC 帧限内(用户裁定 2026-08-31 终案:超 12MB base64 预算按压缩阶梯收紧,极端不达标丢弃最大图保帧并告警;主程序入站链路兜底),下载失败的图以 `[图片]` 占位。
+- **虚拟流注入(主链可引用)**:每条动态构造为一条消息注入 `qzone-qq` 虚拟群聊流,复用主程序 planner→replyer 链;注入带 `is_mentioned=1.0` 强制触发与发布时间戳+相对时间前缀(保证「一动态一轮」的串行模型,且 bot 不会把老说说当成刚发生);「刷到但懒得理」由 planner 自主沉默(无工具调用轮)表达——意愿判断权归模型。图片带 base64 交主流水线处理(描述/落 Images 表/可 `inspect_image` 重看);体积治理=压缩到 RPC 帧限内(用户裁定 2026-08-31 终案:超 12MB base64 预算按压缩阶梯收紧,极端不达标丢弃最大图保帧并告警;主程序入站链路兜底),下载失败的图以 `[图片]` 占位。
 - **真实聊天见闻摘要注入**:真实聊天流的注入块附带 `[空间] 近期刷到:…`(近 `summary_days` 天已 seen 的 `summary_count` 条动态摘要)——bot 在真实聊天中可自然引用「我看到你发的说说」类见闻。
 - **串行注入**:一次只允许一条动态处于「已注入待主链处理」状态;推进信号 = 轮完成(planner 响应无工具调用);超时兜底 `decision_window_seconds`(默认 75 秒,须大于最坏轮延迟),wait 态延长至 3 倍硬上限(自注入时刻起算,防 wait 期间注入下一条并入批处理导致出站意图错靶)。
 
@@ -331,13 +331,13 @@ QQ空间虚拟流(qzone-qq)── 网关注入(route_message;出站一律拒发)
 
 - 虚拟平台名常量 `qzone-qq`,伪群号 `virtual_group_id`(默认 `qzone_feed`,勿与真实群号相同)、显示名 `virtual_group_name`(默认「QQ空间」)。
 - **person 统一(连字符别名)**:主程序 `get_person_id` 对含 `-` 的平台名取连字符后段(split 后第 2 段,如 `qzone-qq` → `qq`)计算命名空间,`qzone-qq` 与真实 `qq` 折叠为**同一 person**——好友画像/人物记忆跨空间与聊天聚合共享(空间流 `query_person_profile` 直接命中统一账本;内容来自好友真实说说,是统一而非混杂)。路由/账号按原始字符串 `qzone-qq` 分键,与真实 qq 平台零接触。
-- **启动自检**(任一硬性失败则模块停用并显式告警):① `person.get_id("qzone-qq", 探针)` 与 `person.get_id("qq", 探针)` 折叠一致性——**不等/返回异常形态/调用异常均硬停用模块并告警**(用户裁定 2026-08-30:人物分裂不可接受,折叠失效宁可不用,不降级为分裂模式;自检校验返回为非空 str,防双侧同形失败的假阴性);② 主程序 `experimental.focus_mode` 必须关闭(focus 槽会吞掉注入的强制触发);③ `favorability.bot_user_id` 非空(虚拟平台 bot 账号注册依赖);网关就绪上报失败同样停用(重载插件重试)。
+- **启动自检**(任一硬性失败则模块停用并显式告警):① `person.get_id("qzone-qq", 探针)` 与 `person.get_id("qq", 探针)` 折叠一致性——**不等/返回异常形态/调用异常均硬停用模块并告警**(用户裁定 2026-08-30:人物分裂不可接受,折叠失效宁可不用,不降级为分裂模式;自检校验返回为非空 str,防双侧同形失败的假阴性);② 主程序 `experimental.focus_mode` 必须关闭(focus 槽会吞掉注入的强制触发);③ 主程序 `chat.reply_timing.talk_value` 必须 >0(为 0 时注入消息被主程序静默消费);④ `favorability.bot_user_id` 非空(虚拟平台 bot 账号注册依赖);网关就绪上报失败同样停用(重载插件重试)。
 
 ### 3.13.3 拉取链路与去重
 
 - **cookie(唯一合规路径)**:空间 cookie 经 adapter 能力 `adapter.napcat.account.get_cookies`(domain=`user.qzone.qq.com`)获取;持久化 `qzone_cookies.json` + `cookie_refresh_minutes`(默认 60 分钟)节流;获取失败或响应缺 `p_skey` 显式告警并跳过本轮拉取(有旧 cookie 时沿用旧值)。
-- **协议**:经典空间网页 cgi(`emotion_cgi_msglist_v6`;g_tk=hash33(p_skey) 签名;`frameElement.callback({...})` 响应截取解析);仅处理**说说类动态(appid=311)**,其余(转发/相册/视频等)跳过并计数(日志可见)。
-- **失败不重试**:`max_retries` 默认 0——协议动作失败直接告警跳过本轮,不做重试循环;`request_timeout_ms` 默认 10000。
+- **协议**:经典空间网页 cgi(`emotion_cgi_msglist_v6`;g_tk=hash33(p_skey) 签名;`frameElement.callback({...})` 响应截取解析)。msglist 条目即说说;转发说说走回退链([转发自XX]原文),纯图说说以图段承载,视频以 [视频] 占位。
+- **重试语义**:`max_retries` 默认 0——图片下载固定单次重试(读路径例外,联调实证 CDN 瞬态 404);动作 API 不重试(M2 起 max_retries 约束);`request_timeout_ms` 默认 10000。
 - **去重(`qzone_feeds` 表,tid 主键)**:入队=queued,注入成功=seen;同 tid 任意状态存在即跳过(不重复注入)。
 - 睡眠期不拉取不注入(绝对静默);`qzone.enabled` 关闭或模块停用(`_qzone_available=False`)时一切拉取/注入/场景手术/见闻注入跳过。
 
@@ -355,19 +355,22 @@ QQ空间虚拟流(qzone-qq)── 网关注入(route_message;出站一律拒发)
 ### 3.13.6 日志关键词
 
 - `QQ空间窗口开始,注入泵激活` / `QQ空间窗口结束,未注入队列回退未读(N 条)`
-- `QQ空间新动态入队 N 条`;`QQ空间拉取:跳过 N 条非说说类动态(appid!=311)`
+- `QQ空间新动态入队 N 条`;`QQ空间窗口开始,注入泵激活;回收跨启动 queued 残留 N 条(重新拉取)`
+- `QQ空间登录态失效(code=-3000/-10005),cookie 已作废,下轮重取`;`QQ空间说说拉取失败(uin=…),该好友本轮跳过`
+- `QQ空间图片下载异常(…),以占位注入`;`空间图片下载失败(重试后仍失败): …`;`QQ空间图片压缩后仍超 RPC 帧预算,丢弃保帧: …`
+- `QQ空间动态注入被宿主拒绝(tid=…,adapter policy 或网关状态),跳过且不标记已见`
 - `QQ空间动态已注入(tid=…,作者=…)`;`QQ空间注入等待轮完成超时(tid=…),强制推进`
 - `QQ空间出站被拒(M1 感知阶段:QQ空间出站未实现(评论路由见 M2);…)`
 - `QQ空间场景回退:…`(「群聊场景提示词配置为空…」/「群聊场景提示词替换未命中…」)
 - `QQ空间模块停用:person 别名折叠自检失败(qzone-qq 与 qq 未折叠到同一命名空间,或自检调用返回异常形态 a=… b=…),主程序 get_person_id 折叠机制可能已改版`;`person 别名自检调用失败,QQ空间模块停用`
-- `QQ空间模块停用:…`(focus_mode 开启 / bot_user_id 为空 / person 别名折叠自检失败 / 网关就绪上报失败)
-- `QQ空间动态拉取失败,本轮跳过`;`QQ空间虚拟平台就绪(platform=qzone-qq,伪群=…)`
+- `QQ空间模块停用:…`(focus_mode 开启 / talk_value=0 / bot_user_id 为空 / person 别名折叠自检失败 / 网关就绪上报失败)
+- `QQ空间虚拟平台就绪(platform=qzone-qq,伪群=…)`
 
 ### 3.13.7 已知限制
 
 1. **M1 无评论/点赞/发布**:虚拟流出站一律显式拒发(`M1 感知阶段:QQ空间出站未实现(评论路由见 M2)`);点赞/评论/评论轮询/发布属 M2/M3 交付。
-2. **cookie 依赖 adapter**:空间 cookie 只经 `adapter.napcat.account.get_cookies` 获取,NapCat 不响应该 API(或响应缺 `p_skey`)时无法拉取,显式告警跳过,不做重试循环。
-3. **仅说说类动态**:只处理 appid=311;转发/相册/视频等其它动态跳过并计数。
+2. **cookie 依赖 adapter**:空间 cookie 只经 `adapter.napcat.account.get_cookies` 获取,NapCat 不响应该 API(或响应缺 `p_skey`)时无法拉取,显式告警跳过;cookie 链路不做重试循环(登录态失效走 invalidate 下轮重取自愈)。
+3. **动态形态**:msglist 条目即说说;转发说说走回退链([转发自XX]原文),纯图说说以图段承载,视频以 [视频] 占位。
 4. **注入图片压缩到 RPC 帧限内**(用户裁定 2026-08-31 终案):base64 总量超 12MB 预算触发压缩阶梯(PIL 降分辨率×降质量),极端不达标丢弃最大图保帧;下载失败以 `[图片]` 占位。
 
 ### 3.13.8 生产部署注意事项
@@ -375,7 +378,7 @@ QQ空间虚拟流(qzone-qq)── 网关注入(route_message;出站一律拒发)
 - **NapCat 需可响应 `adapter.napcat.account.get_cookies`**(domain=`user.qzone.qq.com`):不可用时模块只能依赖持久化旧 cookie,过期即拉取失败。
 - **`experimental.focus_mode` 必须关闭**:开启时启动自检直接停用 qzone 模块(focus 槽会吞掉注入的 is_mentioned 强制触发)。
 - **主程序 `get_person_id` 连字符折叠是 person 统一的前提**:自检发现 `qzone-qq` 与 `qq` 未折叠到同一命名空间(或自检返回异常形态)时,模块**硬停用并告警,不降级为分裂模式**(人物分裂不可接受)——升级主程序后若见「QQ空间模块停用:person 别名折叠自检失败」告警,说明折叠机制可能已改版,需插件适配后再启用。
-- **建议回复频率 talk_value>0**:talk_value=0 时注入消息可能被主程序静默消费(bot「刷到但永不理」),感知效果退化。
+- **回复频率 talk_value 必须 >0(硬停用条件,自检检测)**:`chat.reply_timing.talk_value=0` 时启动自检直接停用 qzone 模块——注入消息会被主程序静默消费(bot「刷到但永不理」),感知完全失效。
 - **`favorability.bot_user_id` 必须配置(非空)**:虚拟平台 bot 账号注册与虚拟流 session_id 计算依赖它,为空则模块停用。
 - **勿配置 `*:*` 全局表达共享组**:虚拟流学习落在自身 session(对真实流无污染),全局共享组会把空间流表达泄入真实流;不希望空间评论喂养虚拟流表达库时,可在主程序 WebUI 对该会话关学习(插件无法代设)。
 - **`schedule_generate` 模板升 v3 后,WebUI 自定义过的该模板需手动同步**:插件自动部署只覆盖主程序 `prompts/zh-CN/` 内置层,`data/custom_prompts/` 下的 WebUI 编辑产物优先级更高且不会被覆盖——旧版自定义模板不含 `qzone` 属性说明,日程将不产生 qzone 浏览窗口(需在 WebUI 手动更新或删除该自定义模板)。
@@ -533,7 +536,7 @@ QQ空间虚拟流(qzone-qq)── 网关注入(route_message;出站一律拒发)
 | summary_count | 5 | 真实聊天注入的近期已见动态条数 |
 | summary_days | 3 | 见闻摘要回溯天数 |
 | request_timeout_ms | 10000 | 空间 HTTP 请求超时(毫秒) |
-| max_retries | 0 | 空间请求失败重试次数(0=失败即告警跳过,不做重试循环) |
+| max_retries | 0 | 空间动作 API(评论/点赞/发布,M2 生效)失败重试次数;0=失败即告警跳过。M1 读路径(图片下载)固定单次重试(联调实证 CDN 瞬态 404),不受此配置影响 |
 | cookie_refresh_minutes | 60 | cookie 刷新节流(分钟,间隔内跳过重取) |
 
 注:QQ空间无独立旁路 LLM 调用(动态注入复用主程序 planner→replyer 链,不占 `llm_usage` 记账)。
@@ -721,7 +724,7 @@ replyer 出站
 | reply 补传/哨兵 | `reply 补传:[…]`;`哨兵判定:放行回复` / `哨兵判定:撤回回复:{reason}` |
 | 旁路记账 | `旁路 LLM 当日调用次数已达或超过阈值 {n},请注意用量`;llm_usage 表按模块分列 |
 | quote 解析 | `quote 发送者解析: 成功 {n}/{m}(stream=…)`;`quote 发送者解析失败(stream=…):…` |
-| QQ空间 | `QQ空间窗口开始,注入泵激活`;`QQ空间新动态入队 {n} 条`;`QQ空间动态已注入(tid=…,作者=…)`;告警/停用:`QQ空间模块停用:…`、`QQ空间模块停用:person 别名折叠自检失败(…)`、`QQ空间出站被拒(…)`、`QQ空间场景回退:…`、`QQ空间动态拉取失败,本轮跳过` |
+| QQ空间 | `QQ空间窗口开始,注入泵激活`;`QQ空间新动态入队 {n} 条`;`QQ空间动态已注入(tid=…,作者=…)`;告警/停用:`QQ空间模块停用:…`、`QQ空间模块停用:person 别名折叠自检失败(…)`、`QQ空间出站被拒(…)`、`QQ空间场景回退:…`、`QQ空间说说拉取失败(uin=…),该好友本轮跳过` |
 
 ### 8.3 常见问题排查
 
@@ -738,7 +741,7 @@ replyer 出站
 | 日程不是预期作息 | 默认作息为软基准,LLM 结合当天活动自主排布;生成失败会有模板兜底告警;可用 update_schedule 工具修改 |
 | 主动发言没有出现 | 检查 speak_threshold_level 门槛(默认熟悉)、近 24h 活跃流、daily_speak_limit 配额、当日是否模板撑场、睡眠期跳过 |
 | 数据异常想重置 | 删除 `data/plugins/catsitate.core/catsitate.db` 与各 JSON 快照(重启重建);注意 favorability 重建即清零(开发期裁定不做迁移) |
-| QQ空间没有动态注入 | 查启动日志有无「QQ空间模块停用」(focus_mode 开启 / bot_user_id 为空 / person 自检失败)与「QQ空间虚拟平台就绪」;确认日程有 qzone 标记的 daily 窗口且当前处于窗口内;「QQ空间动态拉取失败,本轮跳过」→ NapCat 可否响应 `adapter.napcat.account.get_cookies`;仅说说类(appid=311)动态会被注入;WebUI 自定义过 schedule_generate 旧模板需手动同步(§3.13.8) |
+| QQ空间没有动态注入 | 查启动日志有无「QQ空间模块停用」(focus_mode 开启 / talk_value=0 / bot_user_id 为空 / person 自检失败)与「QQ空间虚拟平台就绪」;确认日程有 qzone 标记的 daily 窗口且当前处于窗口内;「QQ空间说说拉取失败(uin=…)」→ NapCat 可否响应 `adapter.napcat.account.get_cookies`;msglist 条目即说说(转发走回退链/纯图以图段承载/视频占位);WebUI 自定义过 schedule_generate 旧模板需手动同步(§3.13.8) |
 | 复审证据链 | 打开 debug.enabled 落盘日志;`catsitate.db` 查 `llm_usage`/`favorability_log` 核旁路记账与结算/衰减记录;`schedule.json` 查日程修改历史;`sleep_review/reports/` 查回顾报告 |
 
 ---

@@ -539,7 +539,7 @@ class CatsitatePlugin(MaiBotPlugin):
             return resp.status_code, resp.content
 
     async def _qzone_selfcheck(self) -> bool:
-        """启动自检:开关 → person 别名折叠(qzone-qq 与 qq 同命名空间) → focus_mode 前置。"""
+        """启动自检:开关 → person 别名折叠(qzone-qq 与 qq 同命名空间) → focus_mode/talk_value=0 前置。"""
 
         if not (self.config.plugin.enabled and self.config.qzone.enabled):
             return False
@@ -566,6 +566,20 @@ class CatsitatePlugin(MaiBotPlugin):
                 return False
         except Exception:
             self.ctx.logger.exception("focus_mode 前置检测失败,QQ空间模块停用")
+            return False
+        try:
+            # 键路径核对(official_configs.py):talk_value 归属 ChatConfig.reply_timing(ChatReplyTimingConfig),
+            # 对应 bot_config.toml [chat.reply_timing];_cap_config_get 返回 {"success":..,"value":..} 兼容裸值
+            result = await self.ctx.config.get(key="chat.reply_timing.talk_value", default=1.0)
+            value = result.get("value") if isinstance(result, dict) else result
+            if value is None:
+                raise TypeError(f"talk_value 返回空值(形态={type(result).__name__})")
+            # float("0")/0/0.0 均视为 0;非数值形态经 float() 抛错走异常路径(读取失败→告警停用)
+            if float(value) == 0:
+                self.ctx.logger.warning("QQ空间模块停用:群聊回复频率 talk_value=0(注入消息会被主程序静默消费)")
+                return False
+        except Exception:
+            self.ctx.logger.exception("talk_value 前置检测失败,QQ空间模块停用")
             return False
         return True
 

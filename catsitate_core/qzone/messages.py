@@ -38,6 +38,10 @@ except ImportError:  # pragma: no cover - 环境异常路径
     _PILImage = None
     _HAS_PIL = False
 
+# PIL 缺失告警只在 fit_images_to_rpc_budget 入口打一次(模块级 flag):
+# _pil_compress 会被压缩阶梯 7 档×N 图反复调用,逐次告警会刷屏
+_PIL_MISSING_WARNED = False
+
 
 def _b64_total(images: list[tuple[str, bytes | None]]) -> int:
     return sum(len(base64.b64encode(d)) for _, d in images if d)
@@ -45,8 +49,7 @@ def _b64_total(images: list[tuple[str, bytes | None]]) -> int:
 
 def _pil_compress(data: bytes, max_dim: int, quality: int) -> bytes:
     if not _HAS_PIL:
-        logger.warning("PIL 不可用,跳过图片压缩(依赖缺失,极端大图将走丢弃路径)")
-        return data
+        return data  # 告警收敛到 fit_images_to_rpc_budget 入口(一次性)
     img = _PILImage.open(io.BytesIO(data))
     img = img.convert("RGB")
     img.thumbnail((max_dim, max_dim))
@@ -70,6 +73,10 @@ def fit_images_to_rpc_budget(
     跳过压缩直接走丢弃路径(保帧限,显式告警)。
     """
     compress = compress or _pil_compress
+    global _PIL_MISSING_WARNED
+    if not _HAS_PIL and not _PIL_MISSING_WARNED:
+        _PIL_MISSING_WARNED = True
+        logger.warning("PIL 不可用,跳过图片压缩(依赖缺失,极端大图将走丢弃路径)")
     current: list[tuple[str, bytes | None]] = [(u, d) for u, d in images]
     if _b64_total(current) <= budget_bytes:
         return current
@@ -138,6 +145,8 @@ def build_feed_message(
     if not raw and feed.image_urls and not images:
         text += " [图片]"  # 有图但全未下载成功的占位
 
+    if post_epoch is None:
+        logger.debug("空间动态 abstime 非法/缺失(tid=%s),时间戳回退注入时刻(不加前缀)", feed.tid)
     timestamp = post_epoch if post_epoch is not None else now_epoch
     if post_epoch is not None:
         prefix = _time_prefix(datetime.fromtimestamp(post_epoch), datetime.fromtimestamp(now_epoch))

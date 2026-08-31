@@ -155,8 +155,6 @@ class QzoneClient:
             # g_tk 只用于空间 cgi 接口;图片 CDN 是签名 URL,附加查询参数会破坏签名致 404(联调缺陷#8)
             params.setdefault("g_tk", generate_gtk(cookies.get("p_skey", "")))
         status, body = await self.fetch(method, url, params=params, headers=headers, timeout_ms=self.timeout_ms)
-        if binary:
-            return status, body
         return status, body
 
     async def get_user_feeds(self, *, target_uin: str, nickname: str, num: int = 5) -> list:
@@ -188,7 +186,8 @@ class QzoneClient:
 
         体积不加插件侧上限(用户裁定 2026-08-31):主程序入站链路对过大图片
         自有压缩/丢弃处理。读路径例外:CDN 偶发瞬态失败(联调实证 404),
-        单次重试;动作 API 的「失败不重试」纪律不适用于此。
+        单次重试;动作 API 的「失败不重试」纪律不适用于此。次数固定 1,
+        不消费 max_retries(该配置约束 M2 动作 API)。
         """
 
         import asyncio as _asyncio

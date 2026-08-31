@@ -226,7 +226,11 @@ class QzoneSection(PluginConfigBase):
     summary_count: int = _f(5, "真实聊天注入的近期已见动态条数", label="见闻摘要条数")
     summary_days: int = _f(3, "见闻摘要回溯天数", label="见闻回溯天数")
     request_timeout_ms: int = _f(10000, "空间 HTTP 请求超时(毫秒)", label="HTTP 超时(毫秒)")
-    max_retries: int = _f(0, "空间请求失败重试次数(0=失败即告警跳过,不做重试循环)", label="失败重试次数")
+    max_retries: int = _f(
+        0,
+        "空间动作 API(评论/点赞/发布,M2 生效)失败重试次数;0=失败即告警跳过。M1 读路径(图片下载)固定单次重试(联调实证 CDN 瞬态 404),不受此配置影响",
+        label="失败重试次数",
+    )
     cookie_refresh_minutes: int = _f(60, "cookie 刷新节流(分钟,间隔内跳过重取)", label="cookie 刷新节流(分钟)")
 
 

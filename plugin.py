@@ -122,7 +122,7 @@ class CatsitatePlugin(MaiBotPlugin):
     _qzone_group_prompt_value: str = ""
     _qzone_group_prompt_at: float = 0.0
     _qzone_available: bool = False  # 启动自检+网关就绪后置 True(Task 12)
-    _qzone_seq: int = 0
+    _qzone_seq: int = 0  # message_id 序号(on_load 以当前秒播种,防跨重启撞车触发宿主去重)
 
     # ---------- 生命周期 ----------
 
@@ -222,6 +222,9 @@ class CatsitatePlugin(MaiBotPlugin):
             max_retries=self.config.qzone.max_retries,
         )
         self.qzone_injector = FeedInjector(decision_window_s=self.config.qzone.decision_window_seconds)
+        # seq 以当前秒播种:重启归零会让 qzone_{tid}_{seq} 与上一轮运行撞车,
+        # 被宿主 driver_id:message_id 去重拒绝(联调缺陷#11,静默丢注入)
+        self._qzone_seq = int(time.time())
         # 泵并发锁:_qzone_pump 两个入口(调度 tick/轮完成信号)整体互斥,防弹出-置位间隙双弹
         self._qzone_pump_lock = asyncio.Lock()
         # 模块日志转发(联调缺陷#10):catsitate_core.* 的告警路由到插件 ctx logger,否则不可见

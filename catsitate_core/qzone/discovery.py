@@ -7,9 +7,9 @@
     key:'{十六进制tid}' appid:{int} abstime:{int} opuin:'{uin}' nickname:'{name}'
 
 解析策略(鲁棒正则,不依赖 bs4/json5):以 `key:'非空十六进制'` 定位条目起点,
-向后 WINDOW_CHARS 字符窗口内提取其余字段;缺任一必需字段的条目跳过
-(容错,不阻断后续条目)。appid 不过滤——说说(appid=311)筛选由调用方决定
-(源B搭便车等场景需保留全量条目)。
+向后至下一 key 锚点(至多 WINDOW_CHARS 字符)的窗口内提取其余字段;缺任一必需
+字段的条目跳过(容错,不阻断后续条目)。appid 不过滤——说说(appid=311)筛选
+由调用方决定(源B搭便车等场景需保留全量条目)。
 
 分层定位:FeedDiscovery 是发现层轻量索引(本模块产物);完整实体(正文/图片/
 评论)由充实层 get_user_feeds 的 FeedItem 承载,两者以 tid 对齐。
@@ -23,10 +23,11 @@ from dataclasses import dataclass
 
 logger = logging.getLogger(__name__)
 
-# 条目字段在 key 之后出现的最大跨度(实证单条目约 150 字符,500 足够宽松)
+# 条目字段在 key 之后出现的最大跨度兜底(实证单条目约 150 字符);有下一
+# key 锚点时窗口以锚点为上界,优先于本值(防跨条目借用,见 parse_unified_timeline)
 WINDOW_CHARS = 500
 
-_KEY_RE = re.compile(r"key:'([0-9a-f]+)'")  # 非空小写十六进制 tid(实证形态)
+_KEY_RE = re.compile(r"key:'([0-9a-fA-F]+)'")  # 非空十六进制 tid(实证小写,容忍大写)
 _ABSTIME_RE = re.compile(r"abstime:(\d+)")
 # opuin 生产实证为单引号字符串,简化样本为裸数字——两种形态都收,统一转 str
 _OPUIN_RE = re.compile(r"opuin:'?(\d+)'?")
@@ -82,7 +83,11 @@ def parse_unified_timeline(text: str) -> list[FeedDiscovery]:
     text = str(text or "")
     out: list[FeedDiscovery] = []
     for match in _KEY_RE.finditer(text):
-        window = text[match.end() : match.end() + WINDOW_CHARS]
+        # 窗口上界=下一 key 锚点位置(审查修复:畸形中间条目不得越过锚点向
+        # 邻条目借用 abstime/appid 等同名字段误组装);无后续锚点回退固定跨度
+        next_key = text.find("key:'", match.end())
+        window_end = next_key if next_key != -1 else match.end() + WINDOW_CHARS
+        window = text[match.end() : window_end]
         abstime = _ABSTIME_RE.search(window)
         opuin = _OPUIN_RE.search(window)
         nickname = _NICKNAME_RE.search(window)

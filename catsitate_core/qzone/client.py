@@ -257,8 +257,9 @@ class QzoneClient:
         if status != 200:
             raise RuntimeError(f"空间统一时间线请求失败(uin={self.bot_uin}): HTTP {status}")
         text = raw.decode("utf-8") if isinstance(raw, (bytes, bytearray)) else str(raw)
-        # 外层 JSON 壳以 "code":0 起头,首个匹配即外层业务码(内层 JS 数据在其后)
-        code_match = re.search(r'"code":\s*(-?\d+)', text)
+        # 外层 JSON 壳以 "code":0 起头,首个匹配即外层业务码(内层 JS 数据在其后);
+        # 键与冒号间容忍空白(审查顺手:兼容壳层格式微差)
+        code_match = re.search(r'"code"\s*:\s*(-?\d+)', text)
         if code_match is None:
             raise RuntimeError(f"空间统一时间线响应不可解析: {text[:120]}")
         code = int(code_match.group(1))

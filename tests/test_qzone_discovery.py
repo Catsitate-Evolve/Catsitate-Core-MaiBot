@@ -8,10 +8,13 @@
 from catsitate_core.qzone.discovery import FeedDiscovery, parse_unified_timeline
 
 # 实证样本(简化):多作者混合 + 非 hex key 条目(应跳过)
+# 字段序按生产实证规范:key → appid → abstime → opuin → nickname(审查修复#2:
+# 首条目 appid 原置于 key 之前,与生产序矛盾且依赖跨条目借用巧合)
 TIMELINE_SAMPLE = '''{"code":0,"data":{main:{
   html:'<div>template</div>',
-  ver:1, appid:311, typeid:0,
+  ver:1, typeid:0,
   key:'ee3396c4d238956ac2f90b00',
+  appid:311,
   flag:0, dataonly:0,
   abstime:1788164306,
   feedstime:' 16:18',
@@ -96,18 +99,42 @@ def test_parse_decodes_js_escapes():
     assert items[0].nickname == '''名字'带单引号和"双引号"'''
 
 
-def test_parse_skips_malformed_entry_without_blocking_next():
-    """缺必需字段(abstime)的条目跳过,且不阻断后续合法条目的解析。
-
-    畸形条目置于末尾——解析窗口向后取 500 字符,前置畸形条目会从后继
-    条目借到同名字段,末尾条目的窗口内无 abstime 才真正缺字段。
-    """
+def test_parse_skips_malformed_entry_at_tail():
+    """缺必需字段(abstime)的条目跳过(置于末尾:窗口回退固定上界仍无该字段),
+    且不阻断后续合法条目的解析。"""
     sample = '''{"code":0,"data":{
 {main:{key:'fedcba9876543210fedcba98', appid:311, abstime:1783000300, opuin:'8888888888', nickname:'正常条目'}},
 {main:{key:'abc123def4560abc123def456', appid:311, opuin:'9999999999', nickname:'缺abstime'}}
 }}'''
     items = parse_unified_timeline(sample)
     assert [i.tid for i in items] == ["fedcba9876543210fedcba98"]
+
+
+def test_parse_malformed_middle_entry_does_not_borrow_from_neighbor():
+    """审查修复#1:中间位置畸形条目(缺 abstime)不得越过下一 key 锚点向邻条目
+    借用同名字段误组装——窗口以下一 `key:'` 锚点为上界。"""
+    sample = '''{"code":0,"data":{
+{main:{key:'fedcba9876543210fedcba98', appid:311, abstime:1783000300, opuin:'8888888888', nickname:'首个正常'}},
+{main:{key:'abc123def4560abc123def456', appid:311, opuin:'9999999999', nickname:'缺abstime'}},
+{main:{key:'0123456789abcdef01234567', appid:311, abstime:1783000400, opuin:'7777777777', nickname:'末个正常'}}
+}}'''
+    items = parse_unified_timeline(sample)
+    # 中间畸形条目被跳过(不借邻条目 abstime/appid),前后条目均正常解析
+    assert [i.tid for i in items] == ["fedcba9876543210fedcba98", "0123456789abcdef01234567"]
+    assert items[1].abstime == "1783000400" and items[1].nickname == "末个正常"
+
+
+def test_parse_tolerates_uppercase_hex_tid():
+    """审查顺手①:key 十六进制容忍大写(实证为小写,防御性兼容)。"""
+    sample = '''{"code":0,"data":{main:{
+  key:'ABCDEF0123456789ABCDEF01',
+  appid:311,
+  abstime:1783000500,
+  opuin:'3333333333',
+  nickname:'大写TID',
+}}}'''
+    items = parse_unified_timeline(sample)
+    assert [i.tid for i in items] == ["ABCDEF0123456789ABCDEF01"]
 
 
 def test_parse_empty_and_unrelated_text():

@@ -82,9 +82,10 @@ QQ 空间四功能（阅读好友动态 / 点赞 / 评论 / 发说说 + 记日�
 
 - `@Tool("qzone_like", visibility="visible", allowed_session=["qzone-qq:<伪群号>"])`：参数=目标动态标识（从当前浏览状态/消息上下文取）；planner 处理虚拟流消息时自主决定调用；与贴表情同模式（「提供工具让机器人自行在合适时机使用」）。
 
-### 3.7 评论轮询（M2）
+### 3.7 统一通知通道（M2.1,替代 M2「评论轮询」设计）
 
-- **始终运行**（醒着即可,联调修正 2026-08-31:浏览流只拉好友动态,不碰自己说说——窗口内 return 反而造成评论区通知盲区）：周期任务拉「自己说说下的新评论」；新评论→注入（「评 XX：」形态，指向 bot 的那条说说作上下文，**同样带 is_mentioned=1.0 与发布时间前缀**）→ planner 回复 → 意图 `AWAIT_COMMENT_REPLY` → 楼中楼 API。睡眠窗口内绝对静默拦截沿用。
+- **统一通知通道（M2.1,联调修正 2026-08-31）**：替代原「评论轮询」设计。模拟推送通知——高频短间隔(默认 120 秒,`notification_interval_seconds`)双源检测：源A=自己说说下的新评论(msglist commentlist);源B=自己在他人说说下的评论收到的新回复(commentlist→list_3 楼中楼)。通知走双优先级队列 P1(插队于浏览动态 P2 之前),模拟「刷着动态→弹通知→先看通知→回完继续刷」注意力模型。始终运行(醒着即可,与浏览窗口无关);单轮≤3 条;新鲜度截断(复用 summary_days);阅读顺序新→旧(信息流降序,QQ 空间 App 实际形态)。工具双向隔离:qzone 流白名单 / 非 qzone 流隐藏 qzone_* 工具。
+- 通知以「(通知) …」形态 FeedItem(source="notify")注入虚拟流(同样带 is_mentioned=1.0;发布时间前缀由注入泵 build_feed_message 从 abstime 统一承载)→ planner 回复 → 意图 `comment_reply` → 楼中楼 API——源A commentId=好友评论 tid(自己说说,target=bot)/源B commentId=回复 tid(好友说说,friend_uin 留痕反查定位);源B正文附带 bot 原评论留痕(note_bot_comment 键剥出)作上下文。上一条通知的意图未消费时不取新通知(不叠加);睡眠窗口内绝对静默拦截沿用。
 
 ### 3.8 发布（M3）
 
@@ -112,7 +113,7 @@ QQ 空间四功能（阅读好友动态 / 点赞 / 评论 / 发说说 + 记日�
 ## 5. 配置模型（新 `qzone` 节，中文 label，默认值为提案）
 
 - `enabled`（默认 true；M1 仅读操作，M2 起含写动作——生产部署注意事项注明）
-- `poll_interval_minutes`（窗口内拉取间隔，默认 15）、`comment_poll_enabled`（默认 true）、`comment_poll_interval_minutes`（默认 30）
+- `poll_interval_minutes`（窗口内拉取间隔，默认 15）、`comment_poll_enabled`（默认 true）、`comment_poll_interval_minutes`（默认 30;M2.1 起废弃,由 `notification_interval_seconds`（统一通知轮询间隔,默认 120 秒,最小 30）替代,不再消费）
 - `decision_window_seconds`（轮完成信号的超时兜底上限，默认 75；须大于最坏 planner 轮延迟）
 - `tool_whitelist`（默认 `["wait","reply","query_memory","query_person_profile","memo_write","memo_read","inspect_image"]`；M2 起 `qzone_like` 并入默认）
 - `virtual_group_id`（默认 `"qzone_feed"`）、`virtual_group_name`（默认 `"QQ空间"`）

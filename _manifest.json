@@ -1,6 +1,6 @@
 {
   "manifest_version": 2,
-  "version": "0.5.0",
+  "version": "0.5.1",
   "name": "Catsitate 核心人格插件",
   "description": "Catsitate 的注入框架、时间节日天气感知、好感度、备忘录、贴表情、戳一戳、reply 补传、图片重看、QQ空间动态感知与互动",
   "author": {

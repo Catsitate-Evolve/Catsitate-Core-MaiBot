@@ -202,6 +202,9 @@ def test_notify_poll_self_skip_dedup_and_intent_occupied(tmp_path):
 
     comments = {"feed1": [
         CommentItem(comment_tid="c0", uin=BOT_UIN, nickname="我", content="自评", create_time=""),
+        # 空 comment_tid 的畸形评论(T11 审查遗留):跳过不构造通知(防空 tid 畸形请求)
+        CommentItem(comment_tid="", uin="20001", nickname="小蓝", content="畸形评论",
+                    create_time=str(int(_time.time()))),
         CommentItem(comment_tid="c1", uin="20000", nickname="小红", content="好友评论",
                     create_time=str(int(_time.time()))),
     ]}
@@ -240,6 +243,11 @@ def test_notify_poll_source_b_reply_routes_to_friend_thread(tmp_path):
     # 源B目标圈定:bot 曾在好友 30000 的说说下发过评论(note_bot_comment 留痕)
     p.qzone_comment_seen.note_bot_comment("ffeed1", "30000", "我的评论", "2026-08-31T10:00:00")
     raw = {"usrinfo": {"uin": "30000"}, "msglist": [{"tid": "ffeed1", "commentlist": [
+        # 空 reply_tid 的畸形回复(T11 审查遗留):跳过不构造通知(防空 tid 畸形请求)
+        {"tid": "bc1", "uin": BOT_UIN, "list_3": [
+            {"tid": "", "uin": "30000", "name": "阿好", "content": "畸形回复",
+             "create_time": str(int(_time.time()))},
+        ]},
         {"tid": "bc1", "uin": BOT_UIN, "list_3": [
             {"tid": "rr1", "uin": "30000", "name": "阿好", "content": "说得对",
              "create_time": str(int(_time.time()))},
@@ -264,6 +272,7 @@ def test_notify_poll_source_b_reply_routes_to_friend_thread(tmp_path):
     assert msg["message_info"]["user_info"]["user_id"] == "30000"
     text = msg["raw_message"][0]["data"]
     assert "(通知) 阿好 回复了你在他人说说下的评论" in text and "阿好: 说得对" in text
+    assert "你曾评论: 我的评论" in text  # T12 源B正文补 bot 原评论留痕(note_bot_comment 取回)
     assert "notify_reply_ffeed1_rr1" in msg["message_id"]
     intent = p._qzone_outbound_intent
     assert intent is not None and intent.kind == "comment_reply"

@@ -108,6 +108,11 @@ def _time_prefix(post_dt: datetime, now_dt: datetime) -> str:
 def comment_time_prefix(create_time: str, now_epoch: float) -> str:
     """评论注入正文的时间前缀薄封装(终审 I2,方案 B 同款语义):发布时间由正文承载。
 
+    当前无调用方,保留待复用(M2.1 联调修正 2026-08-31):通知内容现在经
+    build_feed_message 从 abstime 统一处理时间前缀,本函数不再被轮询侧直接
+    调用;语义与 _time_prefix 一致,留作未来需要单独拼评论时间前缀的消费者
+    复用,不删以防重造。
+
     create_time 为 msglist commentlist 的 epoch 秒字符串;空/非法/非正返回空串
     (回退形态,调用方不截断注入)。新鲜度截断的判定在 plugin 轮询侧,此处只管前缀。
     """

@@ -63,6 +63,22 @@ def test_bot_commented_friends_migration(tmp_path):
     assert "123" in s.bot_commented_friends()
 
 
+def test_get_bot_comment_text(tmp_path):
+    """T12 源B通知正文引用:取 bot 在该说说下最近一条自评文本(键后缀剥出);
+    无留痕返回空串;LIKE 通配符转义防 feed_tid 含 %/_ 时误匹配其它说说。"""
+    s = CommentSeenStore(SQLiteStore(tmp_path / "t.db"))
+    s.ensure_schema()
+    assert s.get_bot_comment_text("f1") == ""  # 无留痕 → 空串
+    s.note_bot_comment("f1", "30000", "第一条", "2026-08-31T10:00:00")
+    s.note_bot_comment("f1", "30000", "第二条(更近)", "2026-08-31T11:00:00")
+    s.note_bot_comment("f2", "30000", "别的说说", "2026-08-31T12:00:00")
+    assert s.get_bot_comment_text("f1") == "第二条(更近)"  # 取 created_at 最近
+    assert s.get_bot_comment_text("f2") == "别的说说"
+    # LIKE 通配安全:feed_tid 含 _ 不误匹配单字通配形态("axb" 不等于 "a_b")
+    s.note_bot_comment("axb", "30000", "被误匹配的", "2026-08-31T13:00:00")
+    assert s.get_bot_comment_text("a_b") == ""
+
+
 def test_prune(tmp_path):
     s = CommentSeenStore(SQLiteStore(tmp_path / "t.db"))
     s.ensure_schema()

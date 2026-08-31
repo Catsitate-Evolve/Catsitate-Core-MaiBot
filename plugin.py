@@ -954,6 +954,8 @@ class CatsitatePlugin(MaiBotPlugin):
             return
         for feed_tid, items in comments.items():
             for c in items:
+                if not c.comment_tid:
+                    continue  # 空 comment_tid 的畸形条目:跳过(防空 tid 畸形请求,T11 审查遗留)
                 if str(c.uin) == bot_uin:
                     # 自己发出的评论:重见即登记(幂等,note_bot_comment 独立键空间;
                     # 自己说说的主人即 bot,friend_uin 记 bot_uin——源B 反查会因此
@@ -1018,6 +1020,8 @@ class CatsitatePlugin(MaiBotPlugin):
                 for r in parse_feed_replies(raw, bot_uin=bot_uin):
                     if not r.feed_tid:
                         continue  # 批①遗留:空 feed_tid 的 ReplyItem 过滤
+                    if not r.reply_tid:
+                        continue  # 空 reply_tid 的畸形回复:跳过(防空 tid 畸形请求,T11 审查遗留)
                     key = f"{r.feed_tid}:{r.parent_comment_tid}:reply:{r.reply_tid}"
                     if not self.qzone_comment_seen.is_new(key):
                         continue
@@ -1030,10 +1034,17 @@ class CatsitatePlugin(MaiBotPlugin):
                             "QQ空间楼中楼回复过旧跳过(create_time=%s,昵称=%s)", r.create_time, r.nickname
                         )
                         continue
+                    # bot 原评论文本从 note_bot_comment 留痕取(ReplyItem 无此字段,
+                    # 键 "{feed_tid}:bot:{text}" 剥出);无留痕时省略该行(不硬凑上下文)
+                    bot_text = self.qzone_comment_seen.get_bot_comment_text(r.feed_tid)
+                    notification_lines = [f"(通知) {r.nickname} 回复了你在他人说说下的评论"]
+                    if bot_text:
+                        notification_lines.append(f"你曾评论: {bot_text}")
+                    notification_lines.append(f"{r.nickname}: {r.content}")
                     notifications.append(FeedItem(
                         tid=f"notify_reply_{r.feed_tid}_{r.reply_tid}",
                         abstime=r.create_time, uin=str(r.uin), nickname=r.nickname,
-                        content=f"(通知) {r.nickname} 回复了你在他人说说下的评论\n{r.nickname}: {r.content}",
+                        content="\n".join(notification_lines),
                         source="notify", friend_uin=friend_uin,
                     ))
                     self.qzone_comment_seen.fav_event(

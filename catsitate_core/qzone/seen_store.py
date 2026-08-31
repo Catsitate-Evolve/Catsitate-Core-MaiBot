@@ -26,6 +26,7 @@ class SeenStore:
                 tid TEXT PRIMARY KEY,
                 abstime TEXT NOT NULL DEFAULT '',
                 author_uin TEXT NOT NULL DEFAULT '',
+                author_nickname TEXT NOT NULL DEFAULT '',
                 summary TEXT NOT NULL DEFAULT '',
                 state TEXT NOT NULL DEFAULT 'queued' CHECK (state IN ('queued', 'seen')),
                 interacted INTEGER NOT NULL DEFAULT 0,
@@ -34,8 +35,14 @@ class SeenStore:
             )
             """
         )
+        # 旧库迁移(M-2):CREATE IF NOT EXISTS 不更新既有表,PRAGMA 查列缺则 ALTER 补
+        columns = {r[1] for r in self.store.query("PRAGMA table_info(qzone_feeds)")}
+        if "author_nickname" not in columns:
+            self.store.execute("ALTER TABLE qzone_feeds ADD COLUMN author_nickname TEXT NOT NULL DEFAULT ''")
 
-    def mark_queued(self, tid: str, *, abstime: str, author_uin: str, summary: str) -> bool:
+    def mark_queued(
+        self, tid: str, *, abstime: str, author_uin: str, summary: str, author_nickname: str = ""
+    ) -> bool:
         """入队标记;tid 已存在(任意状态)返回 False=重复,由调用方跳过。"""
 
         if not tid:
@@ -44,8 +51,9 @@ class SeenStore:
         if rows:
             return False
         self.store.execute(
-            "INSERT INTO qzone_feeds (tid, abstime, author_uin, summary, state, created_at) VALUES (?, ?, ?, ?, 'queued', ?)",
-            (tid, abstime, author_uin, summary[:120], datetime.now().strftime(_ISO)),
+            "INSERT INTO qzone_feeds (tid, abstime, author_uin, author_nickname, summary, state, created_at) "
+            "VALUES (?, ?, ?, ?, ?, 'queued', ?)",
+            (tid, abstime, author_uin, author_nickname, summary[:120], datetime.now().strftime(_ISO)),
         )
         return True
 
@@ -69,11 +77,18 @@ class SeenStore:
 
         since = (now - timedelta(days=max(days, 1))).strftime(_ISO)
         rows = self.store.query(
-            "SELECT tid, abstime, author_uin, summary, injected_at FROM qzone_feeds "
+            "SELECT tid, abstime, author_uin, author_nickname, summary, injected_at FROM qzone_feeds "
             "WHERE state = 'seen' AND injected_at >= ? ORDER BY injected_at DESC LIMIT ?",
             (since, max(limit, 1)),
         )
         return [
-            {"tid": r[0], "abstime": r[1], "author_uin": r[2], "summary": r[3], "injected_at": r[4]}
+            {
+                "tid": r[0],
+                "abstime": r[1],
+                "author_uin": r[2],
+                "author_nickname": r[3],
+                "summary": r[4],
+                "injected_at": r[5],
+            }
             for r in rows
         ]

@@ -5,6 +5,7 @@
 
 from __future__ import annotations
 
+from collections import OrderedDict
 from datetime import date, datetime, timedelta
 from pathlib import Path
 from typing import Any
@@ -81,6 +82,8 @@ from catsitate_core.time_aware import (
 )
 
 logger = logging.getLogger("catsitate.core")
+
+SNAPSHOT_CACHE_MAX = 256  # 快照项缓存条数上限(背包 M-1,超限 LRU 逐最旧)
 
 
 class _ModuleLogForwarder(logging.Handler):
@@ -205,7 +208,7 @@ class CatsitatePlugin(MaiBotPlugin):
             )
             """
         )
-        self._snapshot_cache: dict[str, dict] = {}  # 注入块文本 -> 快照 UserMessageItem
+        self._snapshot_cache: OrderedDict[str, dict] = OrderedDict()  # 注入块文本 -> 快照 UserMessageItem(LRU 上限 SNAPSHOT_CACHE_MAX)
         self._env_cache: dict[str, str] = {}  # content_key -> 环境块文本
         self._env_fetched_at: datetime | None = None
         self._stream_cache: dict[str, dict] = {}  # session_id -> 流信息(说话人解析,10 分钟 TTL)
@@ -787,7 +790,13 @@ class CatsitatePlugin(MaiBotPlugin):
                 # 单个好友失败不中止整轮(逐人隔离,显式告警)
                 self.ctx.logger.exception("QQ空间说说拉取失败(uin=%s),该好友本轮跳过", friend["user_id"])
                 continue
-            added = [f for f in feeds if self.qzone_seen.mark_queued(f.tid, abstime=f.abstime, author_uin=f.uin, summary=f.content[:60])]
+            added = [
+                f for f in feeds
+                if self.qzone_seen.mark_queued(
+                    f.tid, abstime=f.abstime, author_uin=f.uin, summary=f.content[:60],
+                    author_nickname=friend["nickname"],
+                )
+            ]
             if added:
                 self.qzone_injector.enqueue(added)
                 added_total += len(added)
@@ -1239,6 +1248,7 @@ class CatsitatePlugin(MaiBotPlugin):
 
         cached = self._snapshot_cache.get(text)
         if cached is not None:
+            self._snapshot_cache.move_to_end(text)  # 命中刷新新近度(LRU,背包 M-1)
             return cached
         item_id = "catsitate-inject-" + hashlib.sha256(text.encode("utf-8")).hexdigest()[:16]
         item = {
@@ -1251,6 +1261,8 @@ class CatsitatePlugin(MaiBotPlugin):
             "parts": [{"type": "text", "text": text}],
         }
         self._snapshot_cache[text] = item
+        if len(self._snapshot_cache) > SNAPSHOT_CACHE_MAX:
+            self._snapshot_cache.popitem(last=False)  # 逐最旧(背包 M-1:文本键无界增长)
         return item
 
     async def _build_inject_blocks(self, kwargs: dict[str, Any]) -> list[InjectionBlock]:
@@ -1398,7 +1410,9 @@ class CatsitatePlugin(MaiBotPlugin):
         )
         if not entries:
             return None
-        text = "[空间] 近期刷到:" + ";".join((e["summary"] or "(无文字)") for e in entries)
+        text = "[空间] 近期刷到:" + ";".join(
+            f"{e['author_nickname'] or e['author_uin']}:{e['summary'] or '(无文字)'}" for e in entries
+        )
         key = "qzone:s:" + "|".join(e["tid"] for e in entries)
         return key, text
 
@@ -1670,6 +1684,14 @@ class CatsitatePlugin(MaiBotPlugin):
                     )
                     if t and (not best or t > best):
                         best = t
+                # 空间互动事件参与衰减计时基准(spec §3.9:窗口外评论是真实双向互动)。
+                # 事件时间取自事件表全局、不依赖流存在——流消亡(上文 continue)只影响
+                # 消息素材基准不影响事件基准;读取失败告警后按空串(不参与 max)
+                event_ts = ""
+                try:
+                    event_ts = self.qzone_comment_seen.last_fav_interaction(user_id)
+                except Exception as exc:  # noqa: BLE001
+                    self.ctx.logger.warning("衰减取空间互动事件失败,该人事件基准按空处理(user=%s):%s", user_id, type(exc).__name__)
                 # 最近一次衰减判定时间作为基准参与取 max(该人全局,跨流)
                 decay_rows = self.store.query(
                     "SELECT judged_at FROM favorability_log WHERE user_id = ? AND judge_id LIKE 'decay-%' "
@@ -1677,7 +1699,7 @@ class CatsitatePlugin(MaiBotPlugin):
                     (user_id,),
                 )
                 decay_ts = decay_rows[0][0] if decay_rows else ""
-                candidates.append((user_id, max(best or "", decay_ts)))
+                candidates.append((user_id, max(best or "", decay_ts, event_ts or "")))
             persona, style = await self._persona_context()
             results = await self.decay.scan_and_apply(candidates, persona=persona, behavior_style=style)
             for r in results:
@@ -2077,6 +2099,27 @@ class CatsitatePlugin(MaiBotPlugin):
                 except Exception:
                     self.ctx.logger.warning("结算取消息失败(user=%s,stream=%s),跳过该流", user_id, stream_id)
             persona, style = await self._persona_context()
+            # 空间互动事件并入结算素材(spec §3.9,LLM 计权无硬编码数值)。
+            # 本方法素材形态是 history 列表(build_material 的输入 list[dict]),
+            # 事件按合成 user 消息追加:role/user_id=目标保证进入素材锚点,
+            # ts=now+seq 取大保证渲染后落在素材文本末尾;stream_id 用合成流隔离邻居
+            today = datetime.now().strftime("%Y-%m-%d")
+            try:
+                events = self.qzone_comment_seen.fav_events_on(today, user_id)
+            except Exception as exc:  # noqa: BLE001
+                events = []
+                self.ctx.logger.warning("空间互动事件读取失败,本次结算不含事件素材(user=%s):%s", user_id, type(exc).__name__)
+            for i, e in enumerate(events[:5]):
+                history.append({
+                    "role": "user",
+                    "user_id": user_id,
+                    "stream_id": "qzone-events",  # 合成流:不与真实流撞 id,事件互为邻居
+                    "text": f"[空间互动] {'评论了你的说说' if e['kind'] == 'COMMENT' else '你评论/点赞了TA'}: {e['text'][:60]}",
+                    "seq": 10 ** 9 + i,  # 排序键取大且逐条唯一(build_material 以 (stream,seq) 去重),保证全量落在素材末尾
+                    "ts": datetime.now().strftime("%Y-%m-%dT%H:%M:%S"),
+                    "is_group": False,
+                    "addressed": None,
+                })
             result = await self.fav_executor.settle(  # 仓库现有属性名为 fav_executor(plugin.py:85)
                 user_id, history, kind, model=self.config.favorability.llm_model,
                 persona=persona, behavior_style=style,

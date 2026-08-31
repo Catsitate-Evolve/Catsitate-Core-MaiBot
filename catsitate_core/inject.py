@@ -2,13 +2,17 @@
 
 顺序固定:等级规则块 → 环境块 → 日程块 → 空间块 → 备忘块 → 好感度块(按稳定性降序,规格 §4.1)。
 空块跳过;同一 (module, content_key, text) 内容未变时字节级复用上一轮渲染结果。
+缓存上限 LRU(背包 M-1):内容键含全量文本,长周期运行会无界增长,超限逐最旧。
 """
 
 from __future__ import annotations
 
+from collections import OrderedDict
 from dataclasses import dataclass
 
 BLOCK_ORDER: tuple[str, ...] = ("level_rule", "environment", "schedule", "qzone", "memo", "favorability")  # 三期:qzone 块插日程块之后(spec §3.4)
+
+CACHE_MAX = 512  # 渲染缓存条数上限(M-1,超限 LRU 逐最旧)
 
 
 @dataclass(frozen=True)
@@ -21,10 +25,10 @@ class InjectionBlock:
 
 
 class InjectAssembler:
-    """注入块组装器:排序 + 版本化缓存复用。"""
+    """注入块组装器:排序 + 版本化缓存复用(LRU 上限 CACHE_MAX)。"""
 
     def __init__(self) -> None:
-        self._cache: dict[str, dict] = {}
+        self._cache: OrderedDict[str, dict] = OrderedDict()
 
     def render(self, blocks: list[InjectionBlock]) -> list[dict]:
         """按固定顺序渲染为消息列表(role=user)。"""
@@ -47,10 +51,14 @@ class InjectAssembler:
             if message is None:
                 message = {"role": "user", "content": block.text}
                 self._cache[cache_key] = message
+                if len(self._cache) > CACHE_MAX:
+                    self._cache.popitem(last=False)  # 逐最旧
+            else:
+                self._cache.move_to_end(cache_key)  # 命中刷新新近度
             messages.append(message)
         return messages
 
     def reset(self) -> None:
         """清空缓存(配置热重载时调用)。"""
 
-        self._cache = {}
+        self._cache = OrderedDict()

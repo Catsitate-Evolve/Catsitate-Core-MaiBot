@@ -54,3 +54,28 @@ def test_mark_interacted_flag(tmp_path):
     s.mark_queued("t", abstime="", author_uin="u", summary="")
     s.mark_seen("t", "2026-08-30T20:00:00")
     s.mark_interacted("t")  # 不抛错即可(M2 消费)
+
+
+def test_author_nickname_column_and_summary(tmp_path):
+    """M-2:author_nickname 列(新库直接建列,旧库 PRAGMA 迁移补列)。"""
+
+    s = SeenStore(_store(tmp_path))
+    s.ensure_schema()
+    s.mark_queued("t1", abstime="", author_uin="10001", summary="a", author_nickname="小明")
+    s.mark_seen("t1", "2026-08-31T12:00:00")
+    rows = s.recent_seen(limit=5, days=3, now=datetime(2026, 8, 31, 12, 0, 0))
+    assert rows[0]["author_nickname"] == "小明"
+    # 旧列缺失迁移:预建缺列表(如实复刻 T2 原始列集)→ ensure_schema 补列不抛
+    store2 = SQLiteStore(tmp_path / "old.db")
+    store2.execute(
+        "CREATE TABLE qzone_feeds (tid TEXT PRIMARY KEY, abstime TEXT NOT NULL DEFAULT '', "
+        "author_uin TEXT NOT NULL DEFAULT '', summary TEXT NOT NULL DEFAULT '', "
+        "state TEXT NOT NULL DEFAULT 'queued' CHECK (state IN ('queued', 'seen')), "
+        "interacted INTEGER NOT NULL DEFAULT 0, injected_at TEXT NOT NULL DEFAULT '', "
+        "created_at TEXT NOT NULL DEFAULT '')"
+    )
+    s2 = SeenStore(store2)
+    s2.ensure_schema()  # ALTER 补列
+    s2.mark_queued("x", abstime="", author_uin="u", summary="", author_nickname="旧库")
+    s2.mark_seen("x", "2026-08-31T12:00:00")
+    assert s2.recent_seen(limit=1, days=1, now=datetime(2026, 8, 31, 12, 0, 0))[0]["author_nickname"] == "旧库"

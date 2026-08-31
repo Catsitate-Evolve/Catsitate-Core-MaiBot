@@ -122,6 +122,12 @@ def test_m2_wiring_source_assertions():
     assert 'self._qzone_outbound_intent = None' in src  # 意图一次性消费
     # 审查必修:远端成功即刻消费意图(记账失败不得把意图留到下一条出站→重复评论)
     assert 'self._qzone_outbound_intent = None  # 远端成功即刻消费' in src
+    # T7 接线:好感度显式事件消费(结算素材并入 + 衰减计时基准)
+    assert "fav_events_on(" in src and "last_fav_interaction(" in src
+    # T7 M-1:快照缓存 LRU 上限
+    assert "SNAPSHOT_CACHE_MAX" in src and "popitem(last=False)" in src
+    # T7 M-2:见闻摘要带作者昵称
+    assert 'author_nickname=friend["nickname"]' in src and "author_nickname" in src
 
 
 def test_selfcheck_blocks_talk_value_zero():

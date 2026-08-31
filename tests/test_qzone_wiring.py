@@ -12,6 +12,7 @@ import asyncio
 from datetime import datetime, timedelta
 
 from catsitate_core.config import CatsitateConfig
+from catsitate_core.qzone.client import QzoneAuthError
 from catsitate_core.qzone.comment_seen import CommentSeenStore
 from catsitate_core.qzone.discovery import FeedDiscovery
 from catsitate_core.qzone.injector import FeedInjector
@@ -1031,3 +1032,199 @@ def test_poll_feeds_falls_back_to_legacy_on_discovery_failure(tmp_path, monkeypa
     assert len(p._ctx.gateway.calls) == 1  # 旧路径动态仍注入
     assert p._ctx.gateway.calls[0][1]["message_id"].startswith("qzone_lt1_")
     assert p.qzone_seen.is_new_candidate("lt1") is False  # 已登记
+
+
+# ---- M3 终审修复波:I1(浏览流bot自我排除)+ I2(发现层登录态失效行为) ----
+
+
+class _StubCookie:
+    """cookie 管理桩:只记录 invalidate 调用次数(登录态自愈链断言用)。"""
+
+    def __init__(self):
+        self.invalidate_calls = 0
+
+    def invalidate(self):
+        self.invalidate_calls += 1
+
+
+def test_poll_feeds_excludes_bot_own_feed_from_enrichment(tmp_path, monkeypatch):
+    """终审 I1:发现层过滤须排除 bot 自己的说说(自己动态不充实不注入)——
+    源B侧交叉已有同款排除(1211 行 d.uin != bot_uin),浏览流对齐;否则 bot 自己
+    发的说说会被当「新动态」充实注入,形成自我围观。"""
+
+    sleeps: list = []
+    _patch_sleep(monkeypatch, sleeps)
+    p = _make_plugin(tmp_path)
+    p._schedule_data = _active_qzone_schedule()
+
+    enrich_calls: list = []
+
+    class _StubEnrichClient(_StubUnifiedClient):
+        async def get_user_feeds(self, *, target_uin, nickname, num=5):
+            enrich_calls.append((target_uin, nickname, num))
+            return [FeedItem(tid="friendtid", abstime="1750000200", uin="10001",
+                             nickname="小明", content="好友新动态")]
+
+    # 发现层:bot 自己的新说说(mytid)+好友新说说(friendtid)——只有后者应被充实注入
+    p.qzone_client = _StubEnrichClient([
+        FeedDiscovery(tid="mytid", uin=BOT_UIN, nickname="我",
+                      abstime="1750000300", appid=311),
+        FeedDiscovery(tid="friendtid", uin="10001", nickname="小明",
+                      abstime="1750000200", appid=311),
+    ])
+    asyncio.run(p._qzone_poll_feeds())
+
+    # 充实层只对好友调用(bot 自己零充实);好友动态恰好注入一次,bot 动态不注入
+    assert enrich_calls == [("10001", "小明", 3)]
+    assert [c[1]["message_id"] for c in p._ctx.gateway.calls] == ["qzone_friendtid_1"]
+    # bot 自己的 tid 未登记未入队(不占判重键);好友 tid 已随注入标记已见
+    assert p.qzone_seen.is_new_candidate("mytid") is True
+    states = dict(p.store.query("SELECT tid, state FROM qzone_feeds"))
+    assert states == {"friendtid": "seen"}
+
+
+def test_poll_feeds_auth_error_invalidates_cookie_and_skips_legacy(tmp_path, monkeypatch):
+    """终审 I2-①:发现层抛 QzoneAuthError → cookie invalidate 被调 + 不回退
+    legacy(cookie 失效对两路径同源,回退只会重复失败多打一轮 API)——
+    _qzone_poll_feeds_legacy 零调用,显式告警。"""
+
+    p = _make_plugin(tmp_path)
+    p._schedule_data = _active_qzone_schedule()
+    cookie = _StubCookie()
+    p.qzone_cookie = cookie
+
+    class _AuthFailClient:
+        async def get_unified_timeline(self, *, count=20):
+            del count
+            raise QzoneAuthError("登录态失效(code=-3000)")
+
+    p.qzone_client = _AuthFailClient()
+
+    legacy_calls: list = []
+
+    async def _legacy_probe():
+        legacy_calls.append(1)
+
+    monkeypatch.setattr(p, "_qzone_poll_feeds_legacy", _legacy_probe)
+    asyncio.run(p._qzone_poll_feeds())
+
+    assert cookie.invalidate_calls == 1  # cookie 已作废(下轮重取)
+    assert legacy_calls == []  # 不回退 legacy 旧路径
+    assert p._ctx.gateway.calls == []  # 本轮零注入
+    assert any(
+        level == "warning" and "登录态失效" in str(a[0]) and "cookie 已作废" in str(a[0])
+        for level, a in p.logs
+    )
+
+
+def test_notify_scan_source_b_discovery_failure_does_not_block_source_a(tmp_path, monkeypatch):
+    """终审 I2-②:源B发现层抛普通 Exception → 源A已得通知照常入队注入(源B仅是
+    增量来源,失败不阻断源A),并显式告警源B跳过。"""
+
+    import time as _time
+
+    sleeps: list = []
+    _patch_sleep(monkeypatch, sleeps)
+    p = _make_plugin(tmp_path)
+    p.qzone_injector.window_started()
+    # bot 曾在好友 30000 说说下评论——若源B不失败,会再多一次发现层后的拉取路径;
+    # 本测试断言失败路径:发现层抛错后本轮源B静默跳过,不影响源A通知
+    fresh = (datetime.now() - timedelta(minutes=1)).strftime("%Y-%m-%dT%H:%M:%S")
+    p.qzone_comment_seen.note_bot_comment("ffeed1", "30000", "我的评论", fresh)
+
+    class _SourceBFailClient(_StubUnifiedClient):
+        """源A返回一条好友评论;源B发现层抛 RuntimeError。"""
+
+        def __init__(self):
+            super().__init__([])
+
+        async def get_own_feed_comments(self, *, bot_uin, num=10):
+            del bot_uin, num
+            return {"feed1": [
+                CommentItem(comment_tid="c1", uin="20000", nickname="小红",
+                            content="好友评论", create_time=str(int(_time.time()))),
+            ]}, {"feed1": "今天的心情"}
+
+        async def get_unified_timeline(self, *, count=20):
+            del count
+            raise RuntimeError("空间统一时间线请求失败: HTTP 502")
+
+    p.qzone_client = _SourceBFailClient()
+    asyncio.run(p._qzone_notify_scan())
+
+    # 源A通知照常入队注入恰一次;意图对位源A(comment_reply 指向 bot 自己的说说)
+    assert len(p._ctx.gateway.calls) == 1
+    assert p._ctx.gateway.calls[0][1]["message_info"]["user_info"]["user_id"] == "20000"
+    intent = p._qzone_outbound_intent
+    assert intent is not None and intent.kind == "comment_reply"
+    assert (intent.tid, intent.target_qq, intent.comment_tid) == ("feed1", BOT_UIN, "c1")
+    # 源B失败显式告警(不静默)
+    assert any(
+        level == "exception" and "源B发现层失败" in str(a[0]) for level, a in p.logs
+    )
+
+
+def test_notify_scan_source_b_auth_error_invalidates_cookie_and_keeps_source_a(tmp_path, monkeypatch):
+    """M3 终审 Minor1:源B发现层抛 QzoneAuthError → cookie invalidate 被调且
+    显式告警,但不 return——源A已得通知照常入队注入(源B增量终止,源A不受阻)。"""
+
+    import time as _time
+
+    _patch_sleep(monkeypatch, [])
+    p = _make_plugin(tmp_path)
+    p.qzone_injector.window_started()
+    cookie = _StubCookie()
+    p.qzone_cookie = cookie
+    fresh = (datetime.now() - timedelta(minutes=1)).strftime("%Y-%m-%dT%H:%M:%S")
+    p.qzone_comment_seen.note_bot_comment("ffeed1", "30000", "我的评论", fresh)  # 名单非空→进源B
+
+    class _SourceBAuthFailClient(_StubUnifiedClient):
+        """源A返回一条好友评论;源B发现层抛 QzoneAuthError。"""
+
+        def __init__(self):
+            super().__init__([])
+
+        async def get_own_feed_comments(self, *, bot_uin, num=10):
+            del bot_uin, num
+            return {"feed1": [
+                CommentItem(comment_tid="c1", uin="20000", nickname="小红",
+                            content="好友评论", create_time=str(int(_time.time()))),
+            ]}, {"feed1": "今天的心情"}
+
+        async def get_unified_timeline(self, *, count=20):
+            del count
+            raise QzoneAuthError("登录态失效(code=-3000)")
+
+    p.qzone_client = _SourceBAuthFailClient()
+    asyncio.run(p._qzone_notify_scan())
+
+    assert cookie.invalidate_calls == 1  # cookie 已作废(下轮重取)
+    assert len(p._ctx.gateway.calls) == 1  # 源A通知照常注入(不因登录态失效被阻断)
+    intent = p._qzone_outbound_intent
+    assert intent is not None and (intent.tid, intent.target_qq) == ("feed1", BOT_UIN)
+    assert any(
+        level == "warning" and "源B登录态失效" in str(a[0]) and "cookie 已作废" in str(a[0])
+        for level, a in p.logs
+    )
+
+
+def test_notify_scan_source_b_skips_discovery_when_no_commented_friends(tmp_path, monkeypatch):
+    """M3 终审 Minor2:bot 近期未在任何好友说说下评论(名单空)→ 跳过源B发现层
+    调用(本地反查先行省 API:发现层 feeds3_html_more 一次 HTTP 省掉)。"""
+
+    _patch_sleep(monkeypatch, [])
+    p = _make_plugin(tmp_path)
+    p.qzone_injector.window_started()
+    # 不登记 note_bot_comment:bot_commented_friends 名单为空
+
+    class _ProbeClient(_StubUnifiedClient):
+        def __init__(self):
+            super().__init__([])
+
+        async def get_own_feed_comments(self, *, bot_uin, num=10):
+            del bot_uin, num
+            return {}, {}
+
+    p.qzone_client = _ProbeClient()
+    asyncio.run(p._qzone_notify_scan())
+    assert p.qzone_client.discovery_calls == 0  # 名单空:零发现层调用

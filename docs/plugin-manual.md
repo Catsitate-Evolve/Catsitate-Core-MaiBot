@@ -557,7 +557,7 @@ QQ空间虚拟流(qzone-qq)── 网关注入(route_message;出站按意图路�
 | 字段 | 默认 | 说明 |
 |---|---|---|
 | enabled | true | QQ空间模块开关(M2 起含评论/点赞等写动作);关闭或启动自检失败时拉取/注入/见闻注入/出站路由/统一通知全部跳过 |
-| poll_interval_minutes | 15 | 空间窗口内动态拉取间隔(分钟) |
+| poll_interval_minutes | 15 | 统一时间线发现层轮询间隔(分钟,含充实层新动态拉取) |
 | comment_poll_enabled | true | 统一通知轮询开关(双源:自己说说新评论+他人说说楼中楼新回复,始终运行醒着即可;M2.1 沿用作总开关) |
 | notification_interval_seconds | 120 | 统一通知轮询间隔(秒,模拟推送通知的检查频率;注册时下限 30 秒;M2.1) |
 | comment_poll_interval_minutes | 30 | **废弃**(M2 评论轮询间隔,分钟;M2.1 起由 `notification_interval_seconds` 替代,不再消费;保留仅为兼容旧配置,可安全删除) |

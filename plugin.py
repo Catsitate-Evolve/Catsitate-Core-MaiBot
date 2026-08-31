@@ -866,11 +866,18 @@ class CatsitatePlugin(MaiBotPlugin):
                 await self._qzone_poll_feeds_legacy()
                 return
             if not discoveries:
+                await self._qzone_pump()  # 空发现也泵——超时推进兜底(旧路径每轮必泵语义)
                 return
             # ② 过滤:说说(appid=311)且 seen 未登记——is_new_candidate 纯查不登记
-            # (发现≠注入,登记留给充实层 mark_queued,防预占主键判重跳过)
-            new_items = [d for d in discoveries if d.appid == 311 and self.qzone_seen.is_new_candidate(d.tid)]
+            # (发现≠注入,登记留给充实层 mark_queued,防预占主键判重跳过);排除 bot
+            # 自己(自己发的说说不当新动态围观,终审 I1 与源B侧交叉同款语义)
+            bot_uin = str(self.config.favorability.bot_user_id or "").strip()
+            new_items = [
+                d for d in discoveries
+                if d.appid == 311 and d.uin != bot_uin and self.qzone_seen.is_new_candidate(d.tid)
+            ]
             if not new_items:
+                await self._qzone_pump()  # 无新动态也泵——超时推进兜底(旧路径每轮必泵语义)
                 return
             # ③ 充实层:按作者分组(保发现顺序),每组 1 次 get_user_feeds 拉完整实体
             by_uin: dict[str, list[FeedDiscovery]] = {}
@@ -893,15 +900,24 @@ class CatsitatePlugin(MaiBotPlugin):
                     continue
                 # 匹配发现层 tid → 只注入发现层认定的这条新动态(充实页含同好友旧动态)
                 discovered_tids = {d.tid for d in group}
+                matched_tids: set[str] = set()
                 for f in feeds:
                     if f.tid not in discovered_tids:
                         continue
+                    matched_tids.add(f.tid)
                     if self.qzone_seen.mark_queued(
                         f.tid, abstime=f.abstime, author_uin=f.uin, summary=f.content[:60],
                         author_nickname=f.nickname,
                     ):
                         self.qzone_injector.enqueue([f])
                         added_total += 1
+                unmatched_tids = discovered_tids - matched_tids
+                if unmatched_tids:
+                    # 发现层认定的 tid 在充实页消失(已被删除/超出 num 窗口):debug 留痕
+                    self.ctx.logger.debug(
+                        "QQ空间充实层 tid 未匹配(uin=%s,tid=%s),该条本轮跳过",
+                        uin, ",".join(sorted(unmatched_tids)),
+                    )
                 await asyncio.sleep(2.0)  # 好友间请求间隔(防风控,Maizone 保守默认同款)
             if added_total:
                 self.ctx.logger.info("QQ空间新动态入队 %d 条(统一时间线发现 %d 条)", added_total, len(new_items))
@@ -1192,18 +1208,25 @@ class CatsitatePlugin(MaiBotPlugin):
             # M3 重构:搭统一时间线便车——只对「发现层显示有新活动+bot 评论过该好友」
             # 的说说拉评论,不再逐好友全量轮询(发现层无交集时零源B拉取)
             if len(notifications) < 3:
-                try:
-                    discoveries_b = await self.qzone_client.get_unified_timeline(count=20)
-                except Exception:
-                    # 发现层失败不阻断源A已得通知(源B仅是增量来源),显式告警
-                    self.ctx.logger.exception("QQ空间通知源B发现层失败,本轮跳过源B")
-                    discoveries_b = []
+                # 名单先行(M3 终审优化):本地反查零 HTTP,名单空则跳过发现层调用省 API
                 try:
                     commented_friends = set(self.qzone_comment_seen.bot_commented_friends(days=30))
                 except Exception:
                     # 反查失败显式告警后按空处理(源B 仅是增量来源,不阻断源A 已得通知)
                     self.ctx.logger.exception("QQ空间通知轮询源B好友反查失败,本轮跳过源B")
                     commented_friends = set()
+                discoveries_b: list[FeedDiscovery] = []
+                if commented_friends:
+                    try:
+                        discoveries_b = await self.qzone_client.get_unified_timeline(count=20)
+                    except QzoneAuthError:
+                        # 登录态失效自愈链(与浏览流同款):作废 cookie 下轮重取;不 return
+                        # ——源B仅是增量来源,终止本轮源B即可,源A已得通知照常入队
+                        self.qzone_cookie.invalidate()
+                        self.ctx.logger.warning("QQ空间通知源B登录态失效,cookie 已作废")
+                    except Exception:
+                        # 发现层失败不阻断源A已得通知(源B仅是增量来源),显式告警
+                        self.ctx.logger.exception("QQ空间通知源B发现层失败,本轮跳过源B")
                 # 交叉:发现层作者 ∈ 被评论好友 → 该好友有新活动(时间线序去重,
                 # 排除 bot 自己——自己说说已在源A覆盖)
                 active_commented: dict[str, None] = {}

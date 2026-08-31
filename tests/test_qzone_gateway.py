@@ -105,8 +105,21 @@ def test_gateway_declared_platform_constant():
 
     src = inspect.getsource(_plugin)
     assert 'MessageGateway(' in src and 'qzone-qq' in src
-    # 网关回调显式拒发
-    assert "M1_OUTBOUND_ERROR" in src
+    # 网关回调显式拒发(M2 起为按意图路由,无意图仍拒;断言同步为拒发分支告警文案)
+    assert "QQ空间出站拒绝" in src
+
+
+def test_m2_wiring_source_assertions():
+    """M2 接线源码级断言:驱动路由/点赞工具/评论轮询/意图消费。"""
+    import inspect
+
+    import plugin as _plugin
+
+    src = inspect.getsource(_plugin)
+    assert "route_outbound(" in src and "do_comment(fid=" in src and "do_reply(fid=" in src
+    assert '"qzone_like"' in src and "do_like(fid=" in src
+    assert "_qzone_comment_poll_tick" in src and "comment_reply" in src
+    assert 'self._qzone_outbound_intent = None' in src  # 意图一次性消费
 
 
 def test_selfcheck_blocks_talk_value_zero():

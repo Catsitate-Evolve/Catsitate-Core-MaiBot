@@ -37,9 +37,11 @@ from catsitate_core.prompt_deploy import sync_prompt_templates
 from catsitate_core.qzone import QZONE_GATEWAY_NAME, QZONE_PLATFORM
 from catsitate_core.qzone.protocol import parse_friend_list
 from catsitate_core.qzone.client import CookieManager, QzoneAuthError, QzoneClient
+from catsitate_core.qzone.comment_seen import CommentSeenStore
 from catsitate_core.qzone.injector import FeedInjector
 from catsitate_core.qzone.messages import build_feed_message, fit_images_to_rpc_budget
-from catsitate_core.qzone.outbound import M1_OUTBOUND_ERROR, extract_outbound_text
+from catsitate_core.qzone.outbound import extract_outbound_text
+from catsitate_core.qzone.routing import OutboundIntent, route_outbound
 from catsitate_core.qzone.scene import (
     QZONE_SCENE_TEXT, SCENE_EMPTY_CONFIG_WARNING, SCENE_MISS_WARNING,
     apply_scene_surgery, filter_tool_definitions, is_qzone_message,
@@ -124,6 +126,8 @@ class CatsitatePlugin(MaiBotPlugin):
     _qzone_group_prompt_at: float = 0.0
     _qzone_available: bool = False  # 启动自检+网关就绪后置 True(Task 12)
     _qzone_seq: int = 0  # message_id 序号(on_load 以当前秒播种,防跨重启撞车触发宿主去重)
+    _qzone_outbound_intent: OutboundIntent | None = None  # 当前出站意图(一次性消费,M2;on_load 重置)
+    _qzone_comment_task_armed: bool = False  # 评论轮询调度任务已注册标记(热重载重注册防重)
 
     # ---------- 生命周期 ----------
 
@@ -211,6 +215,9 @@ class CatsitatePlugin(MaiBotPlugin):
         # 三期 M1:QQ空间感知模块(网关/客户端/注入泵;启动自检失败则保持停用并已告警)
         self.qzone_seen = SeenStore(self.store)
         self.qzone_seen.ensure_schema()
+        # M2:评论去重与好感度显式事件表(窗口外评论轮询/点赞/出站评论的数据源)
+        self.qzone_comment_seen = CommentSeenStore(self.store)
+        self.qzone_comment_seen.ensure_schema()
         self.qzone_cookie = CookieManager(
             JsonSnapshot(data_dir / "qzone_cookies.json"),
             api_call=self.ctx.api.call,
@@ -228,6 +235,10 @@ class CatsitatePlugin(MaiBotPlugin):
         # seq 以当前秒播种:重启归零会让 qzone_{tid}_{seq} 与上一轮运行撞车,
         # 被宿主 driver_id:message_id 去重拒绝(联调缺陷#11,静默丢注入)
         self._qzone_seq = int(time.time())
+        # M2 出站意图(实例级重置;成功发出/窗口收泵时置 None,一次性消费)
+        self._qzone_outbound_intent = None
+        # 说话人映射实例级重置(类属性为共享可变态,按次加载初始化;§3.10)
+        self._last_speaker_map = {}
         # 泵并发锁:_qzone_pump 两个入口(调度 tick/轮完成信号)整体互斥,防弹出-置位间隙双弹
         self._qzone_pump_lock = asyncio.Lock()
         # 模块日志转发(联调缺陷#10):catsitate_core.* 的告警路由到插件 ctx logger,否则不可见
@@ -240,6 +251,11 @@ class CatsitatePlugin(MaiBotPlugin):
             await self._qzone_gateway_ready()
         self._scheduler = Scheduler(tick_seconds=60)
         self._scheduler.register("qzone_poll", max(self.config.qzone.poll_interval_minutes, 1) * 60, self._qzone_poll_tick)
+        # M2 窗口外评论轮询(间隔下限 5 分钟防风控;tick 内自检开关/睡眠/窗口/可用性)
+        self._scheduler.register(
+            "qzone_comment_poll", max(self.config.qzone.comment_poll_interval_minutes, 5) * 60, self._qzone_comment_poll_tick
+        )
+        self._qzone_comment_task_armed = True
         self._scheduler.register("weather", max(self.config.time_aware.weather_refresh_minutes, 1) * 60, self._refresh_environment)
         self._scheduler.register("holiday", 24 * 3600, self._refresh_environment)
         self._scheduler.register("memo_cleanup", 3600, self._cleanup_memos)
@@ -294,6 +310,12 @@ class CatsitatePlugin(MaiBotPlugin):
                 await self._qzone_gateway_ready()
                 self._scheduler.unregister("qzone_poll")
                 self._scheduler.register("qzone_poll", max(self.config.qzone.poll_interval_minutes, 1) * 60, self._qzone_poll_tick)
+                # 评论轮询间隔热重载(比照 qzone_poll;开关热生效由 tick 首行自检承担)
+                if self._qzone_comment_task_armed:
+                    self._scheduler.unregister("qzone_comment_poll")
+                    self._scheduler.register(
+                        "qzone_comment_poll", max(self.config.qzone.comment_poll_interval_minutes, 5) * 60, self._qzone_comment_poll_tick
+                    )
             self._setup_debug_logging()  # debug 开关随配置热生效
             self.ctx.logger.info("catsitate_core 配置已刷新,派生缓存已重置")
         elif scope == "bot":
@@ -553,7 +575,35 @@ class CatsitatePlugin(MaiBotPlugin):
             return msg
         return str(result.get("response") or "")
 
-    # ---------- QQ空间(M1 感知) ----------
+    @Tool(
+        "qzone_like",
+        description="给当前正在看的好友说说点赞(QQ空间)。仅在浏览动态时可用;可传 message_id 精确指定,缺省对当前说说点赞。",
+        brief_description="给当前说说点赞",
+        parameters=[ToolParameterInfo(name="message_id", param_type="string", description="目标消息 id(可选)", required=False)],
+        visibility="visible",
+    )
+    async def qzone_like(self, message_id: str = "", **kwargs: Any) -> str:
+        # 硬门控(SDK @Tool 无类级 allowed_session 通道,实测结论见任务报告):
+        # 仅虚拟流会话可用,真实聊天流调用直接拒绝
+        if str(kwargs.get("stream_id") or "") not in self._qzone_session_id_set():
+            return "该工具仅在浏览QQ空间动态时可用。"
+        if not self._qzone_available:
+            return "QQ空间模块未启用。"
+        feed = self.qzone_injector.awaiting_feed
+        if feed is None:
+            return "当前没有正在浏览的说说,无法点赞。"
+        if message_id and not message_id.startswith(f"qzone_{feed.tid}_"):
+            return f"消息 {message_id} 不是当前浏览的说说,只能对当前说说点赞。"
+        try:
+            await self.qzone_client.do_like(fid=feed.tid, target_qq=feed.uin)
+        except Exception:
+            self.ctx.logger.exception("QQ空间点赞失败(tid=%s)", feed.tid)
+            return "点赞失败,已记录日志。"
+        self.qzone_seen.mark_interacted(feed.tid)
+        self.qzone_comment_seen.fav_event(feed.uin, "OUT_LIKE", f"你点赞了 {feed.uin} 的说说")
+        return f"已点赞 {feed.nickname} 的说说。"
+
+    # ---------- QQ空间(M1 感知 / M2 互动) ----------
 
     async def _qzone_http_fetch(self, method: str, url: str, *, params: dict, headers: dict, timeout_ms: int, data: dict | None = None) -> tuple[int, bytes]:
         """httpx 薄封装(client.py 的 fetch 注入点;超时与异常上抛由调用方告警)。
@@ -638,12 +688,37 @@ class CatsitatePlugin(MaiBotPlugin):
 
     @MessageGateway("duplex", name=QZONE_GATEWAY_NAME, description="QQ空间虚拟聊天平台(动态流入/出站路由)", platform=QZONE_PLATFORM)
     async def qzone_gateway(self, *, message: dict, route: dict, metadata: dict) -> dict:
-        """duplex 驱动回调:M1 感知阶段一律显式拒发(spec §3.3 出站终局兜底)。"""
+        """duplex 驱动回调:按出站意图路由为真实评论/楼中楼回复(spec §3.3)。"""
 
         del route, metadata
         text, has_binary = extract_outbound_text(message)
-        self.ctx.logger.warning("QQ空间出站被拒(%s;binary=%s,文本预览=%.30s)", M1_OUTBOUND_ERROR, has_binary, text)
-        return {"success": False, "error": M1_OUTBOUND_ERROR}
+        action, reason = route_outbound(self._qzone_outbound_intent, text, has_binary)
+        if action == "reject":
+            self.ctx.logger.warning("QQ空间出站被拒(%s;文本预览=%.30s)", reason, text)
+            return {"success": False, "error": f"QQ空间出站拒绝: {reason}"}
+        intent = self._qzone_outbound_intent
+        try:
+            if action == "comment":
+                await self.qzone_client.do_comment(fid=intent.tid, target_qq=intent.target_qq, content=text)
+                self.qzone_seen.mark_interacted(intent.tid)
+                self.qzone_comment_seen.note_bot_comment(intent.tid, text, datetime.now().strftime("%Y-%m-%dT%H:%M:%S"))
+                self.qzone_comment_seen.fav_event(intent.target_qq, "OUT_COMMENT", f"你评论了 {intent.target_qq} 的说说: {text[:40]}")
+            else:
+                await self.qzone_client.do_reply(fid=intent.tid, target_qq=intent.target_qq,
+                                                 comment_tid=intent.comment_tid, comment_uin=intent.comment_uin,
+                                                 comment_nick=intent.comment_nick, content=text)
+                self.qzone_comment_seen.fav_event(intent.comment_uin, "COMMENT", f"{intent.comment_nick} 评论你被你回复: {text[:40]}")
+        except QzoneAuthError:
+            self.qzone_cookie.invalidate()
+            self.ctx.logger.warning("QQ空间登录态失效,cookie 已作废,下轮重取")
+            return {"success": False, "error": "登录态失效已重置"}
+        except Exception:
+            self.ctx.logger.exception("QQ空间出站动作失败(kind=%s,tid=%s),跳过", action, intent.tid)
+            return {"success": False, "error": "动作失败,详见插件日志"}
+        # 意图一次性消费:成功发出即置 None(防下一条出站误路由到旧目标;失败保留待下轮)
+        self._qzone_outbound_intent = None
+        self.ctx.logger.info("QQ空间出站成功(kind=%s,tid=%s,文本预览=%.30s)", action, intent.tid, text)
+        return {"success": True, "external_message_id": f"qzone_{action}_{intent.tid}_{int(time.time())}"}
 
     async def _qzone_poll_tick(self) -> None:
         """空间窗口内周期拉取;窗口切换时收泵并回退未读。"""
@@ -661,6 +736,7 @@ class CatsitatePlugin(MaiBotPlugin):
                 self.qzone_injector.window_ended()
                 reverted = self.qzone_seen.revert_pending()
                 self.ctx.logger.info("QQ空间窗口结束,未注入队列回退未读(%d 条)", reverted)
+            self._qzone_outbound_intent = None  # 收泵清意图(窗口外残留 reaction 会误路由下一次出站)
             return
         if not self.qzone_injector.window_active:
             self.qzone_injector.window_started()
@@ -764,7 +840,79 @@ class CatsitatePlugin(MaiBotPlugin):
                 return
             self.qzone_injector.mark_injected(feed.tid, time.monotonic())
             self.qzone_seen.mark_seen(feed.tid, datetime.now().strftime("%Y-%m-%dT%H:%M:%S"))
+            # 注入成功即设定出站意图(spec §3.3):本轮 planner 的回复将作为该条说说
+            # 的评论发出;串行泵保证注入→意图→回复消费一一对位
+            self._qzone_outbound_intent = OutboundIntent(kind="reaction", tid=feed.tid, target_qq=feed.uin)
             self.ctx.logger.info("QQ空间动态已注入(tid=%s,作者=%s)", feed.tid, feed.nickname)
+
+    async def _qzone_comment_poll_tick(self) -> None:
+        """窗口外评论轮询:好友在 bot 说说下的新评论 → 注入 → 意图楼中楼回复(spec §3.7)。"""
+
+        if not self._qzone_available:
+            return
+        if not self.config.qzone.comment_poll_enabled:
+            return
+        if self.config.sleep.enabled and self.sleep.is_sleeping():
+            return  # 睡眠绝对静默(spec §2.6)
+        if not self._schedule_data:
+            return  # 日程未生成/未恢复:无窗口可言,按窗口外继续
+        win = current_window(self._schedule_data, datetime.now().strftime("%Y-%m-%dT%H:%M"))
+        if win and win.get("kind") == "daily" and win.get("qzone"):
+            return  # qzone 窗口内由浏览流覆盖,不重复
+        bot_uin = str(self.config.favorability.bot_user_id or "").strip()
+        if not bot_uin:
+            return  # 写路径身份缺失(on_load 自检已停用模块,防御性再判)
+        if self._qzone_outbound_intent is not None:
+            return  # 上一条评论还在等 bot 回复,不叠加
+        try:
+            comments, ctx = await self.qzone_client.get_own_feed_comments(bot_uin=bot_uin, num=10)
+        except QzoneAuthError:
+            # 与 _qzone_poll_tick 同款自愈链(联调缺陷#7):作废 cookie,下轮重取
+            self.qzone_cookie.invalidate()
+            self.ctx.logger.warning("QQ空间评论轮询遇登录态失效,cookie 已作废,下轮重取")
+            return
+        except Exception:
+            self.ctx.logger.exception("QQ空间评论轮询失败,本轮跳过")
+            return
+        for feed_tid, items in comments.items():
+            for c in items:
+                if str(c.uin) == bot_uin:
+                    # 自己发出的评论:重见即登记(幂等,note_bot_comment 独立键空间),不注入
+                    self.qzone_comment_seen.note_bot_comment(feed_tid, c.content, datetime.now().strftime("%Y-%m-%dT%H:%M:%S"))
+                    continue
+                if not self.qzone_comment_seen.is_new(f"{feed_tid}:{c.comment_tid}:{c.uin}"):
+                    continue
+                feed_summary = (ctx.get(feed_tid) or "(无文字)")[:30]
+                text = f"(评 {c.nickname}) {c.content}\n(来自你的说说:{feed_summary})"
+                self._qzone_seq += 1
+                msg = {
+                    "message_id": f"qzone_comment_{feed_tid}_{c.comment_tid}_{self._qzone_seq}",
+                    "platform": QZONE_PLATFORM,
+                    "timestamp": str(int(time.time())),
+                    "message_info": {
+                        "user_info": {"user_id": str(c.uin), "user_nickname": c.nickname},
+                        "group_info": {"group_id": self.config.qzone.virtual_group_id, "group_name": self.config.qzone.virtual_group_name},
+                        "additional_config": {"is_mentioned": 1.0},
+                    },
+                    "raw_message": [{"type": "text", "data": text}],
+                }
+                try:
+                    accepted = await self.ctx.gateway.route_message(QZONE_GATEWAY_NAME, msg)
+                except Exception:
+                    self.ctx.logger.exception("QQ空间评论注入失败(%s)", c.comment_tid)
+                    return
+                if not accepted:
+                    # 注入被宿主拒绝:评论键已在 is_new 登记(发现即登记,store 契约),
+                    # 下轮判重跳过不重试——重注入会有重复回复风险,损失单条注入可接受
+                    self.ctx.logger.warning("QQ空间评论注入被宿主拒绝(%s),跳过且不标记", c.comment_tid)
+                    return
+                self._qzone_outbound_intent = OutboundIntent(
+                    kind="comment_reply", tid=feed_tid, target_qq=bot_uin,
+                    comment_tid=c.comment_tid, comment_uin=str(c.uin), comment_nick=c.nickname,
+                )
+                self.qzone_comment_seen.fav_event(str(c.uin), "COMMENT", f"{c.nickname} 评论了你的说说「{feed_summary}」: {c.content[:40]}")
+                self.ctx.logger.info("QQ空间评论已注入(%s 说:%.40s),意图=楼中楼回复", c.nickname, c.content)
+                return  # 一次一条,等 bot 回复(意图消费)后下轮再取
 
     # ---------- 命令 ----------
 
@@ -1130,8 +1278,8 @@ class CatsitatePlugin(MaiBotPlugin):
                 blocks.append(InjectionBlock("qzone", qz[0], qz[1]))
         if cfg.inject.memo_enabled and cfg.memo.enabled:
             # §3.10 read 为 OR 语义(流 ∪ 主QQ ∪ 附带QQ),一次查询即含原「流+说话人」两维度;
-            # 单查询无重复,按 id 去重保留为防御;合计 ≤ inject_max(规格 §4.4)
-            merged = self.memo.read(stream_id, speaker, limit=3)
+            # 单查询无重复,按 id 去重保留为防御;取数与截断均按 inject_max(规格 §4.4,批③遗留修正)
+            merged = self.memo.read(stream_id, speaker, limit=cfg.memo.inject_max)
             seen: set[int] = set()
             entries = []
             for entry in merged:

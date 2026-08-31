@@ -95,7 +95,11 @@ def test_qzone_section_defaults():
     assert q.max_retries == 0
     assert q.cookie_refresh_minutes == 60
     assert "wait" in q.tool_whitelist and "reply" in q.tool_whitelist
+    assert "qzone_like" in q.tool_whitelist  # M2:虚拟流点赞工具默认可用
     assert "tool_search" not in q.tool_whitelist and "msg_react" not in q.tool_whitelist
+    # M2 评论轮询两字段(spec §5)
+    assert q.comment_poll_enabled is True
+    assert q.comment_poll_interval_minutes == 30
 
 
 def test_qzone_constants():

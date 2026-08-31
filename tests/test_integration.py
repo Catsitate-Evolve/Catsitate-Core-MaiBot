@@ -1207,7 +1207,10 @@ def test_inject_blocks_memo_single_read_or_semantics(tmp_path):
     p.fav_engine.ensure_schema()
 
     blocks = asyncio.run(p._build_inject_blocks({"session_id": "p1"}))
-    assert calls == [("p1", "u1", 3)]  # 仅一次查询,说话人取私聊流对端 u1(流缓存桩)
+    # 仅一次查询,说话人取私聊流对端 u1(流缓存桩);limit 随 memo.inject_max 默认 5
+    # (批③遗留修正:取数与截断统一按 inject_max,不再硬编码 3)
+    assert calls == [("p1", "u1", p.config.memo.inject_max)]
+    assert p.config.memo.inject_max == 5  # 防默认值悄悄变化使断言失去意义
     memo_blocks = [b for b in blocks if b.module == "memo"]
     assert len(memo_blocks) == 1
     assert "跨流备忘" in memo_blocks[0].text and "流内备忘" in memo_blocks[0].text

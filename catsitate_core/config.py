@@ -218,14 +218,16 @@ class QzoneSection(PluginConfigBase):
     __ui_label__ = "QQ空间"
     __ui_order__ = 11
 
-    enabled: bool = _f(True, "QQ空间模块开关(M1:仅读动态,不发评论)", label="QQ空间模块开关")
+    enabled: bool = _f(True, "QQ空间模块开关(M2 起含评论/点赞等写动作)", label="QQ空间模块开关")
     poll_interval_minutes: int = _f(15, "空间窗口内动态拉取间隔(分钟)", label="拉取间隔(分钟)")
     decision_window_seconds: int = _f(75, "注入后等待 planner 轮完成的超时兜底(秒;须大于最坏轮延迟)", label="决策窗口超时(秒)")
     tool_whitelist: list[str] = _f(
-        ["wait", "reply", "query_memory", "query_person_profile", "memo_write", "memo_read", "inspect_image"],
+        ["wait", "reply", "query_memory", "query_person_profile", "memo_write", "memo_read", "inspect_image", "qzone_like"],
         "虚拟流 planner 工具白名单(按名过滤;硬门控不随此配置放松)",
         label="虚拟流工具白名单",
     )
+    comment_poll_enabled: bool = _f(True, "窗口外评论轮询开关(仅轮询自己说说下的新评论)", label="评论轮询开关")
+    comment_poll_interval_minutes: int = _f(30, "评论轮询间隔(分钟;注册时下限 5 分钟防风控)", label="评论轮询间隔(分钟)")
     virtual_group_id: str = _f("qzone_feed", "虚拟群聊流伪群号(勿与真实群号相同)", label="虚拟伪群号")
     virtual_group_name: str = _f("QQ空间", "虚拟群聊流显示名", label="虚拟流显示名")
     summary_count: int = _f(5, "真实聊天注入的近期已见动态条数", label="见闻摘要条数")

@@ -12,7 +12,8 @@ from catsitate_core.qzone import QZONE_PLATFORM
 
 QZONE_SCENE_TEXT = (
     "你正在用手机刷QQ空间的好友动态流。下面的消息流不是群聊发言:每条消息是一位好友发的一条说说"
-    "(可能带图,「评 XX:」开头的是该好友在别人说说下的评论)。你对某条说说的回复会作为QQ空间评论发出"
+    "(可能带图,「评 XX:」开头的是该好友在别人说说下的评论)。你对某条说说的回复会作为QQ空间评论发出;"
+    "可用 qzone_like 工具给当前说说点赞"
 )
 
 SCENE_EMPTY_CONFIG_WARNING = "群聊场景提示词配置为空(chat.reply_style.group_chat_prompt),虚拟流以注入块语义说明工作"

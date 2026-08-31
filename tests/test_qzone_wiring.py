@@ -81,6 +81,10 @@ class _StubCommentClient:
         self.fetches += 1
         return self._comments, self._ctx_map
 
+    async def get_unified_timeline(self, *, count=20):
+        del count
+        return []  # 发现层空:源B零拉取,聚焦源A行为
+
 
 class _StubWriteClient:
     """出站动作桩:记录 do_comment/do_reply 调用,恒成功。"""
@@ -282,7 +286,10 @@ def test_notify_scan_guard_awaits_even_with_intent_cleared(tmp_path):
     p._qzone_outbound_intent = None  # 意图已被清(模拟超时清意图/窗口边界)
     fetches: list = []
 
-    class _ProbeClient:
+    class _ProbeClient(_StubUnifiedClient):
+        def __init__(self):
+            super().__init__([])  # 发现层空:不进源B拉取
+
         async def get_own_feed_comments(self, *, bot_uin, num=10):
             fetches.append(1)
             return {}, {}
@@ -296,13 +303,13 @@ def test_notify_scan_guard_awaits_even_with_intent_cleared(tmp_path):
 
 
 def test_notify_poll_source_b_reply_routes_to_friend_thread(tmp_path, monkeypatch):
-    """T11 源B:bot 在好友说说下的评论收到楼中楼回复(list_3)→ 通知注入 →
-    意图 comment_reply 指向好友说说(target_qq=好友,commentId=回复 tid)。"""
+    """T11/T4-② 源B:发现层显示被评论好友有新活动→拉取其说说→楼中楼回复(list_3)
+    → 通知注入 → 意图 comment_reply 指向好友说说(target_qq=好友,commentId=回复 tid)。"""
 
     import time as _time
 
     sleeps: list = []
-    _patch_sleep(monkeypatch, sleeps)  # 源A无结果→首个源B请求前有 2 秒间隔(I2),桩掉不真等
+    _patch_sleep(monkeypatch, sleeps)  # 源B每个好友前固定 2 秒间隔(I2),桩掉不真等
 
     p = _make_plugin(tmp_path)
     p.qzone_injector.window_started()
@@ -322,15 +329,21 @@ def test_notify_poll_source_b_reply_routes_to_friend_thread(tmp_path, monkeypatc
         ]},
     ]}]}
 
-    class _StubNotifyClient:
-        """源B输入桩:源A无评论,好友 30000 的原始载荷带一条楼中楼回复。"""
+    class _StubNotifyClient(_StubUnifiedClient):
+        """源B输入桩:发现层显示 30000 有新活动,其原始载荷带一条楼中楼回复。"""
+
+        def __init__(self):
+            super().__init__([
+                FeedDiscovery(tid="ffeed1", uin="30000", nickname="阿好",
+                              abstime=str(int(_time.time())), appid=311),
+            ])
 
         async def get_own_feed_comments(self, *, bot_uin, num=10):
             del bot_uin, num
             return {}, {}
 
         async def get_user_feeds_raw(self, *, target_uin, num=5):
-            assert target_uin == "30000"  # 只拉 bot 评论过的好友
+            assert target_uin == "30000"  # 只拉「被评论过+发现层活跃」的好友
             return raw
 
     p.qzone_client = _StubNotifyClient()
@@ -390,22 +403,36 @@ def test_qzone_like_rejects_notify_awaiting(tmp_path):
 
 
 def test_notify_poll_source_b_spaces_friend_requests(tmp_path, monkeypatch):
-    """终审 I2:源B逐好友拉取带 2 秒防风控间隔——源A无结果时首个请求前也间隔
-    (与源A的 HTTP 拉取拉开);好友之间固定间隔。拉取顺序按反查好友圈定。"""
+    """终审 I2(承 M3):源B活跃好友逐个拉取带 2 秒防风控间隔(每个好友前固定,
+    含首个——源B发现层与源A都刚发过 HTTP,不再区分源A有无结果)。拉取范围按
+    「发现层活跃 ∩ bot 评论过」圈定,且按时间线顺序去重。"""
+
+    import time as _time
 
     sleeps: list = []
     _patch_sleep(monkeypatch, sleeps)
 
     p = _make_plugin(tmp_path)
-    # bot 曾在两位好友说说下评论:源B反查圈定 30000/30001
+    # bot 曾在两位好友说说下评论:与发现层求交后圈定 30000/30001
     fresh = (datetime.now() - timedelta(minutes=1)).strftime("%Y-%m-%dT%H:%M:%S")
     p.qzone_comment_seen.note_bot_comment("ffeed1", "30000", "评论一", fresh)
     p.qzone_comment_seen.note_bot_comment("ffeed2", "30001", "评论二", fresh)
 
     pulls: list = []
+    now_s = str(int(_time.time()))
 
-    class _StubSpacingClient:
-        """源A空结果;源B记录拉取顺序,载荷无楼中楼回复(只断言间隔行为)。"""
+    class _StubSpacingClient(_StubUnifiedClient):
+        """源A空结果;发现层含两好友(30000 重复出现验证去重)+未评论好友+bot 自己;
+        源B记录拉取顺序,载荷无楼中楼回复(只断言圈定与间隔行为)。"""
+
+        def __init__(self):
+            super().__init__([
+                FeedDiscovery(tid="fa1", uin="30000", nickname="好友甲", abstime=now_s, appid=311),
+                FeedDiscovery(tid="fa2", uin="30001", nickname="好友乙", abstime=now_s, appid=311),
+                FeedDiscovery(tid="fa3", uin="30000", nickname="好友甲", abstime=now_s, appid=311),  # 同好友再一条
+                FeedDiscovery(tid="fb1", uin="40000", nickname="陌生好友", abstime=now_s, appid=311),  # 未评论过
+                FeedDiscovery(tid="fme", uin=BOT_UIN, nickname="我", abstime=now_s, appid=311),  # bot 自己(源A覆盖)
+            ])
 
         async def get_own_feed_comments(self, *, bot_uin, num=10):
             del bot_uin, num
@@ -418,14 +445,13 @@ def test_notify_poll_source_b_spaces_friend_requests(tmp_path, monkeypatch):
 
     p.qzone_client = _StubSpacingClient()
     asyncio.run(p._qzone_notify_scan())
-    assert sorted(pulls) == ["30000", "30001"]  # 逐好友各拉一次
-    assert sleeps == [2.0, 2.0]  # 源A无结果:首个请求前 + 好友间,各 2 秒
+    assert pulls == ["30000", "30001"]  # 活跃∩被评论,时间线序,同好友去重,排除未评论/自己
+    assert sleeps == [2.0, 2.0]  # 每个好友前各 2 秒
 
 
-def test_notify_poll_source_b_first_pull_no_wait_when_source_a_has_result(tmp_path, monkeypatch):
-    """终审 I2 补充:源A已有通知结果时,首个源B请求前不额外等待(仅好友间间隔)。"""
-
-    import time as _time
+def test_notify_scan_source_b_zero_pulls_when_discovery_no_overlap(tmp_path, monkeypatch):
+    """M3 T4-①:发现层无「被评论过且活跃」的好友(发现层空/无交集)→ 零源B拉取
+    (get_user_feeds_raw 零调用,发现层恰 1 次);评论名单与发现层是必要交集。"""
 
     sleeps: list = []
     _patch_sleep(monkeypatch, sleeps)
@@ -433,23 +459,40 @@ def test_notify_poll_source_b_first_pull_no_wait_when_source_a_has_result(tmp_pa
     p = _make_plugin(tmp_path)
     fresh = (datetime.now() - timedelta(minutes=1)).strftime("%Y-%m-%dT%H:%M:%S")
     p.qzone_comment_seen.note_bot_comment("ffeed1", "30000", "评论一", fresh)
-    comments = {"myfeed": [
-        CommentItem(comment_tid="c1", uin="20000", nickname="小红", content="好友评论",
-                    create_time=str(int(_time.time()))),
-    ]}
+    pulls: list = []
 
-    class _StubSourceAClient:
+    class _StubNoOverlapClient(_StubUnifiedClient):
+        """源A空;发现层只含未评论过的好友 40000——与评论名单无交集。"""
+
+        def __init__(self, discoveries):
+            super().__init__(discoveries)
+            self.discovery_calls = 0
+
         async def get_own_feed_comments(self, *, bot_uin, num=10):
             del bot_uin, num
-            return comments, {"myfeed": "我的说说"}
+            return {}, {}
 
         async def get_user_feeds_raw(self, *, target_uin, num=5):
             del num, target_uin
-            return {"usrinfo": {"uin": target_uin}, "msglist": []}
+            pulls.append(1)
+            return {"usrinfo": {"uin": "40000"}, "msglist": []}
 
-    p.qzone_client = _StubSourceAClient()
+    # 场景一:发现层有动态但作者未被 bot 评论过
+    p.qzone_client = _StubNoOverlapClient([
+        FeedDiscovery(tid="fb1", uin="40000", nickname="陌生好友",
+                      abstime=str(int(datetime.now().timestamp())), appid=311),
+    ])
     asyncio.run(p._qzone_notify_scan())
-    assert sleeps == []  # 单好友且源A有结果:无任何额外等待
+    assert p.qzone_client.discovery_calls == 1  # 发现层照常调用(便车入口)
+    assert pulls == [] and sleeps == []  # 零源B拉取、零间隔等待
+
+    # 场景二:发现层为空(无任何好友动态)→同样零源B拉取
+    p2 = _make_plugin(tmp_path)
+    p2.qzone_comment_seen.note_bot_comment("ffeed1", "30000", "评论一", fresh)
+    p2.qzone_client = _StubNoOverlapClient([])
+    asyncio.run(p2._qzone_notify_scan())
+    assert p2.qzone_client.discovery_calls == 1
+    assert pulls == []
 
 
 def test_poll_tick_warns_p1_notifications_dropped_at_window_end(tmp_path):

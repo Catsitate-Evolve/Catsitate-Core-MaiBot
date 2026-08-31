@@ -98,10 +98,6 @@ QZONE_FAV_EVENT_LABELS = {
 # 重发现的次数上限,超过则保留登记放弃——防宿主持续拒绝时每轮询周期无限重注入
 QZONE_NOTIFY_MAX_RETRIES = 3
 
-# 通知轮询源B好友数硬上限(深度审查 F4):每轮逐好友 2s sleep+HTTP,好友数随
-# bot 评论足迹线性增长会失控;10 为保守值,超出截断并告警
-QZONE_SOURCE_B_FRIEND_CAP = 10
-
 
 class _ModuleLogForwarder(logging.Handler):
     """把 catsitate_core.* 模块日志转发到插件 ctx logger(联调缺陷#10)。
@@ -1193,33 +1189,31 @@ class CatsitatePlugin(MaiBotPlugin):
                     break
 
             # ---- 源B:自己在他人说说下的评论收到的新回复(list_3) ----
+            # M3 重构:搭统一时间线便车——只对「发现层显示有新活动+bot 评论过该好友」
+            # 的说说拉评论,不再逐好友全量轮询(发现层无交集时零源B拉取)
             if len(notifications) < 3:
                 try:
-                    friends = self.qzone_comment_seen.bot_commented_friends()
+                    discoveries_b = await self.qzone_client.get_unified_timeline(count=20)
+                except Exception:
+                    # 发现层失败不阻断源A已得通知(源B仅是增量来源),显式告警
+                    self.ctx.logger.exception("QQ空间通知源B发现层失败,本轮跳过源B")
+                    discoveries_b = []
+                try:
+                    commented_friends = set(self.qzone_comment_seen.bot_commented_friends(days=30))
                 except Exception:
                     # 反查失败显式告警后按空处理(源B 仅是增量来源,不阻断源A 已得通知)
                     self.ctx.logger.exception("QQ空间通知轮询源B好友反查失败,本轮跳过源B")
-                    friends = []
-                if len(friends) > QZONE_SOURCE_B_FRIEND_CAP:
-                    self.ctx.logger.warning(
-                        "源B好友数 %d 超上限,截断为 %d(深度审查 F4:每轮逐好友 2s sleep+HTTP,防 API 量随好友数线性失控)",
-                        len(friends), QZONE_SOURCE_B_FRIEND_CAP,
-                    )
-                    friends = friends[:QZONE_SOURCE_B_FRIEND_CAP]
-                first_source_b_pull = True
-                for friend_uin in friends:
-                    if friend_uin == bot_uin:
-                        continue  # 自己说说已在源A覆盖
+                    commented_friends = set()
+                # 交叉:发现层作者 ∈ 被评论好友 → 该好友有新活动(时间线序去重,
+                # 排除 bot 自己——自己说说已在源A覆盖)
+                active_commented: dict[str, None] = {}
+                for d in discoveries_b:
+                    if d.uin in commented_friends and d.uin != bot_uin:
+                        active_commented.setdefault(d.uin, None)
+                for friend_uin in active_commented:
                     if len(notifications) >= 3:
                         break
-                    # 请求间隔(终审 I2 防风控,与浏览流同款 2 秒):首个源B请求前
-                    # 仅在源A无结果时补间隔(源A 刚发过一次 HTTP 拉取);此后每个好友前固定等待
-                    if first_source_b_pull:
-                        if not notifications:
-                            await asyncio.sleep(2.0)
-                        first_source_b_pull = False
-                    else:
-                        await asyncio.sleep(2.0)
+                    await asyncio.sleep(2.0)  # 好友前固定间隔(终审 I2 防风控,与浏览流同款 2 秒)
                     try:
                         raw = await self.qzone_client.get_user_feeds_raw(target_uin=friend_uin, num=10)
                     except QzoneAuthError:
@@ -1230,7 +1224,7 @@ class CatsitatePlugin(MaiBotPlugin):
                         )
                         break
                     except Exception:
-                        self.ctx.logger.exception("QQ空间通知轮询源B失败(好友 %s),该好友跳过", friend_uin)
+                        self.ctx.logger.exception("QQ空间通知轮询源B拉取失败(好友 %s),该好友跳过", friend_uin)
                         continue
                     for r in parse_feed_replies(raw, bot_uin=bot_uin):
                         if not r.feed_tid:

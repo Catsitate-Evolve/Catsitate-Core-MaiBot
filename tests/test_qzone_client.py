@@ -160,7 +160,7 @@ def test_client_download_image_retries_once_on_transient_failure():
 
     async def fake_fetch(method, url, *, params, headers, timeout_ms):
         attempts.append(url)
-        return (404, "") if len(attempts) == 1 else (200, b"img".decode("latin-1"))
+        return (404, b"") if len(attempts) == 1 else (200, b"img")
 
     async def fake_cookie():
         return {"p_skey": "SK"}
@@ -175,7 +175,7 @@ def test_client_raises_auth_error_on_neg3000():
     from catsitate_core.qzone.client import QzoneAuthError
 
     body = '_preloadCallback(' + _json.dumps({"code": -3000, "message": "登录态失效"}) + ');'
-    client, _ = _make_client([(200, body)])
+    client, _ = _make_client([(200, body.encode("utf-8"))])
     try:
         asyncio.run(client.get_user_feeds(target_uin="1", nickname="n"))
         raised = False
@@ -214,7 +214,7 @@ def test_client_get_user_feeds_maizone_params_and_headers():
             {"tid": "t1", "appid": 311, "created_time": 1, "content": "hi", "pic": []}
         ]
     }) + ');'
-    client, seen = _make_client([(200, body)])
+    client, seen = _make_client([(200, body.encode("utf-8"))])
     items = asyncio.run(client.get_user_feeds(target_uin="8888", nickname="好友甲", num=5))
     assert [i.tid for i in items] == ["t1"]
     req = seen[0]
@@ -226,7 +226,7 @@ def test_client_get_user_feeds_maizone_params_and_headers():
 
 
 def test_client_failure_raises_no_retry_loop():
-    client, _ = _make_client([(500, "err")])
+    client, _ = _make_client([(500, b"err")])
     try:
         asyncio.run(client.get_user_feeds(target_uin="1", nickname="n"))
         raised = False
@@ -243,7 +243,7 @@ def test_client_download_image_no_size_cap_and_no_extra_params():
 
     async def fake_fetch(method, url, *, params, headers, timeout_ms):
         seen.append((url, dict(params)))
-        return 200, big.decode("latin-1")
+        return 200, big
 
     async def fake_cookie():
         return {"p_skey": "SK"}

@@ -523,16 +523,18 @@ class CatsitatePlugin(MaiBotPlugin):
 
     # ---------- QQ空间(M1 感知) ----------
 
-    async def _qzone_http_fetch(self, method: str, url: str, *, params: dict, headers: dict, timeout_ms: int) -> tuple[int, str]:
+    async def _qzone_http_fetch(self, method: str, url: str, *, params: dict, headers: dict, timeout_ms: int) -> tuple[int, bytes]:
         """httpx 薄封装(client.py 的 fetch 注入点;超时与异常上抛由调用方告警)。
 
-        params 为空时必须传 None:httpx 的 params={} 会把 URL 既有 query 整体
-        清空(联调缺陷#9 根因)——图片 CDN 的签名 URL 由此被剥掉签名段致 404。
+        统一返回 **bytes**:二进制图片经 resp.text 的 UTF-8 解码会失真,
+        再 encode('latin-1') 必炸(联调缺陷#13);文本/JSON 由 client 侧显式
+        utf-8 解码。params 为空时必须传 None:httpx 的 params={} 会把 URL
+        既有 query 整体清空(联调缺陷#9 根因)——签名 URL 由此被剥签名致 404。
         """
 
         async with httpx.AsyncClient(timeout=timeout_ms / 1000) as client:
             resp = await client.request(method, url, params=params or None, headers=headers)
-            return resp.status_code, resp.text
+            return resp.status_code, resp.content
 
     async def _qzone_selfcheck(self) -> bool:
         """启动自检:开关 → person 别名折叠(qzone-qq 与 qq 同命名空间) → focus_mode 前置。"""
@@ -681,7 +683,12 @@ class CatsitatePlugin(MaiBotPlugin):
                 return
             images: list[tuple[str, bytes]] = []
             for url in feed.image_urls:
-                data = await self.qzone_client.download_image(url)
+                try:
+                    data = await self.qzone_client.download_image(url)
+                except Exception:
+                    # 单图异常降级为占位,不中止该条动态的注入(网络抖动等瞬态)
+                    self.ctx.logger.exception("QQ空间图片下载异常(%s),以占位注入", url)
+                    data = None
                 if data is not None:
                     images.append((url, data))
             # RPC 帧预算(用户裁定 2026-08-31):体积治理=压缩而非拒收,压到帧限内

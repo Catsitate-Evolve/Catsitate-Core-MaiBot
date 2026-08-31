@@ -167,11 +167,13 @@ class QzoneClient:
             "replynum": "100", "callback": "_preloadCallback", "code_version": "1",
             "format": "jsonp", "need_comment": "1", "need_private_comment": "1",
         }
-        status, text = await self._request(
+        status, raw = await self._request(
             "GET", MSGLIST_URL, params=params, referer=f"https://user.qzone.qq.com/{target_uin}"
         )
         if status != 200:
             raise RuntimeError(f"空间说说列表请求失败(uin={target_uin}): HTTP {status}")
+        # fetch 契约统一返回 bytes(联调缺陷#13);jsonp 响应为 UTF-8 文本,严格解码
+        text = raw.decode("utf-8") if isinstance(raw, (bytes, bytearray)) else str(raw)
         payload = extract_callback_json(text)
         # 注意不可用 `code or -1`:code=0 是成功码,or 短路会误判(内部不一致最小修复)
         code = payload.get("code")
@@ -194,7 +196,8 @@ class QzoneClient:
         for attempt in (1, 2):
             status, body = await self._request("GET", url, params={}, binary=True)
             if status == 200:
-                return body.encode("latin-1") if isinstance(body, str) else body
+                # fetch 契约统一 bytes(联调缺陷#13);防御分支容忍旧 str 形态(仅限 latin-1 安全字节)
+                return body if isinstance(body, (bytes, bytearray)) else str(body).encode("latin-1", errors="ignore")
             if attempt == 1:
                 await _asyncio.sleep(1.0)
         logger.warning("空间图片下载失败(重试后仍失败): %s", url)

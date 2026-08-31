@@ -1,5 +1,15 @@
 # Changelog
 
+## v0.5.0(2026-08-31) 三期 M2:QQ空间互动
+
+- 虚拟流出站经意图状态机路由为真实动作:浏览窗口内对当前说说的回复→空间评论;窗口外评论轮询(好友在 bot 说说下的新评论→注入→楼中楼回复)。动作 API 失败不重试,登录态失效自动作废 cookie 下轮重取。
+- `qzone_like` 工具:planner 浏览时可对当前说说点赞(方法内 stream_id 硬门控——SDK Tool 无类级 allowed_session 通道,联调实证)。
+- 好感度显式事件(spec §3.9):空间评论双向计入日终结算素材(LLM 计权,事件按原始时刻去重防同日重判)并参与衰减计时;不依赖 batch_counter。
+- memo 按人重构(spec §3.10):条目=主QQ+附带QQ(≤5),跨流可见;流维度保留;memo_write 增 related_user_ids 参数;群聊说话人经消息映射解析。
+- 注入缓存 LRU 上限(assembler 512/快照 256);见闻摘要带作者昵称(旧库自动迁移)。
+- 评论轮询配置:comment_poll_enabled(默认开)/comment_poll_interval_minutes(默认 30);工具白名单默认并入 qzone_like。
+- 生产注意:写路径有真实副作用(评论/点赞发布);点赞的 own-feed 枚举无 API,好感度点赞事件仅工具路径。
+
 ## v0.4.0(2026-08-30) 三期 M1:QQ空间感知
 
 - 新增 `qzone` 配置节与 `catsitate_core/qzone/` 模块包(协议客户端/去重存储/消息构造/注入状态机/场景纯函数)。

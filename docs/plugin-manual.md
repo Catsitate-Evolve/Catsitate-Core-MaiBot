@@ -2,7 +2,7 @@
 
 - 插件 ID:`catsitate.core`
 - 仓库:https://github.com/Catsitate-Evolve/Catsitate-Core-MaiBot(目录 `plugins/catsitate_core_maibot/`)
-- 文档日期:2026-08-30(对应 v0.4.0,三期 M1:QQ空间感知;前版 v0.3.2 公测修复集:睡眠窗口语义对齐/跨午夜保留/配置 None 修复/RPC 帧修复 + 旁路模板自动部署)
+- 文档日期:2026-08-31(对应 v0.5.0,三期 M2:QQ空间互动——出站评论路由/点赞工具/评论轮询/好感度显式事件/memo 按人;前版 v0.4.0 M1 QQ空间感知,见 §3.13)
 - 适用对象:公测使用方、复审人员
 - 依据:设计规格(`docs/superpowers/specs/2026-08-14-catsitate-core-maibot-design.md`、`docs/superpowers/specs/2026-08-15-phase2-design.md`,其中全局决策 #7/#8/#9 为最终裁定;`docs/superpowers/specs/2026-08-30-phase3-qzone-design.md` 为 QQ空间 M1 依据)、`docs/acceptance-checklist.md`(全部已验收行为)、当前代码。本文内容与代码不一致处,以代码为准。
 
@@ -14,8 +14,8 @@
 
 Catsitate 是部署在 MaiBot 上的 QQ 聊天机器人人设(伪三无猫耳少女,信息海意识体)。本插件是 Catsitate 的**核心人格行为插件**,负责在**不修改主程序**的前提下:
 
-- 为 bot 提供"生活感":好感度(按人)、睡眠作息、每日日程、节日/天气/时间感知、主动发言与主动问候、QQ空间好友动态见闻;
-- 扩展行为能力:备忘录(工具+命令)、贴表情、主动戳一戳、图片重看、reply 上下文补传与可选哨兵层、QQ空间动态浏览(感知,见 §3.13);
+- 为 bot 提供"生活感":好感度(按人)、睡眠作息、每日日程、节日/天气/时间感知、主动发言与主动问候、QQ空间好友动态见闻与互动;
+- 扩展行为能力:备忘录(工具+命令)、贴表情、主动戳一戳、图片重看、reply 上下文补传与可选哨兵层、QQ空间动态浏览与评论/点赞(见 §3.13);
 - 优化请求结构使提示词缓存命中率尽量高(插件侧缓存纪律,见 §2.4)。
 
 ### 1.2 核心设计哲学
@@ -36,7 +36,8 @@ Catsitate 是部署在 MaiBot 上的 QQ 聊天机器人人设(伪三无猫耳少
 - v0.3.0(2026-08-16):**按人重构**(好感度以 QQ 号唯一标识、特别独占、主动问候统一、配置清理)。
 - v0.3.1(2026-08-18):公测修复集(睡眠窗口语义对齐、跨午夜睡眠窗口保留、超时字段 None→0、RPC 帧超限修复)。
 - v0.3.2(2026-08-18):旁路模板自动部署(插件加载时同步到主程序 `prompts/zh-CN/`,WebUI「提示词管理」可编辑)。
-- v0.4.0(2026-08-30):三期 M1 QQ空间感知(日程浏览窗口内刷好友动态/`qzone-qq` 虚拟流注入/真实聊天见闻摘要,见 §3.13),即当前公测版本。
+- v0.4.0(2026-08-30):三期 M1 QQ空间感知(日程浏览窗口内刷好友动态/`qzone-qq` 虚拟流注入/真实聊天见闻摘要,见 §3.13)。
+- v0.5.0(2026-08-31):三期 M2 QQ空间互动(出站评论路由/`qzone_like` 点赞工具/窗口外评论轮询/好感度显式事件/memo 按人重构,见 §3.13),即当前公测版本。
 
 ---
 
@@ -62,7 +63,7 @@ Catsitate 是部署在 MaiBot 上的 QQ 聊天机器人人设(伪三无猫耳少
 | `catsitate_core/image_relook.py` | 图片重看:图片段定位(按 message_id 或倒数 index)+ MIME 魔数嗅探 + VLM prompt 组装。 |
 | `catsitate_core/time_aware.py` | 时间感知:节日数据回退链(在线→库→内置)、lunar-python 农历节日/节气实算、天气码中文映射、环境块文本组装。 |
 | `catsitate_core/llm_provider.py` | 旁路 LLM 统一出口:8 个内置 prompt 模板、主程序 prompt 管理覆盖加载、稳定段前置组装、模板版本化缓存键。 |
-| `catsitate_core/qzone/` | QQ空间 M1 感知模块包:协议纯函数(g_tk 签名/ callback 解析/说说解析)、HTTP 客户端与 cookie 管理、动态去重存储(`qzone_feeds`)、注入消息构造、串行注入状态机、虚拟流场景手术与工具白名单纯函数、出站显式拒发(网关注册/启动自检/拉取调度接线在 `plugin.py`,见 §3.13)。 |
+| `catsitate_core/qzone/` | QQ空间模块包(M1 感知 + M2 互动):协议纯函数(g_tk 签名/callback 解析/说说与评论解析)、HTTP 客户端与 cookie 管理、动态去重存储(`qzone_feeds`)、评论去重与好感度事件存储(`qzone_comments`/`qzone_fav_events`)、注入消息构造、串行注入状态机、出站意图路由与场景纯函数(网关注册/启动自检/拉取与评论轮询调度接线在 `plugin.py`,见 §3.13)。 |
 | `catsitate_core/services/scheduler.py` | 后台 asyncio 任务引擎:60s tick,任务异常隔离(记录日志不中断主循环)。 |
 
 ### 2.2 消息数据流概览
@@ -75,9 +76,9 @@ Catsitate 是部署在 MaiBot 上的 QQ 聊天机器人人设(伪三无猫耳少
 replyer 出站 ── maisaka.replyer.after_response(BLOCKING LATE)──> goodnight_check(晚安入睡判定)
              ── maisaka.replyer.after_response(BLOCKING LATE)──> sentinel_check(LLM 哨兵,默认关)
 发送链路(proactive)── maisaka.proactive.trigger 由调度器在日程窗口调用,表达权交主程序
-QQ空间虚拟流(qzone-qq)── 网关注入(route_message;出站一律拒发)+ planner/replyer 两侧场景手术与工具白名单(§3.13)
+QQ空间虚拟流(qzone-qq)── 网关注入(route_message;出站按意图路由为空间评论/楼中楼回复)+ planner/replyer 两侧场景手术与工具白名单(§3.13)
                         ── planner.after_response(OBSERVE)──> qzone 轮完成信号:释放注入泵推进下一条动态
-后台调度器(60s tick)── 天气/节日/备忘清理/日终结算/衰减/睡眠/日程窗口/提醒兜底/QQ空间拉取(见 §6.2)
+后台调度器(60s tick)── 天气/节日/备忘清理/日终结算/衰减/睡眠/日程窗口/提醒兜底/QQ空间拉取/评论轮询(见 §6.2)
 ```
 
 ### 2.3 旁路 LLM prompt 纪律(§4.10)
@@ -135,6 +136,7 @@ QQ空间虚拟流(qzone-qq)── 网关注入(route_message;出站一律拒发)
 
 - 取 `window_start`(上次结算时间)之后的消息,时间正序;以该人用户消息为锚取最近 `material_max_messages`(默认 30)条,每条紧邻上下文前后各 1 条;bot 消息仅随附目标用户发过言的流(私聊全收,群聊仅 **@ 该人或 quote 解析出原发送者为该人** 的 bot 消息)。
 - 单条素材超过 `material_message_max_chars`(默认 200)在**单条尾部**截断加「…」;每条素材格式 `[user_id](私聊/群聊·user/bot) 文本`。
+- **空间互动事件并入(M2)**:当日该人的QQ空间评论/点赞显式事件(§3.13)以 `[空间互动]` 前缀追加进素材(至多 5 条,LLM 计权),事件按原始时刻过滤防同日多次结算重判。
 - 关键前提:`bot_user_id` 必须配置为 bot 自身账号 id(实机 3545773341),否则 bot 发言全部被当作用户素材、bot 识别与 quote 归属全部失效。
 
 ### 3.1.5 「特别」等级独占(全局决策 #8)
@@ -156,7 +158,7 @@ QQ空间虚拟流(qzone-qq)── 网关注入(route_message;出站一律拒发)
   - 私聊:流内任意 bot 消息时间(流内只有 bot 与用户两人,任何 bot 消息即回应);
   - 群聊:流内最近一条 **@ 该用户或 quote 了该用户** 的 bot 消息时间(bot 回应 A 不重置 B 的计时;reply 段实机为纯消息 id,经主机能力 `message.get_by_id`(message_id=reply 段,chat_id=当前流)解析原发送者后与目标用户比对;解析失败按未 quote 命中并显式告警,每轮至多一条);
   - 从未被 bot 直接回应:以该人 `favorability.judged_at`(上次结算时间)为计时基准。
-- **计时基准**(判定后重置):`max(各活跃流内最近 bot 直接互动时间, 最近一次 decay 判定时间)`——衰减判定本身即一次「想起」,7 天内不重复衰减(每人每日最多一次的天然去重)。
+- **计时基准**(判定后重置):`max(各活跃流内最近 bot 直接互动时间, 最近一次空间互动事件时间(M2,§3.13), 最近一次 decay 判定时间)`——衰减判定本身即一次「想起」,7 天内不重复衰减(每人每日最多一次的天然去重)。
 - **触发**:`daily_decay` 调度(24h,与日终结算同 tick **先衰减后结算**);扫描 `favorability` 表 **score>0 的人**(单行 per user),距基准 > `decay_after_days`(默认 7 天)进入衰减判定;睡眠期跳过。
 - **流消亡处理**:`batch_counter` 中流已不在 `chat.get_all_streams` 结果 → 显式跳过该流并告警「衰减候选流不存在(user=…,stream=…),跳过该流」;单流取消息失败只跳过该流,不中止整轮。
 - **LLM 判定**:prompt 稳定段 = 人设 + 行为风格 + 上次等级/分数/注记 + 未互动天数;输出 `{"delta": 整数(-decay_max~0), "note": "新注记(≤40 字)"}`;delta=0 表示关系稳定不减;delta>0 直接拒绝(衰减不可加分);结果按 `decay_max`(默认 3)钳制后 `apply_delta` 落库(judge_id=`decay-{时间}-{user}`,同秒多用户判重)。
@@ -255,14 +257,21 @@ QQ空间虚拟流(qzone-qq)── 网关注入(route_message;出站一律拒发)
 
 ## 3.6 备忘录与提醒(`memo.py`)
 
-### 3.6.1 读写
+### 3.6.1 按人语义(M2 重构,spec §3.10)
+
+- **条目维度 = 主 QQ + 附带 QQ 列表**(≤5 个,超限截断并提示):备忘不再以聊天流为唯一归属,任一牵连 QQ 命中当前对话对象即可见——真实私聊/群聊/虚拟流**跨流可见**(与好感度按人对齐)。
+- **写入**:`memo_write` 增 `related_user_ids` 参数(逗号分隔 QQ 号,兼容中文逗号/顿号);主 QQ 缺省取当前说话人——私聊用官方 kwargs `user_id`(可靠),群聊官方 kwargs 常为空,经 fav_count 维护的 `stream_id → 最近发言者` 映射解析(`get_recent` 回溯作兜底)。
+- **流维度保留**:`stream_id` 仍是元数据列与命中条件之一(stream 精确命中 OR 主 QQ/附带 QQ 命中任一即返回),虚拟流上写的备忘在刷到该人动态时可见;读取与注入取数两维度 OR 语义不变(各取 3 条、合计 ≤`inject_max`)。
+- 旧库 memo 表自动补 `extra_user_ids` 列(默认空 JSON 数组),无数据迁移损失。
+
+### 3.6.2 读写
 
 - 双通道:① `@Tool("memo_write"/"memo_read")`(planner 自主);② `@Command("/记一下", pattern=^/记一下\s+…, aliases=["/备忘"])`(用户显式,默认 TTL,超长直接提示精简)。
-- 写入参数:内容(≤`entry_max_chars` 80 字符,超长返回错误让 LLM 重写/提示用户)、关联流/用户、`ttl_hours`(单条有效期,缺省 `default_ttl_hours` 24h,上限 `max_ttl_hours` 168h)、`remind_at`(可选 ISO 绝对时间如 `2026-08-16T19:00`,格式非法显式拒绝,防静默丢提醒)。
-- 读取:当前流相关 + 当前说话人相关(OR 语义,两维度各取 3 条、合计 ≤`inject_max` 5 条),返回剩余有效时间;双空维度返回空。
+- 写入参数:内容(≤`entry_max_chars` 80 字符,超长返回错误让 LLM 重写/提示用户)、主 QQ/附带 QQ 列表(`related_user_ids`,≤5,按人跨流可见,见 §3.6.1)、关联流、`ttl_hours`(单条有效期,缺省 `default_ttl_hours` 24h,上限 `max_ttl_hours` 168h)、`remind_at`(可选 ISO 绝对时间如 `2026-08-16T19:00`,格式非法显式拒绝,防静默丢提醒)。
+- 读取:当前流相关 + 当前说话人相关(说话人含主 QQ 与附带 QQ,OR 语义,两维度各取 3 条、合计 ≤`inject_max` 5 条),返回剩余有效时间;双空维度返回空。
 - 清理:`memo_cleanup` 调度每小时删除过期项,日志「备忘清理:{n} 条过期」。
 
-### 3.6.2 提醒两级(remind_at 联动)
+### 3.6.3 提醒两级(remind_at 联动)
 
 1. **日程收录**:生成日程时,日程对应日 remind_at 到期的备忘并入生成 prompt 的「到期备忘」段;执行窗口时,当日到期且属于当前说话人/当前流的备忘附在日程块注入中(最多 3 条)。
 2. **独立兜底**:无可用生成日程时(默认模板撑场当天、或日程缺失),`remind_fallback` 调度(300s)在 remind_at 到点时经 `maisaka.context.append` 注入**备忘归属流**上下文(`[备忘提醒] {content}`;不主动发言);去重持久化 `remind_fired.json`(key=`remind:{id}`,防重启后旧备忘重复注入,跨天清理);注入失败不标记、留重试机会。日志:「备忘提醒兜底注入(stream={id}):{content}」。
@@ -316,15 +325,20 @@ QQ空间虚拟流(qzone-qq)── 网关注入(route_message;出站一律拒发)
 - 执行链:`message.get_recent(include_binary_data=True)` 解析 image 段(实机仅 hash 无 data)→ 经 `database.get`(Images 表按 image_hash)补读 `full_path` → 读 `/MaiMBot` 下文件补 base64 → 按字节魔数嗅探 MIME(PNG/JPEG/GIF/WEBP,兜底 png)→ 旁路 VLM 回答(文本前缀稳定;图片块追加尾部,无前缀缓存意义)。
 - 目标太旧/取不到/补图失败均**显式报错并记录日志**(不静默)。默认模型 `utils`(轻量任务;VLM 较慢建议超时 120000)。
 
-## 3.13 QQ空间(感知)(`catsitate_core/qzone/`)
+## 3.13 QQ空间(感知+互动)(`catsitate_core/qzone/`)
 
-三期 M1 范围 = **感知**:bot 在日程标记的浏览窗口内"刷"好友动态(拉取说说 → 虚拟流注入 → 主链自主反应),不评论、不点赞、不发布(虚拟流出站一律显式拒发,评论路由是 M2 交付)。
+三期 M1 范围 = **感知**:bot 在日程标记的浏览窗口内"刷"好友动态(拉取说说 → 虚拟流注入 → 主链自主反应);三期 M2 范围 = **互动**:虚拟流出站经出站意图状态机路由为**真实空间动作**(评论/楼中楼回复)、planner 可用 `qzone_like` 点赞、窗口外评论轮询、空间互动计入好感度显式事件;发布说说/日记属 M3 交付(未实现,出站意图 `AWAIT_PUBLISH` 路径 M3 接线)。
 
 ### 3.13.1 功能概览
 
-- **浏览窗口内刷好友动态**:日程生成模板 v3 支持为 daily 窗口标记 `qzone=true`(通常一天 1~2 个,适合搭配轻松的独处活动如「窝着刷手机」);`qzone_poll` 调度(默认 15 分钟)在标记窗口内拉取好友说说——**拉取架构(联调修正 2026-08-30)**:好友列表走 adapter OneBot API(`adapter.napcat.account.get_friend_list`,remark 优先作昵称),逐好友拉最近 3 条说说(空间接口 `emotion_cgi_msglist_v6` 为指定用户接口,无聚合端点),好友间固定 2 秒间隔防风控。窗口切换时收泵,未注入的队列**回退未读**(queued 行删除,下个窗口重新可见,不丢动态)。
-- **虚拟流注入(主链可引用)**:每条动态构造为一条消息注入 `qzone-qq` 虚拟群聊流,复用主程序 planner→replyer 链;注入带 `is_mentioned=1.0` 强制触发;消息时间戳=阅读时刻(注入时刻,消息流时钟单调),发布时间以相对时间前缀写入正文(今天 HH:MM/M月d日 HH:MM,bot 不会把老说说当成刚发生;方案 B 2026-08-31);「刷到但懒得理」由 planner 自主沉默(无工具调用轮)表达——意愿判断权归模型。图片带 base64 交主流水线处理(描述/落 Images 表/可 `inspect_image` 重看);体积治理=压缩到 RPC 帧限内(用户裁定 2026-08-31 终案:超 12MB base64 预算按压缩阶梯收紧,极端不达标丢弃最大图保帧并告警;主程序入站链路兜底),下载失败的图以 `[图片]` 占位。
-- **真实聊天见闻摘要注入**:真实聊天流的注入块附带 `[空间] 近期刷到:…`(近 `summary_days` 天已 seen 的 `summary_count` 条动态摘要)——bot 在真实聊天中可自然引用「我看到你发的说说」类见闻。
+- **浏览窗口内刷好友动态(M1)**:日程生成模板 v3 支持为 daily 窗口标记 `qzone=true`(通常一天 1~2 个,适合搭配轻松的独处活动如「窝着刷手机」);`qzone_poll` 调度(默认 15 分钟)在标记窗口内拉取好友说说——**拉取架构(联调修正 2026-08-30)**:好友列表走 adapter OneBot API(`adapter.napcat.account.get_friend_list`,remark 优先作昵称),逐好友拉最近 3 条说说(空间接口 `emotion_cgi_msglist_v6` 为指定用户接口,无聚合端点),好友间固定 2 秒间隔防风控。窗口切换时收泵,未注入的队列**回退未读**(queued 行删除,下个窗口重新可见,不丢动态)。
+- **出站评论路由(M2)**:插件在每个阶段前置设定**出站意图**——注入好友说说前置「reaction 意图」,bot 在虚拟流的回复文本经 duplex 驱动回调路由为对该条说说的**真实空间评论**(`emotion_cgi_re_feeds`);意图**一次性消费**——首个动作远端成功即刻置空,后续出站按无意图拒发;窗口结束未消费意图作废并记日志。动作 API 失败不重试(告警跳过);登录态失效自动作废 cookie 下轮重取(自愈链)。
+- **点赞工具(M2)**:`qzone_like`(planner 可见,白名单默认含):浏览窗口内对**当前注入的说说**点赞(可传 message_id 精确指定);方法内 stream_id 硬门控——仅虚拟流会话可用(SDK Tool 无类级 allowed_session 通道,联调实证,真实聊天流调用直接拒绝)。
+- **窗口外评论轮询(M2)**:`qzone_comment_poll` 调度(默认 30 分钟,下限 5 分钟防风控;醒着且不在 qzone 窗口时)仅拉取**好友在 bot 自己说说下的新评论**——新评论以「(评 XX) 内容」形态注入虚拟流(同样带 is_mentioned 强制触发与说说上下文),bot 回复经「comment_reply 意图」路由为**楼中楼回复**;一次一条(等上一条回复消费后下轮再取),窗口内不重复(由浏览流覆盖)。
+- **好感度显式事件(M2,spec §3.9)**:好友评论 bot 说说 / bot 评论·回复·点赞好友,双向记入 `qzone_fav_events` 事件表——结算时按 `[空间互动]` 前缀并入该人日终结算素材(LLM 计权,事件按原始时刻去重防同日 early→daily 重判),并参与自然衰减计时基准;**不依赖 batch_counter**(虚拟流消息计数已被豁免)。
+- **memo 按人语义联动(M2)**:虚拟流上写的备忘与真实聊天跨流可见(主 QQ+附带 QQ,见 §3.6.1)。
+- **虚拟流注入(主链可引用, M1)**:每条动态构造为一条消息注入 `qzone-qq` 虚拟群聊流,复用主程序 planner→replyer 链;注入带 `is_mentioned=1.0` 强制触发;消息时间戳=阅读时刻(注入时刻,消息流时钟单调),发布时间以相对时间前缀写入正文(今天 HH:MM/M月d日 HH:MM,bot 不会把老说说当成刚发生;方案 B 2026-08-31);「刷到但懒得理」由 planner 自主沉默(无工具调用轮)表达——意愿判断权归模型。图片带 base64 交主流水线处理(描述/落 Images 表/可 `inspect_image` 重看);体积治理=压缩到 RPC 帧限内(用户裁定 2026-08-31 终案:超 12MB base64 预算按压缩阶梯收紧,极端不达标丢弃最大图保帧并告警;主程序入站链路兜底),下载失败的图以 `[图片]` 占位。
+- **真实聊天见闻摘要注入**:真实聊天流的注入块附带 `[空间] 近期刷到:…`(近 `summary_days` 天已 seen 的 `summary_count` 条动态摘要,带作者昵称——旧库自动迁移补列)——bot 在真实聊天中可自然引用「我看到你发的说说」类见闻。
 - **串行注入**:一次只允许一条动态处于「已注入待主链处理」状态;推进信号 = 轮完成(planner 响应无工具调用);超时兜底 `decision_window_seconds`(默认 75 秒,须大于最坏轮延迟),wait 态延长至 3 倍硬上限(自注入时刻起算,防 wait 期间注入下一条并入批处理导致出站意图错靶)。
 
 ### 3.13.2 虚拟流与 person 统一(`qzone-qq`)
@@ -344,7 +358,7 @@ QQ空间虚拟流(qzone-qq)── 网关注入(route_message;出站一律拒发)
 ### 3.13.4 虚拟流专属处理(场景手术与模块豁免)
 
 - **场景替换**:planner(`before_request`)与 replyer(`before_model_request`)两侧,把 system 文本中的群聊场景提示词(主程序 `chat.reply_style.group_chat_prompt` 当前值,1 小时缓存)**原位精确替换**为空间场景文案(按配置值匹配,用户改过配置也能命中)。配置为空 / 未命中(主程序模板改版风险)→ 每类每进程告警一次,回退**注入块语义说明**(qzone 注入块自带场景解释,功能不失效)。
-- **工具白名单**:虚拟流 planner 轮按 `tool_whitelist` 过滤工具定义,默认 `wait/reply/query_memory/query_person_profile/memo_write/memo_read/inspect_image`(**不含 tool_search/msg_react/poke_user**);硬门控不随此配置放松。
+- **工具白名单**:虚拟流 planner 轮按 `tool_whitelist` 过滤工具定义,默认 `wait/reply/query_memory/query_person_profile/memo_write/memo_read/inspect_image/qzone_like`(**不含 tool_search/msg_react/poke_user**);硬门控不随此配置放松(`qzone_like` 的虚拟流限定为方法内硬门控)。
 - **deferred reminder 剥除**:剥除主程序追加的 deferred 工具提醒 user 项(`<system-reminder>` 开头)。
 - **模块豁免**:虚拟流消息**不计好感度**(好友发说说 ≠ 与 bot 互动,空间互动走 M2 显式事件路径);虚拟流出站文本**不进晚安判定**(防深夜短评论触发全局入睡);daily 窗口主动发言候选**排除虚拟流**(空间表达走 qzone 窗口本身);流缓存纳入 `qzone-qq` 平台;贴表情/戳一戳工具在虚拟流平台自检拒用(返回「当前是QQ空间动态流,这个动作用不上哦」)。
 
@@ -360,7 +374,11 @@ QQ空间虚拟流(qzone-qq)── 网关注入(route_message;出站一律拒发)
 - `QQ空间图片下载异常(…),以占位注入`;`空间图片下载失败(重试后仍失败): …`;`QQ空间图片压缩后仍超 RPC 帧预算,丢弃保帧: …`
 - `QQ空间动态注入被宿主拒绝(tid=…,adapter policy 或网关状态),跳过且不标记已见`
 - `QQ空间动态已注入(tid=…,作者=…)`;`QQ空间注入等待轮完成超时(tid=…),强制推进`
-- `QQ空间出站被拒(M1 感知阶段:QQ空间出站未实现(评论路由见 M2);…)`
+- `QQ空间出站成功(kind=comment/reply,tid=…,文本预览=…)`(M2:虚拟流回复已作为真实评论/楼中楼发出)
+- `QQ空间出站被拒(…;文本预览=…)`(M2:无出站意图/意图已消费/含二进制段等,出站被拒;驱动回执 error 形如 `QQ空间出站拒绝: …`);`QQ空间出站动作失败(kind=…,tid=…),跳过`;`QQ空间出站本地记账失败(kind=…,tid=…),仅告警`
+- `QQ空间窗口结束,未消费出站意图作废(kind=…,tid=…)`(M2:窗口收泵清残留意图)
+- `QQ空间评论已注入(… 说:…),意图=楼中楼回复`(M2 评论轮询);`QQ空间评论轮询失败,本轮跳过`;`QQ空间评论轮询遇登录态失效,cookie 已作废,下轮重取`;`QQ空间评论注入失败(…)` / `QQ空间评论注入被宿主拒绝(…),跳过(该评论不重试)`
+- `QQ空间点赞失败(tid=…)`(M2 `qzone_like`);`QQ空间点赞遇登录态失效,cookie 已作废,下轮重取`
 - `QQ空间场景回退:…`(「群聊场景提示词配置为空…」/「群聊场景提示词替换未命中…」)
 - `QQ空间模块停用:person 别名折叠自检失败(qzone-qq 与 qq 未折叠到同一命名空间,或自检调用返回异常形态 a=… b=…),主程序 get_person_id 折叠机制可能已改版`;`person 别名自检调用失败,QQ空间模块停用`
 - `QQ空间模块停用:…`(focus_mode 开启 / talk_value=0 / bot_user_id 为空 / person 别名折叠自检失败 / 网关就绪上报失败)
@@ -368,11 +386,12 @@ QQ空间虚拟流(qzone-qq)── 网关注入(route_message;出站一律拒发)
 
 ### 3.13.7 已知限制
 
-1. **M1 无评论/点赞/发布**:虚拟流出站一律显式拒发(`M1 感知阶段:QQ空间出站未实现(评论路由见 M2)`);点赞/评论/评论轮询/发布属 M2/M3 交付。
+1. **发布说说/日记为 M3 交付**:M2 已交付评论路由/点赞/评论轮询;说说主动发布、日记直发与回注尚未实现(出站意图 `AWAIT_PUBLISH` 路径 M3 接线)。
 2. **cookie 依赖 adapter**:空间 cookie 只经 `adapter.napcat.account.get_cookies` 获取,NapCat 不响应该 API(或响应缺 `p_skey`)时无法拉取,显式告警跳过;cookie 链路不做重试循环(登录态失效走 invalidate 下轮重取自愈)。
 3. **动态形态**:msglist 条目即说说;转发说说走回退链([转发自XX]原文),纯图说说以图段承载,视频以 [视频] 占位。
 4. **注入图片压缩到 RPC 帧限内**(用户裁定 2026-08-31 终案):base64 总量超 12MB 预算触发压缩阶梯(PIL 降分辨率×降质量),极端不达标丢弃最大图保帧;下载失败以 `[图片]` 占位。
-5. **备忘跨流可见性(I-1)**:虚拟流上 bot 写的备忘挂在虚拟流维度(stream_id=虚拟流),真实聊天不可见(反向可见:真实聊天按人记的备忘在虚拟流刷到该人动态时可见);M2 memo 按人重构(spec §2.16/§3.10)解决。
+5. **备忘跨流可见性(I-1)已随 M2 memo 按人重构解决**(spec §3.10,见 §3.6.1):条目=主QQ+附带QQ(≤5)跨流可见,流维度保留;旧库自动补列迁移。
+6. **写路径有真实副作用**:评论/点赞一经发出即真实发布(无撤回通路);动作 API 失败不重试,点赞的 own-feed 枚举无 API——好友对 bot 说说点赞的好感度事件无法经轮询检测(仅 bot 主动点赞经工具路径计入)。
 
 ### 3.13.8 生产部署注意事项
 
@@ -383,6 +402,7 @@ QQ空间虚拟流(qzone-qq)── 网关注入(route_message;出站一律拒发)
 - **`favorability.bot_user_id` 必须配置(非空)**:虚拟平台 bot 账号注册与虚拟流 session_id 计算依赖它,为空则模块停用。
 - **勿配置 `*:*` 全局表达共享组**:虚拟流学习落在自身 session(对真实流无污染),全局共享组会把空间流表达泄入真实流;不希望空间评论喂养虚拟流表达库时,可在主程序 WebUI 对该会话关学习(插件无法代设)。
 - **`schedule_generate` 模板升 v3 后,WebUI 自定义过的该模板需手动同步**:插件自动部署只覆盖主程序 `prompts/zh-CN/` 内置层,`data/custom_prompts/` 下的 WebUI 编辑产物优先级更高且不会被覆盖——旧版自定义模板不含 `qzone` 属性说明,日程将不产生 qzone 浏览窗口(需在 WebUI 手动更新或删除该自定义模板)。
+- **M2 起写路径有真实副作用(风险提示)**:评论/点赞一经路由成功即真实发布到QQ空间(无撤回通路);评论/楼中楼内容来自主程序 replyer,语义保真由模型决定(插件只做格式护栏——含图/表情等二进制段的出站一律拒发)。`qzone.enabled` 关闭即整体停用(读+写一起);不希望写动作时关闭该开关或停用模块,不存在"只读不禁写"的中间档。
 
 ## 3.14 LLM 用量记账与旁路调用(`plugin.py`)
 
@@ -528,10 +548,12 @@ QQ空间虚拟流(qzone-qq)── 网关注入(route_message;出站一律拒发)
 
 | 字段 | 默认 | 说明 |
 |---|---|---|
-| enabled | true | QQ空间模块开关(M1:仅读动态,不发评论);关闭或启动自检失败时拉取/注入/见闻注入全部跳过 |
+| enabled | true | QQ空间模块开关(M2 起含评论/点赞等写动作);关闭或启动自检失败时拉取/注入/见闻注入/出站路由/评论轮询全部跳过 |
 | poll_interval_minutes | 15 | 空间窗口内动态拉取间隔(分钟) |
+| comment_poll_enabled | true | 窗口外评论轮询开关(仅轮询自己说说下的新评论;M2) |
+| comment_poll_interval_minutes | 30 | 评论轮询间隔(分钟;注册时下限 5 分钟防风控;M2) |
 | decision_window_seconds | 75 | 注入后等待 planner 轮完成的超时兜底(秒;须大于最坏轮延迟;wait 态延长至 3 倍硬上限) |
-| tool_whitelist | ["wait","reply","query_memory","query_person_profile","memo_write","memo_read","inspect_image"] | 虚拟流 planner 工具白名单(按名过滤;硬门控不随此配置放松,默认不含 tool_search/msg_react/poke_user) |
+| tool_whitelist | ["wait","reply","query_memory","query_person_profile","memo_write","memo_read","inspect_image","qzone_like"] | 虚拟流 planner 工具白名单(按名过滤;硬门控不随此配置放松,默认不含 tool_search/msg_react/poke_user;qzone_like 的虚拟流限定为方法内硬门控) |
 | virtual_group_id | "qzone_feed" | 虚拟群聊流伪群号(勿与真实群号相同) |
 | virtual_group_name | "QQ空间" | 虚拟群聊流显示名 |
 | summary_count | 5 | 真实聊天注入的近期已见动态条数 |
@@ -572,10 +594,12 @@ QQ空间虚拟流(qzone-qq)── 网关注入(route_message;出站一律拒发)
 | favorability | user_id(PK), level, score, note, window_start, judged_at | 好感度**按人单行**;window_start=当前批次起点,judged_at=上次结算时间 |
 | favorability_log | judge_id(PK), user_id, delta, note, judged_at | 判定日志,幂等防重;judge_id 前缀 `early-`/`daily-`/`decay-{时间}-{user}` |
 | batch_counter | user_id, stream_id(PK 联合), count, last_bump | 活跃度账本(计数 + 近 24h 活跃判定、衰减流定位);结算窗口不在此 |
-| memo | id, content, stream_id, user_id, expires_at, created_at, remind_at | 备忘录;remind_at 为二期加列(可选) |
+| memo | id, content, stream_id, user_id, extra_user_ids, expires_at, created_at, remind_at | 备忘录(按人重构 M2:主QQ+附带QQ 跨流可见);remind_at 为二期加列、extra_user_ids 为 M2 加列(均自动补列) |
 | llm_usage | day, module, calls, tokens(PK 联合) | 旁路 LLM 用量按日/模块分列 |
 | weather_snapshot | id(=1), city, fetched_at, data | 天气快照(JSON),供日程生成联动 |
-| qzone_feeds | tid(PK), abstime, author_uin, summary, state, interacted, injected_at, created_at | QQ空间动态去重:state=queued(已入队)/seen(已成功注入);interacted=点赞评论过(M2 标记);窗口结束 queued 行删除回退未读 |
+| qzone_feeds | tid(PK), abstime, author_uin, author_nickname, summary, state, interacted, injected_at, created_at | QQ空间动态去重:state=queued(已入队)/seen(已成功注入);interacted=点赞评论过;author_nickname 为 M2 加列(见闻摘要带作者,旧库自动迁移);窗口结束 queued 行删除回退未读 |
+| qzone_comments | comment_key(PK), created_at | M2 评论轮询去重:key=`feed_tid:comment_tid:uin`,发现即登记(宿主拒绝的注入不重试) |
+| qzone_fav_events | id, day, user_id, kind, text, created_at | M2 好感度显式事件(spec §3.9):kind=COMMENT(好友评论 bot)/OUT_COMMENT(bot 评论好友)/OUT_LIKE(bot 点赞);并入日终结算素材与衰减计时 |
 
 ### 5.2 JSON 快照(JsonSnapshot,原子写)
 
@@ -643,7 +667,8 @@ replyer 出站
 | sleep_tick | 60s | 睡眠状态机:自然醒(now≥wake_at→wake+回顾+补跑结算)/ 静默关=窗口起点直接入睡 / 静默开=安静满 N 分钟入睡检查 / 窗口终点未入睡→补生成次日日程 | 「自然醒来: {t}」「睡眠窗口起点已到(静默睡眠关闭),直接入睡」「静默入睡:安静 {n} 分钟」「睡眠窗口已过未入睡:补执行次日日程生成(不入睡)」 |
 | schedule_tick | 60s | 日程窗口触发:greeting→主动问候;daily→门槛过滤+候选流排序→proactive.trigger | 「主动问候触发[{day}] -> {user}」「主动触发[{day}] -> {stream}:{活动}」 |
 | remind_fallback | 5 分钟 | 备忘提醒兜底注入(仅无生成日程日;睡眠期跳过) | 「备忘提醒兜底注入(stream={id}):{content}」 |
-| qzone_poll | max(poll_interval_minutes,1)×60 s(默认 15 分钟) | 空间窗口(kind=daily 且 qzone=true)内拉取好友说说→去重入队→串行注入 `qzone-qq` 虚拟流;窗口切换收泵回退未读;睡眠期/模块停用跳过 | 「QQ空间窗口开始,注入泵激活」「QQ空间新动态入队 {n} 条」「QQ空间动态已注入(tid=…,作者=…)」「QQ空间窗口结束,未注入队列回退未读({n} 条)」 |
+| qzone_poll | max(poll_interval_minutes,1)×60 s(默认 15 分钟) | 空间窗口(kind=daily 且 qzone=true)内拉取好友说说→去重入队→串行注入 `qzone-qq` 虚拟流;窗口切换收泵回退未读;睡眠期/模块停用跳过 | 「QQ空间窗口开始,注入泵激活」「QQ空间新动态入队 {n} 条」「QQ空间动态已注入(tid=…,作者=…)」「QQ空间窗口结束,未注入队列回退未读({n} 条)」「QQ空间窗口结束,未消费出站意图作废(kind=…,tid=…)」 |
+| qzone_comment_poll | max(comment_poll_interval_minutes,5)×60 s(默认 30 分钟) | 窗口外评论轮询(M2):仅拉自己说说下的新评论→注入虚拟流→bot 回复路由为楼中楼;醒着且不在 qzone 窗口时执行,一次一条;睡眠期/开关关闭/模块停用跳过 | 「QQ空间评论已注入(… 说:…),意图=楼中楼回复」「QQ空间评论轮询失败,本轮跳过」「QQ空间评论轮询遇登录态失效,cookie 已作废,下轮重取」 |
 
 ### 6.3 睡眠全链路
 
@@ -693,7 +718,7 @@ replyer 出站
 12. **bot_user_id 留空的连锁影响**:结算素材中 bot 发言被当作普通用户素材、群聊 @/quote 归属与 bot 消息随附全部失效、衰减互动判定失效——实机必须配置。
 13. **群聊说话人近似**:注入与候选流按「最近非 bot 消息发送者」解析(取近 3 条),群聊换人即换好感度块(缓存分层预期内)。
 14. **poke 无好感度门槛**:主动戳只受每用户 600s 冷却限制(联调裁定,如后续需要恢复门槛需改动代码)。
-15. **备忘跨流可见性(I-1)**:虚拟流上 bot 写的备忘挂在虚拟流维度(stream_id=虚拟流),真实聊天不可见(反向可见:真实聊天按人记的备忘在虚拟流刷到该人动态时可见);M2 memo 按人重构(spec §2.16/§3.10)解决。
+15. **备忘按人跨流可见(M2 已交付)**:条目=主QQ+附带QQ(≤5),任一牵连 QQ 命中当前对话对象即可见(原 I-1 跨流不可见问题已随 M2 memo 按人重构解决);附带 QQ 由写入时显式传参或从上下文推断,语义保真由模型决定。
 
 ---
 
@@ -726,7 +751,7 @@ replyer 出站
 | reply 补传/哨兵 | `reply 补传:[…]`;`哨兵判定:放行回复` / `哨兵判定:撤回回复:{reason}` |
 | 旁路记账 | `旁路 LLM 当日调用次数已达或超过阈值 {n},请注意用量`;llm_usage 表按模块分列 |
 | quote 解析 | `quote 发送者解析: 成功 {n}/{m}(stream=…)`;`quote 发送者解析失败(stream=…):…` |
-| QQ空间 | `QQ空间窗口开始,注入泵激活`;`QQ空间新动态入队 {n} 条`;`QQ空间动态已注入(tid=…,作者=…)`;告警/停用:`QQ空间模块停用:…`、`QQ空间模块停用:person 别名折叠自检失败(…)`、`QQ空间出站被拒(…)`、`QQ空间场景回退:…`、`QQ空间说说拉取失败(uin=…),该好友本轮跳过` |
+| QQ空间 | `QQ空间窗口开始,注入泵激活`;`QQ空间新动态入队 {n} 条`;`QQ空间动态已注入(tid=…,作者=…)`;M2 互动:`QQ空间出站成功(kind=comment/reply,tid=…)`、`QQ空间评论已注入(… 说:…),意图=楼中楼回复`;告警/停用:`QQ空间模块停用:…`、`QQ空间模块停用:person 别名折叠自检失败(…)`、`QQ空间出站被拒(…)`(回执 error 形如 `QQ空间出站拒绝: …`)、`QQ空间点赞失败(tid=…)`、`QQ空间窗口结束,未消费出站意图作废(…)`、`QQ空间场景回退:…`、`QQ空间说说拉取失败(uin=…),该好友本轮跳过` |
 
 ### 8.3 常见问题排查
 
@@ -744,6 +769,7 @@ replyer 出站
 | 主动发言没有出现 | 检查 speak_threshold_level 门槛(默认熟悉)、近 24h 活跃流、daily_speak_limit 配额、当日是否模板撑场、睡眠期跳过 |
 | 数据异常想重置 | 删除 `data/plugins/catsitate.core/catsitate.db` 与各 JSON 快照(重启重建);注意 favorability 重建即清零(开发期裁定不做迁移) |
 | QQ空间没有动态注入 | 查启动日志有无「QQ空间模块停用」(focus_mode 开启 / talk_value=0 / bot_user_id 为空 / person 自检失败)与「QQ空间虚拟平台就绪」;确认日程有 qzone 标记的 daily 窗口且当前处于窗口内;「QQ空间说说拉取失败(uin=…)」→ NapCat 可否响应 `adapter.napcat.account.get_cookies`;msglist 条目即说说(转发走回退链/纯图以图段承载/视频占位);WebUI 自定义过 schedule_generate 旧模板需手动同步(§3.13.8) |
+| 空间评论/点赞没发出 | 「QQ空间出站被拒(…)」看括号原因:无出站意图=该轮无对应当前说说的回复(或意图已被上一次成功消费);含二进制段=回复带图/表情,链路拒发属设计;「QQ空间点赞失败(tid=…)」/「QQ空间出站动作失败」→ 多为登录态失效(看有无「cookie 已作废,下轮重取」,自愈不重试);评论轮询不出 → 确认 comment_poll_enabled 开启、当前不在 qzone 浏览窗口内、bot 有历史说说且有人评论 |
 | 复审证据链 | 打开 debug.enabled 落盘日志;`catsitate.db` 查 `llm_usage`/`favorability_log` 核旁路记账与结算/衰减记录;`schedule.json` 查日程修改历史;`sleep_review/reports/` 查回顾报告 |
 
 ---

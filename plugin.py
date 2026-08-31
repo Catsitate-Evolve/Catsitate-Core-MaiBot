@@ -614,7 +614,13 @@ class CatsitatePlugin(MaiBotPlugin):
             return
         if not self.qzone_injector.window_active:
             self.qzone_injector.window_started()
-            self.ctx.logger.info("QQ空间窗口开始,注入泵激活")
+            # 回收跨窗口/跨启动的 queued 残留:注入泵队列在内存,重启即丢,
+            # 而 seen 的 queued 行会让新轮拉取全部判重跳过(联调缺陷#12)
+            stale = self.qzone_seen.revert_pending()
+            if stale:
+                self.ctx.logger.info("QQ空间窗口开始,注入泵激活;回收跨启动 queued 残留 %d 条(重新拉取)", stale)
+            else:
+                self.ctx.logger.info("QQ空间窗口开始,注入泵激活")
         # 拉取架构(联调修正 2026-08-30):好友列表走 adapter OneBot API,
         # 逐好友拉最近说说(msglist_v6 为指定用户接口,无聚合端点);好友间固定间隔防风控
         friends = await self._qzone_friend_list()

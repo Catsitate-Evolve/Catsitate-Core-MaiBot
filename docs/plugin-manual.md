@@ -47,7 +47,7 @@ Catsitate 是部署在 MaiBot 上的 QQ 聊天机器人人设(伪三无猫耳少
 
 | 文件 | 职责(一句话) |
 |---|---|
-| `plugin.py` | 薄接线层:插件生命周期、8 个 Hook、6 个工具、1 个命令、9 个后台调度任务、全部 SDK 适配与日志(业务逻辑不在此)。 |
+| `plugin.py` | 薄接线层:插件生命周期、8 个 Hook、7 个工具、1 个命令、10 个后台调度任务、全部 SDK 适配与日志(业务逻辑不在此)。 |
 | `catsitate_core/config.py` | 配置模型(`PluginConfigBase` 嵌套 13 节,中文 label 供 WebUI 渲染)。 |
 | `catsitate_core/storage.py` | 存储层:`SQLiteStore`(sqlite3 薄封装,WAL 模式)+ `JsonSnapshot`(轻量 JSON 快照,原子写)。 |
 | `catsitate_core/inject.py` | 注入框架唯一出口:注入块组装、`BLOCK_ORDER` 固定排序、字节级版本化缓存复用。 |
@@ -375,6 +375,7 @@ QQ空间虚拟流(qzone-qq)── 网关注入(route_message;出站按意图路�
 - `QQ空间动态注入被宿主拒绝(tid=…,adapter policy 或网关状态),跳过且不标记已见`
 - `QQ空间动态已注入(tid=…,作者=…)`;`QQ空间注入等待轮完成超时(tid=…),强制推进`
 - `QQ空间出站成功(kind=comment/reply,tid=…,文本预览=…)`(M2:虚拟流回复已作为真实评论/楼中楼发出)
+- `QQ空间登录态失效,cookie 已作废,下轮重取`(M2:出站驱动回调/点赞遇登录态失效,作废 cookie 自愈,该次动作不重试)
 - `QQ空间出站被拒(…;文本预览=…)`(M2:无出站意图/意图已消费/含二进制段等,出站被拒;驱动回执 error 形如 `QQ空间出站拒绝: …`);`QQ空间出站动作失败(kind=…,tid=…),跳过`;`QQ空间出站本地记账失败(kind=…,tid=…),仅告警`
 - `QQ空间窗口结束,未消费出站意图作废(kind=…,tid=…)`(M2:窗口收泵清残留意图)
 - `QQ空间评论已注入(… 说:…),意图=楼中楼回复`(M2 评论轮询);`QQ空间评论轮询失败,本轮跳过`;`QQ空间评论轮询遇登录态失效,cookie 已作废,下轮重取`;`QQ空间评论注入失败(…)` / `QQ空间评论注入被宿主拒绝(…),跳过(该评论不重试)`

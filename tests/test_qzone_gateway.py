@@ -214,3 +214,137 @@ def test_module_log_forwarder_routes_levels():
     fwd.emit(rec2)
     assert captured[0] == ("warning", "catsitate_core.qzone.client: 下载失败: u1")
     assert captured[1] == ("error", "catsitate_core.x: boom")
+
+
+# ---- 评论轮询注入行为测试(终审 I2:_StubCtx 模式,时间前缀+新鲜度截断) ----
+
+import asyncio as _asyncio
+import time as _time
+
+from catsitate_core.config import CatsitateConfig as _CatsitateConfig
+from catsitate_core.qzone.comment_seen import CommentSeenStore as _CommentSeenStore
+from catsitate_core.qzone.wire import CommentItem as _CommentItem
+from catsitate_core.storage import SQLiteStore as _SQLiteStore
+
+
+class _CollectLogger2:
+    """收集日志的 stub logger(断言跳过日志)。"""
+
+    def __init__(self, logs):
+        self._logs = logs
+
+    def _record(self, level, a, k):
+        self._logs.append((level, list(a)))
+
+    def info(self, *a, **k):
+        self._record("info", a, k)
+
+    def warning(self, *a, **k):
+        self._record("warning", a, k)
+
+    def exception(self, *a, **k):
+        self._record("exception", a, k)
+
+    def error(self, *a, **k):
+        self._record("error", a, k)
+
+    def debug(self, *a, **k):
+        self._record("debug", a, k)
+
+
+class _StubGateway2:
+    """记录 route_message 注入调用的网关桩。"""
+
+    def __init__(self):
+        self.calls = []
+
+    async def route_message(self, name, msg):
+        self.calls.append((name, msg))
+        return True
+
+
+class _StubCtx2:
+    """评论轮询测试的最小 ctx 面:logger + gateway。"""
+
+    def __init__(self, logs):
+        self.logger = _CollectLogger2(logs)
+        self.gateway = _StubGateway2()
+
+
+class _StubCommentClient:
+    """评论轮询输入桩:get_own_feed_comments 返回固定 (comments, feed 上下文)。"""
+
+    def __init__(self, comments, ctx_map):
+        self._comments = comments
+        self._ctx_map = ctx_map
+        self.calls = 0
+
+    async def get_own_feed_comments(self, *, bot_uin, num=10):
+        del bot_uin, num
+        self.calls += 1
+        return self._comments, self._ctx_map
+
+
+def _make_comment_poll_plugin(tmp_path, comments, ctx_map):
+    """离线装配 _qzone_comment_poll_tick 所需最小插件实例(窗口外状态)。"""
+
+    import plugin as plugin_mod
+
+    logs: list = []
+    p = plugin_mod.CatsitatePlugin()
+    p._ctx = _StubCtx2(logs)
+    p._plugin_config_instance = _CatsitateConfig()
+    p._qzone_available = True
+    p.config.sleep.enabled = False  # 不依赖 self.sleep
+    # 日程含一个非 qzone 的 daily 窗口不覆盖当前 → 窗口外(评论轮询工作区)
+    p._schedule_data = {"date": "2000-01-01", "windows": []}
+    p.config.favorability.bot_user_id = "10000"
+    p._qzone_outbound_intent = None
+    p._qzone_seq = 0
+    p.qzone_client = _StubCommentClient(comments, ctx_map)
+    p.qzone_comment_seen = _CommentSeenStore(_SQLiteStore(tmp_path / "comment_poll.db"))
+    p.qzone_comment_seen.ensure_schema()
+    return p
+
+
+def test_comment_poll_stale_comment_skipped_and_registered(tmp_path):
+    """终审 I2①:早于 summary_days 的过旧评论跳过注入(不注入不占意图),
+    且 is_new 已登记——下轮判重不再重扫(发现即登记的 store 契约)。"""
+
+    stale = str(int(_time.time()) - 10 * 86400)  # 默认 summary_days=3,10 天前必过旧
+    comments = {"feed1": [_CommentItem(
+        comment_tid="ct1", uin="20000", nickname="小红", content="好棒", create_time=stale,
+    )]}
+    p = _make_comment_poll_plugin(tmp_path, comments, {"feed1": "今天的心情"})
+    _asyncio.run(p._qzone_comment_poll_tick())
+    assert p._ctx.gateway.calls == []  # 不注入
+    assert p._qzone_outbound_intent is None  # 不占意图
+    # 已登记:is_new 对该键返回 False(下轮判重跳过,不重扫)
+    assert p.qzone_comment_seen.is_new("feed1:ct1:20000") is False
+    assert any(level == "info" and "评论过旧跳过" in str(a[0]) for level, a in p._ctx.logger._logs)
+
+
+def test_comment_poll_injects_with_time_prefix_or_fallback(tmp_path):
+    """终审 I2②:新评论注入正文含「(评 」;create_time 可解析带相对时间前缀
+    (同日=今天HH:MM),create_time 空则前缀为空(回退形态,正文直接以「(评 」开头)。"""
+
+    fresh = {"feed2": [_CommentItem(
+        comment_tid="ct2", uin="20001", nickname="小明", content="写得好",
+        create_time=str(int(_time.time())),
+    )]}
+    p = _make_comment_poll_plugin(tmp_path, fresh, {"feed2": "今天的心情"})
+    _asyncio.run(p._qzone_comment_poll_tick())
+    assert len(p._ctx.gateway.calls) == 1
+    text = p._ctx.gateway.calls[0][1]["raw_message"][0]["data"]
+    assert "(评 小明) 写得好" in text and "来自你的说说" in text
+    assert text.startswith("(今天")  # 时间前缀承载发布时间(方案 B 同款语义)
+
+    # 回退形态:create_time 空 → 无前缀,正文直接以「(评 」开头
+    no_time = {"feed3": [_CommentItem(
+        comment_tid="ct3", uin="20002", nickname="小刚", content="加油", create_time="",
+    )]}
+    p2 = _make_comment_poll_plugin(tmp_path / "b", no_time, {"feed3": "今天的心情"})
+    _asyncio.run(p2._qzone_comment_poll_tick())
+    assert len(p2._ctx.gateway.calls) == 1
+    text2 = p2._ctx.gateway.calls[0][1]["raw_message"][0]["data"]
+    assert text2.startswith("(评 小刚)") and not text2.startswith("(今天")

@@ -1,12 +1,13 @@
 """虚拟流出站处理(M1)。评论/发布的意图路由是 M2 交付;本模块只提供组件提取与显式拒发。
 
 提取规则(spec §2.19⑦):text 段按序拼接为出站文本;reply/at 段忽略(reply 的
-target_message_sender_id 供 M2 意图交叉校验);image/emoji 二进制段标记 has_binary
+target_message_sender_id（推迟 M3,见 spec §3.3）);image/emoji 二进制段标记 has_binary
 (驱动层拒发——无映射且有 16MB RPC 帧风险)。
 """
 
 from __future__ import annotations
 
+# M1 拒发文案,M2 起生产无调用点,留 M3 清理
 M1_OUTBOUND_ERROR = "M1 感知阶段:QQ空间出站未实现(评论路由见 M2)"
 
 

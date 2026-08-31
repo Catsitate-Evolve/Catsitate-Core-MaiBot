@@ -105,6 +105,22 @@ def _time_prefix(post_dt: datetime, now_dt: datetime) -> str:
     return f"({post_dt:%m月%d日 %H:%M})"
 
 
+def comment_time_prefix(create_time: str, now_epoch: float) -> str:
+    """评论注入正文的时间前缀薄封装(终审 I2,方案 B 同款语义):发布时间由正文承载。
+
+    create_time 为 msglist commentlist 的 epoch 秒字符串;空/非法/非正返回空串
+    (回退形态,调用方不截断注入)。新鲜度截断的判定在 plugin 轮询侧,此处只管前缀。
+    """
+
+    try:
+        candidate = float(str(create_time or "").strip())
+    except ValueError:
+        return ""
+    if candidate <= 0:
+        return ""
+    return _time_prefix(datetime.fromtimestamp(candidate), datetime.fromtimestamp(now_epoch))
+
+
 def build_feed_message(
     feed: FeedItem,
     *,

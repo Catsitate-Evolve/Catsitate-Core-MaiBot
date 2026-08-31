@@ -600,7 +600,7 @@ QQ空间虚拟流(qzone-qq)── 网关注入(route_message;出站按意图路�
 | weather_snapshot | id(=1), city, fetched_at, data | 天气快照(JSON),供日程生成联动 |
 | qzone_feeds | tid(PK), abstime, author_uin, author_nickname, summary, state, interacted, injected_at, created_at | QQ空间动态去重:state=queued(已入队)/seen(已成功注入);interacted=点赞评论过;author_nickname 为 M2 加列(见闻摘要带作者,旧库自动迁移);窗口结束 queued 行删除回退未读 |
 | qzone_comments | comment_key(PK), created_at | M2 评论轮询去重:key=`feed_tid:comment_tid:uin`,发现即登记(宿主拒绝的注入不重试) |
-| qzone_fav_events | id, day, user_id, kind, text, created_at | M2 好感度显式事件(spec §3.9):kind=COMMENT(好友评论 bot)/OUT_COMMENT(bot 评论好友)/OUT_LIKE(bot 点赞);并入日终结算素材与衰减计时 |
+| qzone_fav_events | id, day, user_id, kind, text, created_at | M2 好感度显式事件(spec §3.9):kind=COMMENT(好友评论 bot)/OUT_COMMENT(bot 评论好友)/OUT_LIKE(bot 点赞);并入日终结算素材与衰减计时（无清理,只增不减——刻意保留作衰减计时基准） |
 
 ### 5.2 JSON 快照(JsonSnapshot,原子写)
 

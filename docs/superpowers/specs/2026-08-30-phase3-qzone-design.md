@@ -62,7 +62,7 @@ QQ 空间四功能（阅读好友动态 / 点赞 / 评论 / 发说说 + 记日�
 
 - 状态：`IDLE / AWAIT_REACTION(feed_tid) / AWAIT_COMMENT_REPLY(feed_tid, comment_id) / AWAIT_PUBLISH`。
 - 设置点：注入动态前→`AWAIT_REACTION`；注入评论事件前→`AWAIT_COMMENT_REPLY`；表达触发前→`AWAIT_PUBLISH`。
-- `PluginPlatformDriver.send_message` 回调实现：按状态调 API——`AWAIT_REACTION`→`do_comment(tid)`、`AWAIT_COMMENT_REPLY`→`do_comment(tid, replyid)`、`AWAIT_PUBLISH`→`do_publish`；**文本提取**=raw_message 的 text 段拼接（reply 段做意图交叉校验、at 段忽略），含 image/emoji 二进制段或 `IDLE` 态出站 → 告警拒发（FAILED）；API 失败 → 告警（不重试循环）。
+- `PluginPlatformDriver.send_message` 回调实现：按状态调 API——`AWAIT_REACTION`→`do_comment(tid)`、`AWAIT_COMMENT_REPLY`→`do_comment(tid, replyid)`、`AWAIT_PUBLISH`→`do_publish`；**文本提取**=raw_message 的 text 段拼接（reply 段做意图交叉校验、at 段忽略）（M2 交付时经评估推迟：意图一次性消费+窗口开启作废已闭合主要错靶路径,reply 交叉校验留 M3 视风控需要实现,2026-08-31 回写），含 image/emoji 二进制段或 `IDLE` 态出站 → 告警拒发（FAILED）；API 失败 → 告警（不重试循环）。
 - 决策窗口结束 → 状态回 `IDLE`，未消费意图记日志作废；wait 态下的推进规则见 §2.4。
 
 ### 3.4 场景与上下文注入（`plugin.py` 注入块扩展 + hook 扩展）
@@ -98,7 +98,7 @@ QQ 空间四功能（阅读好友动态 / 点赞 / 评论 / 发说说 + 记日�
 
 ### 3.10 memo 按人重构（M2 前置，独立子项目）
 
-- schema：条目=`主 QQ + 附带 QQ 列表（可空）`，**去 stream_id 依赖**（保留为元数据列，不作过滤键）；`read()` 改为「人维度命中即可见」（任一牵连 QQ = 当前对话对象）；`write()` 增附带 QQ 参数（planner 显式传或从上下文推断，上限见 §9）。
+- schema：条目=`主 QQ + 附带 QQ 列表（可空）`，**去 stream_id 依赖**（保留为元数据列，**同时仍是命中条件之一**（流命中 OR 人命中,spec §3.10 实现语义））；`read()` 改为「人维度命中即可见」（任一牵连 QQ = 当前对话对象）；`write()` 增附带 QQ 参数（planner 显式传或从上下文推断，上限见 §9）。
 - 取数点：§2.16（私聊官方 kwargs / 群聊自建最近发言者映射 / qzone 意图状态机交叉校验）。
 - **流程**：单独一轮语义确认 → CONTEXT 词汇表更新 → TDD → 全量回归（此变更触及全部现有 memo 用例）。
 

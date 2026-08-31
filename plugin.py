@@ -40,7 +40,7 @@ from catsitate_core.qzone.protocol import parse_friend_list
 from catsitate_core.qzone.client import CookieManager, QzoneAuthError, QzoneClient
 from catsitate_core.qzone.comment_seen import CommentSeenStore
 from catsitate_core.qzone.injector import FeedInjector
-from catsitate_core.qzone.messages import build_feed_message, fit_images_to_rpc_budget
+from catsitate_core.qzone.messages import build_feed_message, comment_time_prefix, fit_images_to_rpc_budget
 from catsitate_core.qzone.outbound import extract_outbound_text
 from catsitate_core.qzone.routing import OutboundIntent, route_outbound
 from catsitate_core.qzone.scene import (
@@ -241,6 +241,11 @@ class CatsitatePlugin(MaiBotPlugin):
             # 写路径身份参数(opuin/qzreferrer/topicId.uin);为空时自检已停用模块,不会走到写路径
             bot_uin=str(self.config.favorability.bot_user_id or "").strip(),
         )
+        if self.config.qzone.max_retries != 0:
+            self.ctx.logger.warning(
+                "qzone.max_retries=%s 当前版本不消费(动作 API 固定不重试,读路径固定单次),配置仅预留",
+                self.config.qzone.max_retries,
+            )
         self.qzone_injector = FeedInjector(decision_window_s=self.config.qzone.decision_window_seconds)
         # seq 以当前秒播种:重启归零会让 qzone_{tid}_{seq} 与上一轮运行撞车,
         # 被宿主 driver_id:message_id 去重拒绝(联调缺陷#11,静默丢注入)
@@ -768,6 +773,15 @@ class CatsitatePlugin(MaiBotPlugin):
                 self._qzone_outbound_intent = None  # 收泵清意图(窗口外残留 reaction 会误路由下一次出站)
             return
         if not self.qzone_injector.window_active:
+            # 终审 I1:窗口开启时作废残留评论意图——否则本轮 _qzone_pump 注入动态后意图被
+            # 无条件覆盖为 reaction,迟到的评论回复将错发为新动态的头评(公开不可逆);
+            # 作废后迟到的回复按无意图拒发,窗口注入流程照常(不因残留意图饿死窗口)
+            if self._qzone_outbound_intent is not None:
+                self.ctx.logger.warning(
+                    "QQ空间窗口开始,未消费评论意图作废(kind=%s,tid=%s)——迟到的评论回复将按无意图拒发",
+                    self._qzone_outbound_intent.kind, self._qzone_outbound_intent.tid,
+                )
+                self._qzone_outbound_intent = None
             self.qzone_injector.window_started()
             # 回收跨窗口/跨启动的 queued 残留:注入泵队列在内存,重启即丢,
             # 而 seen 的 queued 行会让新轮拉取全部判重跳过(联调缺陷#12)
@@ -917,13 +931,29 @@ class CatsitatePlugin(MaiBotPlugin):
                     continue
                 if not self.qzone_comment_seen.is_new(f"{feed_tid}:{c.comment_tid}:{c.uin}"):
                     continue
+                now_epoch = time.time()
+                # 新鲜度截断(终审 I2):早于 summary_days 的过旧评论不注入。顺序=先 is_new
+                # 判新(发现即登记,store 契约)再判旧跳过——已登记则下轮判重不再重扫;
+                # create_time 不可解析不截断(保守注入,时间前缀走回退形态)
+                try:
+                    comment_epoch = float(str(c.create_time or "").strip())
+                except ValueError:
+                    comment_epoch = 0.0
+                if comment_epoch > 0 and comment_epoch < now_epoch - max(self.config.qzone.summary_days, 1) * 86400:
+                    self.ctx.logger.info(
+                        "QQ空间评论过旧跳过(create_time=%s,昵称=%s)", c.create_time, c.nickname
+                    )
+                    continue
                 feed_summary = (ctx.get(feed_tid) or "(无文字)")[:30]
-                text = f"(评 {c.nickname}) {c.content}\n(来自你的说说:{feed_summary})"
+                # 发布时间前缀(终审 I2,方案 B 同款语义):与动态注入一致由正文承载发布时间,
+                # 防 bot 把老评论当刚发生;create_time 空/非法则前缀为空
+                prefix = comment_time_prefix(c.create_time, now_epoch)
+                text = f"{prefix}(评 {c.nickname}) {c.content}\n(来自你的说说:{feed_summary})"
                 self._qzone_seq += 1
                 msg = {
                     "message_id": f"qzone_comment_{feed_tid}_{c.comment_tid}_{self._qzone_seq}",
                     "platform": QZONE_PLATFORM,
-                    "timestamp": str(int(time.time())),
+                    "timestamp": str(int(now_epoch)),
                     "message_info": {
                         "user_info": {"user_id": str(c.uin), "user_nickname": c.nickname},
                         "group_info": {"group_id": self.config.qzone.virtual_group_id, "group_name": self.config.qzone.virtual_group_name},

@@ -140,3 +140,30 @@ def test_fit_images_extreme_case_drops_largest():
     )
     assert ("huge", None) in out and ("small", b"a" * 100) in out
     assert dropped == ["huge"]
+
+
+def test_module_log_forwarder_routes_levels():
+    """联调缺陷#10:模块级日志转发到插件 ctx logger(告警可见性)。"""
+    import logging as _logging
+
+    from plugin import _ModuleLogForwarder
+
+    captured = []
+
+    class _Sink:
+        def warning(self, fmt, *args):
+            captured.append(("warning", fmt % args if args else fmt))
+
+        def error(self, fmt, *args):
+            captured.append(("error", fmt % args if args else fmt))
+
+        def info(self, fmt, *args):
+            captured.append(("info", fmt % args if args else fmt))
+
+    fwd = _ModuleLogForwarder(_Sink())
+    rec = _logging.LogRecord("catsitate_core.qzone.client", _logging.WARNING, __file__, 1, "下载失败: %s", ("u1",), None)
+    fwd.emit(rec)
+    rec2 = _logging.LogRecord("catsitate_core.x", _logging.ERROR, __file__, 1, "boom", (), None)
+    fwd.emit(rec2)
+    assert captured[0] == ("warning", "catsitate_core.qzone.client: 下载失败: u1")
+    assert captured[1] == ("error", "catsitate_core.x: boom")

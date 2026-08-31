@@ -81,6 +81,30 @@ from catsitate_core.time_aware import (
 logger = logging.getLogger("catsitate.core")
 
 
+class _ModuleLogForwarder(logging.Handler):
+    """把 catsitate_core.* 模块日志转发到插件 ctx logger(联调缺陷#10)。
+
+    插件 runner 只路由插件自身 logger,模块级 getLogger(__name__) 的告警
+    (如 qzone client 的下载失败)原本不可见——违反错误显式暴露。
+    """
+
+    def __init__(self, sink) -> None:
+        super().__init__()
+        self._sink = sink
+
+    def emit(self, record: logging.LogRecord) -> None:
+        try:
+            message = record.getMessage()
+        except Exception:  # noqa: BLE001 - 格式化失败不得打断日志链
+            message = record.msg
+        if record.levelno >= logging.ERROR:
+            self._sink.error("%s: %s", record.name, message)
+        elif record.levelno >= logging.WARNING:
+            self._sink.warning("%s: %s", record.name, message)
+        else:
+            self._sink.info("%s: %s", record.name, message)
+
+
 class CatsitatePlugin(MaiBotPlugin):
     """Catsitate 猫耳少女核心插件。"""
 
@@ -91,6 +115,7 @@ class CatsitatePlugin(MaiBotPlugin):
     _style_cache: str | None = None  # bot 行为风格缓存(同上)
     _debug_handler: logging.Handler | None = None  # debug 日志文件 handler(配置开关控制)
     _debug_prev_level: int = logging.NOTSET  # 开启前 logger 级别(关闭时恢复)
+    _module_log_forwarder: logging.Handler | None = None  # 模块日志转发(on_load 挂载,unload 清理)
     _llm_warned_day: str = ""  # 旁路 LLM 用量告警的已告警日期(跨越当天只告警一次)
     _qzone_session_ids: set[str] = set()  # 虚拟流 session(运行时收集;豁免判定用)
     _qzone_warned: set[str] = set()
@@ -199,6 +224,11 @@ class CatsitatePlugin(MaiBotPlugin):
         self.qzone_injector = FeedInjector(decision_window_s=self.config.qzone.decision_window_seconds)
         # 泵并发锁:_qzone_pump 两个入口(调度 tick/轮完成信号)整体互斥,防弹出-置位间隙双弹
         self._qzone_pump_lock = asyncio.Lock()
+        # 模块日志转发(联调缺陷#10):catsitate_core.* 的告警路由到插件 ctx logger,否则不可见
+        self._module_log_forwarder = _ModuleLogForwarder(self.ctx.logger)
+        _module_root = logging.getLogger("catsitate_core")
+        _module_root.addHandler(self._module_log_forwarder)
+        _module_root.setLevel(logging.INFO)
         self._qzone_available = await self._qzone_selfcheck()
         if self._qzone_available:
             await self._qzone_gateway_ready()
@@ -230,6 +260,8 @@ class CatsitatePlugin(MaiBotPlugin):
 
     async def on_unload(self) -> None:
         self._teardown_debug_logging()  # 卸载清理:debug handler 移除并 close、logger 级别恢复(审查 I5)
+        if self._module_log_forwarder is not None:
+            logging.getLogger("catsitate_core").removeHandler(self._module_log_forwarder)  # 模块日志转发清理
         await self._scheduler.stop()
         for task in list(self._background_tasks):
             task.cancel()
@@ -489,10 +521,14 @@ class CatsitatePlugin(MaiBotPlugin):
     # ---------- QQ空间(M1 感知) ----------
 
     async def _qzone_http_fetch(self, method: str, url: str, *, params: dict, headers: dict, timeout_ms: int) -> tuple[int, str]:
-        """httpx 薄封装(client.py 的 fetch 注入点;超时与异常上抛由调用方告警)。"""
+        """httpx 薄封装(client.py 的 fetch 注入点;超时与异常上抛由调用方告警)。
+
+        params 为空时必须传 None:httpx 的 params={} 会把 URL 既有 query 整体
+        清空(联调缺陷#9 根因)——图片 CDN 的签名 URL 由此被剥掉签名段致 404。
+        """
 
         async with httpx.AsyncClient(timeout=timeout_ms / 1000) as client:
-            resp = await client.request(method, url, params=params, headers=headers)
+            resp = await client.request(method, url, params=params or None, headers=headers)
             return resp.status_code, resp.text
 
     async def _qzone_selfcheck(self) -> bool:

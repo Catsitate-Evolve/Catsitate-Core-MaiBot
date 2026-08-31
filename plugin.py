@@ -478,9 +478,9 @@ class CatsitatePlugin(MaiBotPlugin):
         if not self.config.plugin.enabled or not self.config.image_relook.enabled:
             return "图片重看工具未启用。"
         stream_id = str(kwargs.get("stream_id") or "")
-        # 虚拟流注入消息带发布时间戳(老动态在宿主默认 24h 窗外),放宽取数窗口(联调缺陷#14)
-        wide = 87600.0 if stream_id in self._qzone_session_id_set() else None
-        recent = await self._fetch_recent(stream_id, limit=50, hours=wide)
+        # 方案 B(2026-08-31):注入消息 timestamp=阅读时刻,天然落在宿主 24h 默认窗内,
+        # 无需放宽取数窗(原缺陷#14 的 hours 放宽随之移除)
+        recent = await self._fetch_recent(stream_id, limit=50)
         seg, err = find_image_segment(recent, message_id or None, image_index)
         if seg is None:
             self.ctx.logger.warning("inspect_image 失败:%s(stream=%s,message_id=%s)", err, stream_id, message_id)
@@ -1936,20 +1936,16 @@ class CatsitatePlugin(MaiBotPlugin):
             self._llm_warned_day = day  # 跨越阈值当天只告警一次(复核 Minor:防每次调用刷屏)
             self.ctx.logger.warning("旁路 LLM 当日调用次数已达或超过阈值 %s,请注意用量", total)
 
-    async def _fetch_recent(self, stream_id: str, limit: int, *, hours: float | None = None) -> list[dict]:
+    async def _fetch_recent(self, stream_id: str, limit: int) -> list[dict]:
         """取近期消息。spike ④ 实测:返回 list;image 段仅 hash。
 
         公测发现:include_binary_data=True 时,含大附件(数十 MB)的消息会把 RPC
         响应帧撑爆(主机 16MB 上限,E_UNKNOWN)——插件消费方(衰减互动判定/说话人
         解析/结算素材)只用文本与元数据,二进制一律不取。
-        hours:宿主默认 24h 时间窗;虚拟流注入消息带的是**发布时间**(联调缺陷#14,
-        老动态在 24h 窗外查不到),调用方按需放宽。
+        方案 B(2026-08-31)后注入消息 timestamp=阅读时刻,宿主默认 24h 窗天然适用。
         """
 
-        kwargs: dict[str, Any] = {"chat_id": stream_id, "limit": limit}
-        if hours is not None:
-            kwargs["hours"] = hours
-        result = await self.ctx.call_capability("message.get_recent", **kwargs)
+        result = await self.ctx.call_capability("message.get_recent", chat_id=stream_id, limit=limit)
         return result if isinstance(result, list) else []
 
     async def _resolve_quote_sender(self, stream_id: str, reply_to_id: str) -> tuple[str | None, str]:

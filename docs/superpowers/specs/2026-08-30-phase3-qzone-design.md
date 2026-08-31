@@ -18,7 +18,7 @@ QQ 空间四功能（阅读好友动态 / 点赞 / 评论 / 发说说 + 记日�
 ## 2. 架构基石与全局决策
 
 1. **虚拟聊天平台**：`@MessageGateway(route_type="duplex", platform="qzone-qq")` 声明网关组件（**平台名为常量 `qzone-qq`，不入配置**——连字符别名经 `get_person_id` 折叠进 `qq` 人物命名空间，实现与真实 QQ 聊天的 person 统一，见 §2.17）；`on_load` 后 `ctx.gateway.update_state(ready=True, account_id=<bot 真实 QQ>)`。每条说说经 `ctx.gateway.route_message()` 注入——与真实 adapter 消息**同一入口**（`chat_bot.receive_message`），完整走 hook→heartflow→planner→replyer 链。`update_state` 的 account_id 会将虚拟平台记为 bot 账号，`is_bot_self` 对虚拟流生效（bot 回注自己的说说可正确标记 self）；account 用真实 bot QQ，经同样折叠统一 bot 自身 person。
-2. **单一虚拟群聊流**：全部好友动态按时间线交错进同一个伪群流（`is_group_session=bool(group_id)` 判群，主程序不校验平台真实性）；流内消息 user_id=好友 QQ、昵称=好友昵称；好友在他人说说下的评论以「评 XX：」前缀的独立消息呈现；队列全局按发布时间升序（补叙式阅读）；bot 自己的说说以 self 消息回注。**注入时间戳=动态发布时间**（联调修正 2026-08-31：防 bot 把老说说当刚发生）；正文带相对时间前缀（今天 HH:MM / M月d日 HH:MM）；宿主 get_recent 默认 24h 窗由此成为插件侧职责——虚拟流取数放宽 hours（inspect_image 已接），说话人解析改用注入泵当前作者（§2.16）。**注入消息必须带 `additional_config.is_mentioned=1.0` 强制触发**（见 §2.18）；message_id 全局唯一（tid+序号派生，去重键=driver_id:message_id）；网关须声明 supports_receive 且 ready 后才可注入；虚拟流由首条消息建立后 proactive 能力才可用。
+2. **单一虚拟群聊流**：全部好友动态按时间线交错进同一个伪群流（`is_group_session=bool(group_id)` 判群，主程序不校验平台真实性）；流内消息 user_id=好友 QQ、昵称=好友昵称；好友在他人说说下的评论以「评 XX：」前缀的独立消息呈现；队列全局按发布时间升序（补叙式阅读）；bot 自己的说说以 self 消息回注。**时间语义（方案 B，用户裁定 2026-08-31）**：注入时间戳=**阅读时刻**（注入时刻——消息流时钟单调递增,主程序时序机制（get_recent 24h 窗/间隔样本/连发过滤）消费正确的到达语义）；**发布时间由正文相对时间前缀承载**（今天 HH:MM / M月d日 HH:MM,防 bot 把老说说当刚发生,联调缺陷#5）；说话人解析用注入泵当前作者（§2.16 交叉校验）。**注入消息必须带 `additional_config.is_mentioned=1.0` 强制触发**（见 §2.18）；message_id 全局唯一（tid+序号派生，去重键=driver_id:message_id）；网关须声明 supports_receive 且 ready 后才可注入；虚拟流由首条消息建立后 proactive 能力才可用。
 3. **图片交主程序**：适配器拉取动态图片后作为消息图片段随说说注入，主程序图片摘要/重看链路原生接管（比 Maizone 的旁路 VLM 描述多拿到重看级能力）。**注入 dict 的 image 组件必须带 `binary_data_base64`**——只给 hash 时主流水线静默不描述、不落 Images 表（inspect_image 前提失效）；**体积治理=压缩到 RPC 帧限内（用户裁定 2026-08-31 终案）**：不设质量上限,但图片 base64 总量超过 RPC 帧预算（12MB,物理帧 16MB 留开销）时按压缩阶梯（PIL 降分辨率×降质量）收紧至达标;极端不达标丢弃最大图保帧并告警;下载失败的图以 `[图片]` 占位。主程序入站链路的压缩/丢弃仍在其后兜底。
 4. **串行注入 + 出站意图状态机**：浏览窗口内**一次只注入一条动态**，注入后等**轮完成信号**（见下），期间 planner 自由沉默/回复/点赞；轮完成后（或超时兜底）再注入下一条。插件在每个阶段前置设定出站意图，duplex 驱动按意图调空间 API（详见 §3.3）。同决策窗口内多次出站 = 对同一条动态多次评论（人类合法行为，放行）；窗口结束未消费意图作废并记日志。
    **轮完成信号（冲突审计修订）**：`maisaka.planner.after_response` 且 `output_items` 中无 tool_calls——此后本轮不再有模型调用/出站；wait/switch_chat 暂停是「假结束」（timeout 后同 logical_turn_id 续轮），视为决策窗口延长；`decision_window_seconds` 从固定间隔**降级为超时兜底上限**（默认 75s，需大于最坏 planner 轮延迟）。**wait 态精确规则（回顾修订）**：`wait` 本身是 tool_call，其所在响应不满足完成信号；超时兜底触发时若流处于 wait 态→**不注入下一条**，继续等 wait 超时后续轮的完成信号，硬上限 `3×decision_window_seconds` 后才强制推进并告警（防错靶：wait 期间注入的消息不触发轮、只会在 wait 结束后并入批处理）。planner 打断默认关闭（`planner_interrupt_max_consecutive_count=0`），「等上一轮结束再注入」与主程序天然兼容。
@@ -55,8 +55,8 @@ QQ 空间四功能（阅读好友动态 / 点赞 / 评论 / 发说说 + 记日�
 
 - 网关组件声明（duplex）；`on_load` 后 `update_state(ready=True)`，失败显式告警。
 - 注入泵（qzone 窗口期激活）：拉取 → seen 去重（msglist 条目即说说,转发/视频走回退链——[转发自XX]原文/[视频] 占位）→ 图片下载（失败占位+告警；带 `binary_data_base64`，体积治理=压缩到 RPC 帧预算（§2.3））→ 入队（全局按发布时间升序）→ **串行注入**（等上一条的**轮完成信号**——`planner.after_response` 无 tool_calls；wait 暂停视为延长；`decision_window_seconds` 为超时兜底）。
-- `message_dict` 构造对齐主程序格式（message_id=稳定去重 id（tid 派生+序号）、platform="qzone-qq"、user_info{user_id=好友QQ, user_nickname=好友昵称}、group_info{group_id=伪群号, group_name=显示名}、is_mentioned 嵌于 message_info.additional_config（主程序只读该位置）、raw_message 组件列表（text+image 段，image 组件结构实现时对齐 `message_utils.py` 的构造器））；**timestamp=发布时间+相对时间前缀**（abstime 非法回退注入时刻,debug 日志可观测）。
-- 发布时间以相对时间前缀写入正文（联调修正 2026-08-31,原「并入注入块『当前浏览状态』行」设计废弃——与 timestamp=发布时间的消息本体对齐使正文自带时间感知）；注入块「当前浏览状态」行不再承载时间。
+- `message_dict` 构造对齐主程序格式（message_id=稳定去重 id（tid 派生+序号）、platform="qzone-qq"、user_info{user_id=好友QQ, user_nickname=好友昵称}、group_info{group_id=伪群号, group_name=显示名}、is_mentioned 嵌于 message_info.additional_config（主程序只读该位置）、raw_message 组件列表（text+image 段，image 组件结构实现时对齐 `message_utils.py` 的构造器））；**timestamp=阅读时刻（注入时刻）；发布时间由正文相对时间前缀承载**（abstime 非法时不加前缀,debug 日志可观测——方案 B,2026-08-31）。
+- 发布时间以相对时间前缀写入正文；消息 timestamp=阅读时刻（方案 B）——两者语义分离,注入块「当前浏览状态」行不承载时间。
 
 ### 3.3 出站意图状态机 + duplex 驱动（`catsitate_core/qzone/outbound.py`）
 
@@ -84,7 +84,7 @@ QQ 空间四功能（阅读好友动态 / 点赞 / 评论 / 发说说 + 记日�
 
 ### 3.7 评论轮询（M2）
 
-- 醒着且不在 qzone 窗口时，周期任务仅拉「自己说说下的新评论」；新评论→注入（「评 XX：」形态，指向 bot 的那条说说作上下文，**同样带 is_mentioned=1.0 与发布时间戳**）→ planner 回复 → 意图 `AWAIT_COMMENT_REPLY` → 楼中楼 API。睡眠窗口内绝对静默拦截沿用。
+- 醒着且不在 qzone 窗口时，周期任务仅拉「自己说说下的新评论」；新评论→注入（「评 XX：」形态，指向 bot 的那条说说作上下文，**同样带 is_mentioned=1.0 与发布时间前缀**）→ planner 回复 → 意图 `AWAIT_COMMENT_REPLY` → 楼中楼 API。睡眠窗口内绝对静默拦截沿用。
 
 ### 3.8 发布（M3）
 
@@ -129,7 +129,7 @@ QQ 空间四功能（阅读好友动态 / 点赞 / 评论 / 发说说 + 记日�
 
 ## 7. 测试方式
 
-- 引擎层单测（pytest，不依赖主程序）：客户端响应解析（callback 截取/异常）、cookie 节流与失效路径、seen 去重（**注入成功才 seen/窗口尾回退未读**）、注入泵串行节奏（轮完成信号/超时兜底/**wait 态不推进与硬上限**）与时间戳=发布时间/相对时间前缀/回退可观测（debug 日志）、注入 dict 构造（is_mentioned/base64/唯一 message_id/platform="qzone-qq"/体积限流）、hours 放宽接线的源码级断言用例、意图状态机全迁移（含 IDLE 出站拒发/**text+reply 混合组件取文本/二进制段拒发**/未消费作废）、场景替换（命中/未命中回退/**空配置走追加且告警**/保留 schema 键）、白名单过滤（元素结构合法/空列表/tools=None）、日程 qzone 属性校验、评论轮询窗口外/睡眠拦截、发布路径（沉默不发布/表达触发不依赖新动态存在）、**日记路径（入睡任务双调用/补生成路径含日记/回注延迟且无 is_mentioned）**、模块豁免（晚安判定豁免虚拟流/fav_count 豁免/daily 候选排除）、**person 别名自检（折叠生效/失效告警停用）**、memo 重构后读写与全量回归。
+- 引擎层单测（pytest，不依赖主程序）：客户端响应解析（callback 截取/异常）、cookie 节流与失效路径、seen 去重（**注入成功才 seen/窗口尾回退未读**）、注入泵串行节奏（轮完成信号/超时兜底/**wait 态不推进与硬上限**）与timestamp=阅读时刻/发布时间前缀/abstime 缺失可观测（debug 日志）、注入 dict 构造（is_mentioned/base64/唯一 message_id/platform="qzone-qq"/体积限流）、意图状态机全迁移（含 IDLE 出站拒发/**text+reply 混合组件取文本/二进制段拒发**/未消费作废）、场景替换（命中/未命中回退/**空配置走追加且告警**/保留 schema 键）、白名单过滤（元素结构合法/空列表/tools=None）、日程 qzone 属性校验、评论轮询窗口外/睡眠拦截、发布路径（沉默不发布/表达触发不依赖新动态存在）、**日记路径（入睡任务双调用/补生成路径含日记/回注延迟且无 is_mentioned）**、模块豁免（晚安判定豁免虚拟流/fav_count 豁免/daily 候选排除）、**person 别名自检（折叠生效/失效告警停用）**、memo 重构后读写与全量回归。
 - 已知工程坑必测：`item_schema_version` 回传、工具元素原样保留、deferred reminder 剥除、`tool_search` 排除。
 - 实机验收清单追加三期条目（cookie 获取、虚拟流建流、评论落地、说说/日记发布与回注、真实聊天见闻摘要、生产前置检测告警）。
 

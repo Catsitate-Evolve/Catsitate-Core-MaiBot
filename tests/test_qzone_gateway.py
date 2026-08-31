@@ -19,7 +19,7 @@ def test_build_message_core_fields():
                              images=[], now_epoch=1750000100.0)
     assert msg["platform"] == QZONE_PLATFORM
     assert msg["message_id"] == "qzone_t1_3"  # 全局唯一去重键(tid+序号)
-    assert msg["timestamp"] == "1750000000"  # 发布时间(原时间,联调缺陷#5)
+    assert msg["timestamp"] == "1750000100"  # 方案 B:timestamp=阅读时刻(注入时刻)
     info = msg["message_info"]
     assert info["user_info"] == {"user_id": "10001", "user_nickname": "小明"}
     assert info["group_info"] == {"group_id": "qzone_feed", "group_name": "QQ空间"}
@@ -54,8 +54,9 @@ def test_build_message_empty_content_uses_placeholder():
     assert msg["raw_message"][0]["data"] == "(无文字内容)"
 
 
-def test_build_message_uses_post_time_and_prefix():
-    """联调缺陷#5(时间错乱):时间戳=发布时间(原时间);正文带相对时间前缀(时区无关断言)。"""
+def test_build_message_reading_timestamp_and_publish_prefix():
+    """时间语义(方案 B,2026-08-31):timestamp=阅读时刻(注入时刻,消息流时钟单调);
+    发布时间由正文相对时间前缀承载(时区无关断言)。"""
     import datetime as _dt
 
     post = 1750000000
@@ -64,18 +65,19 @@ def test_build_message_uses_post_time_and_prefix():
     same_day_evening = _dt.datetime(post_dt.year, post_dt.month, post_dt.day, 22, 0).timestamp()
     msg = build_feed_message(_feed(abstime=str(post)), seq=1, group_id="g", group_name="n",
                              images=[], now_epoch=same_day_evening)
-    assert msg["timestamp"] == str(post)  # 原时间(非注入时刻)
+    assert msg["timestamp"] == str(int(same_day_evening))  # 阅读时刻(与发布日无关)
     text = msg["raw_message"][0]["data"]
     assert text.startswith("(今天") and clock in text and text.endswith("今天天气好")
-    # 老动态(约 2 个月后阅读)→ 日期前缀
+    # 老动态(约 2 个月后阅读)→ 日期前缀;timestamp 仍是阅读时刻
     later = _dt.datetime(post_dt.year, post_dt.month + 2, 1, 9, 0).timestamp()
     msg2 = build_feed_message(_feed(abstime=str(post)), seq=2, group_id="g", group_name="n",
                               images=[], now_epoch=later)
+    assert msg2["timestamp"] == str(int(later))
     t2 = msg2["raw_message"][0]["data"]
     assert t2.startswith(f"({post_dt:%m月%d日}") and clock in t2
-    # abstime 缺失:回退注入时刻,无前缀
+    # abstime 缺失:无前缀
     msg3 = build_feed_message(_feed(abstime=""), seq=3, group_id="g", group_name="n",
-                              images=[], now_epoch=123456.0)
+                             images=[], now_epoch=123456.0)
     assert msg3["timestamp"] == "123456"
     assert msg3["raw_message"][0]["data"] == "今天天气好"
 

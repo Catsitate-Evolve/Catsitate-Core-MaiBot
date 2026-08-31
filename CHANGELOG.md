@@ -3,7 +3,7 @@
 ## v0.4.0(2026-08-30) 三期 M1:QQ空间感知
 
 - 新增 `qzone` 配置节与 `catsitate_core/qzone/` 模块包(协议客户端/去重存储/消息构造/注入状态机/场景纯函数)。
-- QQ空间动态映射为 `qzone-qq` 虚拟群聊流(连字符别名与真实 QQ 统一 person),串行注入复用主程序 planner→replyer 链;注入带 is_mentioned 强制触发与发布时间戳+相对时间前缀,图片带 base64 交主流水线处理。
+- QQ空间动态映射为 `qzone-qq` 虚拟群聊流(连字符别名与真实 QQ 统一 person),串行注入复用主程序 planner→replyer 链;注入带 is_mentioned 强制触发;消息时间戳=阅读时刻,发布时间以相对时间前缀写入正文(方案 B),图片带 base64 交主流水线处理。
 - 图片组件对齐 napcat-adapter(data 描述槽留空),VLM 描述链实证打通。
 - 日程窗口新增 `qzone` 属性(仅 daily 合法),`schedule_generate` 模板升 v3;标记窗口内按 `poll_interval_minutes` 拉取。
 - 虚拟流专属:群聊场景提示词原位替换(planner+replyer 两侧,失败告警回退注入块语义说明)、工具白名单过滤(默认不含 tool_search/msg_react/poke_user)、deferred reminder 剥除。

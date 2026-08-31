@@ -34,10 +34,14 @@ def test_fav_events_roundtrip(tmp_path):
 
 
 def test_note_bot_comment_stores_friend_uin(tmp_path):
+    from datetime import timedelta
+
     s = CommentSeenStore(SQLiteStore(tmp_path / "t.db"))
     s.ensure_schema()
-    s.note_bot_comment("f1", "3298178030", "bot评论", "2026-08-31T12:00:00")
-    s.note_bot_comment("f2", "3341299096", "另一条", "2026-08-31T12:01:00")
+    now = datetime.now()
+    # bot_commented_friends 带时间下界(D-1):登记时刻须在保留期内,取当前时间防日期耦合
+    s.note_bot_comment("f1", "3298178030", "bot评论", (now - timedelta(minutes=1)).strftime("%Y-%m-%dT%H:%M:%S"))
+    s.note_bot_comment("f2", "3341299096", "另一条", (now - timedelta(minutes=1)).strftime("%Y-%m-%dT%H:%M:%S"))
     uins = s.bot_commented_friends()
     assert set(uins) == {"3298178030", "3341299096"}
 
@@ -45,22 +49,45 @@ def test_note_bot_comment_stores_friend_uin(tmp_path):
 def test_bot_commented_friends_excludes_plain_comments(tmp_path):
     """反查只认 bot 评论键:is_new 登记的好友评论行(friend_uin 空串)与
     friend_uin 为空的自评登记都不进结果(空 target 无法圈定楼中楼轮询目标)。"""
+    from datetime import timedelta
+
     s = CommentSeenStore(SQLiteStore(tmp_path / "t.db"))
     s.ensure_schema()
+    fresh = (datetime.now() - timedelta(minutes=1)).strftime("%Y-%m-%dT%H:%M:%S")
     s.is_new("f1:c1:10001")                       # 好友评论(friend_uin 默认空串)
-    s.note_bot_comment("f2", "", "旧格式自评", "2026-08-31T12:00:00")  # 空主人
-    s.note_bot_comment("f3", "3298178030", "有效", "2026-08-31T12:01:00")
+    s.note_bot_comment("f2", "", "旧格式自评", fresh)  # 空主人
+    s.note_bot_comment("f3", "3298178030", "有效", fresh)
     assert s.bot_commented_friends() == ["3298178030"]
 
 
 def test_bot_commented_friends_migration(tmp_path):
     # 旧表无 friend_uin 列 → ensure_schema 迁移补列
+    from datetime import timedelta
+
     store = SQLiteStore(tmp_path / "old.db")
     store.execute("CREATE TABLE qzone_comments (comment_key TEXT PRIMARY KEY, created_at TEXT NOT NULL)")
     s = CommentSeenStore(store)
     s.ensure_schema()
-    s.note_bot_comment("f1", "123", "x", "2026-08-31T12:00:00")
+    s.note_bot_comment("f1", "123", "x", (datetime.now() - timedelta(minutes=1)).strftime("%Y-%m-%dT%H:%M:%S"))
     assert "123" in s.bot_commented_friends()
+
+
+def test_bot_commented_friends_days_cutoff(tmp_path):
+    """深度审查 D-1:反查带时间下界——超过保留期的旧登记不返回(限制源B轮询范围,
+    bot 一个月前评论过的好友不该永远进每轮通知轮询);days 参数可收紧窗口。"""
+    from datetime import timedelta
+
+    s = CommentSeenStore(SQLiteStore(tmp_path / "t.db"))
+    s.ensure_schema()
+    now = datetime.now()
+    s.note_bot_comment("f_old", "30000", "旧评论", (now - timedelta(days=61)).strftime("%Y-%m-%dT%H:%M:%S"))
+    s.note_bot_comment("f_new", "30001", "新评论", (now - timedelta(hours=30)).strftime("%Y-%m-%dT%H:%M:%S"))
+    # 默认 days=30:61 天前的登记超窗不返回
+    assert s.bot_commented_friends() == ["30001"]
+    # days=1:30 小时前的登记也超窗——只剩空
+    assert s.bot_commented_friends(days=1) == []
+    # days 放宽到 90:旧登记重新可见
+    assert sorted(s.bot_commented_friends(days=90)) == ["30000", "30001"]
 
 
 def test_get_bot_comment_text(tmp_path):
@@ -86,3 +113,16 @@ def test_prune(tmp_path):
     s.store.execute("UPDATE qzone_comments SET created_at = '2026-07-01T00:00:00'")
     now = datetime(2026, 8, 31, 12, 0, 0)
     assert s.prune(30, now) == 1  # 7月1日超出30天保留期
+
+
+def test_revert(tmp_path):
+    """深度审查 B-4:回退去重键——通知注入被宿主拒绝后删除 is_new 登记的键,
+    下轮通知轮询重新发现(is_new 再次 True),通知不因一次拒绝永久丢失。"""
+    s = CommentSeenStore(SQLiteStore(tmp_path / "t.db"))
+    s.ensure_schema()
+    key = "feed1:c1:20000"
+    assert s.is_new(key) is True
+    assert s.is_new(key) is False  # 已登记
+    s.revert(key)  # 注入被拒:回退
+    assert s.is_new(key) is True  # 下轮重新发现
+    s.revert("不存在的键")  # 幂等:无该行不报错

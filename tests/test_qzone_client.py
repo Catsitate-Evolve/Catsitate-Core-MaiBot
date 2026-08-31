@@ -166,8 +166,34 @@ def test_client_download_image_retries_once_on_transient_failure():
         return {"p_skey": "SK"}
 
     client = QzoneClient(cookie_provider=fake_cookie, fetch=fake_fetch, timeout_ms=1000, max_retries=0)
-    assert asyncio.run(client.download_image("https://img/x.jpg")) == b"img"
+    assert asyncio.run(client.download_image("https://simg.qpic.cn/x.jpg")) == b"img"
     assert len(attempts) == 2
+
+
+def test_client_download_image_domain_whitelist():
+    """深度审查 E-1:图片下载域名白名单(*.qpic.cn / *.qq.com)——非 QQ 系域名
+    (外站/内网地址)拒绝下载且零网络请求:动态载荷的 URL 不可信,防把登录
+    Cookie 带去任意域与内网探测;白名单内照常下载。"""
+    fetches = []
+
+    async def fake_fetch(method, url, *, params, headers, timeout_ms, data=None):
+        fetches.append(url)
+        return 200, b"img"
+
+    async def fake_cookie():
+        return {"p_skey": "SK"}
+
+    client = QzoneClient(cookie_provider=fake_cookie, fetch=fake_fetch, timeout_ms=1000, max_retries=0)
+    # 白名单外:外站域名/裸域/内网地址/无 host 形态全拒,零请求
+    assert asyncio.run(client.download_image("https://evil.example.com/a.jpg")) is None
+    assert asyncio.run(client.download_image("https://qpic.cn/a.jpg")) is None  # 裸域(须为子域形态)
+    assert asyncio.run(client.download_image("http://127.0.0.1:8080/a.jpg")) is None
+    assert asyncio.run(client.download_image("not-a-url")) is None
+    assert fetches == []
+    # 白名单内:qpic.cn 子域与 qq.com 子域照常
+    assert asyncio.run(client.download_image("https://simg.qpic.cn/a.jpg")) == b"img"
+    assert asyncio.run(client.download_image("https://user.qzone.qq.com/a.jpg")) == b"img"
+    assert len(fetches) == 2
 
 
 def test_client_raises_auth_error_on_neg3000():
@@ -249,7 +275,7 @@ def test_client_download_image_no_size_cap_and_no_extra_params():
         return {"p_skey": "SK"}
 
     client = QzoneClient(cookie_provider=fake_cookie, fetch=fake_fetch, timeout_ms=1000, max_retries=0)
-    assert asyncio.run(client.download_image("https://img/x.jpg")) == big  # 不设上限,原样返回
+    assert asyncio.run(client.download_image("https://simg.qpic.cn/x.jpg")) == big  # 不设上限,原样返回
     assert all(p == {} for _, p in seen)  # 无 g_tk 等附加参数
 
 

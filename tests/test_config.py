@@ -86,7 +86,8 @@ def test_qzone_section_defaults():
     q = cfg.qzone
     assert q.enabled is True
     assert q.poll_interval_minutes == 15
-    assert q.decision_window_seconds == 75
+    # 深度审查 F:慢模型实测轮延迟 31-53s,75s 无余量——默认 150 留余量
+    assert q.decision_window_seconds == 150
     assert q.virtual_group_id == "qzone_feed"
     assert q.virtual_group_name == "QQ空间"
     assert q.summary_count == 5

@@ -16,6 +16,9 @@ class OutboundIntent:
     comment_tid: str = ""
     comment_uin: str = ""
     comment_nick: str = ""
+    # 意图绑定的注入消息 id(qzone_{tid}_{seq},深度审查 A-1):出站 reply 段引用的
+    # 目标消息与之不一致=超时推进后旧轮回复错发新目标,网关侧据此拒发
+    message_id: str = ""
 
 
 def route_outbound(intent: OutboundIntent | None, text: str, has_binary: bool) -> tuple[str, str]:

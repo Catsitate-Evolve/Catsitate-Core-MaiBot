@@ -36,6 +36,10 @@ class FeedItem:
     appid: int = FEED_APPID_SHUOSHUO
     source: str = "feed"  # "feed"=浏览动态 / "notify"=通知(T11 统一通知通道)
     friend_uin: str = ""  # 通知源B:说说主人(楼中楼 target_qq);源A/浏览动态为空
+    # 通知项的去重键(深度审查 B-4):is_new 发现即登记,注入被宿主拒绝/异常时泵侧
+    # 据此回退登记(revert),下轮通知轮询重新发现——通知不因一次拒绝永久丢失。
+    # notify_reply 键含 parent_comment tid(tid 后缀不可还原),故构造时直接传入。
+    dedup_key: str = ""
 
 
 def generate_gtk(p_skey: str) -> int:

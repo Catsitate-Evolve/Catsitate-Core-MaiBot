@@ -63,6 +63,14 @@ class CommentSeenStore:
         )
         return True
 
+    def revert(self, comment_key: str) -> None:
+        """回退 is_new 登记的键(深度审查 B-4):通知项注入被宿主拒绝/异常时,
+        删除该键令下轮通知轮询重新发现——通知不因一次拒绝永久丢失。幂等:无该行不报错。"""
+
+        if not comment_key:
+            return
+        self.store.execute("DELETE FROM qzone_comments WHERE comment_key = ?", (comment_key,))
+
     def note_bot_comment(self, feed_tid: str, friend_uin: str, bot_text: str, at_iso: str) -> None:
         """登记 bot 自己发出的评论(发出成功后/轮询再见到时调用)。
 
@@ -99,16 +107,20 @@ class CommentSeenStore:
             return ""
         return str(rows[0][0])[len(prefix):]
 
-    def bot_commented_friends(self) -> list[str]:
-        """bot 评论过的说说主人去重列表(楼中楼轮询的目标圈定,T9)。
+    def bot_commented_friends(self, *, days: int = 30) -> list[str]:
+        """bot 近 N 天评论过的说说主人去重列表(楼中楼轮询的目标圈定,T9)。
 
         只认 bot 评论键({feed}:bot:{text});is_new 登记的好友评论行
-        friend_uin 恒为默认空串,被 friend_uin != '' 排除。
+        friend_uin 恒为默认空串,被 friend_uin != '' 排除。时间下界(深度审查
+        D-1):只返回近 N 天(默认 30,与 prune 保留期对齐)的登记——超期旧
+        登记不得永远圈定源B轮询范围,好友列表随时间无界增长会拖慢每轮通知轮询。
         """
 
+        cutoff = (datetime.now() - timedelta(days=max(days, 1))).strftime(_ISO)
         rows = self.store.query(
             "SELECT DISTINCT friend_uin FROM qzone_comments "
-            "WHERE comment_key LIKE '%:bot:%' AND friend_uin != ''"
+            "WHERE comment_key LIKE '%:bot:%' AND friend_uin != '' AND created_at >= ?",
+            (cutoff,),
         )
         return [str(r[0]) for r in rows]
 

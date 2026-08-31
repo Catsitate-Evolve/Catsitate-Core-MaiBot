@@ -10,6 +10,7 @@ import json
 import logging
 import time
 from typing import Any, Awaitable, Callable
+from urllib.parse import urlparse
 
 from catsitate_core.qzone.protocol import (
     extract_callback_json,
@@ -132,6 +133,16 @@ def _extract_cookies(result: Any) -> dict[str, str]:
     return {}
 
 
+def _is_qq_image_host(host: str) -> bool:
+    """QQ 空间图片 CDN 域名判定(深度审查 E-1):*.qpic.cn / *.qq.com。
+
+    动态载荷里的图片 URL 来自远端数据,不可信——非白名单域名可能把登录 Cookie
+    带去任意站(或被引去探测内网),一律拒绝下载。
+    """
+
+    return host.endswith(".qpic.cn") or host.endswith(".qq.com")
+
+
 class QzoneClient:
     """空间接口客户端(读路径:M1 好友动态列表与图片下载;写路径:M2 点赞/评论/楼中楼)。"""
 
@@ -164,6 +175,10 @@ class QzoneClient:
             "User-Agent": BROWSER_UA,
             "Referer": referer,
         }
+        if binary and not _is_qq_image_host(urlparse(url).hostname or ""):
+            # 深度防御(深度审查 E-1):白名单已在 download_image 入口拦截,此处兜底
+            # ——非 QQ 系域名的二进制请求一律不带登录 Cookie
+            headers["Cookie"] = ""
         params = dict(params)
         if not binary:
             # g_tk 只用于空间 cgi 接口;图片 CDN 是签名 URL,附加查询参数会破坏签名致 404(联调缺陷#8)
@@ -295,13 +310,20 @@ class QzoneClient:
     async def download_image(self, url: str) -> bytes | None:
         """下载原图,失败返回 None(调用方以占位注入)。防盗链头带上 Referer。
 
-        体积不加插件侧上限(用户裁定 2026-08-31):主程序入站链路对过大图片
-        自有压缩/丢弃处理。读路径例外:CDN 偶发瞬态失败(联调实证 404),
-        单次重试;动作 API 的「失败不重试」纪律不适用于此。次数固定 1,
-        不消费 max_retries(该配置约束 M2 动作 API)。
+        域名白名单(深度审查 E-1):仅 *.qpic.cn/*.qq.com——动态载荷的 URL 不可信,
+        非白名单域拒绝下载(防 Cookie 外带与内网探测)。体积不加插件侧上限
+        (用户裁定 2026-08-31):主程序入站链路对过大图片自有压缩/丢弃处理。
+        读路径例外:CDN 偶发瞬态失败(联调实证 404),单次重试;动作 API 的
+        「失败不重试」纪律不适用于此。次数固定 1,不消费 max_retries
+        (该配置约束 M2 动作 API)。
         """
 
         import asyncio as _asyncio
+
+        host = urlparse(url).hostname or ""
+        if not _is_qq_image_host(host):
+            logger.warning("空间图片域名不在白名单(%s),拒绝下载", host)
+            return None
 
         for attempt in (1, 2):
             status, body = await self._request("GET", url, params={}, binary=True)

@@ -28,3 +28,19 @@ def extract_outbound_text(message: dict) -> tuple[str, bool]:
             has_binary = True
         # reply/at 忽略
     return "".join(parts), has_binary
+
+
+def extract_quote_target(message: dict) -> str:
+    """取出站消息 reply 段的 target_message_id(无 reply 段返回空串)。
+
+    深度审查 A-1 意图绑定校验的输入:出站引用的目标与意图的注入消息不一致
+    (超时推进后旧轮回复错靶)= 拒发;大部分 planner 出站不带 reply 段,
+    空串表示跳过校验(覆盖带引用的高风险场景)。
+    """
+
+    for comp in (message or {}).get("raw_message") or []:
+        if isinstance(comp, dict) and comp.get("type") == "reply":
+            data = comp.get("data")
+            if isinstance(data, dict):
+                return str(data.get("target_message_id") or "")
+    return ""

@@ -1,5 +1,5 @@
-"""出站消息组件提取测试(text 段拼接/reply·at 忽略/二进制检测)。"""
-from catsitate_core.qzone.outbound import M1_OUTBOUND_ERROR, extract_outbound_text
+"""出站消息组件提取测试(text 段拼接/reply·at 忽略/二进制检测/quote 目标提取)。"""
+from catsitate_core.qzone.outbound import M1_OUTBOUND_ERROR, extract_outbound_text, extract_quote_target
 
 
 def _msg(raw):
@@ -33,3 +33,23 @@ def test_extract_detects_binary():
 
 def test_m1_error_message_is_explicit():
     assert "M1" in M1_OUTBOUND_ERROR and "M2" in M1_OUTBOUND_ERROR  # 显式说明阶段与去向
+
+
+# ---- 深度审查 A-1:reply 段 quote 目标提取(意图绑定校验的输入) ----
+
+
+def test_extract_quote_target_from_reply_segment():
+    """reply 段的 target_message_id 即 quote 目标(意图绑定校验比对用)。"""
+    msg = _msg([
+        {"type": "reply", "data": {"target_message_id": "qzone_t1_7"}},
+        {"type": "text", "data": "同感~"},
+    ])
+    assert extract_quote_target(msg) == "qzone_t1_7"
+
+
+def test_extract_quote_target_empty_without_reply_segment():
+    """无 reply 段返回空串(大部分 planner 出站不带引用→跳过绑定校验);畸形形态容错。"""
+    assert extract_quote_target(_msg([{"type": "text", "data": "好看"}])) == ""
+    assert extract_quote_target(_msg([{"type": "reply", "data": "非对象"}])) == ""
+    assert extract_quote_target(_msg([{"type": "reply", "data": {}}])) == ""
+    assert extract_quote_target(None) == ""  # 消息本体缺失(防御形态)

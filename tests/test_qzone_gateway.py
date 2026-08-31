@@ -333,7 +333,7 @@ def test_notify_poll_stale_comment_skipped_and_registered(tmp_path):
         comment_tid="ct1", uin="20000", nickname="小红", content="好棒", create_time=stale,
     )]}
     p = _make_notify_poll_plugin(tmp_path, comments, {"feed1": "今天的心情"})
-    _asyncio.run(p._qzone_notify_poll_tick())
+    _asyncio.run(p._qzone_notify_scan())
     assert p._ctx.gateway.calls == []  # 不注入
     assert p._qzone_outbound_intent is None  # 不占意图
     assert p.qzone_injector.queue_size() == 0  # 未入队(不是入队后没泵出)
@@ -352,7 +352,7 @@ def test_notify_poll_injects_with_time_prefix_or_fallback(tmp_path):
         create_time=str(int(_time.time())),
     )]}
     p = _make_notify_poll_plugin(tmp_path, fresh, {"feed2": "今天的心情"})
-    _asyncio.run(p._qzone_notify_poll_tick())
+    _asyncio.run(p._qzone_notify_scan())
     assert len(p._ctx.gateway.calls) == 1
     msg = p._ctx.gateway.calls[0][1]
     text = msg["raw_message"][0]["data"]
@@ -369,7 +369,7 @@ def test_notify_poll_injects_with_time_prefix_or_fallback(tmp_path):
         comment_tid="ct3", uin="20002", nickname="小刚", content="加油", create_time="",
     )]}
     p2 = _make_notify_poll_plugin(tmp_path / "b", no_time, {"feed3": "今天的心情"})
-    _asyncio.run(p2._qzone_notify_poll_tick())
+    _asyncio.run(p2._qzone_notify_scan())
     assert len(p2._ctx.gateway.calls) == 1
     text2 = p2._ctx.gateway.calls[0][1]["raw_message"][0]["data"]
     assert text2.startswith("(通知) 小刚") and not text2.startswith("(今天")

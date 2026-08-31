@@ -895,7 +895,12 @@ class CatsitatePlugin(MaiBotPlugin):
             self.ctx.logger.info("QQ空间动态已注入(tid=%s,作者=%s)", feed.tid, feed.nickname)
 
     async def _qzone_comment_poll_tick(self) -> None:
-        """窗口外评论轮询:好友在 bot 说说下的新评论 → 注入 → 意图楼中楼回复(spec §3.7)。"""
+        """评论轮询(始终运行,醒着即可):好友在 bot 说说下的新评论 → 注入 → 意图楼中楼回复。
+
+        联调修正(2026-08-31):原设计窗口内 return——但浏览流只拉好友动态,
+        完全不碰自己说说的评论,窗口内(可能 2h+)评论区通知反而完全不可见。
+        评论轮询与浏览流互不重叠(自己 vs 好友),窗口内同时跑更拟人(正在空间)。
+        """
 
         if not self._qzone_available:
             return
@@ -903,11 +908,6 @@ class CatsitatePlugin(MaiBotPlugin):
             return
         if self.config.sleep.enabled and self.sleep.is_sleeping():
             return  # 睡眠绝对静默(spec §2.6)
-        if not self._schedule_data:
-            return  # 日程未生成/未恢复:无窗口可言,按窗口外继续
-        win = current_window(self._schedule_data, datetime.now().strftime("%Y-%m-%dT%H:%M"))
-        if win and win.get("kind") == "daily" and win.get("qzone"):
-            return  # qzone 窗口内由浏览流覆盖,不重复
         bot_uin = str(self.config.favorability.bot_user_id or "").strip()
         if not bot_uin:
             return  # 写路径身份缺失(on_load 自检已停用模块,防御性再判)

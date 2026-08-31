@@ -776,6 +776,43 @@ def test_pump_keeps_feed_semantics_when_rejected(tmp_path):
     assert p.qzone_injector.awaiting_tid == ""
 
 
+# ---- 深度审查 A-N1:通知重试上限 + fav_event 去重 ----
+
+
+def test_pump_notify_retry_limit_gives_up(tmp_path):
+    """深度审查 A-N1:宿主持续拒绝时重试有上限——同一通知经「发现→注入被拒→回退」
+    循环 3 次后保留登记放弃(is_new False),第 4 轮扫描不再注入;同一事件在
+    3 次发现中重复调用 fav_event 只记一条(发现侧去重)。"""
+
+    import time as _time
+
+    comments = {"feed1": [CommentItem(
+        comment_tid="c1", uin="20000", nickname="小红",
+        content="好友评论", create_time=str(int(_time.time())),
+    )]}
+    p = _make_plugin(tmp_path)
+    p.qzone_injector.window_started()
+    p.qzone_client = _StubCommentClient(comments, {"feed1": "今天的心情"})
+    gw = _RejectGateway()
+    p._ctx.gateway = gw
+
+    for _ in range(3):
+        asyncio.run(p._qzone_notify_scan())
+    assert len(gw.calls) == 3  # 恰三次注入尝试(每轮扫描重新发现被回退的键)
+    assert p.qzone_comment_seen.is_new("feed1:c1:20000") is False  # 已放弃:登记保留判重
+    assert any(
+        level == "warning" and "放弃不再重试" in str(a[0]) for level, a in p.logs
+    )
+    assert sum(
+        1 for level, a in p.logs if level == "info" and "待下轮重试" in str(a[0])
+    ) == 2  # 前两次回退(第 1/2 次),第三次放弃
+    asyncio.run(p._qzone_notify_scan())  # 第 4 轮:键已判重,不再注入
+    assert len(gw.calls) == 3
+    # 同一事件 3 次发现只记一条 fav_event(A-N1 去重,防重复放大结算素材)
+    rows = p.store.query("SELECT COUNT(*) FROM qzone_fav_events WHERE user_id = '20000'")
+    assert rows[0][0] == 1
+
+
 # ---- 深度审查 C-1:睡眠门(pump/turn_signal) ----
 
 

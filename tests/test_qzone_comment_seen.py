@@ -116,7 +116,7 @@ def test_prune(tmp_path):
 
 
 def test_revert(tmp_path):
-    """深度审查 B-4:回退去重键——通知注入被宿主拒绝后删除 is_new 登记的键,
+    """深度审查 B-4:回退去重键——通知注入被宿主拒绝后回退 is_new 登记的键,
     下轮通知轮询重新发现(is_new 再次 True),通知不因一次拒绝永久丢失。"""
     s = CommentSeenStore(SQLiteStore(tmp_path / "t.db"))
     s.ensure_schema()
@@ -126,3 +126,46 @@ def test_revert(tmp_path):
     s.revert(key)  # 注入被拒:回退
     assert s.is_new(key) is True  # 下轮重新发现
     s.revert("不存在的键")  # 幂等:无该行不报错
+
+
+def test_notify_retry_gives_up_after_three(tmp_path):
+    """深度审查 A-N1:重试计数跨软回退累计——前两次被拒不丢(回退待下轮重发现),
+    第 3 次仍被拒保留登记放弃(is_new 恒 False),不再无限重注入。"""
+    s = CommentSeenStore(SQLiteStore(tmp_path / "t.db"))
+    s.ensure_schema()
+    key = "feed1:c1:20000"
+    for attempt in (1, 2):
+        assert s.is_new(key) is True        # 首次发现 / 回退后重发现
+        assert s.note_retry(key) == attempt  # 计数跨「回退→重发现」累计,不随重发现归零
+        s.revert(key)                        # 泵侧:未达上限 → 回退待重试
+    assert s.is_new(key) is True  # 第 3 次发现(第 2 次回退后)
+    assert s.note_retry(key) == 3  # 达上限
+    # 泵侧不再 revert:登记保留 → is_new 判 False,下轮轮询跳过
+    assert s.is_new(key) is False
+    assert s.is_new(key) is False  # 恒 False(非一次性语义)
+
+
+def test_retry_columns_migration(tmp_path):
+    """深度审查 A-N1 迁移:旧表无 retry_count/pending_retry 列 → ensure_schema 补列。"""
+    store = SQLiteStore(tmp_path / "old.db")
+    store.execute("CREATE TABLE qzone_comments (comment_key TEXT PRIMARY KEY, created_at TEXT NOT NULL)")
+    s = CommentSeenStore(store)
+    s.ensure_schema()
+    s.is_new("f1:c1:20000")
+    assert s.note_retry("f1:c1:20000") == 1  # 补列后计数可用
+    s.revert("f1:c1:20000")
+    assert s.is_new("f1:c1:20000") is True  # 软回退语义在迁移表上同样成立
+
+
+def test_fav_event_same_day_dedup(tmp_path):
+    """深度审查 A-N1:同日同 user+kind+text 只记一条——通知被拒回退后重发现时,
+    发现侧会再次调用 fav_event,重复入库会放大结算素材与衰减计时。"""
+    s = CommentSeenStore(SQLiteStore(tmp_path / "t.db"))
+    s.ensure_schema()
+    today = datetime.now().strftime("%Y-%m-%d")
+    s.fav_event("20000", "COMMENT", "小红 评论了你的说说「心情」: 好看")
+    s.fav_event("20000", "COMMENT", "小红 评论了你的说说「心情」: 好看")  # revert 重发现的重复
+    s.fav_event("20000", "COMMENT", "小红 评论了你的说说「心情」: 再看一次")  # 不同内容正常记
+    s.fav_event("20000", "OUT_LIKE", "你点赞了 20000 的说说")  # 不同 kind 正常记
+    rows = s.fav_events_on(today, "20000")
+    assert len(rows) == 3

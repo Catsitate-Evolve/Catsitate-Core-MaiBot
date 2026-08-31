@@ -93,6 +93,14 @@ QZONE_FAV_EVENT_LABELS = {
     "OUT_LIKE": "你点赞了TA",
 }
 
+# 通知注入重试上限(深度审查 A-N1):同一通知被宿主拒绝/注入异常后经软回退
+# 重发现的次数上限,超过则保留登记放弃——防宿主持续拒绝时每轮询周期无限重注入
+QZONE_NOTIFY_MAX_RETRIES = 3
+
+# 通知轮询源B好友数硬上限(深度审查 F4):每轮逐好友 2s sleep+HTTP,好友数随
+# bot 评论足迹线性增长会失控;10 为保守值,超出截断并告警
+QZONE_SOURCE_B_FRIEND_CAP = 10
+
 
 class _ModuleLogForwarder(logging.Handler):
     """把 catsitate_core.* 模块日志转发到插件 ctx logger(联调缺陷#10)。
@@ -236,6 +244,15 @@ class CatsitatePlugin(MaiBotPlugin):
             api_call=self.ctx.api.call,
             refresh_minutes=self.config.qzone.cookie_refresh_minutes,
         )
+        # 深度审查 F3:cookie 含登录凭据,文件存在则收紧为属主可读(比照 SQLiteStore
+        # 的 0600 纪律);JsonSnapshot.save 经 mkstemp+rename 本就 0600,此处兜住旧
+        # 版本遗留/外部复制产生的宽权限存量文件
+        cookie_file = data_dir / "qzone_cookies.json"
+        if cookie_file.exists():
+            try:
+                os.chmod(cookie_file, 0o600)
+            except OSError:
+                self.ctx.logger.warning("qzone_cookies.json 权限设置失败(凭据文件可能非属主可读,建议人工检查)")
         self.qzone_client = QzoneClient(
             cookie_provider=self.qzone_cookie.get,
             fetch=self._qzone_http_fetch,
@@ -948,21 +965,17 @@ class CatsitatePlugin(MaiBotPlugin):
                 accepted = await self.ctx.gateway.route_message(QZONE_GATEWAY_NAME, msg)
             except Exception:
                 self.ctx.logger.exception("QQ空间动态注入失败(tid=%s),本轮跳过", feed.tid)
-                # 深度审查 B-4:通知项的 is_new 键发现即登记,注入没成功就回退——
-                # 否则该通知永久丢失(下轮判重跳过);浏览动态无此问题(queued 行
-                # 由窗口尾 revert_pending 回退未读)
-                if feed.source == "notify" and feed.dedup_key:
-                    self.qzone_comment_seen.revert(feed.dedup_key)
-                    self.ctx.logger.warning("QQ空间通知注入异常已回退去重键(%.60s),下轮重检", feed.dedup_key)
+                # 深度审查 B-4+A-N1:通知项注入未成功不永久丢失,但重试有上限(见
+                # _qzone_notify_retry_backoff);浏览动态无此问题(queued 行由窗口
+                # 尾 revert_pending 回退未读)
+                self._qzone_notify_retry_backoff(feed)
                 return
             if not accepted:
                 # 拒绝时不 mark_injected/mark_seen:feed 已从内存队列弹出,但 DB 仍
                 # queued,窗口尾 revert_pending 会回退未读——不丢数据,下窗口可重试
                 self.ctx.logger.warning("QQ空间动态注入被宿主拒绝(tid=%s,adapter policy 或网关状态),跳过且不标记已见", feed.tid)
-                # 深度审查 B-4:通知项被拒不永久丢失——回退去重键,下轮通知轮询重检
-                if feed.source == "notify" and feed.dedup_key:
-                    self.qzone_comment_seen.revert(feed.dedup_key)
-                    self.ctx.logger.warning("QQ空间通知注入被拒已回退去重键(%.60s),下轮重检", feed.dedup_key)
+                # 深度审查 B-4+A-N1:通知项被拒不永久丢失,重试上限内回退待重检
+                self._qzone_notify_retry_backoff(feed)
                 return
             self.qzone_injector.mark_injected(feed.tid, time.monotonic())
             self.qzone_seen.mark_seen(feed.tid, datetime.now().strftime("%Y-%m-%dT%H:%M:%S"))
@@ -992,6 +1005,26 @@ class CatsitatePlugin(MaiBotPlugin):
                     kind="reaction", tid=feed.tid, target_qq=feed.uin, message_id=msg["message_id"],
                 )
             self.ctx.logger.info("QQ空间动态已注入(tid=%s,作者=%s)", feed.tid, feed.nickname)
+
+    def _qzone_notify_retry_backoff(self, feed: FeedItem) -> None:
+        """通知项注入失败(被拒/异常)的回退决策(深度审查 B-4 + A-N1)。
+
+        B-4:回退去重键令下轮通知轮询重新发现,通知不因一次拒绝永久丢失。
+        A-N1:重试有上限——revert 为软回退(qzone_comments 行保留),note_retry
+        的累计跨「回退→重发现」循环存活;满 QZONE_NOTIFY_MAX_RETRIES 次仍失败
+        则保留登记放弃(is_new 恒 False 跳过),防宿主持续拒绝时同一通知每
+        轮询周期(120s)无限重注入。浏览动态(source=feed)不走本路径。"""
+
+        if feed.source != "notify" or not feed.dedup_key:
+            return
+        retries = self.qzone_comment_seen.note_retry(feed.dedup_key)
+        if retries >= QZONE_NOTIFY_MAX_RETRIES:
+            self.ctx.logger.warning(
+                "QQ空间通知重试 %d 次仍被拒(dedup_key=%.40s),放弃不再重试", retries, feed.dedup_key
+            )
+            return  # 不 revert:保留登记,下轮 is_new 判 False 跳过
+        self.ctx.logger.info("QQ空间通知被拒,回退去重键待下轮重试(第 %d 次)", retries)
+        self.qzone_comment_seen.revert(feed.dedup_key)
 
     async def _qzone_notify_poll_tick(self) -> None:
         """统一通知轮询触发器(深度审查 A-2):防重入后派发后台扫描,立即返回。
@@ -1097,6 +1130,12 @@ class CatsitatePlugin(MaiBotPlugin):
                     # 反查失败显式告警后按空处理(源B 仅是增量来源,不阻断源A 已得通知)
                     self.ctx.logger.exception("QQ空间通知轮询源B好友反查失败,本轮跳过源B")
                     friends = []
+                if len(friends) > QZONE_SOURCE_B_FRIEND_CAP:
+                    self.ctx.logger.warning(
+                        "源B好友数 %d 超上限,截断为 %d(深度审查 F4:每轮逐好友 2s sleep+HTTP,防 API 量随好友数线性失控)",
+                        len(friends), QZONE_SOURCE_B_FRIEND_CAP,
+                    )
+                    friends = friends[:QZONE_SOURCE_B_FRIEND_CAP]
                 first_source_b_pull = True
                 for friend_uin in friends:
                     if friend_uin == bot_uin:
@@ -1471,7 +1510,9 @@ class CatsitatePlugin(MaiBotPlugin):
             return
         exc = task.exception()
         if exc is not None:
-            self.ctx.logger.exception("后台任务异常:%s", exc)
+            # exc_info 显式传异常对象:done 回调不在 except 上下文,裸 exception()
+            # 不会附栈回溯,只有一行类型名(深度审查 F5 可观测性)
+            self.ctx.logger.exception("后台任务异常:%s", exc, exc_info=exc)
 
     def _to_snapshot_item(self, text: str) -> dict:
         """渲染块 → 合法快照 UserMessageItem(spike ②:朴素 dict 被主程序拒绝)。
@@ -1781,7 +1822,25 @@ class CatsitatePlugin(MaiBotPlugin):
         if not self.config.plugin.enabled or not self.config.favorability.enabled:
             return
         # 按人语义:多流用户日终只结一次,结算聚合该人全部流素材(规格全局决策 #7)
-        for user_id in self.fav_engine.iter_today_active():
+        candidates = set(self.fav_engine.iter_today_active())
+        # 深度审查 C-N1:纯空间互动好友并集——只有空间事件(评论/点赞/出站)而无
+        # 当日聊天的人没有 batch 行,iter_today_active 只扫 batch_counter 扫不到,
+        # 原实现下纯空间互动者永不结算;并集当日 qzone_fav_events 的 user_id 令其
+        # 进入日终兜底(空间事件本身即结算素材,§3.9)。bot 自身排除:源A自评回复
+        # 的 OUT_COMMENT 以 bot 为 target 落事件,但 bot 不是好感度结算对象。
+        today = datetime.now().strftime("%Y-%m-%d")
+        bot_uin = str(self.config.favorability.bot_user_id or "").strip()
+        try:
+            event_users = {
+                str(r[0]) for r in self.store.query(
+                    "SELECT DISTINCT user_id FROM qzone_fav_events WHERE day = ?", (today,)
+                )
+            }
+        except Exception:
+            self.ctx.logger.exception("当日空间事件反查失败,日终候选仅用 batch 活跃(深度审查 C-N1)")
+            event_users = set()
+        candidates |= {u for u in event_users if u and u != bot_uin}
+        for user_id in sorted(candidates):
             if self.fav_engine.has_daily_settle_today(user_id):
                 continue
             try:

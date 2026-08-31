@@ -279,3 +279,86 @@ def test_iter_today_active_and_daily_settle_check(tmp_path):
         judge_id=f"daily-{NOW.strftime('%Y-%m-%dT%H:%M:%S')}",
     )
     assert engine.has_daily_settle_today("u1", now=lambda: NOW) is True
+
+
+def test_daily_settle_includes_pure_qzone_users(tmp_path):
+    """深度审查 C-N1:纯空间互动好友(当日只有 qzone_fav_events、无 batch 行)进入
+    日终结算候选——iter_today_active 只扫 batch_counter,纯空间互动者原实现永不结算;
+    bot 自身不进候选(源A自评回复的 OUT_COMMENT 以 bot 为 target,bot 非结算对象)。"""
+    import asyncio
+    from types import SimpleNamespace
+
+    import plugin as plugin_mod
+    from catsitate_core.config import CatsitateConfig
+    from catsitate_core.favorability import BatchEngine, SettleExecutor
+    from catsitate_core.qzone.comment_seen import CommentSeenStore
+    from catsitate_core.storage import SQLiteStore
+
+    logs: list = []
+
+    class _Log:
+        def info(self, *a, **k):
+            logs.append(("info", a))
+
+        def warning(self, *a, **k):
+            logs.append(("warning", a))
+
+        def exception(self, *a, **k):
+            logs.append(("exception", a))
+
+        def debug(self, *a, **k):
+            pass
+
+        def error(self, *a, **k):
+            logs.append(("error", a))
+
+    async def _fake_llm(messages, model=""):
+        return {"success": True, "response": '{"delta": 1, "note": "空间互动"}', "model": model}
+
+    p = plugin_mod.CatsitatePlugin()
+    p._ctx = SimpleNamespace(logger=_Log())
+    p._plugin_config_instance = CatsitateConfig()
+    p.config.plugin.enabled = True
+    p.config.favorability.bot_user_id = "10000"
+    p.sleep = SimpleNamespace(is_sleeping=lambda: False)
+    p._settling = set()
+
+    async def _no_decay():
+        return
+
+    p._daily_decay = _no_decay  # 隔离:衰减不在本测试范围
+    p.store = SQLiteStore(tmp_path / "settle.db")
+    p.fav_engine = BatchEngine(p.store, p.config.favorability)
+    p.fav_engine.ensure_schema()
+    p.fav_executor = SettleExecutor(p.fav_engine, _fake_llm)
+    p.qzone_comment_seen = CommentSeenStore(p.store)
+    p.qzone_comment_seen.ensure_schema()
+
+    async def _no_history(stream_id, limit, target_user_id=""):
+        del stream_id, limit
+        # u1 的三条真实消息(满足 daily_settle_min=3);纯空间用户无流,取数不会发生
+        return [
+            {"role": "user", "user_id": "u1", "stream_id": "s1", "is_group": False,
+             "addressed": None, "text": f"消息{i}", "seq": i,
+             "ts": datetime.now().strftime("%Y-%m-%dT%H:%M:%S")}
+            for i in range(3)
+        ]
+
+    async def _persona_ctx():
+        return "猫耳少女", "话少"
+
+    p._fetch_recent_for_history = _no_history
+    p._persona_context = _persona_ctx
+
+    # u1:batch 活跃(既有路径);30000:纯空间互动(仅 fav_events,无 batch 行);
+    # 10000:bot 自身(事件存在但不得进候选);99999:无任何当日活动
+    for _ in range(3):
+        p.fav_engine.count_message("u1", "s1")
+    for i in range(3):  # 三条不同内容事件,满足 daily_settle_min=3
+        p.qzone_comment_seen.fav_event("30000", "COMMENT", f"小红 评论了你的说说「心情」: 第{i}条")
+    p.qzone_comment_seen.fav_event("10000", "OUT_COMMENT", "你评论了自己的说说: 自言自语")
+
+    asyncio.run(p._daily_settle())
+    rows = p.store.query("SELECT DISTINCT user_id FROM favorability_log WHERE judge_id LIKE 'daily-%'")
+    settled = {r[0] for r in rows}
+    assert settled == {"u1", "30000"}  # 纯空间好友被结算;bot 与无活动者不进候选

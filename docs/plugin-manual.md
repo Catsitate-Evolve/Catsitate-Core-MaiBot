@@ -122,7 +122,7 @@ QQ空间虚拟流(qzone-qq)── 网关注入(route_message;出站按意图路�
 | 类型 | 触发条件 | 说明 |
 |---|---|---|
 | **early 提前结算** | 该人跨流总计数 ≥ `early_settle_threshold`(默认 20),且当日 early 次数 < `daily_max_early_settle`(默认 3) | 结算后该人所有流计数清零并开新批次;每用户每日提前结算 ≤3 次 |
-| **daily 日终结算** | `daily_settle` 调度(默认每 24h)扫描当日有消息且未日终结算的用户 | 不计提前结算上限;若素材中该用户本人消息数 < `daily_settle_min`(默认 3)→ **顺延**(不结算、不清零,消息保留继续累积,待再次活跃进入后续日终检查) |
+| **daily 日终结算** | `daily_settle` 调度(默认每 24h)扫描**当日有消息(batch 活跃)∪ 当日有空间事件(qzone_fav_events)且未日终结算**的用户(深度审查 C-N1 并集:纯空间互动好友无 batch 行也进兜底;bot 自身排除) | 不计提前结算上限;若素材中该用户本人消息数 < `daily_settle_min`(默认 3)→ **顺延**(不结算、不清零,消息保留继续累积,待再次活跃进入后续日终检查) |
 
 - 每用户每日判定次数硬上限 = 提前 ≤3 + 日终 ≤1 = **≤4 次**;日终兜底保证最后一次提前结算之后的批次也被判定。
 - 结算并发防护:`_settling` 集合,同一用户任一结算已在飞即跳过(防 delta 双计),日志「好感度结算[%s] %s 已在结算中,跳过本轮」。
@@ -335,7 +335,7 @@ QQ空间虚拟流(qzone-qq)── 网关注入(route_message;出站按意图路�
 - **浏览窗口内刷好友动态(M1)**:日程生成模板 v3 支持为 daily 窗口标记 `qzone=true`(通常一天 1~2 个,适合搭配轻松的独处活动如「窝着刷手机」);`qzone_poll` 调度(默认 15 分钟)在标记窗口内拉取好友说说——**拉取架构(联调修正 2026-08-30)**:好友列表走 adapter OneBot API(`adapter.napcat.account.get_friend_list`,remark 优先作昵称),逐好友拉最近 3 条说说(空间接口 `emotion_cgi_msglist_v6` 为指定用户接口,无聚合端点),好友间固定 2 秒间隔防风控。窗口切换时收泵,未注入的队列**回退未读**(queued 行删除,下个窗口重新可见,不丢动态)。
 - **出站评论路由(M2)**:插件在每个阶段前置设定**出站意图**——注入好友说说前置「reaction 意图」,bot 在虚拟流的回复文本经 duplex 驱动回调路由为对该条说说的**真实空间评论**(`emotion_cgi_re_feeds`);意图**一次性消费**——首个动作远端成功即刻置空,后续出站按无意图拒发;窗口结束未消费意图作废并记日志;意图**绑定注入消息 id**(深度审查 A-1)——出站 reply 段引用的目标与意图绑定不一致(超时推进后旧轮回复错靶新注入)零写调用拒发;超时强制推进时联动清意图。动作 API 失败不重试(告警跳过);登录态失效自动作废 cookie 下轮重取(自愈链)。
 - **点赞工具(M2)**:`qzone_like`(planner 可见,白名单默认含):浏览窗口内对**当前注入的说说**点赞(可传 message_id 精确指定);方法内 stream_id 硬门控——仅虚拟流会话可用(SDK Tool 无类级 allowed_session 通道,联调实证,真实聊天流调用直接拒绝)。
-- **统一通知通道(M2.1,替代 M2「窗口外评论轮询」,spec §3.7)**:模拟推送通知——`qzone_notify_poll` 调度(默认 120 秒,`notification_interval_seconds`,注册时下限 30 秒;始终运行,醒着即可,与浏览窗口无关)**双源检测**:源A=好友在 bot 自己说说下的新评论;源B=bot 在他人说说下的评论收到的新楼中楼回复(list_3,目标好友由 bot 评论留痕反查圈定)。通知走**双优先级队列 P1**(插队于浏览动态 P2 之前),模拟「刷着动态→弹通知→先看通知→回完继续刷」注意力模型;单轮至多 3 条(防通知风暴),早于 `summary_days` 的过旧通知截断不注入,阅读顺序新→旧(信息流降序,QQ 空间 App 实际形态)。通知以「(通知) …」形态注入虚拟流(带 is_mentioned 强制触发与发布时间前缀;源B正文附带 bot 原评论留痕作上下文),bot 回复经「comment_reply 意图」路由为**楼中楼回复**;上一条注入仍在等待轮完成(awaiting)时不取新通知(不叠加,下轮再取;深度审查 B-1:awaiting 是准确的互斥信号,意图在超时/窗口边界可能已清)。通知项的注入被宿主拒绝或异常时**回退去重键**(下轮通知轮询重新发现,不因一次拒绝永久丢失;深度审查 B-4)。
+- **统一通知通道(M2.1,替代 M2「窗口外评论轮询」,spec §3.7)**:模拟推送通知——`qzone_notify_poll` 调度(默认 120 秒,`notification_interval_seconds`,注册时下限 30 秒;始终运行,醒着即可,与浏览窗口无关)**双源检测**:源A=好友在 bot 自己说说下的新评论;源B=bot 在他人说说下的评论收到的新楼中楼回复(list_3,目标好友由 bot 评论留痕反查圈定)。通知走**双优先级队列 P1**(插队于浏览动态 P2 之前),模拟「刷着动态→弹通知→先看通知→回完继续刷」注意力模型;单轮至多 3 条(防通知风暴),早于 `summary_days` 的过旧通知截断不注入,阅读顺序新→旧(信息流降序,QQ 空间 App 实际形态)。通知以「(通知) …」形态注入虚拟流(带 is_mentioned 强制触发与发布时间前缀;源B正文附带 bot 原评论留痕作上下文),bot 回复经「comment_reply 意图」路由为**楼中楼回复**;上一条注入仍在等待轮完成(awaiting)时不取新通知(不叠加,下轮再取;深度审查 B-1:awaiting 是准确的互斥信号,意图在超时/窗口边界可能已清)。通知项的注入被宿主拒绝或异常时**回退去重键**(下轮通知轮询重新发现,不因一次拒绝永久丢失;深度审查 B-4),但**重试上限 3 次**(深度审查 A-N1:软回退保留行,计数跨重发现累计;满 3 次仍被拒则保留登记放弃,「QQ空间通知重试 3 次仍被拒(…),放弃不再重试」——防宿主持续拒绝时每 120 秒无限重注入);同一通知事件的 `fav_events` 同日去重(重发现不重复入库)。
 - **好感度显式事件(M2,spec §3.9)**:好友评论 bot 说说 / bot 评论·回复·点赞好友,双向记入 `qzone_fav_events` 事件表——结算时按 `[空间互动]` 前缀并入该人日终结算素材(LLM 计权,事件按原始时刻去重防同日 early→daily 重判),并参与自然衰减计时基准;**不依赖 batch_counter**(虚拟流消息计数已被豁免)。
 - **memo 按人语义联动(M2)**:虚拟流上写的备忘与真实聊天跨流可见(主 QQ+附带 QQ,见 §3.6.1)。
 - **虚拟流注入(主链可引用, M1)**:每条动态构造为一条消息注入 `qzone-qq` 虚拟群聊流,复用主程序 planner→replyer 链;注入带 `is_mentioned=1.0` 强制触发;消息时间戳=阅读时刻(注入时刻,消息流时钟单调),发布时间以相对时间前缀写入正文(今天 HH:MM/M月d日 HH:MM,bot 不会把老说说当成刚发生;方案 B 2026-08-31);「刷到但懒得理」由 planner 自主沉默(无工具调用轮)表达——意愿判断权归模型。图片带 base64 交主流水线处理(描述/落 Images 表/可 `inspect_image` 重看);体积治理=压缩到 RPC 帧限内(用户裁定 2026-08-31 终案:超 12MB base64 预算按压缩阶梯收紧,极端不达标丢弃最大图保帧并告警;主程序入站链路兜底),下载失败的图以 `[图片]` 占位。
@@ -374,7 +374,7 @@ QQ空间虚拟流(qzone-qq)── 网关注入(route_message;出站按意图路�
 - `QQ空间新动态入队 N 条`;`QQ空间窗口开始,注入泵激活;回收跨启动 queued 残留 N 条(重新拉取)`
 - `QQ空间登录态失效(code=-3000/-10005),cookie 已作废,下轮重取`;`QQ空间说说拉取失败(uin=…),该好友本轮跳过`
 - `QQ空间图片下载异常(…),以占位注入`;`空间图片下载失败(重试后仍失败): …`;`空间图片域名不在白名单(…),拒绝下载`(深度审查 E-1:仅 *.qpic.cn/*.qq.com,防 Cookie 外带);`QQ空间图片压缩后仍超 RPC 帧预算,丢弃保帧: …`
-- `QQ空间动态注入被宿主拒绝(tid=…,adapter policy 或网关状态),跳过且不标记已见`;`QQ空间通知注入被拒已回退去重键(…),下轮重检` / `QQ空间通知注入异常已回退去重键(…),下轮重检`(深度审查 B-4:通知项注入失败回退 is_new 登记键,下轮重新发现)
+- `QQ空间动态注入被宿主拒绝(tid=…,adapter policy 或网关状态),跳过且不标记已见`;`QQ空间通知被拒,回退去重键待下轮重试(第 N 次)`(深度审查 B-4+A-N1:通知项注入失败软回退 is_new 登记键,计数跨重发现累计);`QQ空间通知重试 3 次仍被拒(dedup_key=…),放弃不再重试`(A-N1 上限:保留登记不再重注入)
 - `QQ空间动态已注入(tid=…,作者=…)`;`QQ空间注入等待轮完成超时(tid=…),强制推进;清意图防错靶`(超时推进联动清出站意图,防旧轮回复按残留意图错发,深度审查 A-1/B-1)
 - `QQ空间出站成功(kind=comment/reply,tid=…,文本预览=…)`(M2:虚拟流回复已作为真实评论/楼中楼发出)
 - `QQ空间登录态失效,cookie 已作废,下轮重取`(M2:出站驱动回调/点赞遇登录态失效,作废 cookie 自愈,该次动作不重试)
@@ -407,7 +407,8 @@ QQ空间虚拟流(qzone-qq)── 网关注入(route_message;出站按意图路�
 - **勿配置 `*:*` 全局表达共享组**:虚拟流学习落在自身 session(对真实流无污染),全局共享组会把空间流表达泄入真实流;不希望空间评论喂养虚拟流表达库时,可在主程序 WebUI 对该会话关学习(插件无法代设)。
 - **`schedule_generate` 模板升 v3 后,WebUI 自定义过的该模板需手动同步**:插件自动部署只覆盖主程序 `prompts/zh-CN/` 内置层,`data/custom_prompts/` 下的 WebUI 编辑产物优先级更高且不会被覆盖——旧版自定义模板不含 `qzone` 属性说明,日程将不产生 qzone 浏览窗口(需在 WebUI 手动更新或删除该自定义模板)。
 - **M2 起写路径有真实副作用(风险提示)**:评论/点赞一经路由成功即真实发布到QQ空间(无撤回通路);评论/楼中楼内容来自主程序 replyer,语义保真由模型决定(插件只做格式护栏——含图/表情等二进制段的出站一律拒发)。`qzone.enabled` 关闭即整体停用(读+写一起);不希望写动作时关闭该开关或停用模块,不存在"只读不禁写"的中间档。
-- **通知轮询源B每轮遍历近 30 天内评论过的好友(每人间隔 2 秒),API 请求量随该范围好友数线性增长**(深度审查 D-1:反查带时间下界,不再无界遍历历史全部)——大量好友时建议增大 `notification_interval_seconds` 或关闭 `comment_poll_enabled`。
+- **通知轮询源B每轮遍历近 30 天内评论过的好友(每人间隔 2 秒),API 请求量随该范围好友数线性增长**(深度审查 D-1:反查带时间下界,不再无界遍历历史全部)——大量好友时建议增大 `notification_interval_seconds` 或关闭 `comment_poll_enabled`;深度审查 F4 起每轮源B好友数硬上限 10,超出截断并告警(「源B好友数 … 超上限,截断为 10」)。
+- **意图绑定校验依赖主程序 `chat.reply_style.enable_reply_quote=true`**(reply 段才携带目标消息 id):关闭后出站消息无 quote 段,插件无法核对回复是否锚定意图目标消息,错靶防护失效(该场景插件跳过校验放行,不阻断)。**多段回复仅首段成评论**:后续段因意图已被首段消费(一次性)而以无意图拒发——请引导 bot 单段回复空间通知/动态。
 
 ## 3.14 LLM 用量记账与旁路调用(`plugin.py`)
 
@@ -604,8 +605,8 @@ QQ空间虚拟流(qzone-qq)── 网关注入(route_message;出站按意图路�
 | llm_usage | day, module, calls, tokens(PK 联合) | 旁路 LLM 用量按日/模块分列 |
 | weather_snapshot | id(=1), city, fetched_at, data | 天气快照(JSON),供日程生成联动 |
 | qzone_feeds | tid(PK), abstime, author_uin, author_nickname, summary, state, interacted, injected_at, created_at | QQ空间动态去重:state=queued(已入队)/seen(已成功注入);interacted=点赞评论过;author_nickname 为 M2 加列(见闻摘要带作者,旧库自动迁移);窗口结束 queued 行删除回退未读 |
-| qzone_comments | comment_key(PK), friend_uin, created_at | 评论/楼中楼去重与 bot 评论留痕(M2.1 统一通知):好友评论 key=`feed_tid:comment_tid:uin`、楼中楼回复 key=`feed_tid:parent_comment_tid:reply:reply_tid`,发现即登记(通知项注入被拒/异常时回退登记键,下轮重检——深度审查 B-4);bot 自评留痕 key=`feed_tid:bot:{文本}`(friend_uin=说说主人,供源B反查圈定与通知正文引用,反查只认近 30 天登记——深度审查 D-1);表保留 30 天(每日清理任务) |
-| qzone_fav_events | id, day, user_id, kind, text, created_at | M2 好感度显式事件(spec §3.9):kind=COMMENT(好友评论 bot)/OUT_COMMENT(bot 评论好友)/OUT_LIKE(bot 点赞);并入日终结算素材与衰减计时（无清理,只增不减——刻意保留作衰减计时基准） |
+| qzone_comments | comment_key(PK), friend_uin, created_at, retry_count, pending_retry | 评论/楼中楼去重与 bot 评论留痕(M2.1 统一通知):好友评论 key=`feed_tid:comment_tid:uin`、楼中楼回复 key=`feed_tid:parent_comment_tid:reply:reply_tid`,发现即登记(通知项注入被拒/异常时**软回退**——置 pending_retry 待下轮重检,retry_count 跨重发现累计、满 3 次放弃,深度审查 B-4+A-N1;两列均为 A-N1 加列,旧库自动迁移);bot 自评留痕 key=`feed_tid:bot:{文本}`(friend_uin=说说主人,供源B反查圈定与通知正文引用,反查只认近 30 天登记——深度审查 D-1);表保留 30 天(每日清理任务) |
+| qzone_fav_events | id, day, user_id, kind, text, created_at | M2 好感度显式事件(spec §3.9):kind=COMMENT(好友评论 bot)/OUT_COMMENT(bot 评论好友)/OUT_LIKE(bot 点赞);并入日终结算素材与衰减计时（无清理,只增不减——刻意保留作衰减计时基准）;**同日同 user+kind+text 去重**(A-N1:通知回退重发现不重复入库);当日事件 user 并入日终结算候选(C-N1) |
 
 ### 5.2 JSON 快照(JsonSnapshot,原子写)
 
@@ -668,7 +669,7 @@ replyer 出站
 | weather | max(weather_refresh_minutes,1)×60 s(默认 45 分钟) | 拉节日+天气,刷新环境块缓存,天气落库 | 「holiday-cn 数据源…获取失败」「天气获取失败,本轮环境块省略天气」 |
 | holiday | 24h | 节日数据日级刷新(同上任务) | 同上 |
 | memo_cleanup | 1h | 删除过期备忘 | 「备忘清理:{n} 条过期」 |
-| daily_settle | max(window_hours,1)×3600(默认 24h) | **先衰减后结算**:逐人日终结算(当日有消息且未结) | 「好感度衰减 …」「好感度结算 {user}:daily delta={n}」「好感度结算失败 …:用户消息不足 3 条,顺延」 |
+| daily_settle | max(window_hours,1)×3600(默认 24h) | **先衰减后结算**:逐人日终结算(候选=batch 当日活跃 ∪ 当日空间事件,C-N1) | 「好感度衰减 …」「好感度结算 {user}:daily delta={n}」「好感度结算失败 …:用户消息不足 3 条,顺延」 |
 | daily_decay | 24h | 自然衰减(单独注册,与日终同 tick 顺序由 daily_settle 内部先调用保证) | 「好感度衰减 {user}:delta={n}」 |
 | sleep_tick | 60s | 睡眠状态机:自然醒(now≥wake_at→wake+回顾+补跑结算)/ 静默关=窗口起点直接入睡 / 静默开=安静满 N 分钟入睡检查 / 窗口终点未入睡→补生成次日日程 | 「自然醒来: {t}」「睡眠窗口起点已到(静默睡眠关闭),直接入睡」「静默入睡:安静 {n} 分钟」「睡眠窗口已过未入睡:补执行次日日程生成(不入睡)」 |
 | schedule_tick | 60s | 日程窗口触发:greeting→主动问候;daily→门槛过滤+候选流排序→proactive.trigger | 「主动问候触发[{day}] -> {user}」「主动触发[{day}] -> {stream}:{活动}」 |
@@ -701,7 +702,7 @@ replyer 出站
  → 旁路 LLM(稳定段:人设+风格+5 级规则;变量尾:素材)→ 解析/钳制 delta → apply_delta(+注记截断 40 字)
  → 升特别被占位 → 钳 99/挚友(clamped_exclusive,「结算升特别被独占钳制」)
  → 落库+日志 → reset_batch(该人全流清零)
-日终(daily_settle 调度):iter_today_active(当日有消息)→ 未日终者 → 结算(daily;素材不足 daily_settle_min → 顺延不清零)
+日终(daily_settle 调度):iter_today_active(当日有消息)∪ 当日 qzone_fav_events 的 user(纯空间互动好友,C-N1;排除 bot 自身)→ 未日终者 → 结算(daily;素材不足 daily_settle_min → 顺延不清零)
 衰减(daily_decay):扫 favorability score>0 全表 → 跨流取最近 bot 直接互动(@/quote 解析)
  → 基准 = max(互动时间, 最近 decay 判定时间)→ 超 decay_after_days → LLM 判定(-decay_max~0)
  → apply_delta(judge_id=decay-{时间}-{user})→「好感度衰减 {user}:delta={n}」→ 基准即被重置

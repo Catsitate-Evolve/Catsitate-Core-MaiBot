@@ -12,6 +12,8 @@ import base64
 import hashlib
 from datetime import datetime, timedelta
 
+import pytest
+
 from catsitate_core.config import CatsitateConfig
 from catsitate_core.memo import MemoService
 from catsitate_core.qzone import QZONE_GATEWAY_NAME, QZONE_PLATFORM
@@ -2154,3 +2156,151 @@ def test_inspect_image_hash_prefix_zero_and_multi_hit_errors(tmp_path, monkeypat
     res_bad = asyncio.run(p.inspect_image(image_hash="abcd1234", question="?"))
     assert "异常形态" in res_bad
     assert fetch_calls == []  # 三种失败形态都不触发消息搜索
+
+
+# ---- M3-r2 Task 8:说说发布主动触发(分窗口形态)与冷启动种子自举 ----
+
+
+class _StubProactive:
+    """proactive.trigger 桩:记录调用,默认恒成功(各测试按需替换)。"""
+
+    def __init__(self):
+        self.calls = []
+
+    async def trigger(self, **kwargs):
+        self.calls.append(kwargs)
+        return {"success": True}
+
+
+class _StubMaisaka:
+    """maisaka 桩:仅暴露 proactive.trigger(_window_trigger 同款调用面)。"""
+
+    def __init__(self):
+        self.proactive = _StubProactive()
+
+
+def _make_plugin_with_qzone(tmp_path, window=None):
+    """发布触发测试装配:_make_plugin 基础上补 maisaka 桩,并铺设覆盖当前
+    时刻的日程窗口(window 缺省为 read_qzone 浏览窗口,start/end 可显式传
+    以构造多窗口邻接/切换场景)。"""
+
+    p = _make_plugin(tmp_path)
+    now = datetime.now()
+    win = dict(window or {"kind": "daily", "read_qzone": True})
+    win.setdefault("kind", "daily")
+    win.setdefault("start", (now - timedelta(hours=1)).strftime("%Y-%m-%dT%H:%M"))
+    win.setdefault("end", (now + timedelta(hours=1)).strftime("%Y-%m-%dT%H:%M"))
+    win.setdefault("activity", "逛空间")
+    p._schedule_data = {"date": now.strftime("%Y-%m-%d"), "windows": [win]}
+    p._ctx.maisaka = _StubMaisaka()
+    return p, p._ctx
+
+
+@pytest.mark.asyncio
+async def test_send_trigger_sendonly_window_fires_immediately(tmp_path):
+    """仅 send_qzone 窗口:窗口开始即触发,不等待浏览;仅 send 窗口不做
+    发现/充实拉取(read_qzone=False 不浏览),tick 早退。"""
+
+    p, ctx = _make_plugin_with_qzone(
+        tmp_path, window={"kind": "daily", "read_qzone": False, "send_qzone": True})
+    fired = []
+
+    async def trigger(**kwargs):
+        fired.append(kwargs)
+        return {"success": True}
+
+    ctx.maisaka.proactive.trigger = trigger
+    await p._qzone_poll_feeds()  # 首个 tick:窗口开始→武装→立即触发(浏览轮询照常空转)
+    await asyncio.sleep(0)  # 武装派发的后台触发任务在下一调度槽执行
+    assert len(fired) == 1 and "qzone_post" in fired[0]["intent"]
+    assert fired[0]["reason"] == "日程窗口send_qzone"
+    # 仅 send 窗口不浏览:发现层零调用,注入泵窗口未激活
+    assert p.qzone_client.discovery_calls == 0
+    assert p.qzone_injector.window_active is False
+
+
+@pytest.mark.asyncio
+async def test_send_trigger_cold_start_seed_retry(tmp_path):
+    """会话不存在→种子自举→重试一次成功。"""
+
+    p, ctx = _make_plugin_with_qzone(tmp_path)
+    calls = {"n": 0, "seed": 0}
+
+    async def trigger(**kwargs):
+        calls["n"] += 1
+        if calls["n"] == 1:
+            return {"success": False, "error": "未找到已存在的聊天流: xxx"}
+        return {"success": True}
+
+    async def route(name, msg):
+        calls["seed"] += 1
+        return {"success": True}
+
+    ctx.maisaka.proactive.trigger = trigger
+    ctx.gateway.route_message = route
+    await p._qzone_send_trigger({"kind": "daily", "activity": "忙"}, browsed=False)
+    assert calls["n"] == 2 and calls["seed"] == 1
+
+
+@pytest.mark.asyncio
+async def test_send_trigger_once_per_window(tmp_path):
+    """同窗口不重复触发。"""
+
+    p, ctx = _make_plugin_with_qzone(
+        tmp_path, window={"kind": "daily", "read_qzone": False, "send_qzone": True})
+    n = {"i": 0}
+
+    async def trigger(**kwargs):
+        n["i"] += 1
+        return {"success": True}
+
+    ctx.maisaka.proactive.trigger = trigger
+    await p._qzone_poll_feeds()
+    await p._qzone_poll_feeds()  # 同窗口第二轮:window_active 已 True 走主路径,武装状态防重
+    await asyncio.sleep(0)
+    assert n["i"] == 1
+
+
+@pytest.mark.asyncio
+async def test_send_trigger_browsed_waits_pump_idle_then_fires(tmp_path):
+    """同窗形态(browsed=True):等注入泵空闲即触发,intent 是「刚刷完」语境
+    (分享有上下文),reason 同款;泵空闲判定即时通过(初始队列空)。"""
+
+    p, ctx = _make_plugin_with_qzone(tmp_path)
+    fired = []
+
+    async def trigger(**kwargs):
+        fired.append(kwargs)
+        return {"success": True}
+
+    ctx.maisaka.proactive.trigger = trigger
+    await p._qzone_send_trigger({"kind": "daily", "activity": "逛空间"}, browsed=True)
+    assert len(fired) == 1
+    assert "刚刷完QQ空间" in fired[0]["intent"] and "qzone_post" in fired[0]["intent"]
+
+
+@pytest.mark.asyncio
+async def test_send_trigger_rearms_on_next_window(tmp_path):
+    """窗口切换后重新武装:同一天另一个 send 窗口(不同 start)再次触发——
+    邻接 qzone 窗口间 window_active 不复位,武装按窗口标识判重。"""
+
+    now = datetime.now()
+    first = {"kind": "daily", "read_qzone": False, "send_qzone": True,
+             "start": (now - timedelta(hours=1)).strftime("%Y-%m-%dT%H:%M"),
+             "end": (now + timedelta(hours=1)).strftime("%Y-%m-%dT%H:%M"), "activity": "忙"}
+    second = dict(first, start=(now - timedelta(minutes=30)).strftime("%Y-%m-%dT%H:%M"))
+    p, ctx = _make_plugin_with_qzone(tmp_path, window=first)
+    n = {"i": 0}
+
+    async def trigger(**kwargs):
+        n["i"] += 1
+        return {"success": True}
+
+    ctx.maisaka.proactive.trigger = trigger
+    await p._qzone_poll_feeds()
+    await asyncio.sleep(0)
+    assert n["i"] == 1  # 第一个 send 窗口已触发
+    p._schedule_data = {"date": now.strftime("%Y-%m-%d"), "windows": [second]}
+    await p._qzone_poll_feeds()  # 切到另一个 send 窗口(标识变化→重新武装)
+    await asyncio.sleep(0)
+    assert n["i"] == 2

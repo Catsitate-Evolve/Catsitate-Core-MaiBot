@@ -153,6 +153,8 @@ class CatsitatePlugin(MaiBotPlugin):
     _qzone_notify_task_armed: bool = False  # 统一通知轮询调度任务已注册标记(热重载重注册防重)
     _qzone_poll_running: bool = False  # 浏览轮询后台拉取进行中(深度审查 A-2:tick 防重入标记)
     _qzone_notify_running: bool = False  # 通知轮询后台扫描进行中(同上,通知 tick 独立标记)
+    _qzone_send_armed: str = ""        # 发布触发已武装的窗口标记 "{day}|{start}"
+    _qzone_send_first_poll_done: bool = False  # 本窗口首轮拉取是否已完成
 
     # ---------- 生命周期 ----------
 
@@ -1181,6 +1183,9 @@ class CatsitatePlugin(MaiBotPlugin):
         ③充实层按作者 uin 分组、每组 1 次 get_user_feeds 只拉有新动态的好友
         (1+N 次调用,N=有新动态的作者数,与好友总数无关)。
         发现层非登录态失败回退 _qzone_poll_feeds_legacy 旧逐好友路径。
+        send_qzone 窗口(Task 8):仅 send 窗口(无 read)在窗口开始即派发
+        发布触发后早退(无浏览语义);同窗形态(read+send)在首轮拉取收尾
+        派发发布触发(等泵空闲,分享有上下文)。
         """
 
         try:
@@ -1191,15 +1196,34 @@ class CatsitatePlugin(MaiBotPlugin):
             if not self._schedule_data:
                 return  # 日程未生成/未恢复(日程节禁用等):无窗口可言,按窗口外处理
             win = current_window(self._schedule_data, datetime.now().strftime("%Y-%m-%dT%H:%M"))
-            in_qzone_window = bool(win and win.get("kind") == "daily" and win.get("read_qzone"))
-            if not in_qzone_window:
-                if self.qzone_injector.window_active:
-                    self.qzone_injector.window_ended()
-                    reverted = self.qzone_seen.revert_pending()
-                    self.ctx.logger.info(
-                        "QQ空间浏览窗口结束,浏览队列回退未读(%d 条);通知队列保留等待注入", reverted
-                    )
-                return
+            in_read_window = bool(win and win.get("kind") == "daily" and win.get("read_qzone"))
+            in_send_window = bool(win and win.get("kind") == "daily" and win.get("send_qzone"))
+            if not in_read_window and self.qzone_injector.window_active:
+                # 浏览窗口结束(含 read→仅 send 邻接切换:send 窗口无浏览语义,
+                # 浏览队列同样回退未读);通知队列保留 P1 等待注入
+                self.qzone_injector.window_ended()
+                reverted = self.qzone_seen.revert_pending()
+                self.ctx.logger.info(
+                    "QQ空间浏览窗口结束,浏览队列回退未读(%d 条);通知队列保留等待注入", reverted
+                )
+            if not in_read_window and not in_send_window:
+                return  # 非 qzone 窗口(自由时间/问候/睡眠):按窗口外处理
+            # 发布触发武装(Task 8):按窗口标识 "{day}|{start}" 判重——邻接
+            # qzone 窗口间 window_active 不复位,泵状态不能当窗口切换信号
+            day = datetime.now().strftime("%Y-%m-%d")
+            armed_key = f"{day}|{win.get('start')}"
+            if win.get("send_qzone"):
+                if self._qzone_send_armed != armed_key:
+                    self._qzone_send_armed = armed_key
+                    self._qzone_send_first_poll_done = False
+                    if not win.get("read_qzone"):
+                        # 仅 send 窗口:无浏览上下文,窗口开始即触发
+                        self._spawn_background_task(self._qzone_send_trigger(win, browsed=False))
+            else:
+                self._qzone_send_armed = ""
+                self._qzone_send_first_poll_done = False
+            if not in_read_window:
+                return  # 仅 send 窗口:发布触发已发,无浏览语义,不做发现/充实
             if not self.qzone_injector.window_active:
                 self.qzone_injector.window_started()
                 # 评论频控计数随窗口边界重置(工具驱动 2026-09-01):新窗口重新计数,
@@ -1298,6 +1322,11 @@ class CatsitatePlugin(MaiBotPlugin):
             if added_total:
                 self.ctx.logger.info("QQ空间新动态入队 %d 条(统一时间线发现 %d 条)", added_total, len(new_items))
             await self._qzone_pump()
+            if self._qzone_send_armed and not self._qzone_send_first_poll_done:
+                self._qzone_send_first_poll_done = True
+                if win.get("read_qzone"):
+                    # 同窗形态:等首轮浏览注入完成(泵空闲)再触发,分享有上下文
+                    self._spawn_background_task(self._qzone_send_trigger(win, browsed=True))
         finally:
             self._qzone_poll_running = False
 
@@ -1508,6 +1537,90 @@ class CatsitatePlugin(MaiBotPlugin):
             return  # 上一轮后台扫描还在跑,跳过(防重入)
         self._qzone_notify_running = True
         self._spawn_background_task(self._qzone_notify_scan())
+
+    async def _qzone_send_trigger(self, win: dict, *, browsed: bool) -> None:
+        """发布触发:planner 自主决定是否用 qzone_post 发说说(沉默=正常结束)。
+
+        browsed=True(同窗形态)等待首轮浏览注入完成再触发——刚看完好友动态,
+        分享有上下文;等待上限 180s,超时也触发(首批已读足够)。
+        """
+
+        if browsed:
+            deadline = time.monotonic() + 180
+            while time.monotonic() < deadline:
+                st = self.qzone_injector.stats()
+                if not st["p1_queued"] and not st["p2_queued"] and not st["awaiting"]:
+                    break
+                await asyncio.sleep(5)
+        activity = str(win.get("activity") or "")
+        if browsed:
+            intent = (
+                "你刚刷完QQ空间看到了好友的动态,现在有点想分享点什么。"
+                "如果确实想发,用 qzone_post 工具(reply_reference 填想表达的方向);"
+                f"不想发就保持沉默,什么都不用做。当前活动:{activity}"
+            )
+        else:
+            intent = (
+                f"你在忙{activity},忙里偷闲想上QQ空间发条说说。"
+                "如果确实想发,用 qzone_post 工具(reply_reference 填想表达的方向);"
+                "不想发就保持沉默,什么都不用做。"
+            )
+        stream_id = self._qzone_expected_session_id()
+        if not stream_id:
+            self.ctx.logger.warning("QQ空间发布触发跳过:虚拟流 session id 不可得")
+            return
+        try:
+            result = await self.ctx.maisaka.proactive.trigger(
+                stream_id=stream_id, intent=intent, reason="日程窗口send_qzone", priority="",
+            )
+        except Exception:
+            self.ctx.logger.exception("QQ空间发布触发失败(虚拟流)")
+            result = {"success": False, "error": "异常"}
+        if isinstance(result, dict) and result.get("success"):
+            self.ctx.logger.info("QQ空间发布触发已发出(browsed=%s)", browsed)
+            return
+        err_text = str((result or {}).get("error") or "") if isinstance(result, dict) else ""
+        if "未找到" in err_text and "聊天流" in err_text:
+            # 冷启动自举:虚拟流会话在首条消息进入后才诞生,proactive.trigger
+            # 需要已存在会话——注入无 is_mentioned 的种子消息仅建会话后重试一次
+            if await self._qzone_seed_virtual_session():
+                try:
+                    result2 = await self.ctx.maisaka.proactive.trigger(
+                        stream_id=stream_id, intent=intent,
+                        reason="日程窗口send_qzone(种子自举重试)", priority="",
+                    )
+                    if isinstance(result2, dict) and result2.get("success"):
+                        self.ctx.logger.info("QQ空间发布触发已发出(种子自举,browsed=%s)", browsed)
+                        return
+                except Exception:
+                    self.ctx.logger.exception("QQ空间发布触发重试失败(种子自举后)")
+        self.ctx.logger.warning("QQ空间发布触发未成功(%s),等下个窗口", err_text[:60])
+
+    async def _qzone_seed_virtual_session(self) -> bool:
+        """冷启动种子:注入一条无 is_mentioned 的 self 消息,仅让主程序创建
+        虚拟流会话(不触发 planner 决策轮),供 proactive.trigger 使用。"""
+
+        self._qzone_seq += 1
+        bot_uin = str(self.config.favorability.bot_user_id or "").strip()
+        msg = {
+            "message_id": f"qzone_seed_{int(time.time())}_{self._qzone_seq}",
+            "platform": QZONE_PLATFORM,
+            "timestamp": str(int(time.time())),
+            "message_info": {
+                "user_info": {"user_id": bot_uin, "user_nickname": "我"},
+                "group_info": {
+                    "group_id": self.config.qzone.virtual_group_id,
+                    "group_name": self.config.qzone.virtual_group_name,
+                },
+            },
+            "raw_message": [{"type": "text", "data": "(打开了QQ空间)"}],
+        }
+        try:
+            await self.ctx.gateway.route_message(QZONE_GATEWAY_NAME, msg)
+            return True
+        except Exception:
+            self.ctx.logger.exception("QQ空间种子消息注入失败")
+            return False
 
     async def _qzone_notify_scan(self) -> None:
         """统一通知扫描(原 _qzone_notify_poll_tick 主体,始终运行,醒着即可;M2.1 替代旧评论轮询)。

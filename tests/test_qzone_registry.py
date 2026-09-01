@@ -84,3 +84,10 @@ def test_clear_drops_all_entries():
     reg.register(_ctx("t1"))
     reg.clear()
     assert reg.resolve("t1") is None
+
+
+def test_feed_context_new_fields_default():
+    """M3-r2 Task 6 表达生成层:content_summary/recent_comments 带默认值——
+    旧构造点(通知/回退路径)不传也不炸,新登记点传入供 prompt 场景素材。"""
+    ctx = FeedContext(tid="t", owner_uin="1")
+    assert ctx.content_summary == "" and ctx.recent_comments == []

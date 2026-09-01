@@ -1301,7 +1301,9 @@ class CatsitatePlugin(MaiBotPlugin):
             # 工具驱动架构:登记 FeedContext(替代意图绑定,工具按 tid 解析目标)。
             # 键=真实说说 tid(通知项用 origin_tid——消息尾部锚展示真实 tid,合成 tid
             # 模型不可见);owner=说说主人(浏览=作者;通知源B=好友;源A=bot 自己);
-            # commenter/comment_tid/comment_uin=通知场景的评论者与主评论二元组素材
+            # commenter/comment_tid/comment_uin=通知场景的评论者与主评论二元组素材;
+            # content_summary/recent_comments=表达生成层场景素材(说说正文前 100 字
+            # +近期评论摘要,通知项取 origin_content,正文空以「(无文字)」占位)
             bot_uin = str(self.config.favorability.bot_user_id or "").strip()
             self._qzone_registry.register(FeedContext(
                 tid=feed.origin_tid or feed.tid,
@@ -1312,6 +1314,8 @@ class CatsitatePlugin(MaiBotPlugin):
                 comment_tid=feed.comment_tid,
                 comment_uin=feed.comment_uin,
                 kind=feed.source,
+                content_summary=((feed.origin_content if feed.source == "notify" else feed.content) or "(无文字)")[:100],
+                recent_comments=list(feed.comments),
             ))
             self.ctx.logger.info("QQ空间动态已注入(tid=%s,作者=%s)", feed.tid, feed.nickname)
 

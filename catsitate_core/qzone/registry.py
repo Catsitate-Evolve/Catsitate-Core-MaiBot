@@ -13,19 +13,23 @@ asyncio 单线程事件循环内使用,无锁(与 FeedInjector 同款纪律)。
 from __future__ import annotations
 import time
 from collections import OrderedDict
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 
 
 @dataclass
 class FeedContext:
     tid: str
     owner_uin: str
-    owner_nickname: str
+    owner_nickname: str = ""  # 通知回退路径可能无昵称(owner_uin 兜底展示),默认空
     commenter_uin: str = ""   # 通知场景:评论者/回复者
     commenter_nickname: str = ""
     comment_tid: str = ""     # 通知场景:主评论 tid(楼中楼回复用)
     comment_uin: str = ""     # 通知场景:主评论作者 uin(楼中楼二元组)
     kind: str = "feed"        # "feed"=浏览动态 / "notify_comment"=说说被评论 / "notify_reply"=评论被回复 / "self"=自己发布
+    # M3-r2 表达生成层场景素材:说说正文摘要(前 100 字)与近期评论(「昵称:内容」),
+    # qzone_comment/qzone_reply 生成正文时作防复读上下文;旧登记点不传保持默认空。
+    content_summary: str = ""
+    recent_comments: list[str] = field(default_factory=list)
 
 
 class FeedContextRegistry:

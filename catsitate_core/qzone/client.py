@@ -227,10 +227,19 @@ class QzoneClient:
         return payload
 
     async def get_user_feeds(self, *, target_uin: str, nickname: str, num: int = 5) -> list:
-        """拉取指定好友最近说说(联调实证参数集:jsonp+need_comment,Referer 指向目标空间)。"""
+        """拉取指定好友最近说说(联调实证参数集:jsonp+need_comment,Referer 指向目标空间)。
+
+        M3-r2 表达生成层:parse_msglist 之上用 parse_feed_comments 合并评论摘要
+        (「昵称:内容」前 3 条,内容截 40 字)到 FeedItem.comments——同一原始
+        载荷两用,不发第二次请求。
+        """
 
         payload = await self._fetch_msglist(target_uin=target_uin, num=num)
-        return parse_msglist(payload, target_uin=str(target_uin), nickname=nickname)
+        feeds = parse_msglist(payload, target_uin=str(target_uin), nickname=nickname)
+        comments = parse_feed_comments(payload)
+        for f in feeds:
+            f.comments = [f"{c.nickname}:{c.content[:40]}" for c in comments.get(f.tid, [])[:3]]
+        return feeds
 
     async def get_user_feeds_raw(self, *, target_uin: str, num: int = 5) -> dict:
         """返回 msglist 原始 payload(含 commentlist/list_3),供 parse_feed_replies 消费。

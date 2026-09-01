@@ -542,3 +542,24 @@ def test_client_fetch_likes_raw_scope1():
     asyncio.run(client._fetch_likes_raw(count=10))
     p = seen[0]["params"]
     assert p["scope"] == "1" and p["count"] == "10" and p["begin"] == "0"
+
+
+def _msglist_payload_with_comments():
+    """msglist 载荷(含一条带 commentlist 的说说),M3-r2 Task 6 表达生成层素材源。"""
+    return '_preloadCallback(' + _json.dumps({
+        "code": 0, "msglist": [
+            {"tid": "t1", "appid": 311, "created_time": 1, "content": "今天的心情",
+             "pic": [],
+             "commentlist": [{"tid": "c1", "uin": 20000, "name": "小红",
+                              "content": "好看!", "create_time": 2}]},
+        ]
+    }) + ');'
+
+
+def test_get_user_feeds_merges_comments():
+    """M3-r2 Task 6:FeedItem.comments 取该说说 commentlist 前 3 条「昵称:内容(40字)」
+    ——get_user_feeds 在 parse_msglist 之上用 parse_feed_comments 合并评论摘要,
+    泵登记 recent_comments 由此承载(表达生成的防复读素材)。"""
+    client, _ = _make_client([(200, _msglist_payload_with_comments().encode("utf-8"))])
+    feeds = asyncio.run(client.get_user_feeds(target_uin="100", nickname="小明", num=3))
+    assert feeds and feeds[0].comments and feeds[0].comments[0].startswith("小红:")

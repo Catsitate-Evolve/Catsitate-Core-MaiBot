@@ -48,6 +48,9 @@ class FeedItem:
     origin_sender: str = ""    # 原说说作者 uin(reply 段用)
     comment_tid: str = ""      # 通知场景:主评论 tid(qzone_reply 用,工具驱动 2026-09-01)
     comment_uin: str = ""      # 通知场景:主评论作者 uin(楼中楼二元组;源A=评论好友,源B=bot 自己)
+    # 该说说近期评论摘要(「昵称:内容」前 3 条,M3-r2 表达生成层防复读素材;
+    # get_user_feeds 用 parse_feed_comments 合并,通知项无此数据保持空)
+    comments: list[str] = field(default_factory=list)
 
 
 def generate_gtk(p_skey: str) -> int:

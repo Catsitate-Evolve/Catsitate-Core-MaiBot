@@ -1411,6 +1411,36 @@ def test_pump_keeps_feed_semantics_when_rejected(tmp_path):
     assert p.qzone_injector.awaiting_tid == ""
 
 
+def test_pump_registers_content_summary_and_recent_comments(tmp_path):
+    """M3-r2 Task 6 表达生成层素材:泵登记 FeedContext 带 content_summary(说说
+    正文前 100 字)与 recent_comments(get_user_feeds 合并的「昵称:内容」摘要)
+    ——qzone_comment 生成正文时的场景素材;纯图说说以「(无文字)」占位。"""
+
+    import time as _time
+
+    p = _make_plugin(tmp_path)
+    p.qzone_injector.window_started()
+    p.qzone_seen.mark_queued("t_cs", abstime="1750000000", author_uin="10001", summary="正文")
+    p.qzone_injector.enqueue([FeedItem(
+        tid="t_cs", abstime="1750000000", uin="10001", nickname="小明", content="今天去了海边玩,晒黑了",
+        comments=["小红:羡慕", "小刚:哈哈"],
+    )])
+    p.qzone_seen.mark_queued("t_pic", abstime="1750000100", author_uin="10002", summary="图片")
+    p.qzone_injector.enqueue([FeedItem(
+        tid="t_pic", abstime="1750000100", uin="10002", nickname="小红", content="",  # 纯图说说
+    )])
+    asyncio.run(p._qzone_pump())  # 注入较新的 t_pic(队列按时间序)
+    p.qzone_injector.on_turn_complete(_time.monotonic())  # 释放 awaiting(一动态一轮)
+    asyncio.run(p._qzone_pump())  # 注入 t_cs
+
+    ctx = p._qzone_registry.resolve("t_cs")
+    assert ctx is not None
+    assert ctx.content_summary == "今天去了海边玩,晒黑了"
+    assert ctx.recent_comments == ["小红:羡慕", "小刚:哈哈"]
+    ctx_pic = p._qzone_registry.resolve("t_pic")
+    assert ctx_pic is not None and ctx_pic.content_summary == "(无文字)"  # 空正文占位
+
+
 # ---- 深度审查 A-N1:通知重试上限 + fav_event 去重 ----
 
 

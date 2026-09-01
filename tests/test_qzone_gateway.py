@@ -378,7 +378,7 @@ def _make_notify_poll_plugin(tmp_path, comments, ctx_map):
     p.qzone_comment_seen = _CommentSeenStore(_SQLiteStore(tmp_path / "notify.db"))
     p.qzone_comment_seen.ensure_schema()
     p.qzone_injector = _FeedInjector(decision_window_s=75)
-    p.qzone_injector.window_started()  # 通知经泵注入需窗口开启(窗口外静置 P1)
+    p.qzone_injector.window_started()  # 与生产浏览窗口同构(通知推送语义本不依赖窗口)
     p.qzone_client = _StubCommentClient(comments, ctx_map)
     return p
 

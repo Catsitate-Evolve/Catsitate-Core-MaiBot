@@ -694,7 +694,7 @@ def test_notify_poll_self_skip_dedup_and_awaiting_occupied(tmp_path):
                     create_time=str(int(_time.time()))),
     ]}
     p = _make_plugin(tmp_path)
-    p.qzone_injector.window_started()  # 通知经泵注入需窗口开启
+    p.qzone_injector.window_started()  # 浏览路径走泵需窗口(通知推送语义本不依赖)
     p.qzone_client = _StubCommentClient(comments, {"feed1": "今天的心情"})
 
     # ①首轮:自评跳过(登记不注入),好友评论通知经泵注入恰好 1 条
@@ -1039,9 +1039,9 @@ def test_notify_scan_source_b_zero_pulls_when_discovery_no_overlap(tmp_path, mon
     assert pulls == []
 
 
-def test_poll_tick_warns_p1_notifications_dropped_at_window_end(tmp_path):
-    """终审 I3:窗口结束时未注入的 P1 通知被清空须显式告警(通知 is_new 发现即
-    登记,清空后不重检)——告警含条数,清空后 p1_queued 归零。"""
+def test_poll_tick_keeps_p1_notifications_at_window_end(tmp_path):
+    """M3-r2 通知推送语义:窗口结束只清浏览队列(P2),通知队列(P1)保留等待
+    注入条件(bot 醒着/泵空闲)——不再有「未注入通知被清空」告警分支。"""
 
     p = _make_plugin(tmp_path)
     now = datetime.now()
@@ -1062,11 +1062,11 @@ def test_poll_tick_warns_p1_notifications_dropped_at_window_end(tmp_path):
 
     asyncio.run(p._qzone_poll_feeds())
     assert p.qzone_injector.window_active is False
-    assert p.qzone_injector.stats()["p1_queued"] == 0  # 队列已清空
+    assert p.qzone_injector.stats()["p1_queued"] == 2  # 通知队列保留
     assert any(
-        level == "warning" and "%d 条未注入通知被清空(已登记不重试)" in str(a[0]) and a[1] == 2
-        for level, a in p.logs
+        level == "info" and "QQ空间浏览窗口结束,浏览队列回退未读" in str(a[0]) for level, a in p.logs
     )
+    assert not any("未注入通知被清空" in str(a[0]) for _, a in p.logs)  # 告警分支已删
 
 
 # ---- 深度审查修复波(F1/F2/F3/F5):组合层行为测试 ----

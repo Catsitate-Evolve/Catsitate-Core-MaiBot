@@ -208,11 +208,44 @@ def test_mark_injected_resolves_item_from_priority_queue():
     assert inj.next_to_inject(now=3.0).tid == "a1"
 
 
-def test_window_end_clears_both_queues():
+def test_window_end_clears_p2_and_awaiting_keeps_p1():
+    """窗口结束:浏览队列(P2)与 awaiting 状态一并丢弃,通知队列(P1)保留
+    (M3-r2 通知推送语义:通知不隶属任何窗口,等注入条件满足后继续)。"""
     inj = FeedInjector(decision_window_s=75)
     inj.window_started()
-    inj.enqueue([_f("a")])
-    inj.enqueue_priority([_f("n")])
+    inj.enqueue([_f("a1"), _f("a2")])
+    popped = inj.next_to_inject(now=1.0)  # 弹出 P2 首条(a1)
+    assert popped is not None and popped.tid == "a1"
+    inj.mark_injected(popped.tid, 1.0)    # awaiting 中:模拟窗口在注入等待期结束
+    inj.enqueue_priority([_f("n")])       # awaiting 期间通知到达(P1 入队不抢当前)
     inj.window_ended()
-    assert inj.queue_size() == 0
-    assert inj.stats()["p1_queued"] == 0 and inj.stats()["p2_queued"] == 0
+    assert inj.stats()["p2_queued"] == 0 and inj.stats()["p1_queued"] == 1  # a2 清,n 保留
+    assert inj.awaiting_tid == "" and inj.awaiting_timed_out(now=2.0) is False  # awaiting 已清
+
+
+def test_p1_injectable_without_window():
+    """通知是推送语义:窗口未开也能注入。"""
+    inj = FeedInjector(decision_window_s=10)
+    inj.enqueue_priority([_f("n1")])
+    assert inj.next_to_inject(0.0) is not None
+
+
+def test_p2_blocked_without_window():
+    """浏览动态只在窗口内注入。"""
+    inj = FeedInjector(decision_window_s=10)
+    inj.enqueue([_f("f1")])
+    assert inj.next_to_inject(0.0) is None
+    inj.window_started()
+    assert inj.next_to_inject(0.0) is not None
+
+
+def test_window_ended_keeps_p1():
+    """窗口结束清浏览队列,通知队列保留等待注入条件。"""
+    inj = FeedInjector(decision_window_s=10)
+    inj.window_started()
+    inj.enqueue([_f("f1")])
+    inj.enqueue_priority([_f("n1")])
+    inj.window_ended()
+    st = inj.stats()
+    assert st["p2_queued"] == 0 and st["p1_queued"] == 1
+    assert inj.next_to_inject(0.0) is not None  # P1 仍可注入

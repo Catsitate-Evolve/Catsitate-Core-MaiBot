@@ -1010,14 +1010,11 @@ class CatsitatePlugin(MaiBotPlugin):
             in_qzone_window = bool(win and win.get("kind") == "daily" and win.get("read_qzone"))
             if not in_qzone_window:
                 if self.qzone_injector.window_active:
-                    # 通知残留须在 window_ended 清队前读取(其后 p1_queued 恒 0,终审 I3)
-                    p1_left = self.qzone_injector.stats().get("p1_queued", 0)
                     self.qzone_injector.window_ended()
                     reverted = self.qzone_seen.revert_pending()
-                    self.ctx.logger.info("QQ空间窗口结束,未注入队列回退未读(%d 条)", reverted)
-                    if p1_left:
-                        # 通知项 is_new 发现即登记,清空后不会重检——显式告警不静默(终审 I3)
-                        self.ctx.logger.warning("QQ空间窗口结束,%d 条未注入通知被清空(已登记不重试)", p1_left)
+                    self.ctx.logger.info(
+                        "QQ空间浏览窗口结束,浏览队列回退未读(%d 条);通知队列保留等待注入", reverted
+                    )
                 return
             if not self.qzone_injector.window_active:
                 self.qzone_injector.window_started()
@@ -1188,7 +1185,9 @@ class CatsitatePlugin(MaiBotPlugin):
         """
 
         async with self._qzone_pump_lock:
-            if not self._qzone_available or not self.qzone_injector.window_active:
+            # 泵门控不卡浏览窗口(M3-r2):通知(P1)推送语义任何时刻可注入,
+            # 窗口外浏览动态由 next_to_inject 的窗口判定拦截
+            if not self._qzone_available:
                 return
             if self.config.sleep.enabled and self.sleep.is_sleeping():
                 return  # 深度审查 C-1:入睡后在途泵静默退出——注入的消息会被睡眠拦截链拦进回顾缓冲(白注入)
@@ -1505,7 +1504,7 @@ class CatsitatePlugin(MaiBotPlugin):
             if notifications:
                 added = self.qzone_injector.enqueue_priority(notifications)
                 self.ctx.logger.info("QQ空间通知入队 %d 条(源A+B,P1 插队)", added)
-                # 泵优先取 P1;注入需注入窗口开启,窗口外通知静置 P1 待下窗口开始时优先呈现
+                # 泵优先取 P1(推送语义,任何时刻可注入);浏览动态仅窗口内注入
                 await self._qzone_pump()
         finally:
             self._qzone_notify_running = False

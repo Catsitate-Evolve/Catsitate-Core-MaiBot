@@ -9,7 +9,9 @@ P2=浏览动态。next_to_inject 优先弹 P1——模拟「刷着动态→弹�
 超时兜底:常规 decision_window_s;wait 态(wait 是 tool_call,其响应不满足完成信号)
 延长到 hard_cap_multiplier×decision_window_s(自注入时刻起算,wait 不重置起点),
 防止 wait 期间注入下一条并入批处理导致出站意图错靶(spec §2.4 回顾修订)。
-窗口结束:两队列状态一并丢弃(SeenStore.revert_pending 由 plugin 调用回退未读)。
+窗口结束:浏览队列(P2)与 awaiting 状态一并丢弃(SeenStore.revert_pending 由
+plugin 调用回退未读);通知队列(P1)保留——通知是推送语义,不隶属任何窗口,
+等注入条件(bot 醒着/泵空闲)满足后继续(M3-r2 P1/P2 分治)。
 """
 
 from __future__ import annotations
@@ -50,9 +52,13 @@ class FeedInjector:
         self._window_active = True
 
     def window_ended(self) -> None:
+        """浏览窗口结束:清浏览队列与进行中的注入。
+
+        通知队列(P1)保留——通知是推送语义,不隶属任何窗口,
+        等注入条件(bot 醒着/泵空闲)满足后继续。
+        """
         self._window_active = False
         self._queue_p2.clear()
-        self._queue_p1.clear()  # 通知队列随窗口一并清(plugin 侧 SeenStore 回退)
         self._awaiting = None
         self._popped = None
 
@@ -91,14 +97,15 @@ class FeedInjector:
     def next_to_inject(self, now: float) -> FeedItem | None:
         """弹出下一条注入项:P1(通知)非空优先,P1 空取 P2(浏览)。
 
-        awaiting 逻辑不变:awaiting 未释放/窗口未开/两队列皆空返回 None。
+        awaiting 未释放时返回 None(串行语义不变);P1 任何时刻可弹
+        (推送语义,不依赖浏览窗口),P2 仅窗口内可弹;两队列皆空返回 None。
         """
-        if not self._window_active or self._awaiting is not None:
+        if self._awaiting is not None:
             return None
         if self._queue_p1:
-            self._popped = self._queue_p1.pop(0)
-        elif self._queue_p2:
-            self._popped = self._queue_p2.pop(0)
+            self._popped = self._queue_p1.pop(0)  # 通知:推送语义,不依赖浏览窗口
+        elif self._window_active and self._queue_p2:
+            self._popped = self._queue_p2.pop(0)  # 浏览动态:仅 read_qzone 窗口内注入
         else:
             return None
         return self._popped

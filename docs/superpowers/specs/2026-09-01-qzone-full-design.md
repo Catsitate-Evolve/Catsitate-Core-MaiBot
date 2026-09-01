@@ -116,6 +116,7 @@ QzoneClient（协议封装）
 | qzone_reply | feed_id*(必填), comment_id*(必填), content*(必填) | 回复评论（楼中楼） |
 | qzone_like | feed_id?（缺省=当前浏览的说说） | 点赞 |
 | qzone_post | content*(必填) | 发布说说 |
+| inspect_image | message_id?, image_index?, question*, image_hash? | 带具体问题重看图片；message_id 路径搜虚拟流消息，image_hash 路径直接查 Images 表（覆盖 view_friend_feeds 等非消息路径入库的图片） |
 
 **全域可用**（真实聊天流和虚拟流均可调用，不以 qzone_ 为前缀）：
 
@@ -126,8 +127,13 @@ QzoneClient（协议封装）
 `view_friend_feeds` 说明：
 - 调用 `client.get_user_feeds` 复用现有解析
 - **图片返回走主程序原生 tool result media 通道**：工具返回 dict（非 str），`content` 为格式化文本摘要，`content_items` 为图片列表（content_type=image + base64 + mime_type）。主程序自动处理：文本 planner 后台 VLM 识图，视觉 planner 直接看图。图片体积用现有压缩阶梯治理。
-- 不做 Images 表缓存查询——所有图片统一走 content_items 通道，主程序 image_manager 的 sha256 去重自动处理已见过的图（不重复识图），插件侧不维护缓存逻辑。
-- 已知限制：通过本工具返回的图片不在 mai_messages 表中，`inspect_image` 无法按消息搜索到它们；如需细看，再次调用本工具即可。
+- 主程序 image_manager 的 sha256 去重自动跳过已识图过的图片，插件侧不维护缓存。
+- **inspect_image 的 image_hash 参数兜底**：通过本工具返回的图片不在 mai_messages 表中，inspect_image 按 message_id 搜不到——增补可选参数 `image_hash`，允许 planner 直接传 Images 表的 hash 查图重看，覆盖所有入库图片（无论来源是消息流还是 tool result）。
+
+`inspect_image` 的 image_hash 增补说明：
+- 现有链路（message_id → find_image_segment → hash）保持不变，仍为默认路径
+- 新增可选参数 `image_hash`：直接用 hash 查 Images 表取 full_path，跳过消息搜索
+- planner 可从 view_friend_feeds 的返回内容中获取 hash（content_items 元数据中携带）
 
 内容长度 ≤200 字（说说 ≤500 字）。
 

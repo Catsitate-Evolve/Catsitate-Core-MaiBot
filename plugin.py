@@ -1185,7 +1185,8 @@ class CatsitatePlugin(MaiBotPlugin):
         发现层非登录态失败回退 _qzone_poll_feeds_legacy 旧逐好友路径。
         send_qzone 窗口(Task 8):仅 send 窗口(无 read)在窗口开始即派发
         发布触发后早退(无浏览语义);同窗形态(read+send)在首轮拉取收尾
-        派发发布触发(等泵空闲,分享有上下文)。
+        (含零新动态轮与 legacy 回退轮,审查修正)派发发布触发(等泵空闲,
+        分享有上下文)。
         """
 
         try:
@@ -1264,9 +1265,11 @@ class CatsitatePlugin(MaiBotPlugin):
             except Exception:
                 self.ctx.logger.exception("QQ空间统一时间线拉取失败,回退逐好友旧路径")
                 await self._qzone_poll_feeds_legacy()
+                self._qzone_send_first_poll_finish(win)  # legacy 完整跑完一轮同样算首轮完成
                 return
             if not discoveries:
                 await self._qzone_pump()  # 空发现也泵——超时推进兜底(旧路径每轮必泵语义)
+                self._qzone_send_first_poll_finish(win)  # 零新动态轮同样完成了浏览(审查修正)
                 return
             # ② 过滤:说说(appid=311)且 seen 未登记——is_new_candidate 纯查不登记
             # (发现≠注入,登记留给充实层 mark_queued,防预占主键判重跳过);排除 bot
@@ -1278,6 +1281,7 @@ class CatsitatePlugin(MaiBotPlugin):
             ]
             if not new_items:
                 await self._qzone_pump()  # 无新动态也泵——超时推进兜底(旧路径每轮必泵语义)
+                self._qzone_send_first_poll_finish(win)  # 零新动态轮同样完成了浏览(审查修正)
                 return
             # ③ 充实层:按作者分组(保发现顺序),每组 1 次 get_user_feeds 拉完整实体
             by_uin: dict[str, list[FeedDiscovery]] = {}
@@ -1322,11 +1326,7 @@ class CatsitatePlugin(MaiBotPlugin):
             if added_total:
                 self.ctx.logger.info("QQ空间新动态入队 %d 条(统一时间线发现 %d 条)", added_total, len(new_items))
             await self._qzone_pump()
-            if self._qzone_send_armed and not self._qzone_send_first_poll_done:
-                self._qzone_send_first_poll_done = True
-                if win.get("read_qzone"):
-                    # 同窗形态:等首轮浏览注入完成(泵空闲)再触发,分享有上下文
-                    self._spawn_background_task(self._qzone_send_trigger(win, browsed=True))
+            self._qzone_send_first_poll_finish(win)
         finally:
             self._qzone_poll_running = False
 
@@ -1538,6 +1538,19 @@ class CatsitatePlugin(MaiBotPlugin):
         self._qzone_notify_running = True
         self._spawn_background_task(self._qzone_notify_scan())
 
+    def _qzone_send_first_poll_finish(self, win: dict) -> None:
+        """首轮浏览收尾派发(审查修正):零新动态轮同样算完成浏览——置位一次性
+        标记并派发 browsed=True 发布触发(其内部等泵空闲,时序安全);未武装/
+        已触发过的窗口为 no-op;仅 send 窗口不经浏览主路径,不在此派发。"""
+
+        if not self._qzone_send_armed or self._qzone_send_first_poll_done:
+            return
+        if not win.get("read_qzone"):
+            return
+        self._qzone_send_first_poll_done = True
+        # 同窗形态:等首轮浏览注入完成(泵空闲)再触发,分享有上下文
+        self._spawn_background_task(self._qzone_send_trigger(win, browsed=True))
+
     async def _qzone_send_trigger(self, win: dict, *, browsed: bool) -> None:
         """发布触发:planner 自主决定是否用 qzone_post 发说说(沉默=正常结束)。
 
@@ -1555,7 +1568,7 @@ class CatsitatePlugin(MaiBotPlugin):
         activity = str(win.get("activity") or "")
         if browsed:
             intent = (
-                "你刚刷完QQ空间看到了好友的动态,现在有点想分享点什么。"
+                "你刚刷完QQ空间,现在有点想分享点什么。"
                 "如果确实想发,用 qzone_post 工具(reply_reference 填想表达的方向);"
                 f"不想发就保持沉默,什么都不用做。当前活动:{activity}"
             )

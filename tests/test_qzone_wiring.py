@@ -2256,7 +2256,7 @@ async def test_send_trigger_once_per_window(tmp_path):
 
     ctx.maisaka.proactive.trigger = trigger
     await p._qzone_poll_feeds()
-    await p._qzone_poll_feeds()  # 同窗口第二轮:window_active 已 True 走主路径,武装状态防重
+    await p._qzone_poll_feeds()  # 同窗口第二轮:armed 键不变防重(仅 send 窗口 window_active 恒 False,判重不依赖泵状态)
     await asyncio.sleep(0)
     assert n["i"] == 1
 
@@ -2277,6 +2277,28 @@ async def test_send_trigger_browsed_waits_pump_idle_then_fires(tmp_path):
     await p._qzone_send_trigger({"kind": "daily", "activity": "逛空间"}, browsed=True)
     assert len(fired) == 1
     assert "刚刷完QQ空间" in fired[0]["intent"] and "qzone_post" in fired[0]["intent"]
+
+
+@pytest.mark.asyncio
+async def test_send_trigger_browsed_fires_on_zero_new_feeds(tmp_path):
+    """审查修正:read+send 窗口首轮零新动态(空发现)同样算完成浏览——空发现
+    早退分支收尾也派发 browsed 触发,整窗不再静默;第二轮零新动态不重复。"""
+
+    p, ctx = _make_plugin_with_qzone(
+        tmp_path, window={"kind": "daily", "read_qzone": True, "send_qzone": True})
+    fired = []
+
+    async def trigger(**kwargs):
+        fired.append(kwargs)
+        return {"success": True}
+
+    ctx.maisaka.proactive.trigger = trigger
+    await p._qzone_poll_feeds()  # 发现层空时间线(默认桩):走空发现早退分支
+    await asyncio.sleep(0)  # 收尾派发的后台触发任务在下一调度槽执行
+    assert len(fired) == 1 and "刚刷完QQ空间" in fired[0]["intent"]
+    await p._qzone_poll_feeds()  # 第二轮零新动态:first_poll_done 已置位,不重复
+    await asyncio.sleep(0)
+    assert len(fired) == 1
 
 
 @pytest.mark.asyncio

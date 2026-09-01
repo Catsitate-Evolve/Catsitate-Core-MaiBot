@@ -16,7 +16,7 @@
 
 ---
 
-### Task M3-1: 发布 API（wire + client）
+### Task 1: 发布 API（wire + client）
 
 **Files:** wire.py, client.py; Test tests/test_qzone_wire.py, tests/test_qzone_client.py
 
@@ -25,7 +25,7 @@
 
 TDD: 表单字段断言 + client 请求/响应解析。
 
-### Task M3-2: qzone_post 工具 + 回注
+### Task 2: qzone_post 工具 + 回注
 
 **Files:** plugin.py, messages.py; Test tests/test_qzone_wiring.py
 
@@ -39,7 +39,7 @@ TDD: 表单字段断言 + client 请求/响应解析。
 
 TDD: 工具行为测试（成功→do_publish+route_message 被调/失败/长度校验）。
 
-### Task M3-3: 日记（入睡任务扩展）
+### Task 3: 日记（入睡任务扩展）
 
 **Files:** plugin.py, llm_provider.py, prompt_templates/; Test tests/test_qzone_wiring.py
 
@@ -58,7 +58,7 @@ TDD: 工具行为测试（成功→do_publish+route_message 被调/失败/长度
 
 TDD: 模板存在 + 入睡生成调用链 + 醒来补注 + 配置开关。
 
-### Task M3-4: 见闻摘要 + 场景更新 + 收尾
+### Task 4: 见闻摘要 + 场景更新 + 收尾
 
 **Files:** plugin.py, scene.py, config.py; Test 全量
 

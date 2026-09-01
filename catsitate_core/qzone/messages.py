@@ -5,8 +5,9 @@
 语义;**发布时间由正文相对时间前缀承载**(今天 HH:MM / M月d日 HH:MM,联调缺陷#5
 防 bot 把老说说当刚发生);message_id 全局唯一(tid+时间播种序号);is_mentioned
 嵌在 message_info.additional_config(主程序只读该位置);图片段带 binary_data_base64,
-下载失败的图以 [图片] 占位;文本段末尾带「说说 {tid[:12]}」ID 锚(工具驱动 2026-09-01,
-纯图说说也保留文本段承载锚);纯图说说正文为空时锚即整段内容。
+下载失败的图以 [图片] 占位;文本段末尾带参数独立尾行「〔说说ID=xxx〕」(tid 前 12 位,
+工具驱动 2026-09-01;可读性优化后换行独立成行,纯图说说也保留文本段承载锚);
+纯图说说正文为空时参数行即整段内容。
 图片体积治理=压缩到 RPC 帧预算内(12MB,用户裁定:压缩而非拒收)。
 """
 
@@ -223,10 +224,13 @@ def build_feed_message(
         body = prefix
     else:
         body = f"{prefix}(无文字内容)".strip()
-    # 工具 ID 锚(工具驱动架构 2026-09-01):文本段末尾追加说说 ID 短码(前 12 位),
-    # 模型照抄给 qzone_comment/qzone_like 的 feed_id;纯图说说也保证有文本段——
-    # 锚丢失则工具无从解析目标。时间前缀语义不变,锚只追加在段尾。
-    body = f"{body}(说说 {feed.tid[:12]})".strip()
+    # 工具参数独立尾行(可读性优化 2026-09-01,Q1=a+Q4=a):换行+〔说说ID=…〕
+    # 独立成行——消除与正文/时间前缀的行内语义混淆(旧「(说说 xxx)」行内尾注
+    # 易被模型当正文一部分);tid 取前 12 位短码,模型照抄给
+    # qzone_comment/qzone_like 的 feed_id;纯图说说也保证有文本段——参数行
+    # 丢失则工具无从解析目标。时间前缀语义不变,参数行只追加在段尾。
+    param_line = f"〔说说ID={feed.tid[:12]}〕"
+    body = f"{body}\n{param_line}" if body else param_line
     raw.insert(0, {"type": "text", "data": body})
     return {
         "message_id": f"qzone_{feed.tid}_{seq}",

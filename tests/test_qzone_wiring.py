@@ -468,7 +468,7 @@ def test_notify_poll_source_b_reply_registers_friend_thread_context(tmp_path, mo
             {"tid": "", "uin": "30000", "name": "阿好", "content": "畸形回复",
              "create_time": str(int(_time.time()))},
         ]},
-        {"tid": "bc1", "uin": BOT_UIN, "list_3": [
+        {"tid": "bc1", "uin": BOT_UIN, "content": "我的评论", "list_3": [
             {"tid": "rr1", "uin": "30000", "name": "阿好", "content": "说得对",
              "create_time": str(int(_time.time()))},
         ]},
@@ -507,8 +507,9 @@ def test_notify_poll_source_b_reply_registers_friend_thread_context(tmp_path, mo
     assert reply["data"]["target_message_sender_id"] == "30000"
     assert reply["data"]["target_message_content"] == ("好友的说说正文" * 10)[:60]
     text = msg["raw_message"][1]["data"]
-    # 工具驱动 ID 锚形态:评论ID=主评论 tid(bc1,bot 的评论),QQ=回复者
-    assert text == "回复了你的评论:说得对(说说 ffeed1 · 评论 bc1 · QQ 30000)"
+    # 工具驱动+可读性优化:楼中楼上下文(bot 原评论前 20 字)+参数独立尾行;
+    # 评论ID=主评论 tid(bc1,bot 的评论),评论者QQ=回复者
+    assert text == "回复了你的评论「我的评论」:说得对\n〔说说ID=ffeed1 评论ID=bc1 评论者QQ=30000〕"
     assert "你曾评论" not in text and "(通知)" not in text
     assert "notify_reply_ffeed1_rr1" in msg["message_id"]
     ctx = p._qzone_registry.resolve("ffeed1")
@@ -519,6 +520,64 @@ def test_notify_poll_source_b_reply_registers_friend_thread_context(tmp_path, mo
     assert (ctx.commenter_uin, ctx.commenter_nickname) == ("30000", "阿好")
     # 楼中楼回复键已登记(下轮判重,不重复通知)
     assert p.qzone_comment_seen.is_new("ffeed1:bc1:reply:rr1") is False
+
+
+def test_notify_scan_source_b_reply_without_parent_content_falls_back(tmp_path, monkeypatch):
+    """楼中楼上下文兜底(Q3=a):主评论条目缺 content(非实测形态容错)时,
+    通知正文引用段降级「你之前的评论」,不空引号也不静默丢上下文。"""
+
+    import time as _time
+
+    sleeps: list = []
+    _patch_sleep(monkeypatch, sleeps)
+    p = _make_plugin(tmp_path)
+    p.qzone_injector.window_started()
+    fresh = (datetime.now() - timedelta(minutes=1)).strftime("%Y-%m-%dT%H:%M:%S")
+    p.qzone_comment_seen.note_bot_comment("ffeed9", "30000", "我的评论", fresh)
+    raw = {"usrinfo": {"uin": "30000"}, "msglist": [{"tid": "ffeed9", "content": "说说正文",
+        "commentlist": [
+        {"tid": "bc9", "uin": BOT_UIN, "list_3": [  # 无 content 键:parent_comment_content 空
+            {"tid": "rr9", "uin": "30000", "name": "阿好", "content": "说得对",
+             "create_time": str(int(_time.time()))},
+        ]},
+    ]}]}
+
+    class _StubNoParentClient(_StubUnifiedClient):
+        def __init__(self):
+            super().__init__([
+                FeedDiscovery(tid="ffeed9", uin="30000", nickname="阿好",
+                              abstime=str(int(_time.time())), appid=311),
+            ])
+
+        async def get_own_feed_comments(self, *, bot_uin, num=10):
+            del bot_uin, num
+            return {}, {}
+
+        async def get_user_feeds_raw(self, *, target_uin, num=5):
+            assert target_uin == "30000"
+            return raw
+
+    p.qzone_client = _StubNoParentClient()
+    asyncio.run(p._qzone_notify_scan())
+    assert len(p._ctx.gateway.calls) == 1
+    text = p._ctx.gateway.calls[0][1]["raw_message"][-1]["data"]
+    assert text == "回复了你的评论「你之前的评论」:说得对\n〔说说ID=ffeed9 评论ID=bc9 评论者QQ=30000〕"
+
+
+def test_qzone_block_virtual_stream_state_only(tmp_path):
+    """注入块去重(可读性优化 2026-09-01):场景全文已由 apply_scene_surgery 进
+    system 段(场景替换),虚拟流注入块只保留动态状态——不再重复拼场景文案。"""
+
+    p = _make_plugin(tmp_path)
+    p._qzone_session_ids = {"qz_stream"}
+    key, text = p._qzone_block("qz_stream")
+    assert key.startswith("qzone:v:")
+    assert text.startswith("[空间] ")
+    assert "暂无新动态" in text  # 无 awaiting/队列时的动态状态
+    assert "刷QQ空间" not in text and "qzone_comment" not in text  # 场景文案不重复注入
+    # 真实聊天摘要分支保持不变:无见闻 → None
+    key2 = p._qzone_block("real_stream")
+    assert key2 is None
 
 
 # ---- 终审修复波 I1/I2/I3:组合层行为测试 ----

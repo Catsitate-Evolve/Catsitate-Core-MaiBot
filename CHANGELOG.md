@@ -1,5 +1,14 @@
 # Changelog
 
+## v0.7.1(2026-09-01) QQ空间提示词可读性五项优化
+
+- **@ 解析**(`wire.parse_qzone_mentions`):通知正文里的 QQ 空间 `@{uin:xxx,nick:xxx,…}` 机器格式解析为「@昵称 」可读形态(缺 nick 回退 @uin,无 uin 畸形原样保留;@bot 自己保留不过滤,用户裁定 Q2=a)。
+- **参数独立尾行**(Q1=a+Q4=a):浏览动态/通知的尾部参数从行内「(说说 xxx · 评论 x · QQ x)」改为换行+独立行「〔说说ID=xx 评论ID=xx 评论者QQ=xx〕」(浏览动态为「〔说说ID=xx〕」,tid 前 12 位)——消除与正文/时间前缀的行内语义混淆;纯图说说仍保留文本段承载参数行。参数键名用完整语义,与工具参数名(feed_id/comment_id/at_user_id)的映射由场景 prompt 解释。
+- **楼中楼上下文**(Q3=a):`ReplyItem` 增 `parent_comment_content`(bot 被回复的主评论正文);源B通知正文改「回复了你的评论「{bot原评论前20字}」:…」,缺内容回退「你之前的评论」。
+- **场景 prompt 可配置**:`SIDE_TEMPLATES` 增 `qzone_scene`(v2);`scene.py` 场景文案运行时经 `load_side_system("qzone_scene")` 三层链读取(WebUI custom_prompts → 主程序 prompts → 插件内置;硬编码常量降级为兜底,与内置逐字一致由测试锁定);`prompt_templates/catsitate_qzone_scene.prompt` 入列,on_load 自动部署 8→9 个模板,WebUI 可编辑、改完即生效。
+- **注入块去重**:虚拟流 qzone 注入块不再拼场景全文(场景已由 apply_scene_surgery 进 system 段),只保留 `describe_current()` 动态状态——免同轮双份场景说明互相漂移;真实聊天摘要分支不变。
+- docs:手册 §3.13 同步参数行格式/楼中楼上下文/场景可配置与 9 模板清单。
+
 ## v0.7.0(2026-09-01) QQ空间工具驱动架构重构
 
 - **BREAKING:出站意图系统整体删除**(OutboundIntent/route_outbound/网关回调路由/意图绑定校验/出站计数/窗口首尾意图作废/超时清意图)。网关 `duplex`→`receive`(只进不出)——虚拟流里直接打字发不出去,互动一律经工具显式发出,是否互动/评论什么完全由模型自主决定。`routing.py`/`outbound.py` 文件保留但标记废弃(无生产调用点,便于 revert)。

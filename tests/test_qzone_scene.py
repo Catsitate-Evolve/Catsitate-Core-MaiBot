@@ -34,14 +34,54 @@ def test_replace_scene_empty_config_and_miss():
 
 
 def test_scene_text_distinguishes_feeds_and_notifications():
-    """场景文案 v2(工具驱动 2026-09-01):说明 ID 锚格式(说说/评论/QQ)与三个
-    互动工具的用法,并明示「直接打字发不出去」(receive 网关无出站路径)。"""
+    """场景文案(工具驱动 2026-09-01+可读性优化):说明〔〕参数行格式(说说ID/
+    评论ID/评论者QQ)与三个互动工具的用法,并明示「直接打字发不出去」
+    (receive 网关无出站路径)。"""
     assert "你正在用手机刷QQ空间" in QZONE_SCENE_TEXT
     assert "说说动态" in QZONE_SCENE_TEXT and "互动通知" in QZONE_SCENE_TEXT
-    assert "「说说 xxx」" in QZONE_SCENE_TEXT and "「评论 xxx」" in QZONE_SCENE_TEXT  # ID 锚说明
+    assert "〔〕" in QZONE_SCENE_TEXT  # 参数行说明
+    assert "说说ID" in QZONE_SCENE_TEXT and "评论ID" in QZONE_SCENE_TEXT
+    assert "评论者QQ" in QZONE_SCENE_TEXT  # 参数键名完整语义
     assert "qzone_comment" in QZONE_SCENE_TEXT and "qzone_reply" in QZONE_SCENE_TEXT
     assert "qzone_like" in QZONE_SCENE_TEXT
+    assert "feed_id" in QZONE_SCENE_TEXT and "comment_id" in QZONE_SCENE_TEXT
+    assert "at_user_id" in QZONE_SCENE_TEXT  # 参数名映射由场景 prompt 解释
     assert "直接打字是发不出去的" in QZONE_SCENE_TEXT  # receive 网关语义
+
+
+def test_scene_text_runtime_chain_from_llm_provider(monkeypatch):
+    """可读性优化(2026-09-01):场景文案运行时经 load_side_system("qzone_scene")
+    读取(WebUI custom_prompts → 主程序 prompts → 插件内置三层链,可被 WebUI
+    覆盖),硬编码常量降级为兜底;replace_scene/apply_scene_surgery 默认参数同链。"""
+    import catsitate_core.llm_provider as _lp
+    from catsitate_core.qzone import scene as _scene_mod
+
+    monkeypatch.setattr(
+        _lp, "load_side_system",
+        lambda tid: ("WebUI自定义场景文案", f"{tid}:v2+deadbeef"), raising=True,
+    )
+    assert _scene_mod.current_scene_text() == "WebUI自定义场景文案"
+    new_text, status = _scene_mod.replace_scene(SYSTEM, GROUP_PROMPT)
+    assert status == "replaced" and "WebUI自定义场景文案" in new_text
+    out, st = _scene_mod.apply_scene_surgery([_sys_item(SYSTEM)], GROUP_PROMPT)
+    assert st == "replaced" and "WebUI自定义场景文案" in out[0]["parts"][0]["text"]
+    # 显式 scene_text 仍可覆盖链路(纯函数语义保留)
+    new_text2, _ = _scene_mod.replace_scene(SYSTEM, GROUP_PROMPT, scene_text="显式文案")
+    assert "显式文案" in new_text2
+
+
+def test_scene_text_default_chain_falls_back_to_builtin():
+    """未部署模板(测试环境无 /MaiMBot):链路回退 SIDE_TEMPLATES 内置,
+    与兜底常量一致——场景全文内容不因链路缺失而漂移。"""
+    from catsitate_core.llm_provider import SIDE_TEMPLATES
+
+    from catsitate_core.qzone.scene import current_scene_text
+
+    text = current_scene_text()
+    assert text  # 非空(环境可能已部署模板,不断言与内置逐字相等)
+    assert "刷QQ空间" in text
+    if text == SIDE_TEMPLATES["qzone_scene"]["system"]:  # 未部署时
+        assert text == QZONE_SCENE_TEXT  # 内置与兜底常量逐字一致
 
 
 def test_filter_tool_definitions_openai_and_flat_forms():

@@ -115,3 +115,61 @@ def test_parse_feed_replies_empty():
     assert parse_feed_replies({"usrinfo": {"uin": "8"}, "msglist": [
         {"tid": "f1", "commentlist": [{"tid": "c1", "uin": 3545773341, "name": "bot", "content": "x"}]}
     ]}, bot_uin="3545773341") == []
+
+
+# ---- @ 解析与楼中楼父评论上下文(提示词可读性优化 2026-09-01) ----
+
+
+def test_parse_qzone_mentions_replaces_with_nick():
+    """@{uin,nick,...} → @昵称(后接空格,拟 QQ 客户端 @ 展示形态);缺 nick 回退 uin。"""
+    from catsitate_core.qzone.wire import parse_qzone_mentions
+
+    assert parse_qzone_mentions("@{uin:123,nick:小明,auto:1}你好", bot_uin="10000") == "@小明 你好"
+    assert parse_qzone_mentions("@{uin:123,auto:1}早", bot_uin="10000") == "@123 早"  # 缺 nick 回退 uin
+    assert parse_qzone_mentions("开头@{uin:456,nick:小红}结尾", bot_uin="10000") == "开头@小红 结尾"
+
+
+def test_parse_qzone_mentions_passthrough_when_no_mention_or_no_uin():
+    """无 @ 原样;无 uin 的畸形花括号原样保留(不吞文本)。"""
+    from catsitate_core.qzone.wire import parse_qzone_mentions
+
+    assert parse_qzone_mentions("普通文本没有花括号", bot_uin="10000") == "普通文本没有花括号"
+    assert parse_qzone_mentions("@{auto:1}畸形", bot_uin="10000") == "@{auto:1}畸形"
+    assert parse_qzone_mentions("", bot_uin="10000") == ""
+
+
+def test_parse_qzone_mentions_keeps_bot_self_mention():
+    """Q2=a:纯格式转换,@bot 自己也保留(bot_uin 仅作语境,不过滤)。"""
+    from catsitate_core.qzone.wire import parse_qzone_mentions
+
+    assert parse_qzone_mentions(
+        "@{uin:10000,nick:我自己,auto:1}在吗", bot_uin="10000"
+    ) == "@我自己 在吗"
+
+
+def test_parse_feed_replies_carries_parent_comment_content():
+    """楼中楼上下文(Q3=a):ReplyItem 带 bot 主评论正文 parent_comment_content。"""
+    from catsitate_core.qzone.wire import parse_feed_replies
+
+    payload = {"usrinfo": {"uin": 8888}, "msglist": [{"tid": "f1", "commentlist": [
+        {"tid": "c1", "uin": 3545773341, "name": "bot", "content": "bot 的主评论",
+         "list_3": [{"tid": "r1", "uin": 10001, "name": "小明", "content": "回复bot",
+                     "create_time": 1750000001}]},
+    ]}]}
+    items = parse_feed_replies(payload, bot_uin="3545773341")
+    assert len(items) == 1
+    assert items[0].parent_comment_content == "bot 的主评论"
+
+
+def test_parse_feed_replies_parent_comment_content_defaults_empty():
+    """主评论条目缺 content(非实测形态容错):parent_comment_content 降级空串,
+    通知正文构造侧以「你之前的评论」兜底。"""
+    from catsitate_core.qzone.wire import parse_feed_replies
+
+    payload = {"usrinfo": {"uin": 8888}, "msglist": [{"tid": "f1", "commentlist": [
+        {"tid": "c1", "uin": 3545773341, "name": "bot", "list_3": [
+            {"tid": "r1", "uin": 10001, "name": "小明", "content": "回复", "create_time": 1750000001},
+        ]},
+    ]}]}
+    items = parse_feed_replies(payload, bot_uin="3545773341")
+    assert len(items) == 1 and items[0].parent_comment_content == ""

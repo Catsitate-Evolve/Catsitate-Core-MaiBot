@@ -44,11 +44,11 @@ from catsitate_core.qzone.injector import FeedInjector
 from catsitate_core.qzone.messages import build_feed_message, build_notify_message, fit_images_to_rpc_budget
 from catsitate_core.qzone.registry import FeedContext, FeedContextRegistry
 from catsitate_core.qzone.scene import (
-    QZONE_SCENE_TEXT, SCENE_EMPTY_CONFIG_WARNING, SCENE_MISS_WARNING,
+    SCENE_EMPTY_CONFIG_WARNING, SCENE_MISS_WARNING,
     apply_scene_surgery, filter_qzone_tools_for_stream, is_qzone_message,
 )
 from catsitate_core.qzone.seen_store import SeenStore
-from catsitate_core.qzone.wire import parse_feed_replies
+from catsitate_core.qzone.wire import parse_feed_replies, parse_qzone_mentions
 from catsitate_core.reply_guard import (
     CONTEXT_TOOLS,
     backfill_reply_items,
@@ -1249,9 +1249,12 @@ class CatsitatePlugin(MaiBotPlugin):
         优先级队列(插队于浏览动态之前),泵注入成功后登记 FeedContext 供
         qzone_comment/qzone_reply 解析目标(工具驱动,替代意图路由)。
         通知注入走 build_notify_message:reply 段引用原说说注入消息承载上下文
-        (target_message_content=原说说正文前 60 字),正文自然可读并带 ID 锚
-        「评论了你的说说:…(说说 xx · 评论 xx · QQ xx)」——锚供模型照抄调用
-        工具,不重复引用原文,也不带发布时间前缀。
+        (target_message_content=原说说正文前 60 字),正文自然可读并带参数独立
+        尾行(可读性优化 2026-09-01)——源A「评论了你的说说:…」换行
+        「〔说说ID=xx 评论ID=xx 评论者QQ=xx〕」、源B「回复了你的评论
+        「{bot原评论前20字}」:…」换行同款参数行,评论内 @{uin,nick} 解析为
+        @昵称;参数行供模型照抄调用工具(映射由场景 prompt 解释),不重复引用
+        原文,也不带发布时间前缀。
         """
 
         try:
@@ -1317,9 +1320,14 @@ class CatsitatePlugin(MaiBotPlugin):
                     notifications.append(FeedItem(
                         tid=f"notify_comment_{feed_tid}_{c.comment_tid}",
                         abstime=c.create_time, uin=str(c.uin), nickname=c.nickname,
-                        # 正文=自然可读+ID 锚(工具驱动 2026-09-01):锚供模型照抄调用
-                        # qzone_comment/qzone_reply(说说ID/评论ID/评论者QQ),不再依赖意图绑定
-                        content=f"评论了你的说说:{c.content}(说说 {feed_tid[:12]} · 评论 {c.comment_tid} · QQ {c.uin})",
+                        # 正文=自然可读+参数独立尾行(可读性优化 2026-09-01):评论内
+                        # @{uin,nick} 解析为 @昵称;〔〕参数行(说说ID/评论ID/评论者QQ)
+                        # 供模型照抄调用 qzone_comment/qzone_reply,与工具参数名
+                        # (feed_id/comment_id/at_user_id)的映射由场景 prompt 解释
+                        content=(
+                            f"评论了你的说说:{parse_qzone_mentions(c.content, bot_uin=bot_uin)}\n"
+                            f"〔说说ID={feed_tid[:12]} 评论ID={c.comment_tid} 评论者QQ={c.uin}〕"
+                        ),
                         source="notify", dedup_key=dedup_key,
                         # reply 段关联原说说(联调修正):origin_* 供泵构造引用段,
                         # 引用内容=原说说正文前 60 字(截断统一在 messages 构造层,
@@ -1400,13 +1408,20 @@ class CatsitatePlugin(MaiBotPlugin):
                                 "QQ空间楼中楼回复过旧跳过(create_time=%s,昵称=%s)", r.create_time, r.nickname
                             )
                             continue
-                        # 正文=自然可读+ID 锚(工具驱动 2026-09-01):锚供模型照抄调用
-                        # qzone_reply(说说ID/主评论ID/回复者QQ);楼中楼二元组的
-                        # commentUin=bot 自己(被回复的主评论作者是 bot)
+                        # 正文=自然可读+楼中楼上下文+参数独立尾行(可读性优化
+                        # 2026-09-01):引用 bot 原评论前 20 字(缺内容回退
+                        # 「你之前的评论」),@{uin,nick} 解析为 @昵称;〔〕参数行
+                        # 供模型照抄调用 qzone_reply(说说ID/主评论ID/回复者QQ);
+                        # 楼中楼二元组的 commentUin=bot 自己(主评论作者是 bot)
+                        bot_ctx = r.parent_comment_content[:20] if r.parent_comment_content else "你之前的评论"
                         notifications.append(FeedItem(
                             tid=f"notify_reply_{r.feed_tid}_{r.reply_tid}",
                             abstime=r.create_time, uin=str(r.uin), nickname=r.nickname,
-                            content=f"回复了你的评论:{r.content}(说说 {r.feed_tid[:12]} · 评论 {r.parent_comment_tid} · QQ {r.uin})",
+                            content=(
+                                f"回复了你的评论「{bot_ctx}」:"
+                                f"{parse_qzone_mentions(r.content, bot_uin=bot_uin)}\n"
+                                f"〔说说ID={r.feed_tid[:12]} 评论ID={r.parent_comment_tid} 评论者QQ={r.uin}〕"
+                            ),
                             source="notify", friend_uin=friend_uin, dedup_key=key,
                             # reply 段关联原说说(源B:原说说作者=好友/说说主人);
                             # 引用内容=原说说正文前 60 字(截断统一在 messages 构造层)
@@ -1899,11 +1914,16 @@ class CatsitatePlugin(MaiBotPlugin):
         return ids
 
     def _qzone_block(self, stream_id: str) -> tuple[str, str] | None:
-        """qzone 注入块(spec §3.4):虚拟流=语义说明+当前浏览状态;真实聊天=近期见闻摘要。"""
+        """qzone 注入块(spec §3.4):虚拟流=当前浏览动态状态;真实聊天=近期见闻摘要。
+
+        注入块去重(可读性优化 2026-09-01):场景全文已由 apply_scene_surgery
+        原位替换进 system 段,虚拟流分支只保留动态状态——不再拼场景常量,
+        免同轮双份场景说明互相漂移。
+        """
 
         if stream_id in self._qzone_session_id_set():
             state = self.qzone_injector.describe_current()
-            return f"qzone:v:{state}", f"[空间] {QZONE_SCENE_TEXT};{state}"
+            return f"qzone:v:{state}", f"[空间] {state}"
         entries = self.qzone_seen.recent_seen(
             limit=self.config.qzone.summary_count, days=self.config.qzone.summary_days, now=datetime.now()
         )

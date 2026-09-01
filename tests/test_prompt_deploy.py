@@ -125,3 +125,23 @@ def test_unwritable_target_warns_but_does_not_raise(tmp_path: Path, caplog: pyte
 
     assert (written, skipped) == (1, 0)
     assert any("部署失败" in rec.message for rec in caplog.records)
+
+
+def test_qzone_scene_prompt_in_template_dir_and_syncs(tmp_path: Path) -> None:
+    """可读性优化(2026-09-01):空间场景模板入列插件 prompt_templates/(8→9),
+    内容与 llm_provider 内置一致(插件为权威源);sync 后落在主程序
+    prompts/zh-CN/,经主程序「提示词管理」WebUI 可查看/编辑。"""
+    real_plugin_root = Path(__file__).resolve().parents[1]
+    src = real_plugin_root / "prompt_templates" / "catsitate_qzone_scene.prompt"
+    assert src.is_file()  # 仓库内置 9 个模板之一
+
+    from catsitate_core.llm_provider import SIDE_TEMPLATES
+
+    builtin = SIDE_TEMPLATES["qzone_scene"]["system"]
+    assert src.read_text(encoding="utf-8").strip() == builtin  # 与内置逐字一致(权威源不漂移)
+
+    project_root = _make_project_root(tmp_path)
+    written, skipped = sync_prompt_templates(project_root, real_plugin_root)
+    assert written >= 1 and skipped == 0  # 空目标目录:全部 9 个写入
+    deployed = _target_dir(project_root) / "catsitate_qzone_scene.prompt"
+    assert deployed.read_text(encoding="utf-8") == src.read_text(encoding="utf-8")

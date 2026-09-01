@@ -7,9 +7,33 @@ protocol.extract_callback_json 通用截取。仅纯函数,IO 在 client.py。
 from __future__ import annotations
 
 import logging
+import re
 from dataclasses import dataclass
 
 logger = logging.getLogger(__name__)
+
+
+def parse_qzone_mentions(text: str, *, bot_uin: str) -> str:
+    """将 QQ 空间 @{uin:xxx,nick:xxx,...} 格式解析为可读 @昵称(提示词可读性 2026-09-01)。
+
+    好友回复正文里的 @ 是花括号机器格式,直接拼进通知会糊住语义——解析为
+    「@昵称 」(后接一个空格,拟 QQ 客户端 @ 展示形态;原文紧跟的至多一个
+    空格被合并,不产生双空格)。缺 nick 回退 @uin;无 uin 的畸形花括号原样
+    保留(不吞文本)。bot_uin 仅作语境(Q2=a 用户裁定:@bot 自己也保留,
+    不过滤)。
+    """
+    del bot_uin
+
+    def _replace(m: re.Match) -> str:
+        inner = m.group(1)
+        uin_m = re.search(r"uin:(\d+)", inner)
+        nick_m = re.search(r"nick:([^,}]+)", inner)
+        if not uin_m:
+            return m.group(0)
+        nick = nick_m.group(1).strip() if nick_m else uin_m.group(1)
+        return f"@{nick} "
+
+    return re.sub(r"@\{([^}]+)\} ?", _replace, text)
 
 
 @dataclass
@@ -116,7 +140,9 @@ class ReplyItem:
     """bot 评论下的一条楼中楼回复(msglist.commentlist[].list_3 条目)。
 
     feed_content 为所属说说正文(通知 reply 段引用预览用,通知源B构造 FeedItem
-    时截 30 字传入);旧调用方不填默认空串。
+    时截 30 字传入);parent_comment_content 为被回复的 bot 主评论正文(楼中楼
+    上下文,可读性优化 2026-09-01:通知正文引用「bot 原评论前 20 字」);旧
+    调用方不填默认空串。
     """
 
     reply_tid: str  # 回复自身 tid
@@ -128,13 +154,15 @@ class ReplyItem:
     content: str
     create_time: str
     feed_content: str = ""  # 所属说说正文(通知 reply 段引用预览)
+    parent_comment_content: str = ""  # 被回复的 bot 主评论正文(楼中楼上下文)
 
 
 def parse_feed_replies(payload: dict, *, bot_uin: str) -> list[ReplyItem]:
     """解析 msglist 载荷中 bot 评论的楼中楼回复(list_3)。
 
     在 commentlist 中找 uin==bot_uin 的条目(即 bot 自己的评论),
-    解析其 list_3 数组中的每条回复为 ReplyItem。无 bot 评论/无 list_3/
+    解析其 list_3 数组中的每条回复为 ReplyItem(携带主评论正文
+    parent_comment_content 供通知正文楼中楼上下文引用)。无 bot 评论/无 list_3/
     字段缺失容错跳过;bot 自己的楼中楼回复跳过(不通知自己)。
 
     friend_uin(说说主人,意图路由 target_qq)取自载荷 usrinfo.uin——
@@ -154,6 +182,7 @@ def parse_feed_replies(payload: dict, *, bot_uin: str) -> list[ReplyItem]:
             if not isinstance(c, dict) or str(c.get("uin") or "") != bot_uin:
                 continue
             parent_tid = str(c.get("tid") or "")
+            parent_content = str(c.get("content") or "").strip()
             for r in c.get("list_3") or []:
                 if not isinstance(r, dict):
                     continue
@@ -170,6 +199,7 @@ def parse_feed_replies(payload: dict, *, bot_uin: str) -> list[ReplyItem]:
                     content=str(r.get("content") or "").strip(),
                     create_time=str(r.get("create_time") or ""),
                     feed_content=str(feed.get("content") or "").strip(),
+                    parent_comment_content=parent_content,
                 ))
     if out and not friend_uin:
         logger.warning(

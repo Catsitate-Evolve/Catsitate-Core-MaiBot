@@ -1,8 +1,32 @@
-"""写路径纯函数测试:表单构造(Maizone 实证参数集)/评论解析。"""
+"""写路径纯函数测试:表单构造(Maizone 实证参数集)/评论解析/发布表单。"""
 
 from catsitate_core.qzone.wire import (
-    CommentItem, build_comment_form, build_like_form, build_reply_form, parse_feed_comments,
+    CommentItem, build_comment_form, build_like_form, build_publish_form, build_reply_form,
+    parse_feed_comments,
 )
+
+
+def test_build_publish_form():
+    """发表说说表单:参数集对照上游开源实现 Maizone 的 publish_emotion 核实
+    ——纯文本说说不带 pic_bo/richtype/richval(带图发布需先走图片上传通道,
+    当前不支持);who 是「以自己身份发表」的固定标志 "1",不是 QQ 号;
+    format=json 表示响应为纯 JSON(无 callback 包裹)。"""
+    form = build_publish_form(content="今天天气很好", bot_uin="3545773341")
+    # 全量键值比对,防拼写/取值漂移
+    assert form == {
+        "syn_tweet_verson": "1",
+        "paramstr": "1",
+        "who": "1",
+        "con": "今天天气很好",
+        "feedversion": "1",
+        "ver": "1",
+        "ugc_right": "1",
+        "to_sign": "0",
+        "hostuin": "3545773341",
+        "code_version": "1",
+        "format": "json",
+        "qzreferrer": "https://user.qzone.qq.com/3545773341",
+    }
 
 
 def test_build_like_form():

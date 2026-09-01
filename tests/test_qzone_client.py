@@ -290,7 +290,7 @@ def test_client_download_image_no_size_cap_and_no_extra_params():
 # ---- 写路径(fake 注入,无网络) ----
 
 
-def _post_client(responses):
+def _post_client(responses, bot_uin=""):
     cookies = {"p_skey": "SK", "uin": "o3545773341"}
     seen = []
 
@@ -301,7 +301,8 @@ def _post_client(responses):
         seen.append({"method": method, "url": url, "params": dict(params), "data": dict(data or {}), "headers": dict(headers)})
         return responses.pop(0)
 
-    client = QzoneClient(cookie_provider=fake_cookie, fetch=fake_fetch, timeout_ms=1000, max_retries=0)
+    client = QzoneClient(cookie_provider=fake_cookie, fetch=fake_fetch, timeout_ms=1000, max_retries=0,
+                         bot_uin=bot_uin)
     return client, seen
 
 
@@ -374,6 +375,38 @@ def test_write_auth_error_invalidates_cookie():
     except QzoneAuthError:
         pass
     assert invalidated == [1] and len(calls) == 1
+
+
+# ---- 发布说说写路径(emotion_cgi_publish_v6,fake 注入,无网络) ----
+
+
+def test_do_publish_posts_form_with_uin_query():
+    """发布说说:emotion_cgi_publish_v6 端点,查询串除 g_tk 外还带 uin(与上游
+    Maizone publish_emotion 的请求一致);表单由 wire.build_publish_form 构造;
+    format=json 响应走纯 JSON 解析(成功载荷含新说说 tid)。"""
+    client, seen = _post_client([(200, b'{"code":0,"subcode":0,"tid":"newtid123"}')], bot_uin="3545773341")
+    assert asyncio.run(client.do_publish(content="今天天气很好")) is True
+    req = seen[0]
+    assert req["method"] == "POST"
+    assert "emotion_cgi_publish_v6" in req["url"]
+    assert req["params"]["g_tk"] == generate_gtk("SK")
+    assert req["params"]["uin"] == "3545773341"  # 查询串带 uin(发布端点实证参数)
+    assert req["data"]["con"] == "今天天气很好"
+    assert req["data"]["hostuin"] == "3545773341" and req["data"]["who"] == "1"
+    assert req["headers"]["Referer"] == "https://user.qzone.qq.com/3545773341"
+    assert req["headers"]["Origin"] == "https://user.qzone.qq.com"
+
+
+def test_do_publish_business_error_raises():
+    """发布失败(非 0 业务码)→ RuntimeError 显式暴露,不静默当成功;不重试。"""
+    client, seen = _post_client([(200, '{"code":-3,"message":"内容含敏感词"}'.encode("utf-8"))], bot_uin="3545773341")
+    try:
+        asyncio.run(client.do_publish(content="x"))
+        raised = ""
+    except RuntimeError as e:
+        raised = str(e)
+    assert "业务错误" in raised
+    assert len(seen) == 1  # 失败不重试,由调用方告警跳过
 
 
 def test_get_own_feed_comments():

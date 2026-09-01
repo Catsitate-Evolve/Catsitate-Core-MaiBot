@@ -23,6 +23,7 @@ from catsitate_core.qzone.wire import (
     CommentItem,
     build_comment_form,
     build_like_form,
+    build_publish_form,
     build_reply_form,
     parse_feed_comments,
 )
@@ -154,13 +155,14 @@ class QzoneClient:
       覆盖全好友动态,返回轻量索引 FeedDiscovery)
     - 内容层:get_user_feeds / get_user_feeds_raw / get_own_feed_comments
       (emotion_cgi_msglist_v6 指定用户说说,返回完整实体 FeedItem / 原始载荷)
-    - 写路径:do_like / do_comment / do_reply(点赞 / 评论 / 楼中楼回复)
+    - 写路径:do_like / do_comment / do_reply / do_publish(点赞 / 评论 / 楼中楼回复 / 发表说说)
     - 基础通道:_request(读 GET)/ _post(写 POST)/ download_image(图片 CDN);
       cookie 经 CookieManager 注入,身份参数(bot_uin)由装配层传入
     """
 
     DOLIKE_URL = "https://user.qzone.qq.com/proxy/domain/w.qzone.qq.com/cgi-bin/likes/internal_dolike_app"
     COMMENT_URL = "https://user.qzone.qq.com/proxy/domain/taotao.qzone.qq.com/cgi-bin/emotion_cgi_re_feeds"
+    PUBLISH_URL = "https://user.qzone.qq.com/proxy/domain/taotao.qzone.qq.com/cgi-bin/emotion_cgi_publish_v6"
 
     def __init__(
         self,
@@ -279,9 +281,10 @@ class QzoneClient:
         text = await self._fetch_unified(count=count)
         return parse_unified_timeline(text)
 
-    async def _post(self, url: str, *, form: dict, referer_uin: str) -> dict:
+    async def _post(self, url: str, *, form: dict, referer_uin: str, extra_params: dict | None = None) -> dict:
         """写路径 POST 通道(独立于 _request:读路径为 GET 语义,参数全进 query;
         写路径为 params=g_tk + form 表单,且需 Origin/Content-Type 头)。
+        extra_params 为 g_tk 之外的查询参数(发布端点需带 uin,上游实现同款)。
 
         失败直接抛出由调用方告警跳过,不重试(max_retries 语义=动作 API 失败即告警)。
         """
@@ -290,6 +293,8 @@ class QzoneClient:
             raise RuntimeError("空间 cookie 不可用,跳过请求")
         # g_tk 保持 int(与 _request 读路径一致,httpx 对 params 原生值直接编码)
         params = {"g_tk": generate_gtk(cookies.get("p_skey", ""))}
+        if extra_params:
+            params.update(extra_params)
         headers = {
             "Cookie": "; ".join(f"{k}={v}" for k, v in cookies.items()),
             "User-Agent": BROWSER_UA,
@@ -346,6 +351,16 @@ class QzoneClient:
                                 comment_nick=comment_nick, content=content,
                                 at_uin=at_uin, at_nick=at_nick)
         await self._post(self.COMMENT_URL, form=form, referer_uin=self.bot_uin)
+        return True
+
+    async def do_publish(self, *, content: str) -> bool:
+        """发表一条纯文本说说(emotion_cgi_publish_v6,表单由 wire.build_publish_form
+        构造;查询串除 g_tk 外带 uin,与上游 Maizone publish_emotion 请求一致;
+        format=json 响应为纯 JSON,成功载荷含新说说 tid)。"""
+
+        form = build_publish_form(content=content, bot_uin=self.bot_uin)
+        await self._post(self.PUBLISH_URL, form=form, referer_uin=self.bot_uin,
+                         extra_params={"uin": self.bot_uin})
         return True
 
     async def get_own_feed_comments(

@@ -1,7 +1,8 @@
 """QQ 空间写路径纯函数(参数集为 Maizone qzone_api.py 实证,联调期经 jsdelivr 复核)。
 
 comment/reply 响应为 format=fs 的 frameElement.callback 包裹——复用
-protocol.extract_callback_json 通用截取。仅纯函数,IO 在 client.py。
+protocol.extract_callback_json 通用截取;publish 表单 format=json,响应为
+纯 JSON 无包裹。仅纯函数,IO 在 client.py。
 """
 
 from __future__ import annotations
@@ -81,6 +82,31 @@ def build_comment_form(*, fid: str, target_qq: str, bot_uin: str, content: str) 
         "format": "fs",
         "ref": "feeds",
         "content": content,
+    }
+
+
+def build_publish_form(*, content: str, bot_uin: str) -> dict:
+    """发表纯文本说说的表单(emotion_cgi_publish_v6 端点)。
+
+    参数集对照上游开源实现 Maizone 的 publish_emotion 核实:纯文本说说不带
+    pic_bo/richtype/richval(带图发布需先走图片上传通道生成 pic_bo,当前不
+    支持);who 为「以自己身份发表」的固定标志 "1"(不是 QQ 号,空间主人由
+    hostuin 承载);format=json 表示响应为纯 JSON,无 frameElement.callback
+    包裹;qzreferrer 指向自己的空间主页(与点赞表单的防伪造引用头同源)。
+    """
+    return {
+        "syn_tweet_verson": "1",
+        "paramstr": "1",
+        "who": "1",
+        "con": content,
+        "feedversion": "1",
+        "ver": "1",
+        "ugc_right": "1",
+        "to_sign": "0",
+        "hostuin": bot_uin,
+        "code_version": "1",
+        "format": "json",
+        "qzreferrer": f"https://user.qzone.qq.com/{bot_uin}",
     }
 
 

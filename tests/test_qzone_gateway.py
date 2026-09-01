@@ -28,7 +28,7 @@ def test_build_message_core_fields():
     # 顶层键会被丢弃,注入消息将卡在必要性评分 50<80 不触发 planner 轮)
     assert info["additional_config"]["is_mentioned"] == 1.0
     text = msg["raw_message"][0]["data"]
-    assert text.startswith("(今天") and text.endswith("今天天气好")  # 同日阅读→今天前缀
+    assert text.startswith("(今天") and text.endswith("今天天气好(说说 t1)")  # 同日阅读→今天前缀+ID 锚
 
 
 def test_build_message_image_segments_and_placeholder():
@@ -40,7 +40,7 @@ def test_build_message_image_segments_and_placeholder():
     msg = build_feed_message(_feed(abstime="", image_urls=["u1", "u2"]), seq=1, group_id="g", group_name="n",
                              images=[("u1", small), ("u2", None)], now_epoch=1.0)
     text = msg["raw_message"][0]
-    assert text == {"type": "text", "data": "今天天气好 [图片]"}  # 下载失败的图占位(abstime 空→无前缀)
+    assert text == {"type": "text", "data": "今天天气好 [图片](说说 t1)"}  # 占位+ID 锚(abstime 空→无前缀)
     img = msg["raw_message"][1]
     assert img["type"] == "image"
     assert img["data"] == ""  # 描述槽必须留空:填占位文本会令主程序跳过 VLM 描述
@@ -51,7 +51,7 @@ def test_build_message_image_segments_and_placeholder():
 def test_build_message_empty_content_uses_placeholder():
     msg = build_feed_message(_feed(abstime="", content=""), seq=1, group_id="g", group_name="n",
                              images=[], now_epoch=1.0)
-    assert msg["raw_message"][0]["data"] == "(无文字内容)"
+    assert msg["raw_message"][0]["data"] == "(无文字内容)(说说 t1)"
 
 
 def test_build_message_reading_timestamp_and_publish_prefix():
@@ -67,7 +67,7 @@ def test_build_message_reading_timestamp_and_publish_prefix():
                              images=[], now_epoch=same_day_evening)
     assert msg["timestamp"] == str(int(same_day_evening))  # 阅读时刻(与发布日无关)
     text = msg["raw_message"][0]["data"]
-    assert text.startswith("(今天") and clock in text and text.endswith("今天天气好")
+    assert text.startswith("(今天") and clock in text and text.endswith("今天天气好(说说 t1)")
     # 老动态(约 2 个月后阅读)→ 日期前缀;timestamp 仍是阅读时刻
     later = _dt.datetime(post_dt.year, post_dt.month + 2, 1, 9, 0).timestamp()
     msg2 = build_feed_message(_feed(abstime=str(post)), seq=2, group_id="g", group_name="n",
@@ -77,24 +77,26 @@ def test_build_message_reading_timestamp_and_publish_prefix():
     assert t2.startswith(f"({post_dt:%m月%d日}") and clock in t2
     # abstime 缺失:无前缀
     msg3 = build_feed_message(_feed(abstime=""), seq=3, group_id="g", group_name="n",
-                             images=[], now_epoch=123456.0)
+                              images=[], now_epoch=123456.0)
     assert msg3["timestamp"] == "123456"
-    assert msg3["raw_message"][0]["data"] == "今天天气好"
+    assert msg3["raw_message"][0]["data"] == "今天天气好(说说 t1)"
 
 
 def test_build_message_pure_image_text_policy():
-    """纯图说说:带时间→文本段仅含时间前缀;无时间→省略文本段(图段承载内容,联调缺陷#4)。"""
+    """纯图说说:带时间→文本段=时间前缀+ID 锚;无时间→文本段仅 ID 锚(工具驱动
+    2026-09-01:纯图也保留文本段承载锚,否则 qzone_comment/qzone_like 无从解析)。"""
     msg = build_feed_message(_feed(abstime="1750000000", content="", image_urls=["u1"]),
                              seq=1, group_id="g", group_name="n",
                              images=[("u1", b"imgdata")], now_epoch=1750000100.0)
     assert msg["raw_message"][0]["type"] == "text"
-    assert msg["raw_message"][0]["data"].startswith("(今天")  # 仅时间前缀
+    assert msg["raw_message"][0]["data"].startswith("(今天")  # 时间前缀在前
+    assert msg["raw_message"][0]["data"].endswith("(说说 t1)")  # ID 锚收尾
     assert msg["raw_message"][1]["type"] == "image"
-    # 无时间纯图:首段即图片
+    # 无时间纯图:文本段仍存在(仅锚),不再是首段即图片
     msg2 = build_feed_message(_feed(abstime="", content="", image_urls=["u1"]),
                               seq=2, group_id="g", group_name="n",
                               images=[("u1", b"imgdata")], now_epoch=1.0)
-    assert msg2["raw_message"][0]["type"] == "image"
+    assert msg2["raw_message"][0] == {"type": "text", "data": "(说说 t1)"}
 
 
 def test_build_notify_message_with_reply_segment():
@@ -385,11 +387,11 @@ def test_notify_poll_stale_comment_skipped_and_registered(tmp_path):
 
 
 def test_notify_poll_injects_notify_message_with_and_without_reply_segment(tmp_path):
-    """通知注入(联调修正+可读性优化):泵对 source=notify 走 build_notify_message
-    专用构造——正文「你的说说收到了来自 XX 的评论: 评论内容」一眼可读(谁在哪条
-    说说下评论了什么);原说说已在 seen 登记 message_id → 注入消息带 reply 段引用
-    原说说注入消息(napcat quote 式,引用内容=原说说正文);未登记 → 无 reply 段
-    回退纯文本。"""
+    """通知注入(工具驱动 2026-09-01):泵对 source=notify 走 build_notify_message
+    专用构造——正文「评论了你的说说:内容(说说 xx · 评论 xx · QQ xx)」自然可读且
+    带 ID 锚(模型照抄调用 qzone_comment/qzone_reply);原说说已在 seen 登记
+    message_id → 注入消息带 reply 段引用原说说注入消息(napcat quote 式,引用
+    内容=原说说正文);未登记 → 无 reply 段回退纯文本。"""
 
     fresh = {"feed2": [_CommentItem(
         comment_tid="ct2", uin="20001", nickname="小明", content="写得好",
@@ -408,7 +410,10 @@ def test_notify_poll_injects_notify_message_with_and_without_reply_segment(tmp_p
     assert reply["data"]["target_message_id"] == "qzone_feed2_5"
     assert reply["data"]["target_message_sender_id"] == "10000"  # 源A:原说说作者=bot
     assert reply["data"]["target_message_content"] == "今天的心情"  # 引用内容=原说说正文(非通知文本)
-    assert msg["raw_message"][1] == {"type": "text", "data": "你的说说收到了来自 小明 的评论: 写得好"}
+    assert msg["raw_message"][1] == {
+        "type": "text",
+        "data": "评论了你的说说:写得好(说说 feed2 · 评论 ct2 · QQ 20001)",  # ID 锚形态
+    }
     intent = p._qzone_outbound_intent
     assert intent is not None and intent.kind == "comment_reply"
     assert (intent.tid, intent.target_qq, intent.comment_tid, intent.comment_uin) == \
@@ -423,5 +428,5 @@ def test_notify_poll_injects_notify_message_with_and_without_reply_segment(tmp_p
     _asyncio.run(p2._qzone_notify_scan())
     assert len(p2._ctx.gateway.calls) == 1
     raw2 = p2._ctx.gateway.calls[0][1]["raw_message"]
-    assert raw2 == [{"type": "text", "data": "你的说说收到了来自 小刚 的评论: 加油"}]
+    assert raw2 == [{"type": "text", "data": "评论了你的说说:加油(说说 feed3 · 评论 ct3 · QQ 20002)"}]
     assert p2._qzone_outbound_intent is not None and p2._qzone_outbound_intent.comment_tid == "ct3"

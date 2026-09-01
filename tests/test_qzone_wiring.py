@@ -418,7 +418,8 @@ def test_notify_poll_source_b_reply_routes_to_friend_thread(tmp_path, monkeypatc
     assert reply["data"]["target_message_sender_id"] == "30000"
     assert reply["data"]["target_message_content"] == ("好友的说说正文" * 10)[:60]
     text = msg["raw_message"][1]["data"]
-    assert text == "你的评论收到了来自 阿好 的回复: 说得对"  # 一眼可读:谁回复了你的评论
+    # 工具驱动 ID 锚形态:评论ID=主评论 tid(bc1,bot 的评论),QQ=回复者
+    assert text == "回复了你的评论:说得对(说说 ffeed1 · 评论 bc1 · QQ 30000)"
     assert "你曾评论" not in text and "(通知)" not in text
     assert "notify_reply_ffeed1_rr1" in msg["message_id"]
     intent = p._qzone_outbound_intent

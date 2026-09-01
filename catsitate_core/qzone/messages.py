@@ -5,7 +5,8 @@
 语义;**发布时间由正文相对时间前缀承载**(今天 HH:MM / M月d日 HH:MM,联调缺陷#5
 防 bot 把老说说当刚发生);message_id 全局唯一(tid+时间播种序号);is_mentioned
 嵌在 message_info.additional_config(主程序只读该位置);图片段带 binary_data_base64,
-下载失败的图以 [图片] 占位;纯图说说省略空文本段(图段承载内容,联调缺陷#4)。
+下载失败的图以 [图片] 占位;文本段末尾带「说说 {tid[:12]}」ID 锚(工具驱动 2026-09-01,
+纯图说说也保留文本段承载锚);纯图说说正文为空时锚即整段内容。
 图片体积治理=压缩到 RPC 帧预算内(12MB,用户裁定:压缩而非拒收)。
 """
 
@@ -215,16 +216,18 @@ def build_feed_message(
     else:
         logger.debug("空间动态 abstime 非法/缺失(tid=%s),正文不加发布时间前缀", feed.tid)
         prefix = ""
-    # 文本段:正文→前缀+正文;纯图→仅时间前缀(无时间则整段省略,图段承载内容);
-    # 无正文无图→前缀+占位
+    # 文本段:正文→前缀+正文;纯图→仅时间前缀(无时间则空);无正文无图→前缀+占位
     if text:
         body = f"{prefix}{text}".strip()
     elif raw:
         body = prefix
     else:
         body = f"{prefix}(无文字内容)".strip()
-    if body:
-        raw.insert(0, {"type": "text", "data": body})
+    # 工具 ID 锚(工具驱动架构 2026-09-01):文本段末尾追加说说 ID 短码(前 12 位),
+    # 模型照抄给 qzone_comment/qzone_like 的 feed_id;纯图说说也保证有文本段——
+    # 锚丢失则工具无从解析目标。时间前缀语义不变,锚只追加在段尾。
+    body = f"{body}(说说 {feed.tid[:12]})".strip()
+    raw.insert(0, {"type": "text", "data": body})
     return {
         "message_id": f"qzone_{feed.tid}_{seq}",
         "platform": QZONE_PLATFORM,

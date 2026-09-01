@@ -4,7 +4,7 @@ Catsitate 的 MaiBot 核心人格行为插件(独立 git repo,直接提交 main;
 
 ## 项目定位
 
-- 一个插件 `catsitate.core`,多模块:注入框架 / 时间节日天气感知 / 好感度(按人)/ 自然衰减 / 睡眠与日程 / 主动问候 / 备忘录提醒 / 贴表情 / 戳一戳 / reply 补传 / 图片重看 / 回复质检哨兵。
+- 一个插件 `catsitate.core`,多模块:注入框架 / 时间节日天气感知 / 好感度(按人)/ 自然衰减 / 睡眠与日程 / 主动问候 / 备忘录提醒 / 贴表情 / 戳一戳 / reply 补传 / 图片重看 / 回复质检哨兵 / QQ空间(动态浏览·互动·表达)。
 - 人格与行为风格以 `Catsitate-Soul`(工作区同级仓库)为准;插件 prompt 模板是其运行形态之一。
 
 ## 硬约束(必须遵守)
@@ -13,6 +13,7 @@ Catsitate 的 MaiBot 核心人格行为插件(独立 git repo,直接提交 main;
 - **简体中文**:日志、注释、文档、用户可见文本。
 - **错误显式暴露**:禁止静默 fallback——回退必须 `logger.warning/exception` 告警;配置错误拒绝加载;测试覆盖失败路径。
 - **只使用 maibot-plugin-sdk**:capability 必须在 `_manifest.json` 声明;不 import 主程序内部模块。
+- **文档/prompt 自包含**:禁止出现只有开发对话参与者才能理解的表述——不引用「用户裁定」「联调缺陷#N」「深度审查」「AR-N」「Q21=a」「二期语义」等内部代号/编号/时间戳;写**为什么这样设计**(当前行为的原因),不写**什么时候讨论的**(开发历史)。代码注释解释当前行为,不解释修改过程。工具描述/prompt 模板面向零上下文的 LLM 和开发者,CHANGELOG/手册面向第一次接触本项目的运维者。
 - 生产容器根为 `/MaiMBot`(`catsitate_core/llm_provider.py` 的 `_PROJECT_ROOT`);生产部署由用户执行,本地只开发+单测+可选集成冒烟。
 
 ## 目录结构
@@ -24,6 +25,7 @@ Catsitate 的 MaiBot 核心人格行为插件(独立 git repo,直接提交 main;
   - `prompt_deploy.py` 模板自动部署:`on_load` 时把 `prompt_templates/catsitate_*.prompt`(8 个)同步到主程序 `prompts/zh-CN/`(内容一致跳过、变更覆盖、结构异常显式告警不阻断)
   - `favorability.py` 好感度引擎:`LEVELS`/`EXCLUSIVE_LEVEL`(特别等级全表独占,钳制 99/挚友)
   - `decay.py`/`schedule.py`/`sleep.py`/`memo.py`/`msg_react.py`/`poke.py`/`reply_guard.py`/`image_relook.py`/`inject.py`/`time_aware.py`/`storage.py`/`services/scheduler.py`
+  - `qzone/` — QQ空间模块(虚拟聊天平台):`client.py`(协议客户端)/`discovery.py`(统一时间线解析)/`injector.py`(双优先级注入泵)/`registry.py`(注入上下文追踪)/`messages.py`(消息构造)/`wire.py`(写路径表单)/`comment_seen.py`(评论去重+好感度事件)/`seen_store.py`(动态去重)/`scene.py`(场景替换+工具隔离)/`protocol.py`(协议纯函数)
 - `prompt_templates/` — 旁路模板源(内置默认的出处,自动部署时推送)
 - `tests/` — pytest 单测(不依赖 MaiBot 主程序)
 - `_manifest.json`、`CHANGELOG.md`、`CONTEXT.md`、`README.md`、`docs/plugin-manual.md`、`docs/superpowers/specs/`

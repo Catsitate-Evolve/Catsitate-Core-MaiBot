@@ -2,7 +2,7 @@
 import base64
 
 from catsitate_core.qzone import QZONE_PLATFORM
-from catsitate_core.qzone.messages import build_feed_message
+from catsitate_core.qzone.messages import build_feed_message, build_notify_message
 from catsitate_core.qzone.protocol import FeedItem
 
 
@@ -97,6 +97,38 @@ def test_build_message_pure_image_text_policy():
     assert msg2["raw_message"][0]["type"] == "image"
 
 
+def test_build_notify_message_with_reply_segment():
+    """通知专用构造(联调修正):reply 段置首引用原说说的注入消息(napcat quote 式
+    上下文关联),target_message_content 截 60 字;消息 id 形如 qzone_notify_{tid}_{epoch}。"""
+    feed = _feed(tid="notify_comment_f1_c1", uin="20000", nickname="小红",
+                 content="(通知) 小红 评论了你的说说: 好棒")
+    msg = build_notify_message(feed, group_id="qzone_feed", group_name="QQ空间",
+                               now_epoch=1750000100.0, reply_target_id="qzone_f1_3",
+                               reply_target_content="原说说正文" * 20, reply_target_sender="10000")
+    assert msg["message_id"] == "qzone_notify_notify_comment_f1_c1_1750000100"
+    assert msg["platform"] == QZONE_PLATFORM and msg["timestamp"] == "1750000100"
+    info = msg["message_info"]
+    assert info["user_info"] == {"user_id": "20000", "user_nickname": "小红"}
+    assert info["group_info"] == {"group_id": "qzone_feed", "group_name": "QQ空间"}
+    assert info["additional_config"]["is_mentioned"] == 1.0  # 同 build_feed_message(联调缺陷#3)
+    reply = msg["raw_message"][0]
+    assert reply["type"] == "reply"
+    assert reply["data"]["target_message_id"] == "qzone_f1_3"
+    assert reply["data"]["target_message_content"] == ("原说说正文" * 20)[:60]  # 截 60 字
+    assert reply["data"]["target_message_sender_id"] == "10000"
+    assert msg["raw_message"][1] == {"type": "text", "data": feed.content}
+
+
+def test_build_notify_message_without_reply_segment():
+    """reply 目标缺省(原说说未注入过,seen 无 message_id 记录)→ 无 reply 段,
+    raw_message 仅文本段,正文原样(通知格式精简后不再重复引用原文)。"""
+    feed = _feed(tid="notify_reply_f2_r1", uin="30000", nickname="阿好",
+                 content="(通知) 阿好 回复了你: 说得对")
+    msg = build_notify_message(feed, group_id="g", group_name="n", now_epoch=1750000200.5)
+    assert msg["message_id"] == "qzone_notify_notify_reply_f2_r1_1750000200"
+    assert msg["raw_message"] == [{"type": "text", "data": feed.content}]
+
+
 def test_gateway_declared_platform_constant():
     """网关平台必须是常量 qzone-qq(连字符别名折叠进 qq 人物命名空间,spec §2.17)。"""
     import inspect
@@ -116,7 +148,9 @@ def test_m2_wiring_source_assertions():
     import plugin as _plugin
 
     src = inspect.getsource(_plugin)
-    assert "route_outbound(" in src and "do_comment(fid=" in src and "do_reply(fid=" in src
+    assert "route_outbound(" in src and "do_comment(fid=" in src
+    # 楼中楼降级(联调实证 -10049):reply 分支改发头评+@前缀,do_reply 不再接线
+    assert "do_reply(" not in src and "auto:1}}" in src
     assert '"qzone_like"' in src and "do_like(fid=" in src
     assert "comment_reply" in src
     # T11 统一通知通道:双源检测(自己说说评论+他人说说楼中楼回复)+P1 插队
@@ -346,35 +380,42 @@ def test_notify_poll_stale_comment_skipped_and_registered(tmp_path):
     assert any(level == "info" and "评论过旧跳过" in str(a[0]) for level, a in p._ctx.logger._logs)
 
 
-def test_notify_poll_injects_with_time_prefix_or_fallback(tmp_path):
-    """T11 源A注入:新评论经泵注入,正文含「(通知) XX 评论了你的说说」;发布时间
-    前缀由 build_feed_message 从 abstime 承载(同日=今天HH:MM),create_time 空
-    则无前缀(回退形态)。意图=comment_reply(target_qq 回退 bot 自己)。"""
+def test_notify_poll_injects_notify_message_with_and_without_reply_segment(tmp_path):
+    """通知注入(联调修正):泵对 source=notify 走 build_notify_message 专用构造——
+    正文精简「(通知) XX 评论了你的说说: 评论内容」(无发布时间前缀/reply 段已带
+    上下文);原说说已在 seen 登记 message_id → 注入消息带 reply 段引用原说说注入
+    消息(napcat quote 式);未登记 → 无 reply 段回退纯文本。"""
 
     fresh = {"feed2": [_CommentItem(
         comment_tid="ct2", uin="20001", nickname="小明", content="写得好",
         create_time=str(int(_time.time())),
     )]}
     p = _make_notify_poll_plugin(tmp_path, fresh, {"feed2": "今天的心情"})
+    # 原说说 feed2 已注入过(seen 记录 message_id)→ 通知应带 reply 段引用它
+    p.qzone_seen.mark_queued("feed2", abstime="1750000000", author_uin="10000", summary="今天的心情")
+    p.qzone_seen.mark_seen("feed2", "2026-09-01T10:00:00", "qzone_feed2_5")
     _asyncio.run(p._qzone_notify_scan())
     assert len(p._ctx.gateway.calls) == 1
     msg = p._ctx.gateway.calls[0][1]
-    text = msg["raw_message"][0]["data"]
-    assert "(通知) 小明 评论了你的说说「今天的心情」" in text and "小明: 写得好" in text
-    assert text.startswith("(今天")  # 时间前缀承载发布时间(方案 B 同款语义)
-    assert "notify_comment_feed2_ct2" in msg["message_id"]  # 通知 tid 形态(泵据此拆意图)
+    assert msg["message_id"].startswith("qzone_notify_notify_comment_feed2_ct2_")  # 通知专用 id 形态
+    reply = msg["raw_message"][0]
+    assert reply["type"] == "reply"  # 引用段置首(napcat quote 式上下文关联)
+    assert reply["data"]["target_message_id"] == "qzone_feed2_5"
+    assert reply["data"]["target_message_sender_id"] == "10000"  # 源A:原说说作者=bot
+    assert msg["raw_message"][1] == {"type": "text", "data": "(通知) 小明 评论了你的说说: 写得好"}
     intent = p._qzone_outbound_intent
     assert intent is not None and intent.kind == "comment_reply"
     assert (intent.tid, intent.target_qq, intent.comment_tid, intent.comment_uin) == \
         ("feed2", "10000", "ct2", "20001")  # 源A:说说主人=bot,commentId=好友评论
+    assert intent.message_id == msg["message_id"]  # 意图绑定通知注入消息(quote 校验对位)
 
-    # 回退形态:create_time 空 → 无前缀,正文直接以「(通知)」开头
-    no_time = {"feed3": [_CommentItem(
+    # 回退形态:原说说未注入过(无 message_id 记录)→ 无 reply 段,首段即精简正文
+    no_origin = {"feed3": [_CommentItem(
         comment_tid="ct3", uin="20002", nickname="小刚", content="加油", create_time="",
     )]}
-    p2 = _make_notify_poll_plugin(tmp_path / "b", no_time, {"feed3": "今天的心情"})
+    p2 = _make_notify_poll_plugin(tmp_path / "b", no_origin, {"feed3": "今天的心情"})
     _asyncio.run(p2._qzone_notify_scan())
     assert len(p2._ctx.gateway.calls) == 1
-    text2 = p2._ctx.gateway.calls[0][1]["raw_message"][0]["data"]
-    assert text2.startswith("(通知) 小刚") and not text2.startswith("(今天")
+    raw2 = p2._ctx.gateway.calls[0][1]["raw_message"]
+    assert raw2 == [{"type": "text", "data": "(通知) 小刚 评论了你的说说: 加油"}]
     assert p2._qzone_outbound_intent is not None and p2._qzone_outbound_intent.comment_tid == "ct3"

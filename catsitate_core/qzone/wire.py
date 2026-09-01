@@ -104,7 +104,11 @@ def parse_feed_comments(payload: dict) -> dict[str, list[CommentItem]]:
 
 @dataclass
 class ReplyItem:
-    """bot 评论下的一条楼中楼回复(msglist.commentlist[].list_3 条目)。"""
+    """bot 评论下的一条楼中楼回复(msglist.commentlist[].list_3 条目)。
+
+    feed_content 为所属说说正文(通知 reply 段引用预览用,通知源B构造 FeedItem
+    时截 30 字传入);旧调用方不填默认空串。
+    """
 
     reply_tid: str  # 回复自身 tid
     parent_comment_tid: str  # 被回复的 bot 评论 tid
@@ -114,6 +118,7 @@ class ReplyItem:
     nickname: str
     content: str
     create_time: str
+    feed_content: str = ""  # 所属说说正文(通知 reply 段引用预览)
 
 
 def parse_feed_replies(payload: dict, *, bot_uin: str) -> list[ReplyItem]:
@@ -155,6 +160,7 @@ def parse_feed_replies(payload: dict, *, bot_uin: str) -> list[ReplyItem]:
                     nickname=str(r.get("name") or "") or uin,
                     content=str(r.get("content") or "").strip(),
                     create_time=str(r.get("create_time") or ""),
+                    feed_content=str(feed.get("content") or "").strip(),
                 ))
     if out and not friend_uin:
         logger.warning(

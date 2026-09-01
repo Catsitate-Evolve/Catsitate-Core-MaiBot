@@ -71,6 +71,37 @@ def test_mark_interacted_flag(tmp_path):
     s.mark_interacted("t")  # 不抛错即可(M2 消费)
 
 
+def test_mark_seen_message_id_and_get_message_id(tmp_path):
+    """通知 reply 段关联(联调修正):mark_seen 第三参记录注入消息 id,
+    get_message_id 按 tid 查回——通知注入时据此构造 reply 段引用原说说。
+    旧签名(不传 message_id)兼容为空串;未知 tid 回退空串;旧库 PRAGMA 迁移补列。"""
+
+    s = SeenStore(_store(tmp_path))
+    s.ensure_schema()
+    s.mark_queued("t1", abstime="", author_uin="u", summary="a")
+    s.mark_seen("t1", "2026-09-01T10:00:00")  # 旧签名:不传 message_id → 空串
+    assert s.get_message_id("t1") == ""
+    s.mark_queued("t2", abstime="", author_uin="u", summary="b")
+    s.mark_seen("t2", "2026-09-01T10:00:01", "qzone_t2_7")
+    assert s.get_message_id("t2") == "qzone_t2_7"
+    assert s.get_message_id("unknown") == ""  # 未登记 tid 回退空串
+
+    # 旧库迁移:预建缺 message_id 列的表(如实复刻 M-2 原始列集)→ ensure_schema 补列
+    store2 = SQLiteStore(tmp_path / "old.db")
+    store2.execute(
+        "CREATE TABLE qzone_feeds (tid TEXT PRIMARY KEY, abstime TEXT NOT NULL DEFAULT '', "
+        "author_uin TEXT NOT NULL DEFAULT '', summary TEXT NOT NULL DEFAULT '', "
+        "state TEXT NOT NULL DEFAULT 'queued' CHECK (state IN ('queued', 'seen')), "
+        "interacted INTEGER NOT NULL DEFAULT 0, injected_at TEXT NOT NULL DEFAULT '', "
+        "created_at TEXT NOT NULL DEFAULT '')"
+    )
+    s2 = SeenStore(store2)
+    s2.ensure_schema()  # ALTER 补列不抛
+    s2.mark_queued("x", abstime="", author_uin="u", summary="")
+    s2.mark_seen("x", "2026-09-01T12:00:00", "qzone_x_1")
+    assert s2.get_message_id("x") == "qzone_x_1"
+
+
 def test_author_nickname_column_and_summary(tmp_path):
     """M-2:author_nickname 列(新库直接建列,旧库 PRAGMA 迁移补列)。"""
 

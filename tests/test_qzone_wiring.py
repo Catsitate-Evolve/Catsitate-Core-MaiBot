@@ -227,6 +227,28 @@ def test_gateway_rejects_when_intent_consumed(tmp_path):
     assert p.qzone_client.comment_calls == [] and p.qzone_client.reply_calls == []  # 零写调用
 
 
+def test_gateway_reply_downgrades_to_head_comment_with_at_prefix(tmp_path):
+    """楼中楼降级(联调实证:commentlist 的 tid 是显示序号非真实 ID,楼中楼 API 必返
+    -10049):comment_reply 意图出站改发头评+napcat @前缀(QQ 空间原生支持)——
+    do_reply 零调用,do_comment 目标对位(fid=意图说说,target_qq=说说主人);成功后
+    意图照常即刻消费。"""
+
+    p = _make_gateway_plugin(tmp_path)
+    p.qzone_seen.mark_queued("f1", abstime="1750000000", author_uin="10001", summary="说说")
+    p._qzone_outbound_intent = OutboundIntent(
+        kind="comment_reply", tid="f1", target_qq="10001",
+        comment_tid="c9", comment_uin="20000", comment_nick="小红",
+    )
+    res = asyncio.run(p.qzone_gateway(message=_out_msg("谢谢你!"), route={}, metadata={}))
+    assert res["success"] is True and res.get("external_message_id")
+    assert p.qzone_client.reply_calls == []  # do_reply 不再调用(-10049 降级)
+    # 头评+@前缀:@ 格式与 napcat 适配器一致(uin/nick/auto)
+    assert p.qzone_client.comment_calls == [
+        ("f1", "10001", "@{uin:20000,nick:小红,auto:1}谢谢你!")
+    ]
+    assert p._qzone_outbound_intent is None  # 意图一次性消费(远端成功即刻置空)
+
+
 def test_notify_poll_self_skip_dedup_and_intent_occupied(tmp_path):
     """I4-3(承 T11 重写,深度审查 B-1 守卫改判 awaiting):统一通知轮询三重守卫——
     ①bot 自评跳过不注入;②is_new 判重(二次轮询不重注入);③awaiting 占用时
@@ -318,7 +340,8 @@ def test_notify_poll_source_b_reply_routes_to_friend_thread(tmp_path, monkeypatc
     # 登记时刻取当前时间(bot_commented_friends 带时间下界 D-1,硬编码日期会超窗失效)
     fresh = (datetime.now() - timedelta(minutes=1)).strftime("%Y-%m-%dT%H:%M:%S")
     p.qzone_comment_seen.note_bot_comment("ffeed1", "30000", "我的评论", fresh)
-    raw = {"usrinfo": {"uin": "30000"}, "msglist": [{"tid": "ffeed1", "commentlist": [
+    raw = {"usrinfo": {"uin": "30000"}, "msglist": [{"tid": "ffeed1", "content": "好友的说说正文",
+        "commentlist": [
         # 空 reply_tid 的畸形回复(T11 审查遗留):跳过不构造通知(防空 tid 畸形请求)
         {"tid": "bc1", "uin": BOT_UIN, "list_3": [
             {"tid": "", "uin": "30000", "name": "阿好", "content": "畸形回复",
@@ -348,13 +371,22 @@ def test_notify_poll_source_b_reply_routes_to_friend_thread(tmp_path, monkeypatc
             return raw
 
     p.qzone_client = _StubNotifyClient()
+    # 原说说 ffeed1 曾注入过(seen 记录 message_id)→ 通知注入消息带 reply 段引用它
+    p.qzone_seen.mark_queued("ffeed1", abstime="1750000000", author_uin="30000", summary="好友的说说正文")
+    p.qzone_seen.mark_seen("ffeed1", "2026-09-01T10:00:00", "qzone_ffeed1_2")
     asyncio.run(p._qzone_notify_scan())
     assert len(p._ctx.gateway.calls) == 1
     msg = p._ctx.gateway.calls[0][1]
     assert msg["message_info"]["user_info"]["user_id"] == "30000"
-    text = msg["raw_message"][0]["data"]
-    assert "(通知) 阿好 回复了你在他人说说下的评论" in text and "阿好: 说得对" in text
-    assert "你曾评论: 我的评论" in text  # T12 源B正文补 bot 原评论留痕(note_bot_comment 取回)
+    # reply 段置首引用原说说注入消息(napcat quote 式上下文关联;源B sender=说说主人)
+    reply = msg["raw_message"][0]
+    assert reply["type"] == "reply"
+    assert reply["data"]["target_message_id"] == "qzone_ffeed1_2"
+    assert reply["data"]["target_message_sender_id"] == "30000"
+    assert reply["data"]["target_message_content"] == "好友的说说正文"
+    text = msg["raw_message"][1]["data"]
+    assert text == "(通知) 阿好 回复了你: 说得对"  # 正文精简(reply 段已带上下文,不重复原文)
+    assert "你曾评论" not in text
     assert "notify_reply_ffeed1_rr1" in msg["message_id"]
     intent = p._qzone_outbound_intent
     assert intent is not None and intent.kind == "comment_reply"

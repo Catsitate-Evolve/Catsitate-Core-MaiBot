@@ -126,6 +126,45 @@ def comment_time_prefix(create_time: str, now_epoch: float) -> str:
     return _time_prefix(datetime.fromtimestamp(candidate), datetime.fromtimestamp(now_epoch))
 
 
+def build_notify_message(
+    feed: FeedItem, *, group_id: str, group_name: str, now_epoch: float,
+    reply_target_id: str = "", reply_target_content: str = "", reply_target_sender: str = "",
+) -> dict:
+    """构造通知注入消息——带 reply 段引用原说说(napcat quote 式上下文关联)。
+
+    与 build_feed_message 的分工(联调修正):通知不走浏览动态的图片/时间前缀
+    管线,正文由通知轮询侧精简构造(reply 段已带原说说上下文,正文不重复引用
+    原文);reply 段置首,target_message_id=原说说**注入时的消息 id**(泵侧经
+    seen_store.get_message_id(origin_tid) 查得),原说说未注入过时调用方传空
+    → reply 段省略(回退纯文本)。timestamp 同方案 B=注入时刻。
+    """
+
+    raw: list[dict] = []
+    if reply_target_id:
+        raw.append({
+            "type": "reply",
+            "data": {
+                "target_message_id": reply_target_id,
+                "target_message_content": reply_target_content[:60],
+                "target_message_sender_id": reply_target_sender,
+            },
+        })
+    raw.append({"type": "text", "data": feed.content})
+    return {
+        "message_id": f"qzone_notify_{feed.tid}_{int(now_epoch)}",
+        "platform": QZONE_PLATFORM,
+        "timestamp": str(int(now_epoch)),
+        "message_info": {
+            "user_info": {"user_id": str(feed.uin), "user_nickname": feed.nickname},
+            "group_info": {"group_id": group_id, "group_name": group_name},
+            # is_mentioned 必须嵌在 message_info.additional_config 内(联调缺陷#3,
+            # 与 build_feed_message 同款):主程序只读该位置,顶层键会被丢弃
+            "additional_config": {"is_mentioned": 1.0},
+        },
+        "raw_message": raw,
+    }
+
+
 def build_feed_message(
     feed: FeedItem,
     *,

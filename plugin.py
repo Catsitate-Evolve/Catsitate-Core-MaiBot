@@ -41,7 +41,7 @@ from catsitate_core.qzone.client import CookieManager, QzoneAuthError, QzoneClie
 from catsitate_core.qzone.comment_seen import CommentSeenStore
 from catsitate_core.qzone.discovery import FeedDiscovery
 from catsitate_core.qzone.injector import FeedInjector
-from catsitate_core.qzone.messages import build_feed_message, fit_images_to_rpc_budget
+from catsitate_core.qzone.messages import build_feed_message, build_notify_message, fit_images_to_rpc_budget
 from catsitate_core.qzone.outbound import extract_outbound_text, extract_quote_target
 from catsitate_core.qzone.routing import OutboundIntent, route_outbound
 from catsitate_core.qzone.scene import (
@@ -755,10 +755,11 @@ class CatsitatePlugin(MaiBotPlugin):
         try:
             if action == "comment":
                 await self.qzone_client.do_comment(fid=intent.tid, target_qq=intent.target_qq, content=text)
-            else:
-                await self.qzone_client.do_reply(fid=intent.tid, target_qq=intent.target_qq,
-                                                 comment_tid=intent.comment_tid, comment_uin=intent.comment_uin,
-                                                 comment_nick=intent.comment_nick, content=text)
+            elif action == "reply":
+                # 联调实证:commentlist 的 tid 是显示序号非真实 ID,楼中楼 API 必返 -10049
+                # 降级为头评+@前缀(与 napcat 适配器的 @ 格式一致,QQ 空间原生支持)
+                prefixed = f"@{{uin:{intent.comment_uin},nick:{intent.comment_nick},auto:1}}{text}"
+                await self.qzone_client.do_comment(fid=intent.tid, target_qq=intent.target_qq, content=prefixed)
         except QzoneAuthError:
             self.qzone_cookie.invalidate()
             self.ctx.logger.warning("QQ空间登录态失效,cookie 已作废,下轮重取")
@@ -1000,7 +1001,8 @@ class CatsitatePlugin(MaiBotPlugin):
             self.ctx.logger.info("QQ空间数据清理:评论去重 %d 行,seen 保留 7 天", pruned_comments)
 
     async def _qzone_pump(self) -> None:
-        """串行注入:超时兜底 → 取队首 → 下载图片 → route_message → mark_seen。
+        """串行注入:超时兜底 → 取队首 → 构造(通知=build_notify_message 带 reply 段
+        /浏览=下载图片+build_feed_message)→ route_message → mark_seen。
 
         泵有两个入口(调度 tick 直接 await 与轮完成信号后台任务),整体持锁串行:
         next_to_inject(弹出)到 mark_injected(置 awaiting)之间有图片下载/route_message
@@ -1020,27 +1022,44 @@ class CatsitatePlugin(MaiBotPlugin):
             feed = self.qzone_injector.next_to_inject(now)
             if feed is None:
                 return
-            images: list[tuple[str, bytes]] = []
-            for url in feed.image_urls:
-                try:
-                    data = await self.qzone_client.download_image(url)
-                except Exception:
-                    # 单图异常降级为占位,不中止该条动态的注入(网络抖动等瞬态)
-                    self.ctx.logger.exception("QQ空间图片下载异常(%s),以占位注入", url)
-                    data = None
-                if data is not None:
-                    images.append((url, data))
-            # RPC 帧预算(用户裁定 2026-08-31):体积治理=压缩而非拒收,压到帧限内
-            images = fit_images_to_rpc_budget(
-                images,
-                on_drop=lambda u: self.ctx.logger.warning("QQ空间图片压缩后仍超 RPC 帧预算,丢弃保帧: %s", u),
-            )
-            self._qzone_seq += 1
-            msg = build_feed_message(
-                feed, seq=self._qzone_seq, group_id=self.config.qzone.virtual_group_id,
-                group_name=self.config.qzone.virtual_group_name, images=images,
-                now_epoch=time.time(),
-            )
+            if feed.source == "notify":
+                # 通知走专用构造(联调修正):带 reply 段引用**原说说**的注入消息
+                # (napcat quote 式上下文关联)——引用目标经 seen_store.get_message_id
+                # 查原说说注入时记录的 message_id;原说说未注入过(窗口外通知/已被
+                # 7 天清理/旧库未记录)时查无 id → reply 段省略,回退纯文本不静默臆造
+                reply_target_id = self.qzone_seen.get_message_id(feed.origin_tid)
+                if feed.origin_tid and not reply_target_id:
+                    self.ctx.logger.debug(
+                        "QQ空间通知原说说无注入记录(origin_tid=%s),reply 段省略", feed.origin_tid
+                    )
+                msg = build_notify_message(
+                    feed, group_id=self.config.qzone.virtual_group_id,
+                    group_name=self.config.qzone.virtual_group_name, now_epoch=time.time(),
+                    reply_target_id=reply_target_id, reply_target_content=feed.origin_content,
+                    reply_target_sender=feed.origin_sender,
+                )
+            else:
+                images: list[tuple[str, bytes]] = []
+                for url in feed.image_urls:
+                    try:
+                        data = await self.qzone_client.download_image(url)
+                    except Exception:
+                        # 单图异常降级为占位,不中止该条动态的注入(网络抖动等瞬态)
+                        self.ctx.logger.exception("QQ空间图片下载异常(%s),以占位注入", url)
+                        data = None
+                    if data is not None:
+                        images.append((url, data))
+                # RPC 帧预算(用户裁定 2026-08-31):体积治理=压缩而非拒收,压到帧限内
+                images = fit_images_to_rpc_budget(
+                    images,
+                    on_drop=lambda u: self.ctx.logger.warning("QQ空间图片压缩后仍超 RPC 帧预算,丢弃保帧: %s", u),
+                )
+                self._qzone_seq += 1
+                msg = build_feed_message(
+                    feed, seq=self._qzone_seq, group_id=self.config.qzone.virtual_group_id,
+                    group_name=self.config.qzone.virtual_group_name, images=images,
+                    now_epoch=time.time(),
+                )
             try:
                 # SDK route_message 返回 bool accepted(不抛异常):宿主 adapter policy
                 # 或网关状态拒绝时返回 False,不得当成功继续标记
@@ -1060,10 +1079,12 @@ class CatsitatePlugin(MaiBotPlugin):
                 self._qzone_notify_retry_backoff(feed)
                 return
             self.qzone_injector.mark_injected(feed.tid, time.monotonic())
-            self.qzone_seen.mark_seen(feed.tid, datetime.now().strftime("%Y-%m-%dT%H:%M:%S"))
+            # message_id 随 mark_seen 落库:后续通知的 reply 段据此引用本条注入消息
+            self.qzone_seen.mark_seen(feed.tid, datetime.now().strftime("%Y-%m-%dT%H:%M:%S"), msg["message_id"])
             # 注入成功即设定出站意图(spec §3.3):串行泵保证注入→意图→回复消费一一对位。
             # M2.1 统一通知通道:按 FeedItem.source 区分——通知(P1)→comment_reply
-            # (楼中楼,commentId=被回应的那条评论/回复),浏览动态(P2)→reaction(头评)
+            # (评论/回复意图;网关侧降级头评+@前缀,见 qzone_gateway),浏览动态(P2)→
+            # reaction(头评)
             if feed.source == "notify":
                 # tid 形如 notify_comment_{feed_tid}_{comment_tid}(源A,自己说说评论)/
                 # notify_reply_{feed_tid}_{reply_tid}(源B,他人说说楼中楼回复);
@@ -1126,8 +1147,9 @@ class CatsitatePlugin(MaiBotPlugin):
         双源检测:源A=自己说说下的新评论;源B=自己在他人说说下的评论收到的
         新楼中楼回复(list_3)。通知构造为 FeedItem(source="notify")走 P1
         优先级队列(插队于浏览动态之前),意图在泵注入成功后按 source 设定
-        (通知→comment_reply 楼中楼,浏览→reaction 头评)。发布时间前缀由
-        泵的 build_feed_message 从 abstime 统一承载,通知正文不再重复拼。
+        (通知→comment_reply 评论意图,网关降级头评+@前缀;浏览→reaction 头评)。
+        通知注入走 build_notify_message(联调修正):reply 段引用原说说注入消息
+        承载上下文,正文精简不重复引用原文,也不带发布时间前缀。
         """
 
         try:
@@ -1193,8 +1215,11 @@ class CatsitatePlugin(MaiBotPlugin):
                     notifications.append(FeedItem(
                         tid=f"notify_comment_{feed_tid}_{c.comment_tid}",
                         abstime=c.create_time, uin=str(c.uin), nickname=c.nickname,
-                        content=f"(通知) {c.nickname} 评论了你的说说「{feed_summary}」\n{c.nickname}: {c.content}",
+                        content=f"(通知) {c.nickname} 评论了你的说说: {c.content}",
                         source="notify", dedup_key=dedup_key,
+                        # reply 段关联原说说(联调修正):origin_* 供泵构造引用段,
+                        # 正文精简不再重复引用原文(源A:原说说作者=bot 自己)
+                        origin_tid=feed_tid, origin_content=feed_summary, origin_sender=bot_uin,
                     ))
                     self.qzone_comment_seen.fav_event(
                         str(c.uin), "COMMENT", f"{c.nickname} 评论了你的说说「{feed_summary}」: {c.content[:40]}"
@@ -1266,18 +1291,16 @@ class CatsitatePlugin(MaiBotPlugin):
                                 "QQ空间楼中楼回复过旧跳过(create_time=%s,昵称=%s)", r.create_time, r.nickname
                             )
                             continue
-                        # bot 原评论文本从 note_bot_comment 留痕取(ReplyItem 无此字段,
-                        # 键 "{feed_tid}:bot:{text}" 剥出);无留痕时省略该行(不硬凑上下文)
-                        bot_text = self.qzone_comment_seen.get_bot_comment_text(r.feed_tid)
-                        notification_lines = [f"(通知) {r.nickname} 回复了你在他人说说下的评论"]
-                        if bot_text:
-                            notification_lines.append(f"你曾评论: {bot_text}")
-                        notification_lines.append(f"{r.nickname}: {r.content}")
+                        # 正文精简(联调修正):reply 段已带原说说上下文,bot 原评论
+                        # 留痕不再拼入正文(上下文由引用段承载,不重复引用原文)
                         notifications.append(FeedItem(
                             tid=f"notify_reply_{r.feed_tid}_{r.reply_tid}",
                             abstime=r.create_time, uin=str(r.uin), nickname=r.nickname,
-                            content="\n".join(notification_lines),
+                            content=f"(通知) {r.nickname} 回复了你: {r.content}",
                             source="notify", friend_uin=friend_uin, dedup_key=key,
+                            # reply 段关联原说说(源B:原说说作者=好友/说说主人)
+                            origin_tid=r.feed_tid, origin_content=r.feed_content[:30],
+                            origin_sender=friend_uin,
                         ))
                         self.qzone_comment_seen.fav_event(
                             str(r.uin), "COMMENT", f"{r.nickname} 回复了你的评论: {r.content[:40]}"

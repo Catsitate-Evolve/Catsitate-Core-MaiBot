@@ -53,6 +53,14 @@ def test_parse_msglist_null_or_missing():
     assert parse_msglist({"code": 0}, target_uin="1", nickname="n") == []
 
 
+def test_feeditem_notify_origin_fields_default_empty():
+    """通知 reply 段关联字段(联调修正):origin_tid/origin_content/origin_sender
+    默认空串——浏览动态与旧形态通知不受影响,不传即无 reply 语义。"""
+    item = FeedItem(tid="t1", abstime="1750000000", uin="10001", nickname="小明", content="正文")
+    assert item.origin_tid == "" and item.origin_content == "" and item.origin_sender == ""
+    assert item.source == "feed" and item.friend_uin == "" and item.dedup_key == ""
+
+
 def test_parse_msglist_forward_and_video_fallback( ):
     """特殊动态(联调缺陷#4 实证形态):转发→rt_con.content+rt_uinname;视频→占位。"""
     payload = {"code": 0, "msglist": [

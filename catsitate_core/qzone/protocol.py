@@ -24,7 +24,10 @@ class FeedItem:
     M2.1 统一通知通道扩展:source 区分队列来源("feed"=浏览动态 P2 /
     "notify"=通知 P1,泵注入后据此设定出站意图);friend_uin 为通知源B
     (他人说说楼中楼回复)的说说主人 uin——楼中楼回复 API 的 target_qq,
-    源A(自己说说评论)留空,泵侧回退 bot 自己。
+    源A(自己说说评论)留空,泵侧回退 bot 自己。origin_* 为通知 reply 段
+    关联信息(联调修正):通知注入消息带 reply 段引用**原说说**的注入消息
+    (napcat quote 式上下文关联),origin_tid 查 seen_store.get_message_id
+    得引用目标;浏览动态不填(默认空=无 reply 语义)。
     """
 
     tid: str
@@ -40,6 +43,9 @@ class FeedItem:
     # 据此回退登记(revert),下轮通知轮询重新发现——通知不因一次拒绝永久丢失。
     # notify_reply 键含 parent_comment tid(tid 后缀不可还原),故构造时直接传入。
     dedup_key: str = ""
+    origin_tid: str = ""       # 通知关联的原说说 tid(reply 段用)
+    origin_content: str = ""   # 原说说正文前30字(reply 段用)
+    origin_sender: str = ""    # 原说说作者 uin(reply 段用)
 
 
 def generate_gtk(p_skey: str) -> int:

@@ -31,14 +31,18 @@ class SeenStore:
                 state TEXT NOT NULL DEFAULT 'queued' CHECK (state IN ('queued', 'seen')),
                 interacted INTEGER NOT NULL DEFAULT 0,
                 injected_at TEXT NOT NULL DEFAULT '',
+                message_id TEXT NOT NULL DEFAULT '',
                 created_at TEXT NOT NULL DEFAULT ''
             )
             """
         )
-        # 旧库迁移(M-2):CREATE IF NOT EXISTS 不更新既有表,PRAGMA 查列缺则 ALTER 补
+        # 旧库迁移(M-2/通知 reply 段):CREATE IF NOT EXISTS 不更新既有表,PRAGMA 查列缺则 ALTER 补
         columns = {r[1] for r in self.store.query("PRAGMA table_info(qzone_feeds)")}
         if "author_nickname" not in columns:
             self.store.execute("ALTER TABLE qzone_feeds ADD COLUMN author_nickname TEXT NOT NULL DEFAULT ''")
+        if "message_id" not in columns:
+            # 注入消息 id(通知 reply 段引用原说说注入消息,napcat quote 式上下文关联)
+            self.store.execute("ALTER TABLE qzone_feeds ADD COLUMN message_id TEXT NOT NULL DEFAULT ''")
 
     def mark_queued(
         self, tid: str, *, abstime: str, author_uin: str, summary: str, author_nickname: str = ""
@@ -67,8 +71,22 @@ class SeenStore:
         rows = self.store.query("SELECT 1 FROM qzone_feeds WHERE tid = ?", (tid,))
         return not rows
 
-    def mark_seen(self, tid: str, injected_at_iso: str) -> None:
-        self.store.execute("UPDATE qzone_feeds SET state = 'seen', injected_at = ? WHERE tid = ?", (injected_at_iso, tid))
+    def mark_seen(self, tid: str, injected_at_iso: str, message_id: str = "") -> None:
+        """标记已见;message_id 记录注入时的消息 id(通知 reply 段关联原说说用,缺省空串)。"""
+
+        self.store.execute(
+            "UPDATE qzone_feeds SET state = 'seen', injected_at = ?, message_id = ? WHERE tid = ?",
+            (injected_at_iso, message_id, tid),
+        )
+
+    def get_message_id(self, tid: str) -> str:
+        """查 tid 注入时的消息 id(通知注入据此构造 reply 段引用原说说)。
+
+        未登记 tid / 旧库未记录 → 空串(调用方按无 reply 段回退,不静默臆造)。
+        """
+
+        rows = self.store.query("SELECT message_id FROM qzone_feeds WHERE tid = ?", (tid,))
+        return str(rows[0][0]) if rows else ""
 
     def mark_interacted(self, tid: str) -> None:
         self.store.execute("UPDATE qzone_feeds SET interacted = 1 WHERE tid = ?", (tid,))

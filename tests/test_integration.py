@@ -1220,3 +1220,51 @@ def test_inject_blocks_memo_single_read_or_semantics(tmp_path):
     memo_blocks = [b for b in blocks if b.module == "memo"]
     assert len(memo_blocks) == 1
     assert "跨流备忘" in memo_blocks[0].text and "流内备忘" in memo_blocks[0].text
+
+
+def test_diary_stable_ctx_includes_persona(tmp_path):
+    """M3-r2 人设前置:日记 stable_ctx 首段为「bot 人设:{persona}」,模板以
+    本人身份口吻书写——日记与表达生成层(qzone_expression)同人设,人设背景
+    属稳定段(前置),不混入变量素材尾。"""
+
+    import asyncio
+
+    import plugin as plugin_mod
+    from catsitate_core.config import CatsitateConfig
+    from catsitate_core.storage import JsonSnapshot
+
+    p = plugin_mod.CatsitatePlugin()
+    p._ctx = _StubCtx(tmp_path)
+    p._plugin_config_instance = CatsitateConfig()
+    captured = {}
+
+    async def side_llm(messages, model, module, timeout_ms=None):
+        captured["messages"] = messages
+        return {"success": True, "response": "今天很平静。" * 5}
+
+    async def publish(*, content):
+        return "tid123"
+
+    p._side_llm_call = side_llm
+    p.qzone_client = type("_QC", (), {})()
+    p.qzone_client.do_publish = publish
+    # 日记方法门控(qzone.enabled+diary_enabled+_qzone_available)与素材依赖,
+    # on_load 装配项离线手工补齐
+    p.config.qzone.enabled = True
+    p.config.qzone.diary_enabled = True
+    p._qzone_available = True
+    p._persona_cache = "温柔猫娘"  # 人设缓存预置,绕开 config.get 桩(None 走兜底路径)
+    p._style_cache = ""
+    p._schedule_data = {}
+    p.memo = type("_M", (), {"due_on": staticmethod(lambda day: [])})()
+    p.qzone_seen = type("_S", (), {"recent_seen": staticmethod(lambda limit, days, now=None: [])})()
+    p._pending_diary_snapshot = JsonSnapshot(tmp_path / "qzone_pending_diary.json")
+
+    asyncio.run(p._generate_and_publish_diary())
+
+    stable = captured["messages"][1]["content"]
+    assert stable.startswith("bot 人设:温柔猫娘")  # 人设前置为 stable_ctx 首段
+    assert "今天的日程:自由活动" in stable  # 原有当日素材段保留(人设前置不挤掉素材)
+    assert captured["messages"][0]["role"] == "system"
+    data = p._pending_diary_snapshot.load()  # 发布链走完:tid 随快照透传(Task 4 口径)
+    assert data.get("tid") == "tid123"

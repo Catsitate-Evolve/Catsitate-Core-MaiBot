@@ -2890,7 +2890,11 @@ class CatsitatePlugin(MaiBotPlugin):
         memos = ";".join(e["content"] for e in self.memo.due_on(today)[:3])
         seen_feeds = self.qzone_seen.recent_seen(limit=3, days=1, now=datetime.now())
         seen_summary = ";".join(e["summary"][:20] for e in seen_feeds)
+        # 人设前置为 stable_ctx 首段(与 qzone_expression 同形态):模板以用户本人
+        # 身份书写日记,人设背景属稳定段(前置),不混入变量素材尾(前缀缓存纪律)
+        persona, _ = await self._persona_context()
         stable_ctx = (
+            f"bot 人设:{persona}\n"
             f"今天的日程:{schedule_summary or '自由活动'}\n"
             f"备忘:{memos or '无'}\n看到的好友动态:{seen_summary or '无'}"
         )

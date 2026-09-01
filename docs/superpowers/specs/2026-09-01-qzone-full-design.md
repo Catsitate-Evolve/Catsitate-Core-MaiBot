@@ -108,14 +108,27 @@ QzoneClient（协议封装）
 
 ### 4.1 工具清单
 
+**虚拟流专用**（仅 qzone-qq 虚拟流内可用，真实流自动隐藏 qzone_* 前缀工具）：
+
 | 工具 | 参数 | 描述 |
 |---|---|---|
 | qzone_comment | feed_id*(必填), content*(必填), at_user_id? | 评论说说；回应评论时填 at_user_id 会自动@TA |
-| qzone_reply | feed_id*(必填), comment_id*(必填), content*(必填) | 回复评论（楼中楼，直接在被回复评论下） |
+| qzone_reply | feed_id*(必填), comment_id*(必填), content*(必填) | 回复评论（楼中楼） |
 | qzone_like | feed_id?（缺省=当前浏览的说说） | 点赞 |
-| qzone_post | content*(必填) | 发布说说（仅表达触发轮） |
+| qzone_post | content*(必填) | 发布说说 |
 
-所有工具硬门控：仅虚拟流内可用（stream_id 校验）。频控：同说说评论 ≤3 次/窗口。内容长度 ≤200 字（说说 ≤500 字）。
+**全域可用**（真实聊天流和虚拟流均可调用，不以 qzone_ 为前缀）：
+
+| 工具 | 参数 | 描述 |
+|---|---|---|
+| view_friend_feeds | qq*(必填), count?(默认 3, 上限 10) | 查看指定好友最近 n 条说说，返回正文+图片描述 |
+
+`view_friend_feeds` 说明：
+- 调用 `client.get_user_feeds(target_uin=qq, nickname=qq, num=count)` 复用现有解析
+- 图片输出为 VLM 生成的文字描述（Images 表已有），非 base64/URL——工具返回纯文本给 planner
+- 任何流可用（不经过虚拟流），直接调 API 后返回格式化文本
+
+内容长度 ≤200 字（说说 ≤500 字）。
 
 ### 4.2 楼中楼 API 参数
 
@@ -123,7 +136,7 @@ QzoneClient（协议封装）
 
 ### 4.3 说说发布（主动触发机制）
 
-浏览窗口首轮拉取完成后：
+`send_qzone=true` 的日程窗口首轮拉取完成后：
 1. Plugin 调 `maisaka.proactive.trigger(虚拟流, intent="你正在<日程事件>，想分享点什么吗？可以用 qzone_post 发一条说说")`
 2. Planner 看到触发指示 + 刚看过的动态上下文
 3. Planner 自主决定：想发 → 调 qzone_post(content)；不想发 → 沉默
@@ -164,14 +177,45 @@ QzoneClient（协议封装）
 
 | 模块 | 集成点 |
 |---|---|
-| 日程 | qzone=true 标记日常窗口→激活浏览流；日程注入块对 qzone 窗口追加「(正在刷QQ空间)」 |
-| 睡眠 | 睡眠中通知轮询静默；入睡时生成日记；醒来后补注；空间活动刷新静默入睡计时 |
+| 日程 | 窗口属性分 `read_qzone`（激活浏览流）和 `send_qzone`（激活表达触发），均仅 daily 窗口合法；日程注入块对 read_qzone 窗口追加「(正在刷QQ空间)」 |
+| 睡眠 | 睡眠中通知轮询静默；入睡时生成日记+见闻摘要；醒来后补注；空间活动刷新静默入睡计时 |
 | 好感度 | 空间互动（评论/被评论/点赞/被点赞）写入 fav_events → 并入日终结算候选；衰减计时含空间事件基准 |
 | 备忘录 | 备忘按人存储（主QQ+附带QQ 跨流可见）；虚拟流上写的备忘挂虚拟流维度（当前限制） |
 | 场景替换 | 虚拟流的群聊场景提示词替换为空间场景（WebUI 可编辑 catsitate_qzone_scene） |
-| 工具隔离 | 双向：虚拟流白名单过滤 / 真实流隐藏 qzone_* 工具 |
+| 工具隔离 | 双向：虚拟流白名单过滤 / 真实流隐藏 qzone_* 工具（view_friend_feeds 不受隔离，全域可用） |
 
-## 7. 数据模型
+## 7. 见闻系统
+
+### 7.1 设计
+
+将 QQ空间虚拟流的「聊天记录」用旁路 LLM 摘要为自然语言见闻，替代原设计的原始动态列表注入。Bot 自己发布的说说（日记/日常）做好回注后，同样纳入见闻素材。
+
+### 7.2 生成时机
+
+入睡任务（与日记生成同任务），每日一次。
+
+### 7.3 素材
+
+| 素材 | 来源 |
+|---|---|
+| 虚拟流当日历史 | 主程序消息（含浏览动态+通知+bot 回注的自己的说说） |
+| Bot 自己的说说 | qzone_post 成功后以 self 消息回注虚拟流 |
+| 日记 | 入睡生成后延迟回注虚拟流 |
+
+### 7.4 生成 prompt（旁路 LLM）
+
+模板 `catsitate_qzone_digest.prompt`（WebUI 可编辑），要点：
+- 第一人称回顾「今天在QQ空间看到了什么、做了什么」
+- 自然语言叙述（不是动态列表），如「今天看到XX发了一张猫图，还给YY的说说点了赞」
+- 包含 bot 自己的发布行为（「我发了一条日记」「我在XX的说说下留了评论」）
+- 50~150 字，轻松随意
+- 输出卫生：不加前后缀/引号/表情，直接输出正文
+
+### 7.5 注入
+
+生成的见闻存入 inject 框架，真实聊天流注入块输出 `[空间见闻] {digest}`。每条真实聊天轮可见，bot 在群聊/私聊中自然引用空间经历。次日凌晨入睡时重新生成（覆盖前一天的见闻）。
+
+## 8. 数据模型
 
 | 表 | 键 | 用途 |
 |---|---|---|
@@ -180,25 +224,25 @@ QzoneClient（协议封装）
 | qzone_fav_events | 自增 PK | 好感度事件（day/user_id/kind/text），同日同事件去重 |
 | qzone_likes | like_key PK | 赞事件去重（liker_owner_hash） |
 
-## 8. 配置面（qzone 节）
+## 9. 配置面（qzone 节）
 
 | 字段 | 默认 | 说明 |
 |---|---|---|
 | enabled | true | 模块总开关（含写动作） |
-| poll_interval_minutes | 15 | 浏览流轮询间隔（发现层+充实层） |
+| poll_interval_minutes | 15 | 浏览流轮询间隔（read_qzone 窗口内） |
 | notification_interval_seconds | 120 | 通知轮询间隔（最小 30） |
 | decision_window_seconds | 150 | 注入后等待 planner 轮完成的超时 |
-| tool_whitelist | 含 10 工具 | 虚拟流可用工具（qzone_post 不在默认中） |
+| tool_whitelist | 含 qzone_comment/reply/like/post + view_friend_feeds | 虚拟流可用工具 |
 | comment_poll_enabled | true | 通知轮询开关 |
-| summary_count / summary_days | 5 / 3 | 见闻摘要条数/回溯天数 |
+| digest_enabled | true | 见闻摘要开关 |
+| digest_llm_model / timeout | memory / 0 | 见闻摘要模型 |
 | diary_enabled | true | 日记开关 |
 | diary_llm_model / timeout | memory / 0 | 日记生成模型 |
 | virtual_group_id / name | qzone_feed / QQ空间 | 虚拟流标识 |
 
-## 9. 风控注意
+## 10. 风控注意
 
 - 写路径（评论/点赞/发布）有真实不可逆副作用
-- 通知轮询约 1000 次 API/天（常量，与好友数无关）
-- cookie 约 24 小时过期，自动经 NapCat adapter 重取
+- cookie 约 24 小时过期，在过期前务必自动经 NapCat adapter 重取
 - 图片下载域名白名单（*.qpic.cn / *.qq.com），非白名单不带 Cookie
 - 好友间拉取间隔 2 秒（防风控）

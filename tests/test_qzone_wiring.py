@@ -205,11 +205,27 @@ def test_poll_tick_resets_comment_counts_on_window_start(tmp_path):
 
 
 def _make_tool_plugin(tmp_path):
-    """工具直调装配:写路径客户端桩 + 真实 seen/comment_seen 存储。"""
+    """工具直调装配:写路径客户端桩 + 真实 seen/comment_seen 存储 + 表达生成
+    LLM 桩(两段式:回显「表达方向」素材段为生成正文,等价于旁路人设生成)。"""
 
     p = _make_plugin(tmp_path)
     p.qzone_client = _StubWriteClient()
     p._qzone_session_ids.add("s1")  # 虚拟流会话(硬门控放行)
+    expr_llm_calls: list = []
+
+    async def _fake_side_llm(messages, model, module, timeout_ms=None):
+        expr_llm_calls.append({"messages": messages, "model": model, "module": module})
+        for m in messages:
+            c = str(m.get("content") or "")
+            if c.startswith("表达方向"):
+                return {"success": True, "response": c.split("\n", 1)[-1]}
+        return {"success": True, "response": "ok"}
+
+    p._side_llm_call = _fake_side_llm
+    p.expr_llm_calls = expr_llm_calls
+    # 人设缓存预置(离线桩无 ctx.config,不走异常兜底路径;实例级覆盖防测试间泄漏)
+    p._persona_cache = "猫耳少女"
+    p._style_cache = ""
     return p
 
 
@@ -219,25 +235,51 @@ def _register_feed(p, tid="fulltid0001", owner="10001", nickname="小明", **kw)
 
 
 def test_qzone_comment_success_via_registry(tmp_path):
-    """qzone_comment 成功路径:registry 解析目标(锚前缀→全量 tid 回填),
-    do_comment 参数对位(fid=全量 tid,target_qq=说说主人);记账三件套落库
-    (interacted/自评登记/好感度事件),计数累计。"""
+    """qzone_comment 成功路径(两段式):registry 解析目标(锚前缀→全量 tid 回填),
+    正文经表达生成层产出(旁路 qzone_expression 模块/人设前置/场景素材入 prompt);
+    do_comment 参数对位(fid=全量 tid,target_qq=说说主人,正文=生成结果);
+    记账三件套落库(interacted/自评登记/好感度事件),计数累计。"""
 
     p = _make_tool_plugin(tmp_path)
-    _register_feed(p, tid="fulltid0001abc", owner="10001")
+    _register_feed(p, tid="fulltid0001abc", owner="10001",
+                   content_summary="今天去了海边", recent_comments=["小红:羡慕"])
     # seen 预登记(mark_interacted 的落库对象;registry-only 通知说说无行则 UPDATE 空转,无害)
     p.qzone_seen.mark_queued("fulltid0001abc", abstime="1", author_uin="10001", summary="动态")
-    res = asyncio.run(p.qzone_comment(feed_id="fulltid0001", content="好看!", stream_id="s1"))
+    res = asyncio.run(p.qzone_comment(feed_id="fulltid0001", reply_reference="好看!", stream_id="s1"))
     assert res == "已评论。"
-    # fid 回填为全量 tid(锚前缀不可直接发 API);target_qq=说说主人
+    # fid 回填为全量 tid(锚前缀不可直接发 API);target_qq=说说主人;正文=生成结果
     assert p.qzone_client.comment_calls == [("fulltid0001abc", "10001", "好看!")]
+    # 表达生成调用:模块/模型走 qzone 节表达配置;人设前置稳定上下文首段;
+    # 场景素材(说说正文摘要+近期评论防复读)进变量素材段
+    assert p.expr_llm_calls[0]["module"] == "qzone_expression"
+    assert p.expr_llm_calls[0]["model"] == p.config.qzone.expression_llm_model
+    contents = [m["content"] for m in p.expr_llm_calls[0]["messages"]]
+    assert "今天去了海边" in "".join(contents) and "小红:羡慕" in "".join(contents)
     rows = p.qzone_seen.store.query("SELECT interacted FROM qzone_feeds WHERE tid = 'fulltid0001abc'")
     assert rows and rows[0][0] == 1  # mark_interacted 已落库
     keys = p.qzone_comment_seen.store.query(
         "SELECT comment_key FROM qzone_comments WHERE comment_key LIKE 'fulltid0001abc:bot:%'"
     )
-    assert keys  # 自评登记(note_bot_comment)已入评论表
+    assert keys  # 自评登记(note_bot_comment)已入评论表(正文=生成结果)
     assert p._qzone_comment_counts == {"fulltid0001abc": 1}  # 频控计数累计
+
+
+def test_qzone_comment_generation_failure_returns_error(tmp_path):
+    """两段式失败路径:表达生成 LLM 失败(不成功)→ 显式错误回执(可重试口径)+
+    告警日志,零写调用、零频控计数——失败不静默兜底也不臆造正文。"""
+
+    p = _make_tool_plugin(tmp_path)
+    _register_feed(p, tid="genfail1", owner="10001")
+
+    async def _fail(messages, model, module, timeout_ms=None):
+        return {"success": False}
+
+    p._side_llm_call = _fail
+    res = asyncio.run(p.qzone_comment(feed_id="genfail1", reply_reference="夸一下", stream_id="s1"))
+    assert "评论正文生成失败" in res
+    assert p.qzone_client.comment_calls == []
+    assert p._qzone_comment_counts == {}
+    assert any(level == "warning" and "评论正文生成失败" in str(a[0]) for level, a in p.logs)
 
 
 def test_qzone_comment_at_prefix_uses_commenter_nickname(tmp_path):
@@ -246,7 +288,7 @@ def test_qzone_comment_at_prefix_uses_commenter_nickname(tmp_path):
 
     p = _make_tool_plugin(tmp_path)
     _register_feed(p, tid="notifyfeed01", owner=BOT_UIN, commenter_uin="20000", commenter_nickname="小红")
-    res = asyncio.run(p.qzone_comment(feed_id="notifyfeed01", content="谢谢你!",
+    res = asyncio.run(p.qzone_comment(feed_id="notifyfeed01", reply_reference="谢谢你!",
                                       at_user_id="20000", stream_id="s1"))
     assert res == "已评论并@了 小红。"
     # 源A:说说主人=bot 自己,评论带 @ 前缀(napcat 适配器同格式)
@@ -267,12 +309,12 @@ def test_qzone_comment_frequency_limit_three(tmp_path):
     _register_feed(p, tid="feedA", owner="10001")
     _register_feed(p, tid="feedB", owner="10002")
     for i in range(3):
-        res = asyncio.run(p.qzone_comment(feed_id="feedA", content=f"第{i}条", stream_id="s1"))
+        res = asyncio.run(p.qzone_comment(feed_id="feedA", reply_reference=f"第{i}条", stream_id="s1"))
         assert res == "已评论。"
-    res4 = asyncio.run(p.qzone_comment(feed_id="feedA", content="第四条", stream_id="s1"))
+    res4 = asyncio.run(p.qzone_comment(feed_id="feedA", reply_reference="第四条", stream_id="s1"))
     assert res4 == "这条说说你已经评论过 3 次了,适可而止～"
     assert len(p.qzone_client.comment_calls) == 3  # 第 4 条零写调用
-    res_b = asyncio.run(p.qzone_comment(feed_id="feedB", content="另一条", stream_id="s1"))
+    res_b = asyncio.run(p.qzone_comment(feed_id="feedB", reply_reference="另一条", stream_id="s1"))
     assert res_b == "已评论。"  # 其它说说不受影响
     assert len(p.qzone_client.comment_calls) == 4
 
@@ -282,13 +324,13 @@ def test_qzone_comment_target_resolution_failure_and_fallback(tmp_path):
     (零写调用,不臆造目标);seen_store 回退:7 天内浏览过的动态按前缀命中。"""
 
     p = _make_tool_plugin(tmp_path)
-    res = asyncio.run(p.qzone_comment(feed_id="nosuchid", content="?", stream_id="s1"))
+    res = asyncio.run(p.qzone_comment(feed_id="nosuchid", reply_reference="?", stream_id="s1"))
     assert "未找到说说" in res
     assert p.qzone_client.comment_calls == []
     # 回退:registry 无记录,但 seen_store 有 7 天内浏览记录(前缀匹配)
     p.qzone_seen.mark_queued("seentid0001", abstime="1", author_uin="10003", summary="旧动态")
     p.qzone_seen.mark_seen("seentid0001", datetime.now().strftime("%Y-%m-%dT%H:%M:%S"))
-    res2 = asyncio.run(p.qzone_comment(feed_id="seentid0001", content="补一条", stream_id="s1"))
+    res2 = asyncio.run(p.qzone_comment(feed_id="seentid0001", reply_reference="补一条", stream_id="s1"))
     assert res2 == "已评论。"
     assert p.qzone_client.comment_calls == [("seentid0001", "10003", "补一条")]
 
@@ -304,7 +346,7 @@ def test_qzone_comment_auth_error_invalidates_cookie(tmp_path):
     p = _make_tool_plugin(tmp_path)
     _register_feed(p, tid="feedX", owner="10001")
     p.qzone_client = _AuthFailClient()
-    res = asyncio.run(p.qzone_comment(feed_id="feedX", content="你好", stream_id="s1"))
+    res = asyncio.run(p.qzone_comment(feed_id="feedX", reply_reference="你好", stream_id="s1"))
     assert res == "登录态失效已重置,请稍后再试。"
     assert p.qzone_cookie.invalidate_calls == 1  # cookie 已作废(下轮重取)
     assert p._qzone_comment_counts == {}  # 失败不计入频控
@@ -319,7 +361,7 @@ def test_qzone_reply_real_thread_with_correct_pair(tmp_path):
     _register_feed(p, tid="feedR1", owner=BOT_UIN,
                    commenter_uin="20000", commenter_nickname="小红",
                    comment_tid="ct9", comment_uin="20000")
-    res = asyncio.run(p.qzone_reply(feed_id="feedR1", comment_id="ct9", content="谢谢!", stream_id="s1"))
+    res = asyncio.run(p.qzone_reply(feed_id="feedR1", comment_id="ct9", reply_reference="谢谢!", stream_id="s1"))
     assert res == "已回复 小红 的评论。"
     # 二元组对位:fid=全量 tid,target_qq=说说主人(源A=bot),commentUin=主评论作者
     assert p.qzone_client.reply_calls == [
@@ -340,7 +382,7 @@ def test_qzone_reply_source_b_pair_bot_head_commenter_target(tmp_path):
     _register_feed(p, tid="feedR2", owner="30000",
                    commenter_uin="30000", commenter_nickname="阿好",
                    comment_tid="bc1", comment_uin=BOT_UIN)
-    res = asyncio.run(p.qzone_reply(feed_id="feedR2", comment_id="bc1", content="说得对", stream_id="s1"))
+    res = asyncio.run(p.qzone_reply(feed_id="feedR2", comment_id="bc1", reply_reference="说得对", stream_id="s1"))
     assert res == "已回复 阿好 的评论。"
     fid, target_qq, ctid, cuin, cnick, content, at_uin, at_nick = p.qzone_client.reply_calls[0]
     assert (fid, target_qq, ctid) == ("feedR2", "30000", "bc1")
@@ -353,9 +395,9 @@ def test_qzone_reply_requires_all_params_and_session(tmp_path):
 
     p = _make_tool_plugin(tmp_path)
     _register_feed(p, tid="feedR3", owner="10001")
-    res = asyncio.run(p.qzone_reply(feed_id="", comment_id="c1", content="x", stream_id="s1"))
+    res = asyncio.run(p.qzone_reply(feed_id="", comment_id="c1", reply_reference="x", stream_id="s1"))
     assert "都不能为空" in res
-    res2 = asyncio.run(p.qzone_reply(feed_id="feedR3", comment_id="c1", content="x", stream_id="other"))
+    res2 = asyncio.run(p.qzone_reply(feed_id="feedR3", comment_id="c1", reply_reference="x", stream_id="other"))
     assert res2 == "这个工具只能在QQ空间动态流里使用。"
     assert p.qzone_client.reply_calls == []
 
@@ -364,15 +406,19 @@ def test_qzone_reply_requires_all_params_and_session(tmp_path):
 
 
 def test_qzone_post_success_publishes_and_echoes(tmp_path):
-    """qzone_post 成功路径:do_publish 收到正文;回注 self 消息进虚拟流——
-    user_id=bot 自己、无 is_mentioned(bot 自己发的不触发 planner 决策轮,
-    仅入历史供后续互动引用上下文);尾部带〔说说ID=前12位〕锚(模型照抄锚值
-    即可对该说说评论/点赞);成功日志含前 30 字预览。"""
+    """qzone_post 成功路径(两段式):正文经表达生成层产出(表达方向→人设正文),
+    do_publish 收到生成结果;回注 self 消息进虚拟流——user_id=bot 自己、
+    无 is_mentioned(bot 自己发的不触发 planner 决策轮,仅入历史供后续互动引用
+    上下文);尾部带〔说说ID=前12位〕锚(模型照抄锚值即可对该说说评论/点赞);
+    成功日志含前 30 字预览。"""
 
     p = _make_tool_plugin(tmp_path)
-    res = asyncio.run(p.qzone_post(content="  今天散步看到一只很亲人的猫  ", stream_id="s1"))
+    res = asyncio.run(p.qzone_post(reply_reference="  今天散步看到一只很亲人的猫  ", stream_id="s1"))
     assert res == "发布成功。"
-    assert p.qzone_client.publish_calls == ["今天散步看到一只很亲人的猫"]  # 首尾空白已剥
+    assert p.qzone_client.publish_calls == ["今天散步看到一只很亲人的猫"]  # 生成正文(首尾空白已剥)
+    # 表达生成调用:模块/模型走 qzone 节表达配置
+    assert p.expr_llm_calls[0]["module"] == "qzone_expression"
+    assert p.expr_llm_calls[0]["model"] == p.config.qzone.expression_llm_model
     # 回注:经网关进虚拟流,qzone_self_ 前缀 message_id
     assert len(p._ctx.gateway.calls) == 1
     gw_name, msg = p._ctx.gateway.calls[0]
@@ -395,11 +441,12 @@ def test_qzone_post_success_publishes_and_echoes(tmp_path):
 def test_qzone_post_anchors_seen_and_registry(tmp_path):
     """发布后本地锚定三连:seen 库 queued→seen(own-post 摘要=正文前 50 字,
     message_id=回注消息 id,后续通知 reply 段据此引用);registry 登记
-    kind="self" 自锚——模型照抄回注锚(前 12 位)即可解析到该说说。"""
+    kind="self" 自锚(content_summary=正文前 100 字,表达生成场景素材)——
+    模型照抄回注锚(前 12 位)即可解析到该说说。"""
 
     p = _make_tool_plugin(tmp_path)
     p.qzone_client.publish_tid = "fullpubtid000123456"
-    asyncio.run(p.qzone_post(content="今天的心情很不错,写点什么好呢", stream_id="s1"))
+    asyncio.run(p.qzone_post(reply_reference="今天的心情很不错,写点什么好呢", stream_id="s1"))
     _, msg = p._ctx.gateway.calls[0]
     assert msg["raw_message"][0]["data"].endswith("\n〔说说ID=fullpubtid00〕")  # 锚取前 12 位
     rows = p.qzone_seen.recent_seen(limit=5, days=1, now=datetime.now())
@@ -412,6 +459,22 @@ def test_qzone_post_anchors_seen_and_registry(tmp_path):
     ctx = p._qzone_registry.resolve("fullpubtid00")  # 前缀锚解析(registry 两级口径)
     assert ctx is not None and ctx.tid == "fullpubtid000123456"
     assert ctx.owner_uin == BOT_UIN and ctx.owner_nickname == "我" and ctx.kind == "self"
+    assert ctx.content_summary == "今天的心情很不错,写点什么好呢"  # 表达生成场景素材
+
+
+def test_qzone_post_route_failure_skips_local_anchor(tmp_path):
+    """Task 4 缓议修正:回注 route 失败(异常)时本地锚定三连跳过——注入没成功
+    就无 message_id 可挂,锚定必落空(与日记补注路径对称);发布回执不受影响
+    (说说已远端发布成功,谎报失败会诱导重复发布)。"""
+
+    p = _make_tool_plugin(tmp_path)
+    p.qzone_client.publish_tid = "routefailtid0001"
+    p._ctx.gateway = _ExplodingGateway()
+    res = asyncio.run(p.qzone_post(reply_reference="回注会炸", stream_id="s1"))
+    assert res == "发布成功。"
+    assert p.qzone_client.publish_calls == ["回注会炸"]
+    assert p.qzone_seen.recent_seen(limit=10, days=1, now=datetime.now()) == []  # seen 零登记
+    assert p._qzone_registry.resolve("routefailtid0001") is None  # registry 零登记
 
 
 def test_qzone_post_missing_tid_warns_and_skips_anchor(tmp_path):
@@ -420,7 +483,7 @@ def test_qzone_post_missing_tid_warns_and_skips_anchor(tmp_path):
 
     p = _make_tool_plugin(tmp_path)
     p.qzone_client.publish_tid = ""
-    res = asyncio.run(p.qzone_post(content="发了但拿不到 tid", stream_id="s1"))
+    res = asyncio.run(p.qzone_post(reply_reference="发了但拿不到 tid", stream_id="s1"))
     assert res == "发布成功。"
     _, msg = p._ctx.gateway.calls[0]
     assert msg["raw_message"][0]["data"] == "我发布了一条说说:发了但拿不到 tid"
@@ -438,23 +501,24 @@ def test_qzone_post_echo_content_truncated_to_sixty(tmp_path):
 
     long_content = "字" * 80
     p = _make_tool_plugin(tmp_path)
-    asyncio.run(p.qzone_post(content=long_content, stream_id="s1"))
-    assert p.qzone_client.publish_calls == [long_content]  # 全文发布
+    asyncio.run(p.qzone_post(reply_reference=long_content, stream_id="s1"))
+    assert p.qzone_client.publish_calls == [long_content]  # 全文发布(表达方向即正文的桩形态)
     _, msg = p._ctx.gateway.calls[0]
     # 回注截 60 字;锚行独立成行,不受预览截断影响
     assert msg["raw_message"][0]["data"] == f"我发布了一条说说:{'字' * 60}\n〔说说ID=newtid0001〕"
 
 
-def test_qzone_post_validation_empty_too_long_and_session(tmp_path):
-    """入参校验:空内容/超 500 字 → 显式提示;非虚拟流会话/模块未启用 → 拒绝;
-    四种拒绝形态均零发布调用、零回注。"""
+def test_qzone_post_validation_empty_reference_and_session(tmp_path):
+    """入参校验(两段式):空表达方向 → 表达生成层显式报错(错误串含
+    reply_reference,不静默兜底);非虚拟流会话/模块未启用 → 拒绝;
+    三种拒绝形态均零 LLM 写调用副作用之外的发布调用、零回注。"""
 
     p = _make_tool_plugin(tmp_path)
-    assert asyncio.run(p.qzone_post(content="   ", stream_id="s1")) == "说说内容不能为空。"
-    assert asyncio.run(p.qzone_post(content="长" * 501, stream_id="s1")) == "内容太长了(501 字,上限 500)。"
-    assert asyncio.run(p.qzone_post(content="你好", stream_id="other")) == "这个工具只能在QQ空间动态流里使用。"
+    res = asyncio.run(p.qzone_post(reply_reference="   ", stream_id="s1"))
+    assert "说说正文生成失败" in res and "reply_reference" in res
+    assert asyncio.run(p.qzone_post(reply_reference="你好", stream_id="other")) == "这个工具只能在QQ空间动态流里使用。"
     p._qzone_available = False
-    assert asyncio.run(p.qzone_post(content="你好", stream_id="s1")) == "QQ空间模块未启用。"
+    assert asyncio.run(p.qzone_post(reply_reference="你好", stream_id="s1")) == "QQ空间模块未启用。"
     assert p.qzone_client.publish_calls == []
     assert p._ctx.gateway.calls == []
 
@@ -469,7 +533,7 @@ def test_qzone_post_auth_error_invalidates_cookie(tmp_path):
 
     p = _make_tool_plugin(tmp_path)
     p.qzone_client = _AuthFailPostClient()
-    res = asyncio.run(p.qzone_post(content="想发点什么都发不出去", stream_id="s1"))
+    res = asyncio.run(p.qzone_post(reply_reference="想发点什么都发不出去", stream_id="s1"))
     assert res == "登录态失效已重置,请稍后再试。"
     assert p.qzone_cookie.invalidate_calls == 1
     assert p._ctx.gateway.calls == []
@@ -484,7 +548,7 @@ def test_qzone_post_generic_failure_logs_and_no_echo(tmp_path):
 
     p = _make_tool_plugin(tmp_path)
     p.qzone_client = _BoomPostClient()
-    res = asyncio.run(p.qzone_post(content="测试", stream_id="s1"))
+    res = asyncio.run(p.qzone_post(reply_reference="测试", stream_id="s1"))
     assert res == "发布失败,已记录日志。"
     assert any(level == "exception" for level, _a in p.logs)
     assert p._ctx.gateway.calls == []
@@ -496,7 +560,7 @@ def test_qzone_post_echo_failure_still_reports_success(tmp_path):
 
     p = _make_tool_plugin(tmp_path)
     p._ctx.gateway = _ExplodingGateway()
-    res = asyncio.run(p.qzone_post(content="发布成功但回注会炸", stream_id="s1"))
+    res = asyncio.run(p.qzone_post(reply_reference="发布成功但回注会炸", stream_id="s1"))
     assert res == "发布成功。"
     assert p.qzone_client.publish_calls == ["发布成功但回注会炸"]
     assert any(
@@ -685,6 +749,7 @@ def test_echo_pending_diary_with_tid_anchors_seen_and_registry(tmp_path):
     assert p.qzone_seen.get_message_id("diarytid000456789") == msg["message_id"]
     ctx = p._qzone_registry.resolve("diarytid0004")  # 前缀锚解析
     assert ctx is not None and ctx.kind == "self" and ctx.owner_uin == BOT_UIN
+    assert ctx.content_summary == "昨晚的日记正文"  # 表达生成场景素材(正文前 100 字)
     assert p._pending_diary_snapshot.load() == {}
 
 

@@ -67,8 +67,8 @@ Catsitate 是部署在 MaiBot 上的 QQ 聊天机器人人设(伪三无猫耳少
 | `catsitate_core/reply_guard.py` | reply 补传规则层(三条件判定、工具结果合并摘要)+ 哨兵 prompt 组装与解析。 |
 | `catsitate_core/image_relook.py` | 图片重看:图片段定位(按 message_id 或倒数 index)+ MIME 魔数嗅探 + VLM prompt 组装。 |
 | `catsitate_core/time_aware.py` | 时间感知:节日数据回退链(在线→库→内置)、lunar-python 农历节日/节气实算、天气码中文映射、环境块文本组装。 |
-| `catsitate_core/llm_provider.py` | 旁路 LLM 统一出口:10 个内置 prompt 模板、主程序 prompt 管理覆盖加载、稳定段前置组装、模板版本化缓存键。 |
-| `catsitate_core/qzone/` | QQ空间模块包(感知+互动+统一通知,工具驱动 v0.7):协议纯函数(g_tk 签名/callback 解析/说说与评论解析)、HTTP 客户端与 cookie 管理、动态去重存储(`qzone_feeds`)、评论去重与好感度事件存储(`qzone_comments`/`qzone_fav_events`)、注入消息构造(带工具 ID 锚)、串行注入状态机、注入上下文登记表(`registry.py`,工具目标解析)与场景纯函数(网关注册/启动自检/拉取与统一通知调度/发布 API `do_publish`/四工具接线在 `plugin.py`,见 §3.13)。 |
+| `catsitate_core/llm_provider.py` | 旁路 LLM 统一出口:11 个内置 prompt 模板、主程序 prompt 管理覆盖加载、稳定段前置组装、模板版本化缓存键。 |
+| `catsitate_core/qzone/` | QQ空间模块包(感知+互动+统一通知,工具驱动 v0.7):协议纯函数(g_tk 签名/callback 解析/说说与评论解析)、HTTP 客户端与 cookie 管理、动态去重存储(`qzone_feeds`)、评论去重与好感度事件存储(`qzone_comments`/`qzone_fav_events`)、注入消息构造(带工具 ID 锚)、串行注入状态机、注入上下文登记表(`registry.py`,工具目标解析)、表达生成层(`expression.py`,评论/回复/说说正文两段式人设生成)与场景纯函数(网关注册/启动自检/拉取与统一通知调度/发布 API `do_publish`/四工具接线在 `plugin.py`,见 §3.13)。 |
 | `catsitate_core/services/scheduler.py` | 后台 asyncio 任务引擎:60s tick,任务异常隔离(记录日志不中断主循环)。 |
 
 ### 2.2 消息数据流概览
@@ -91,8 +91,8 @@ QQ空间虚拟流(qzone-qq)── 网关注入(route_message;receive 只进不�
 - **模型路由**:所有旁路请求统一经 `ctx.call_capability("llm.generate", prompt=messages, model=<task 名>)`;`model` 填**主程序 `model_task_config` 的 task 名**(节名),填模型标识会报「未找到名为 … 的模型配置」;留空=主程序默认(取首个可用 task,不可控,不推荐)。
 - **统一结构**:`[任务指令+输出格式(system,固定模板+版本化)] [稳定上下文(5 级规则/白名单/人设背景,配置数据)] [变量素材(时间正序)]`——稳定段在前、变量段在后。
 - **模板加载顺序**:主程序数据目录 `data/custom_prompts/zh-CN/catsitate_<id>.prompt`(WebUI「提示词管理」编辑产物)→ 主程序 `prompts/zh-CN/catsitate_<id>.prompt`(内置层)→ 插件内置默认(`llm_provider.SIDE_TEMPLATES`)。模板缺失时告警一次并回退内置,部署后自动恢复;模板内容变化即缓存键失效。
-- **WebUI 管理前提(自动部署)**:主程序「提示词管理」只扫描主程序 `prompts/` 与 `data/custom_prompts/` 目录,**不会自动扫描插件的 `prompt_templates/`**——插件加载时(`on_load`)自动把 `prompt_templates/catsitate_*.prompt`(10 个)同步到主程序 `prompts/zh-CN/`(`prompt_deploy.sync_prompt_templates`:内容一致跳过、变更覆盖;主程序 `load_prompts()` 在插件启动后调用,**同次启动即生效,无需重启**,见 §8.1 第 4 步)。生效后:主程序加载为内置层 → WebUI 可编辑 → 编辑产物写 `data/custom_prompts/zh-CN/` → 插件旁路调用优先读取(闭环)。插件不在 `plugins/` 下或主程序 `prompts/zh-CN/` 缺失时跳过并告警,插件回退内置默认。插件 `prompt_templates/` 目录保留作源模板。
-- **10 个旁路模板**:`catsitate_favorability`、`catsitate_msg_react`、`catsitate_sentinel`、`catsitate_image_relook`、`catsitate_decay`、`catsitate_schedule_generate`、`catsitate_sleep_confirm`、`catsitate_sleep_review`、`catsitate_qzone_scene`、`catsitate_qzone_diary`(与 `prompt_templates/` 下 10 个文件一一对应;前 8 个含 `{{delta_max}}`/`{{decay_max}}` 占位符,`catsitate_qzone_scene` 为空间虚拟流场景文案——场景替换运行时读取,WebUI 改完即生效;`catsitate_qzone_diary` 为睡前日记生成模板)。
+- **WebUI 管理前提(自动部署)**:主程序「提示词管理」只扫描主程序 `prompts/` 与 `data/custom_prompts/` 目录,**不会自动扫描插件的 `prompt_templates/`**——插件加载时(`on_load`)自动把 `prompt_templates/catsitate_*.prompt`(11 个)同步到主程序 `prompts/zh-CN/`(`prompt_deploy.sync_prompt_templates`:内容一致跳过、变更覆盖;主程序 `load_prompts()` 在插件启动后调用,**同次启动即生效,无需重启**,见 §8.1 第 4 步)。生效后:主程序加载为内置层 → WebUI 可编辑 → 编辑产物写 `data/custom_prompts/zh-CN/` → 插件旁路调用优先读取(闭环)。插件不在 `plugins/` 下或主程序 `prompts/zh-CN/` 缺失时跳过并告警,插件回退内置默认。插件 `prompt_templates/` 目录保留作源模板。
+- **11 个旁路模板**:`catsitate_favorability`、`catsitate_msg_react`、`catsitate_sentinel`、`catsitate_image_relook`、`catsitate_decay`、`catsitate_schedule_generate`、`catsitate_sleep_confirm`、`catsitate_sleep_review`、`catsitate_qzone_scene`、`catsitate_qzone_diary`、`catsitate_qzone_expression`(与 `prompt_templates/` 下 11 个文件一一对应;前 8 个含 `{{delta_max}}`/`{{decay_max}}` 占位符,`catsitate_qzone_scene` 为空间虚拟流场景文案——场景替换运行时读取,WebUI 改完即生效;`catsitate_qzone_diary` 为睡前日记生成模板;`catsitate_qzone_expression` 为空间动作表达生成模板——评论/回复/说说正文共用,见 §3.13.1)。
 - **记账**:每次旁路调用写入 `llm_usage` 表(day/module/calls/tokens 按模块分列)。
 
 ### 2.4 主链路注入纪律(§4.1)
@@ -338,7 +338,8 @@ QQ空间虚拟流(qzone-qq)── 网关注入(route_message;receive 只进不�
 
 - **浏览窗口内刷好友动态(M1)**:日程生成模板 v3 支持为 daily 窗口标记 `qzone=true`(通常一天 1~2 个,适合搭配轻松的独处活动如「窝着刷手机」);`qzone_poll` 调度(默认 15 分钟)在标记窗口内拉取好友说说——**拉取架构(统一时间线,M3 重构 2026-08-31)**:**发现层** 1 次 `feeds3_html_more` 统一时间线调用覆盖全好友(轻量索引 tid/uin/nickname/abstime/appid,FeedDiscovery),**充实层**仅对发现层标记为新的 tid 按作者 uin 分组拉 `emotion_cgi_msglist_v6` 完整实体(典型 0-3 次/周期)——API 量从 O(好友数) 降为 O(1+新动态数),好友 24 或 240 成本相同;发现层非登录态失败告警回退旧逐好友路径(好友列表走 adapter OneBot API `adapter.napcat.account.get_friend_list`,remark 优先作昵称,逐好友拉最近 3 条,好友间固定 2 秒间隔防风控)。窗口切换时收泵,未注入的队列**回退未读**(queued 行删除,下个窗口重新可见,不丢动态)。
 - **工具驱动互动(v0.7,替代 M2 出站意图路由)**:注入消息的文本段末尾带**参数独立尾行**(可读性优化 2026-09-01,换行+〔〕独立成行,消除与正文的行内语义混淆)——浏览动态「…\n〔说说ID=xxx〕」(tid 前 12 位),通知「评论了你的说说:…\n〔说说ID=xx 评论ID=xx 评论者QQ=xx 评论于(今天HH:MM)〕」(完整语义键名;末段为动作时间「评论于/回复于(今天HH:MM)/(M月d日 HH:MM)」,M3-r2:让 bot 分得清互动新旧,`create_time` 缺失则省略该段;与工具参数名 `feed_id`/`comment_id`/`at_user_id` 的映射由场景 prompt 解释);泵注入成功后把该说说的上下文(主人/评论者/主评论二元组)登记进 **FeedContextRegistry**(内存 LRU,上限 128 条/48h 过期);planner 想互动就调工具,目标按 feed_id 三级解析:registry(精确/前缀)→ seen_store(7 天浏览窗前缀)→ awaiting(当前浏览项)——解析出的**全量 tid** 回填发 API(锚前缀不可直接用),三级全miss显式失败提示模型核对锚值。**在虚拟流直接打字是发不出去的**(receive 网关无出站路径)——不感兴趣就沉默(无工具调用轮),动作只能通过工具完成,意愿与目标选择权全部归模型。
-- **四个空间工具(v0.7 互动 + v0.8 表达)**:`qzone_comment(feed_id, content, at_user_id?)` 评论说说(回应谁的评论就把TA的QQ号填 at_user_id,自动拼 @ 前缀——napcat 同格式,registry 有该评论者昵称则用昵称;同说说频控上限 **3 条**,窗口边界重置);`qzone_reply(feed_id, comment_id, content)` 楼中楼回复——**commentId+commentUin 二元组精确匹配主评论**(源A=好友评论/源B=bot 自己被回复的评论,@ 目标与二元组解耦由 wire 层承载),回复内容 ≤200 字;`qzone_like(feed_id?)` 点赞(缺省对当前浏览的说说,通知项自动锚定其原说说);`qzone_post(content)` 发布自己的说说(M3 表达:想说点什么、分享心情或见闻时使用,内容 ≤500 字自然表达,无频控——是否发/发什么由模型自主决定)。四工具均方法内 stream_id 硬门控——仅虚拟流会话可用(SDK Tool 无类级 allowed_session 通道,联调实证,真实聊天流调用直接拒绝)。动作 API 失败不重试(告警跳过);登录态失效自动作废 cookie 下轮重取(自愈链)。
+- **四个空间工具(v0.7 互动 + v0.8 表达,M3-r2 起评论/回复/发布两段式)**:`qzone_comment(feed_id, reply_reference, reply_style?, at_user_id?)` 评论说说;`qzone_reply(feed_id, comment_id, reply_reference, reply_style?)` 楼中楼回复——**commentId+commentUin 二元组精确匹配主评论**(源A=好友评论/源B=bot 自己被回复的评论,@ 目标与二元组解耦由 wire 层承载);`qzone_like(feed_id?)` 点赞(缺省对当前浏览的说说,通知项自动锚定其原说说);`qzone_post(reply_reference, reply_style?)` 发布自己的说说(无频控——是否发/表达什么由模型自主决定)。四工具均方法内 stream_id 硬门控——仅虚拟流会话可用(SDK Tool 无类级 allowed_session 通道,联调实证,真实聊天流调用直接拒绝)。动作 API 失败不重试(告警跳过);登录态失效自动作废 cookie 下轮重取(自愈链)。
+- **表达生成层(M3-r2,两段式正文)**:planner 只决定「是否动作、表达什么方向」——`reply_reference` 填表达方向(要点/事实/关系/语气倾向),`reply_style` 选篇幅(简短表达/正常回复/长回复,默认正常回复);正文由带**完整 bot 人设**的旁路 LLM(`qzone_expression` 模板,`expression_llm_model`)产出——planner 提示词只含行为风格摘要,完整人设在表达层,空间动作与真实聊天共享同一个人设出口。场景素材随 prompt 进变量段:评论带说说作者/正文摘要(registry `content_summary`,前 100 字)/近期评论摘要(`recent_comments`,get_user_feeds 合并的「昵称:内容」前 3 条,防复读);回复带说说正文摘要;发布不带场景素材。护栏:评论/回复正文上限 200 字、说说上限 500 字(超长带硬约束重生成一次,仍超长截断);生成失败/空素材显式返回错误回执(可重试口径)+告警,不静默兜底;同说说评论频控上限 **3 条**(窗口边界重置)与 @ 前缀拼装(napcat 同格式,registry 有该评论者昵称则用昵称)沿用不变。
 - **日记(M3 表达,入睡任务旁路生成+API 直发+延迟回注)**:入睡时与次日日程生成同属入睡任务——用旁路 LLM(`qzone_diary` 模板,`diary_llm_model`)基于**当日真实素材**(日程活动概览+到期备忘+当日空间见闻)生成 80~200 字第一人称日记,经发布 API(`do_publish`)直发为说说;旁路 LLM 与发布 API 均不经消息链,**不受睡眠拦截(深夜直发)**;睡眠窗口终点未入睡时由 tick 补执行(每窗口至多一篇)。护栏:模板明令「内容必须完全基于给到的当日素材,不要编造」;空/超 300 字视为输出异常跳过;发布失败不落回注快照(没发出去的日记不该回注成「昨晚发过」的假上下文)。**回注延迟到醒来**:正文+发布时刻存 `qzone_pending_diary.json`,醒态 `sleep_tick` 以 self 消息「我昨晚发布的日记:{前 60 字}」补注进虚拟流(睡眠期注入会被 sleep_gate 拦进回顾缓冲,白注入);补注失败保留快照下轮重试。开关 `diary_enabled`(默认开)。
 - **统一通知通道(M2.1,spec §3.7)**:模拟推送通知——`qzone_notify_poll` 调度(默认 120 秒,`notification_interval_seconds`,注册时下限 30 秒;始终运行,醒着即可,与浏览窗口无关)**双源检测**:源A=好友在 bot 自己说说下的新评论;源B=bot 在他人说说下的评论收到的新楼中楼回复(list_3,目标好友由 bot 评论留痕反查圈定)。通知走**双优先级队列 P1**(插队于浏览动态 P2 之前),模拟「刷着动态→弹通知→先看通知→回完继续刷」注意力模型;**通知注入是推送语义(M3-r2 P1/P2 分治):任何时刻可注入(仅 awaiting 互斥),不依赖浏览窗口——浏览窗口结束只清浏览队列 P2,通知队列保留等待注入条件**,浏览动态仅 read_qzone 窗口内注入;单轮至多 3 条(防通知风暴),早于 `summary_days` 的过旧通知截断不注入,阅读顺序新→旧(信息流降序,QQ 空间 App 实际形态)。通知正文自然可读并带参数独立尾行(可读性优化 2026-09-01)——源A「评论了你的说说:…\n〔说说ID=xx 评论ID=xx 评论者QQ=xx 评论于(今天HH:MM)〕」、源B「回复了你的评论「{bot原评论前20字}」:…\n〔说说ID=xx 评论ID=xx 评论者QQ=xx 回复于(今天HH:MM)〕」(两处参数行末段均为动作时间,`create_time` 缺失则省略不编造;楼中楼上下文=bot 被回复的原评论前 20 字,缺内容回退「你之前的评论」;评论内 `@{uin,nick}` 机器格式解析为「@昵称 」可读形态),带 is_mentioned 强制触发;注入消息带 reply 段引用**原说说**的注入消息(napcat quote 式,引用内容=原说说正文前 60 字;原说说未注入过则省略 reply 段回退纯文本);上一条注入仍在等待轮完成(awaiting)时不取新通知(不叠加,下轮再取)。通知项的注入被宿主拒绝或异常时**回退去重键**(下轮通知轮询重新发现,不因一次拒绝永久丢失;深度审查 B-4),但**重试上限 3 次**(深度审查 A-N1:软回退保留行,计数跨重发现累计;满 3 次仍被拒则保留登记放弃——防宿主持续拒绝时每 120 秒无限重注入);同一通知事件的 `fav_events` 同日去重(重发现不重复入库)。
 - **好感度显式事件(M2,spec §3.9)**:好友评论 bot 说说 / bot 评论·回复·点赞好友,双向记入 `qzone_fav_events` 事件表——结算时按 `[空间互动]` 前缀并入该人日终结算素材(LLM 计权,事件按原始时刻去重防同日 early→daily 重判),并参与自然衰减计时基准;**不依赖 batch_counter**(虚拟流消息计数已被豁免)。
@@ -384,6 +385,7 @@ QQ空间虚拟流(qzone-qq)── 网关注入(route_message;receive 只进不�
 - `QQ空间动态已注入(tid=…,作者=…)`;`QQ空间注入等待轮完成超时(tid=…),强制推进`(超时推进不清 registry,上下文 48h TTL 内仍可解析)
 - `QQ空间评论失败(feed_id=…)`(v0.7 `qzone_comment` 动作 API 失败,不重试);`QQ空间楼中楼回复失败(feed=…,comment=…)`(`qzone_reply`);`QQ空间点赞失败(tid=…)`(`qzone_like`);`QQ空间评论记账失败(远端已成功,仅告警)`(远端成功后本地记账异常,不影响回执)
 - `QQ空间说说发布成功: …`(v0.8 `qzone_post`/日记发布成功,前 30 字预览);`QQ空间说说发布失败`(`qzone_post` 动作 API 失败);`QQ空间说说回注失败(发布已成功,仅上下文注入失败)`;`QQ空间说说发布遇登录态失效,cookie 已作废,下轮重取`
+- `QQ空间评论/回复/说说正文生成失败(原因)`(M3-r2 表达生成层:旁路人设生成失败显式报错,回执可重试口径,零写调用);`QQ空间表达生成超长(N 字>上限 …),带字数硬约束重新生成一次` / `QQ空间表达生成重生成仍超长(N 字),截断至 N 字`(护栏路径,不失败)
 - `QQ空间日记发布成功: …`(入睡任务日记直发);`QQ空间日记 LLM 生成失败,跳过本轮` / `QQ空间日记 LLM 失败(success=…),跳过`(旁路生成失败,当夜无日记);`QQ空间日记内容异常(长度=…),跳过发布`(空/超 300 字护栏);`QQ空间日记发布失败(内容已生成,发布跳过)`;`QQ空间日记醒来补注完成`;`QQ空间日记补注失败(下个 tick 重试)`(快照保留,醒态 tick 重试)
 - `QQ空间登录态失效,cookie 已作废,下轮重取`(空间工具遇登录态失效,作废 cookie 自愈,该次动作不重试);`QQ空间点赞遇登录态失效,cookie 已作废,下轮重取`
 - `QQ空间网关收到意外出站回调(receive 模式无出站路径,文本预览=…)`(v0.7 防御分支:receive 网关不应被回调,出现即主程序行为变化,回执 success=False)
@@ -402,7 +404,7 @@ QQ空间虚拟流(qzone-qq)── 网关注入(route_message;receive 只进不�
 3. **动态形态**:msglist 条目即说说;转发说说走回退链([转发自XX]原文),纯图说说文本段仅承载工具 ID 锚(图段承载内容),视频以 [视频] 占位。
 4. **注入图片压缩到 RPC 帧限内**(用户裁定 2026-08-31 终案):base64 总量超 12MB 预算触发压缩阶梯(PIL 降分辨率×降质量),极端不达标丢弃最大图保帧;下载失败以 `[图片]` 占位。
 5. **备忘跨流可见性(I-1)已随 M2 memo 按人重构解决**(spec §3.10,见 §3.6.1):条目=主QQ+附带QQ(≤5)跨流可见,流维度保留;旧库自动补列迁移。
-6. **写路径有真实副作用**:评论/回复/点赞/发布说说/日记一经工具或入睡任务成功即真实发布(无撤回通路);动作 API 失败不重试,点赞的 own-feed 枚举无 API——好友对 bot 说说点赞的好感度事件无法经轮询检测(仅 bot 主动点赞经工具路径计入)。`qzone_post` 无频控(≤500 字长度护栏之外全凭模型自主),日记每窗口至多一篇。
+6. **写路径有真实副作用**:评论/回复/点赞/发布说说/日记一经工具或入睡任务成功即真实发布(无撤回通路);动作 API 失败不重试,点赞的 own-feed 枚举无 API——好友对 bot 说说点赞的好感度事件无法经轮询检测(仅 bot 主动点赞经工具路径计入)。`qzone_post` 无频控(正文生成上限 500 字护栏之外全凭模型自主),日记每窗口至多一篇。
 7. **registry 为内存态(工具驱动 v0.7)**:FeedContextRegistry 重启即空——重启后已注入但未互动的说说只能靠 seen_store(7 天浏览窗)或消息锚重新解析,主评论二元组(comment_uin)丢失时 `qzone_reply` 回退 bot 自己作二元组(通知场景的常规形态);不影响评论/点赞主路径。
 
 ### 3.13.8 生产部署注意事项
@@ -414,7 +416,7 @@ QQ空间虚拟流(qzone-qq)── 网关注入(route_message;receive 只进不�
 - **`favorability.bot_user_id` 必须配置(非空)**:虚拟平台 bot 账号注册与虚拟流 session_id 计算依赖它,为空则模块停用。
 - **勿配置 `*:*` 全局表达共享组**:虚拟流学习落在自身 session(对真实流无污染),全局共享组会把空间流表达泄入真实流;不希望空间评论喂养虚拟流表达库时,可在主程序 WebUI 对该会话关学习(插件无法代设)。
 - **`schedule_generate` 模板升 v3 后,WebUI 自定义过的该模板需手动同步**:插件自动部署只覆盖主程序 `prompts/zh-CN/` 内置层,`data/custom_prompts/` 下的 WebUI 编辑产物优先级更高且不会被覆盖——旧版自定义模板不含 `qzone` 属性说明,日程将不产生 qzone 浏览窗口(需在 WebUI 手动更新或删除该自定义模板)。**`qzone_scene` 模板同理(v0.8 升 v3)**:WebUI 自定义过的该模板需手动同步,否则场景说明不含 `qzone_post` 用法(模型在虚拟流里不知道可以发说说)。
-- **写路径有真实副作用(风险提示)**:评论/回复/点赞/发布说说一经 `qzone_comment`/`qzone_reply`/`qzone_like`/`qzone_post` 调用成功即真实发布到QQ空间(无撤回通路);**是否互动、评论什么、是否发说说,完全由模型自主决定**(插件只做工程护栏——同说说评论频控上限 3、内容 ≤200/500 字、虚拟流会话硬门控、目标三级解析失败显式拒绝);入睡任务还会每晚自动发布一篇日记(`diary_enabled` 可单独关闭)。`qzone.enabled` 关闭即整体停用(读+写一起);不希望写动作时关闭该开关或停用模块,不存在"只读不禁写"的中间档。
+- **写路径有真实副作用(风险提示)**:评论/回复/点赞/发布说说一经 `qzone_comment`/`qzone_reply`/`qzone_like`/`qzone_post` 调用成功即真实发布到QQ空间(无撤回通路);**是否互动、表达什么方向、是否发说说,完全由模型自主决定**(正文由表达生成层按人设产出;插件只做工程护栏——同说说评论频控上限 3、正文生成上限 200/500 字(超长重生成仍超长则截断)、虚拟流会话硬门控、目标三级解析失败显式拒绝、生成失败显式报错不静默兜底);入睡任务还会每晚自动发布一篇日记(`diary_enabled` 可单独关闭)。`qzone.enabled` 关闭即整体停用(读+写一起);不希望写动作时关闭该开关或停用模块,不存在"只读不禁写"的中间档。
 - **通知轮询源B API 量(M3 统一时间线重构 2026-08-31)**:源B搭发现层便车——每轮 1 次统一时间线发现层调用+仅对「发现层有新活动 ∩ bot 近 30 天评论过(深度审查 D-1 反查时间下界)」的好友拉楼中楼(每人间隔 2 秒),**量与好友数无关**(零交集时零源B拉取);源B好友数硬上限(10)已随重构删除,不再截断。
 - **旧配置升级(v0.7/v0.8)**:持久化的 `qzone.tool_whitelist` 若含已废弃的 `reply` 或缺 `qzone_comment`/`qzone_reply`/`qzone_post`,on_load 会告警提示——需手动更新配置补入(reply 项无效可移除);不更新则虚拟流内无法评论/回复/发说说。
 
@@ -576,11 +578,13 @@ QQ空间虚拟流(qzone-qq)── 网关注入(route_message;receive 只进不�
 | diary_enabled | true | 日记功能开关(入睡时生成并发布空间日记说说;关闭则入睡任务只生成次日日程) |
 | diary_llm_model | "memory" | 日记生成模型(task 名) |
 | diary_llm_timeout_ms | 0 | 日记生成超时(毫秒;0=主程序默认) |
+| expression_llm_model | "memory" | 表达生成模型(评论/回复/说说正文的旁路人设生成,task 名;M3-r2 两段式) |
+| expression_llm_timeout_ms | 0 | 表达生成超时(毫秒;0=主程序默认) |
 | request_timeout_ms | 10000 | 空间 HTTP 请求超时(毫秒) |
 | max_retries | 0 | 空间动作 API(评论/点赞/发布,M2 生效)失败重试次数;0=失败即告警跳过。M1 读路径(图片下载)固定单次重试(联调实证 CDN 瞬态 404),不受此配置影响 |
 | cookie_refresh_minutes | 60 | cookie 刷新节流(分钟,间隔内跳过重取) |
 
-注:QQ空间动态注入复用主程序 planner→replyer 链不占旁路记账;日记是 QQ空间模块唯一的旁路 LLM 调用(`qzone_diary` 模块记账)。
+注:QQ空间动态注入复用主程序 planner→replyer 链不占旁路记账;QQ空间模块的旁路 LLM 调用有二——日记(`qzone_diary` 模块)与表达生成层(`qzone_expression` 模块,评论/回复/发布说说的正文生成,M3-r2 起),各自按模块记账。
 
 ### 4.13 debug 节(调试)
 

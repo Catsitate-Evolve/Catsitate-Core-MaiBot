@@ -225,7 +225,9 @@ class QzoneSection(PluginConfigBase):
         ["wait", "query_memory", "query_person_profile", "memo_write", "memo_read", "inspect_image",
          "qzone_like", "qzone_comment", "qzone_reply", "qzone_post"],
         "虚拟流 planner 工具白名单(按名过滤;硬门控不随此配置放松。工具驱动 v0.7:reply 已移除——"
-        "receive 网关无出站路径,直接打字发不出去,动作一律走 qzone_* 工具;M3 表达:qzone_post 发布自己的说说)",
+        "receive 网关无出站路径,直接打字发不出去,动作一律走 qzone_* 工具;M3-r2 表达生成层:"
+        "qzone_comment/qzone_reply/qzone_post 为两段式——planner 传 reply_reference(表达方向),"
+        "正文按 bot 人设由旁路 LLM 生成)",
         label="虚拟流工具白名单",
     )
     comment_poll_enabled: bool = _f(True, "统一通知轮询开关(双源:自己说说新评论+他人说说楼中楼新回复,始终运行醒着即可)", label="通知轮询开关")
@@ -241,6 +243,8 @@ class QzoneSection(PluginConfigBase):
     diary_enabled: bool = _f(True, "日记功能开关(入睡时生成并发布空间日记说说)", label="日记开关")
     diary_llm_model: str = _f("memory", "日记生成模型:填主程序 task 名", label="日记模型(task 名)")
     diary_llm_timeout_ms: int = _f(0, "日记生成 LLM 超时(毫秒);0=主程序默认", label="日记超时(毫秒)")
+    expression_llm_model: str = _f("memory", "表达生成模型(评论/回复/说说正文的旁路人设生成)", label="表达生成模型")
+    expression_llm_timeout_ms: int = _f(0, "表达生成超时(毫秒,0=默认)", label="表达生成超时(ms)")
     request_timeout_ms: int = _f(10000, "空间 HTTP 请求超时(毫秒)", label="HTTP 超时(毫秒)")
     max_retries: int = _f(
         0,

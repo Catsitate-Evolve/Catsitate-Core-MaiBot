@@ -240,18 +240,20 @@ class QzoneClient:
         """
         return await self._fetch_msglist(target_uin=target_uin, num=num)
 
-    async def _fetch_unified(self, *, count: int) -> str:
+    async def _fetch_unified(self, *, count: int, begin: int = 0, scope: int = 0) -> str:
         """拉取统一时间线原始响应文本(feeds3_html_more,发现层基础通道)。
 
-        响应外层 JSON、内层为 JS 对象字面量(见 discovery 模块)——不走
-        callback 截取/JSON 解码,原文直返交 parse_unified_timeline 消费。
-        外层 code 校验与读/写路径同一纪律:登录态失效抛 QzoneAuthError
-        (触发 cookie 失效重取),非 0 业务码/畸形 200 显式 RuntimeError,
-        不静默当空时间线。
+        begin 为翻页偏移(第 N 页 begin=N×页大小,M3-r2 Task5);scope=0 全好友
+        时间线、scope=1「与我相关」流(源C 赞事件输入,Task 10 的 get_like_events
+        经 _fetch_likes_raw 复用本通道)。响应外层 JSON、内层为 JS 对象字面量
+        (见 discovery 模块)——不走 callback 截取/JSON 解码,原文直返交
+        parse_unified_timeline 消费。外层 code 校验与读/写路径同一纪律:登录态
+        失效抛 QzoneAuthError(触发 cookie 失效重取),非 0 业务码/畸形 200
+        显式 RuntimeError,不静默当空时间线。
         """
         params = {
-            "uin": self.bot_uin, "format": "json", "begin": "0", "count": str(count),
-            "update": "1", "scope": "0", "filter": "all",
+            "uin": self.bot_uin, "format": "json", "begin": str(begin), "count": str(count),
+            "update": "1", "scope": str(scope), "filter": "all",
         }
         status, raw = await self._request(
             "GET", UNIFIED_TIMELINE_URL, params=params,
@@ -272,15 +274,21 @@ class QzoneClient:
             raise RuntimeError(f"空间统一时间线返回业务错误: code={code} 响应={text[:120]}")
         return text
 
-    async def get_unified_timeline(self, *, count: int = 20) -> list[FeedDiscovery]:
+    async def get_unified_timeline(self, *, count: int = 20, begin: int = 0) -> list[FeedDiscovery]:
         """发现层 API:统一时间线(1 次调用覆盖全好友动态,与好友数无关)。
 
-        返回轻量索引 FeedDiscovery 列表,appid 不过滤——说说(311)筛选
-        与新 tid 判重由调用方决定;完整正文/图片由充实层 get_user_feeds
-        按作者 uin 分组拉取(1+N 次调用,N=有新动态的作者数)。
+        begin 为翻页偏移(调用方按「本页无新说说即止步」语义逐页拉取,
+        M3-r2 Task5);scope 恒 0(全好友时间线)。返回轻量索引
+        FeedDiscovery 列表,appid 不过滤——说说(311)筛选与新 tid 判重由
+        调用方决定;完整正文/图片由充实层 get_user_feeds 按作者 uin 分组
+        拉取(1+N 次调用,N=有新动态的作者数)。
         """
-        text = await self._fetch_unified(count=count)
+        text = await self._fetch_unified(count=count, begin=begin)
         return parse_unified_timeline(text)
+
+    async def _fetch_likes_raw(self, *, count: int) -> str:
+        """拉取「与我相关」流原始文本(feeds3_html_more?scope=1,源C 赞事件输入)。"""
+        return await self._fetch_unified(count=count, scope=1)
 
     async def _post(self, url: str, *, form: dict, referer_uin: str, extra_params: dict | None = None) -> dict:
         """写路径 POST 通道(独立于 _request:读路径为 GET 语义,参数全进 query;

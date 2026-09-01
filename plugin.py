@@ -36,7 +36,7 @@ from catsitate_core.msg_react import MsgReactEngine, parse_choice_resp
 from catsitate_core.poke import PokeEngine
 from catsitate_core.prompt_deploy import sync_prompt_templates
 from catsitate_core.qzone import QZONE_GATEWAY_NAME, QZONE_PLATFORM
-from catsitate_core.qzone.protocol import FeedItem, parse_friend_list
+from catsitate_core.qzone.protocol import FEED_APPID_SHUOSHUO, FeedItem, parse_friend_list
 from catsitate_core.qzone.client import CookieManager, QzoneAuthError, QzoneClient
 from catsitate_core.qzone.comment_seen import CommentSeenStore
 from catsitate_core.qzone.discovery import FeedDiscovery
@@ -1017,7 +1017,8 @@ class CatsitatePlugin(MaiBotPlugin):
     async def _qzone_poll_feeds(self) -> None:
         """空间窗口内周期拉取(M3 统一时间线架构);窗口切换时收泵并回退未读。
 
-        浏览流三段式:①发现层 get_unified_timeline(1 次调用覆盖全好友)→
+        浏览流三段式:①发现层 get_unified_timeline 逐页拉取(稳态首页全旧
+        即止步恒 1 次调用;长时间离线后翻页补全积压,Task5)→
         ②过滤(说说 appid=311 且 seen 未登记的新 tid,is_new_candidate 纯查)→
         ③充实层按作者 uin 分组、每组 1 次 get_user_feeds 只拉有新动态的好友
         (1+N 次调用,N=有新动态的作者数,与好友总数无关)。
@@ -1053,9 +1054,25 @@ class CatsitatePlugin(MaiBotPlugin):
                     self.ctx.logger.info("QQ空间窗口开始,注入泵激活;回收跨启动 queued 残留 %d 条(重新拉取)", stale)
                 else:
                     self.ctx.logger.info("QQ空间窗口开始,注入泵激活")
-            # ① 发现层:统一时间线 1 次调用(feeds3_html_more,全好友聚合端点)
+            # ① 发现层:统一时间线(feeds3_html_more,全好友聚合端点)翻页拉取
+            # (M3-r2 Task5):稳态第 1 页全旧即止步恒 1 次调用;长时间离线后积压
+            # 逐页补全(每页 begin=页序×页大小),上限 discovery_max_pages 防
+            # 深翻——更早页只会更旧,本页无新说说 tid 即无翻页价值
+            page_size = max(self.config.qzone.discovery_count, 1)
+            max_pages = max(self.config.qzone.discovery_max_pages, 1)
+            discoveries: list[FeedDiscovery] = []
             try:
-                discoveries = await self.qzone_client.get_unified_timeline(count=20)
+                for page_idx in range(max_pages):
+                    batch = await self.qzone_client.get_unified_timeline(
+                        count=page_size, begin=page_idx * page_size
+                    )
+                    discoveries.extend(batch)
+                    has_new = any(
+                        d.appid == FEED_APPID_SHUOSHUO and self.qzone_seen.is_new_candidate(d.tid)
+                        for d in batch
+                    )
+                    if not batch or not has_new:
+                        break  # 本页无新说说:更早页只会更旧,翻页止步
             except QzoneAuthError:
                 # 登录态失效自愈链(联调缺陷#7):作废 cookie 下轮重取;不回退
                 # legacy——cookie 失效对两路径同源,回退只会重复失败多打一轮 API
@@ -1371,7 +1388,9 @@ class CatsitatePlugin(MaiBotPlugin):
 
             # ---- 源A:自己说说下的新评论 ----
             try:
-                comments, ctx = await self.qzone_client.get_own_feed_comments(bot_uin=bot_uin, num=10)
+                comments, ctx = await self.qzone_client.get_own_feed_comments(
+                    bot_uin=bot_uin, num=max(self.config.qzone.own_feed_scan_count, 1)
+                )
             except QzoneAuthError:
                 # 与浏览轮询同款自愈链(联调缺陷#7):作废 cookie,下轮重取
                 self.qzone_cookie.invalidate()
@@ -1454,7 +1473,11 @@ class CatsitatePlugin(MaiBotPlugin):
                 discoveries_b: list[FeedDiscovery] = []
                 if commented_friends:
                     try:
-                        discoveries_b = await self.qzone_client.get_unified_timeline(count=20)
+                        # 单页不翻页(源B 只需找「有新活动且评论过」的交集,
+                        # 页大小取 discovery_count 与浏览流同口径)
+                        discoveries_b = await self.qzone_client.get_unified_timeline(
+                            count=max(self.config.qzone.discovery_count, 1)
+                        )
                     except QzoneAuthError:
                         # 登录态失效自愈链(与浏览流同款):作废 cookie 下轮重取;不 return
                         # ——源B仅是增量来源,终止本轮源B即可,源A已得通知照常入队

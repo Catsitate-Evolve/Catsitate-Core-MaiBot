@@ -515,3 +515,30 @@ def test_client_unified_http_failure_raises_no_retry():
     except RuntimeError:
         raised = True
     assert raised and len(seen) == 1  # 读路径失败不重试,由调用方告警/回退
+
+
+def test_client_fetch_unified_begin_scope_passthrough():
+    """M3-r2 Task5:begin/scope 透传到请求参数——begin 供发现层翻页(第 N 页
+    偏移 N×页大小),scope=1 为「与我相关」流(源C 赞事件,Task 10 复用同通道)。"""
+    client, seen = _unified_client([(200, b'{"code":0,"data":{}}')])
+    asyncio.run(client._fetch_unified(count=50, begin=50, scope=1))
+    p = seen[0]["params"]
+    assert p["begin"] == "50" and p["count"] == "50" and p["scope"] == "1"
+
+
+def test_client_fetch_unified_begin_passthrough_via_get_unified_timeline():
+    """get_unified_timeline 透传 begin(发现层翻页入口),scope 恒 0(全好友时间线)。"""
+    client, seen = _unified_client([(200, UNIFIED_SAMPLE.encode("utf-8"))])
+    items = asyncio.run(client.get_unified_timeline(count=30, begin=30))
+    assert len(items) == 1  # 样本时间线照常解析(翻页不改变解析路径)
+    p = seen[0]["params"]
+    assert p["begin"] == "30" and p["count"] == "30" and p["scope"] == "0"
+
+
+def test_client_fetch_likes_raw_scope1():
+    """源C 赞事件输入通道:feeds3_html_more?scope=1(与我相关),Task 10 的
+    get_like_events 消费此原始文本;begin 恒 0(赞事件只取最新一页)。"""
+    client, seen = _unified_client([(200, b'{"code":0,"data":{}}')])
+    asyncio.run(client._fetch_likes_raw(count=10))
+    p = seen[0]["params"]
+    assert p["scope"] == "1" and p["count"] == "10" and p["begin"] == "0"

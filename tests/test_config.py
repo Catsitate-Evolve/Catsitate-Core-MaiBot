@@ -92,6 +92,10 @@ def test_qzone_section_defaults():
     assert q.virtual_group_name == "QQ空间"
     assert q.summary_count == 5
     assert q.summary_days == 3
+    # M3-r2 Task5:发现层翻页与拉取数量(源A自扫/源B单页与浏览流同口径)
+    assert q.discovery_count == 50
+    assert q.discovery_max_pages == 3
+    assert q.own_feed_scan_count == 20
     assert q.request_timeout_ms == 10000
     assert q.max_retries == 0
     assert q.cookie_refresh_minutes == 60

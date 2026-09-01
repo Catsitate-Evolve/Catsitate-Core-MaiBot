@@ -352,7 +352,7 @@ class _StubCommentClient:
         self.calls += 1
         return self._comments, self._ctx_map
 
-    async def get_unified_timeline(self, *, count=20):
+    async def get_unified_timeline(self, *, count=20, begin=0):
         del count
         return []
 

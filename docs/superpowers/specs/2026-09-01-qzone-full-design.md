@@ -36,7 +36,7 @@ QzoneClient（协议封装）
 │   ├── qzone_comment(feed_id, content, at_user_id?)
 │   ├── qzone_reply(feed_id, comment_id, content)
 │   ├── qzone_like(feed_id?)
-│   └── qzone_post(content) ← 仅表达触发轮可用
+│   └── qzone_post(content) 
 └── 说说发布（主动触发机制）
     └── 浏览窗口首轮后 proactive.trigger → planner 自主决定 → qzone_post 执行
 ```
@@ -49,26 +49,26 @@ QzoneClient（协议封装）
 
 **浏览动态**：
 ```
-(今天14:30)今天天气好
-〔说说ID=ee3396c49d38〕
+作者：XXX
+内容：今天天气好
+[说说ID=ee3396c49d38 发布于今天14:30]
 ```
 
 **通知·评论**：
 ```
-小明 评论了你的说说:好棒
-〔说说ID=ee3396c49d38 评论ID=2 评论者QQ=10001〕
+小明 评论了你的说说:好棒 → 用quote引用原说说
+[说说ID=ee3396c49d38 评论ID=2 评论者QQ=10001 回复于今天14:30]
 ```
 
 **通知·楼中楼回复**（含 bot 原评论上下文）：
 ```
-小明 回复了你的评论「测试收到~」:@小明 说得对
-〔说说ID=ee3396c49d38 评论ID=2 评论者QQ=10001〕
-```
+小明 回复了你的评论「测试收到~」:说得对 → 用quote引用原说说
+[说说ID=ee3396c49d38 评论ID=2 评论者QQ=10001 回复于今天14:30]
 
 **通知·点赞**：
 ```
-小明 赞了你的说说
-〔说说ID=ee3396c49d38〕
+小明 赞了你的说说「今天天气好」 → 过长可截断，用quote引用原说说
+[说说ID=ee3396c49d38 点赞于今天14:30]
 ```
 
 设计规则：
@@ -123,13 +123,10 @@ QzoneClient（协议封装）
 
 ### 4.3 说说发布（主动触发机制）
 
-浏览窗口首轮拉取完成后，若该窗口未用过表达机会：
-1. Plugin 调 `maisaka.proactive.trigger(虚拟流, intent="想分享点什么吗？可以用 qzone_post 发一条说说")`
+浏览窗口首轮拉取完成后：
+1. Plugin 调 `maisaka.proactive.trigger(虚拟流, intent="你正在<日程事件>，想分享点什么吗？可以用 qzone_post 发一条说说")`
 2. Planner 看到触发指示 + 刚看过的动态上下文
 3. Planner 自主决定：想发 → 调 qzone_post(content)；不想发 → 沉默
-4. qzone_post 从白名单移除（仅表达触发轮的 intent 文本提及，planner 平时不可见）
-
-每窗口一次表达机会，窗口起点重置。
 
 ### 4.4 目标解析（FeedContextRegistry）
 

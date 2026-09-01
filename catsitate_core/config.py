@@ -223,11 +223,12 @@ class QzoneSection(PluginConfigBase):
     decision_window_seconds: int = _f(150, "注入后等待 planner 轮完成的超时兜底(秒;须大于最坏轮延迟,慢模型实测 53s,150 留余量)", label="决策窗口超时(秒)")
     tool_whitelist: list[str] = _f(
         ["wait", "query_memory", "query_person_profile", "memo_write", "memo_read", "inspect_image",
-         "qzone_like", "qzone_comment", "qzone_reply", "qzone_post"],
+         "view_friend_feeds", "qzone_like", "qzone_comment", "qzone_reply", "qzone_post"],
         "虚拟流 planner 工具白名单(按名过滤;硬门控不随此配置放松。工具驱动 v0.7:reply 已移除——"
         "receive 网关无出站路径,直接打字发不出去,动作一律走 qzone_* 工具;M3-r2 表达生成层:"
         "qzone_comment/qzone_reply/qzone_post 为两段式——planner 传 reply_reference(表达方向),"
-        "正文按 bot 人设由旁路 LLM 生成)",
+        "正文按 bot 人设由旁路 LLM 生成;全域工具(view_friend_feeds/inspect_image)同时在此列,"
+        "表外工具一律不可用)",
         label="虚拟流工具白名单",
     )
     comment_poll_enabled: bool = _f(True, "统一通知轮询开关(双源:自己说说新评论+他人说说楼中楼新回复,始终运行醒着即可)", label="通知轮询开关")

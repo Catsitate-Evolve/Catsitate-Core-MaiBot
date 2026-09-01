@@ -588,13 +588,48 @@ class CatsitatePlugin(MaiBotPlugin):
         parameters=[
             ToolParameterInfo(name="message_id", param_type="string", description="目标消息 ID(可选,缺省按 image_index 取)", required=False),
             ToolParameterInfo(name="image_index", param_type="integer", description="倒数第几张含图消息(默认 1)", required=False),
+            ToolParameterInfo(name="image_hash", param_type="string", description="图片hash(view_friend_feeds 返回的图标注,8位前缀即可)", required=False),
             ToolParameterInfo(name="question", param_type="string", description="针对图片的具体问题", required=True),
         ],
         visibility="visible",
     )
-    async def inspect_image(self, message_id: str = "", image_index: int = 1, question: str = "", **kwargs: Any) -> str:
+    async def inspect_image(self, message_id: str = "", image_index: int = 1, question: str = "",
+                            image_hash: str = "", **kwargs: Any) -> str:
         if not self.config.plugin.enabled or not self.config.image_relook.enabled:
             return "图片重看工具未启用。"
+        if str(image_hash or "").strip():
+            # hash 路径(M3-r2 Task 7):覆盖非消息来源的图片——view_friend_feeds 等
+            # 经 tool result media 入库的图片没有消息上下文,消息搜索必空手而归;
+            # capability 无 LIKE 查询,database.get 拉表(Images 表量级有限)后插件侧
+            # 前缀匹配。行为不变量:命中唯一才用;多命中/零命中/形态异常显式报错
+            # 不猜,且不回退消息搜索(hash 语义失败换路会掩盖真实原因)。
+            prefix = str(image_hash).strip()
+            db_rows = await self.ctx.call_capability(
+                "database.get", model_name="Images", filters={}, single_result=False,
+            )
+            if not isinstance(db_rows, list):
+                msg = f"图片hash检索返回异常形态({type(db_rows).__name__}):{db_rows}"
+                self.ctx.logger.error(msg)
+                return msg
+            matched = [
+                r for r in db_rows
+                if isinstance(r, dict) and str(r.get("image_hash") or "").startswith(prefix)
+            ]
+            if not matched:
+                return f"未找到 hash 前缀 {prefix} 对应的图片"
+            if len(matched) > 1:
+                cand = ", ".join(f"{str(r.get('image_hash') or '')[:12]}…" for r in matched[:3])
+                return f"hash 前缀 {prefix} 命中 {len(matched)} 张图片,存在歧义,请提供更长前缀(候选:{cand})"
+            row = matched[0]
+            if not row.get("full_path"):
+                msg = f"图片 {prefix} 数据库记录缺 full_path:{row}"
+                self.ctx.logger.error(msg)
+                return msg
+            # 命中唯一:合成图片段(hash 路径无消息上下文,段仅承载 hash/文件名),
+            # 复用 message_id 路径的 full_path→读文件→relook 收尾链
+            seg = {"type": "image", "hash": str(row.get("image_hash") or prefix),
+                   "file_name": str(row.get("file_name") or "")}
+            return await self._inspect_image_relook(question, seg, str(row["full_path"]))
         stream_id = str(kwargs.get("stream_id") or "")
         # 方案 B(2026-08-31):注入消息 timestamp=阅读时刻,天然落在宿主 24h 默认窗内,
         # 无需放宽取数窗(原缺陷#14 的 hours 放宽随之移除)
@@ -615,7 +650,13 @@ class CatsitatePlugin(MaiBotPlugin):
             msg = f"图片 {seg.get('file_name') or seg.get('hash')} 数据库补读失败:{db_result}"
             self.ctx.logger.error(msg)
             return msg
-        image_path = Path("/MaiMBot") / str(db_result["full_path"])
+        return await self._inspect_image_relook(question, seg, str(db_result["full_path"]))
+
+    async def _inspect_image_relook(self, question: str, seg: dict, full_path: str) -> str:
+        """重看收尾链(两路径共用):读 full_path 文件补 base64 → relook prompt
+        → 旁路 LLM;读文件/LLM 失败显式返回并记日志(不静默)。"""
+
+        image_path = Path("/MaiMBot") / full_path
         try:
             image_bytes = image_path.read_bytes()
         except OSError as exc:
@@ -945,6 +986,81 @@ class CatsitatePlugin(MaiBotPlugin):
             self.ctx.logger.exception("QQ空间说说回注失败(发布已成功,仅上下文注入失败)")
         self.ctx.logger.info("QQ空间说说发布成功: %s", content[:30])
         return "发布成功。"
+
+    @Tool(
+        "view_friend_feeds",
+        description="查看指定QQ好友最近的QQ空间说说(正文+图片)。想了解某位好友近况时使用,任何聊天里都可用。",
+        brief_description="看好友说说",
+        parameters=[
+            ToolParameterInfo(name="qq", param_type="string", description="好友QQ号", required=True),
+            ToolParameterInfo(name="count", param_type="integer", description="看最近几条(默认3,上限10)", required=False),
+        ],
+        visibility="visible",
+    )
+    async def view_friend_feeds(self, qq: str = "", count: int = 3, **kwargs: Any) -> dict | str:
+        """全域查看工具:真实流仅供获取信息(空间动作工具在真实流隐藏)。
+
+        回 dict 而非 str:图片以 content_items(content_type=image+base64)经 tool
+        result media 返回,宿主入库 Images 表后可被 inspect_image 的 image_hash
+        前缀反查;文本摘要逐图列 sha256 前 8 位即该前缀的来源。成功即 registry
+        登记(content_summary/recent_comments=后续评论/回复的表达生成素材)。
+        """
+        del kwargs  # 全域工具:不限会话(真实流/虚拟流都只读不写)
+        import base64
+
+        if not self._qzone_available:
+            return "QQ空间模块未启用。"
+        qq = str(qq).strip()
+        if not qq.isdigit():
+            return "请提供好友的QQ号(纯数字)。"
+        count = max(1, min(int(count or 3), 10))
+        try:
+            # nickname 无上下文可用,传 QQ 号占位(仅请求参数,不影响拉取)
+            feeds = await self.qzone_client.get_user_feeds(target_uin=qq, nickname=qq, num=count)
+        except QzoneAuthError:
+            self.qzone_cookie.invalidate()
+            self.ctx.logger.warning("QQ空间登录态失效(view_friend_feeds),cookie 已作废,下轮重取")
+            return "登录态失效已重置,请稍后再试。"
+        except Exception:
+            self.ctx.logger.exception("QQ空间好友说说拉取失败(qq=%s)", qq)
+            return "拉取失败,已记录日志。"
+        if not feeds:
+            return f"{qq} 最近没有可见的说说。"
+        text_parts: list[str] = []
+        content_items: list[dict] = []
+        for f in feeds:
+            self._qzone_registry.register(FeedContext(
+                tid=f.tid, owner_uin=qq, owner_nickname=f.nickname or qq, kind="feed",
+                content_summary=(f.content or "(纯图)")[:100], recent_comments=list(f.comments),
+            ))
+            pairs: list[tuple[str, bytes]] = []
+            for url in f.image_urls[:3]:  # 单条说说最多带 3 图(防 media 项爆炸)
+                data = await self.qzone_client.download_image(url)
+                if data:
+                    pairs.append((url, data))
+            # RPC 帧预算同浏览注入链:压缩优先,极端丢弃置 None(摘要行只列实际
+            # 进入 content_items 的图,丢弃不占图号不误导 hash 反查)
+            fitted = fit_images_to_rpc_budget(
+                pairs, on_drop=lambda u: self.ctx.logger.warning(
+                    "QQ空间好友说说图片压缩后仍超 RPC 帧预算,丢弃保帧: %s", u),
+            )
+            img_tags: list[str] = []
+            for _url, data in fitted:
+                if not data:
+                    continue
+                img_tags.append(f"图{len(img_tags) + 1}({hashlib.sha256(data).hexdigest()[:8]})")
+                content_items.append({
+                    "content_type": "image",
+                    "data": base64.b64encode(data).decode("ascii"),
+                    "mime_type": "image/jpeg",
+                })
+            line = f"作者:{f.nickname or qq}\n内容:{f.content or '(纯图)'}"
+            if img_tags:
+                line += "\n" + " ".join(img_tags)
+            line += f"\n〔说说ID={f.tid[:12]}〕"
+            text_parts.append(line)
+        self.ctx.logger.info("QQ空间好友说说查看(qq=%s,%d 条,%d 图)", qq, len(feeds), len(content_items))
+        return {"content": "\n\n".join(text_parts), "content_items": content_items}
 
     # ---------- QQ空间(M1 感知 / M2 互动) ----------
 

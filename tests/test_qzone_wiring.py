@@ -8,6 +8,8 @@ _StubCtx 模式参照 test_integration.py:离线装配插件实例,依赖全部�
 from __future__ import annotations
 
 import asyncio
+import base64
+import hashlib
 from datetime import datetime, timedelta
 
 from catsitate_core.config import CatsitateConfig
@@ -2008,3 +2010,147 @@ def test_discovery_pagination_respects_configured_page_size(tmp_path, monkeypatc
     p.qzone_client = _PagedClient([])
     asyncio.run(p._qzone_poll_feeds())
     assert calls == [(7, 0), (7, 7)]  # 页大小 7、上限 2 页
+
+
+# ---- M3-r2 Task 7:view_friend_feeds 全域查看工具 + inspect_image hash 路径 ----
+
+
+def test_view_friend_feeds_returns_media_dict(tmp_path):
+    """view_friend_feeds 成功路径(全域查看工具,任何聊天流可用):拉好友说说→
+    dict 回执(content 文本摘要+content_items 图片媒体项,宿主按 tool result
+    media 入 Images 表供 inspect_image hash 路径反查);图标注为 sha256 前 8 位
+    (inspect_image 的 image_hash 前缀即来源于此);成功即 registry 登记
+    (content_summary/recent_comments=表达生成层场景素材)。"""
+
+    p = _make_plugin(tmp_path)
+    feed = FeedItem(tid="tid1", abstime="1750000000", uin="100", nickname="小明",
+                    content="今天天气好", image_urls=["http://img.qpic.cn/a.jpg"],
+                    comments=["小红:不错"])
+    feed_calls: list = []
+
+    async def get_user_feeds(*, target_uin, nickname, num=3):
+        feed_calls.append((target_uin, nickname, num))
+        return [feed]
+
+    downloads: list = []
+
+    async def download(url):
+        downloads.append(url)
+        return b"fakejpeg"
+
+    p.qzone_client.get_user_feeds = get_user_feeds
+    p.qzone_client.download_image = download
+
+    result = asyncio.run(p.view_friend_feeds(qq="100", count=2))
+    assert isinstance(result, dict)
+    # 拉取参数对位:nickname 回退 QQ 号(全域工具无昵称上下文),num=请求条数
+    assert feed_calls == [("100", "100", 2)]
+    assert downloads == ["http://img.qpic.cn/a.jpg"]  # 每图恰下载一次
+    # content 摘要:作者/正文/图标注(sha256 前 8 位,与 inspect_image 前缀口径一致)/锚
+    content = result["content"]
+    assert "作者:小明" in content and "说说ID=tid1" in content and "内容:今天天气好" in content
+    expected_tag = f"图1({hashlib.sha256(b'fakejpeg').hexdigest()[:8]})"
+    assert expected_tag in content and "图2" not in content
+    # 媒体项:base64 图 + mime(宿主 _parse_tool_content_items 消费形态)
+    assert result["content_items"] == [{
+        "content_type": "image",
+        "data": base64.b64encode(b"fakejpeg").decode("ascii"),
+        "mime_type": "image/jpeg",
+    }]
+    # registry 登记:owner=好友,素材字段=正文前 100 字+近期评论(qzone_comment 素材)
+    resolved = p._qzone_registry.resolve("tid1")
+    assert resolved is not None and resolved.owner_uin == "100" and resolved.owner_nickname == "小明"
+    assert resolved.content_summary == "今天天气好" and resolved.recent_comments == ["小红:不错"]
+    # count 上限 10(防单次拉爆);非法 QQ 号显式拒绝(零拉取)
+    asyncio.run(p.view_friend_feeds(qq="100", count=99))
+    assert feed_calls[-1][2] == 10
+    assert asyncio.run(p.view_friend_feeds(qq="notnum")) == "请提供好友的QQ号(纯数字)。"
+    assert len(feed_calls) == 2
+
+
+def test_inspect_image_by_hash_prefix_skips_message_search(tmp_path, monkeypatch):
+    """inspect_image hash 路径(M3-r2 Task 7):image_hash 给定时跳过消息搜索
+    (_fetch_recent 零调用——主断言,hash 覆盖 view_friend_feeds 等非消息来源经
+    tool result media 入库的图片);database.get 拉表(single_result=False)+
+    插件侧前缀过滤,命中唯一复用 full_path→读文件→relook 链(旁路 LLM 收到补图)。"""
+
+    import plugin as plugin_mod
+
+    p = _make_tool_plugin(tmp_path)
+    p.config.plugin.enabled = True  # inspect_image 开关门禁(默认关,工具直调测试放开)
+    full_hash = "abcd1234" + "0" * 56
+    db_calls: list = []
+
+    async def cap(capability, **kwargs):
+        if capability == "database.get":
+            db_calls.append(kwargs)
+            return [
+                {"image_hash": "ffff0000" + "0" * 56, "full_path": "other.jpg"},  # 非命中行
+                {"image_hash": full_hash, "full_path": "x.jpg"},
+            ]
+        return {}
+
+    p._ctx.call_capability = cap
+    (tmp_path / "x.jpg").write_bytes(b"img")
+    monkeypatch.setattr(plugin_mod, "Path", lambda s: tmp_path)  # /MaiMBot 根 → 测试目录
+    fetch_calls: list = []
+
+    async def _fetch_probe(stream_id, limit):
+        fetch_calls.append((stream_id, limit))
+        return []
+
+    p._fetch_recent = _fetch_probe
+
+    result = asyncio.run(p.inspect_image(image_hash="abcd1234", question="图里是什么"))
+    assert fetch_calls == []  # 主断言:hash 路径不做消息搜索
+    assert result == "ok"  # 旁路 LLM 桩回显(relook 链完整走通,非取图失败串)
+    # 拉表形态:Images 表 + single_result=False(capability 无 LIKE,插件侧前缀过滤)
+    assert len(db_calls) == 1
+    assert db_calls[0]["model_name"] == "Images" and db_calls[0]["single_result"] is False
+
+
+def test_inspect_image_hash_prefix_zero_and_multi_hit_errors(tmp_path, monkeypatch):
+    """hash 路径不变量(错误显式暴露):零命中/多命中/返回形态异常都显式报错
+    不猜,且一律不回退消息搜索(_fetch_recent 零调用——hash 语义失败不是消息
+    路径的失败,静默换路会掩盖真实原因)。"""
+
+    import plugin as plugin_mod
+
+    p = _make_tool_plugin(tmp_path)
+    p.config.plugin.enabled = True  # inspect_image 开关门禁(默认关,工具直调测试放开)
+    rows: list = []
+
+    async def cap(capability, **kwargs):
+        if capability == "database.get":
+            return list(rows)
+        return {}
+
+    p._ctx.call_capability = cap
+    monkeypatch.setattr(plugin_mod, "Path", lambda s: tmp_path)
+    fetch_calls: list = []
+
+    async def _fetch_probe(stream_id, limit):
+        fetch_calls.append((stream_id, limit))
+        return []
+
+    p._fetch_recent = _fetch_probe
+
+    # 零命中:表里无该前缀的图
+    rows = [{"image_hash": "ffff" + "0" * 60, "full_path": "other.jpg"}]
+    res0 = asyncio.run(p.inspect_image(image_hash="abcd1234", question="?"))
+    assert "未找到 hash 前缀 abcd1234" in res0
+    # 多命中:同前缀两张图 → 歧义报错并列候选(提示加长前缀),不任选其一
+    rows = [
+        {"image_hash": "abcd1234" + "1" * 56, "full_path": "a.jpg"},
+        {"image_hash": "abcd1234" + "2" * 56, "full_path": "b.jpg"},
+    ]
+    res2 = asyncio.run(p.inspect_image(image_hash="abcd1234", question="?"))
+    assert "歧义" in res2 and "命中 2 张" in res2 and "abcd1234" in res2
+    # 返回形态异常(错误 dict 而非列表):显式报错,不静默当空表
+    async def cap_bad(capability, **kwargs):
+        return {"success": False, "error": "未找到数据模型: Images"}
+
+    p._ctx.call_capability = cap_bad
+    res_bad = asyncio.run(p.inspect_image(image_hash="abcd1234", question="?"))
+    assert "异常形态" in res_bad
+    assert fetch_calls == []  # 三种失败形态都不触发消息搜索

@@ -100,10 +100,13 @@ def test_qzone_section_defaults():
     assert q.max_retries == 0
     assert q.cookie_refresh_minutes == 60
     # 工具驱动 v0.7:reply 移除(receive 网关无出站路径),qzone_comment/qzone_reply 进白名单;
-    # M3 表达:qzone_post(发布自己的说说)进白名单
+    # M3 表达:qzone_post(发布自己的说说)进白名单;M3-r2 Task7:全域查看工具
+    # view_friend_feeds 进白名单(排在 inspect_image 后)
     assert "wait" in q.tool_whitelist and "reply" not in q.tool_whitelist
     assert "qzone_like" in q.tool_whitelist and "qzone_comment" in q.tool_whitelist and "qzone_reply" in q.tool_whitelist
     assert "qzone_post" in q.tool_whitelist
+    assert "view_friend_feeds" in q.tool_whitelist
+    assert q.tool_whitelist.index("view_friend_feeds") == q.tool_whitelist.index("inspect_image") + 1
     assert "tool_search" not in q.tool_whitelist and "msg_react" not in q.tool_whitelist
     # M2 评论轮询两字段(spec §5;间隔字段 T11 起废弃,由 notification_interval_seconds 替代)
     assert q.comment_poll_enabled is True

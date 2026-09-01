@@ -1,5 +1,17 @@
 # Changelog
 
+## v0.7.0(2026-09-01) QQ空间工具驱动架构重构
+
+- **BREAKING:出站意图系统整体删除**(OutboundIntent/route_outbound/网关回调路由/意图绑定校验/出站计数/窗口首尾意图作废/超时清意图)。网关 `duplex`→`receive`(只进不出)——虚拟流里直接打字发不出去,互动一律经工具显式发出,是否互动/评论什么完全由模型自主决定。`routing.py`/`outbound.py` 文件保留但标记废弃(无生产调用点,便于 revert)。
+- 新增 `qzone_comment` 工具:评论说说(feed_id 照抄消息尾部锚);@ 前缀支持(at_user_id,napcat 同格式,registry 有昵称用昵称);同说说频控上限 3 条(窗口边界重置);内容 ≤200 字。
+- 新增 `qzone_reply` 工具:**真实楼中楼**——commentId+commentUin 二元组精确匹配主评论(@ 目标与二元组解耦,`wire.build_reply_form` 增 at_uin/at_nick);通知源A的 comment_uin=评论好友(回复他人评论的二元组=该评论+其作者,Maizone 实证),替代 M2 的「楼中楼降级头评+@」。
+- `qzone_like` 改造:增 feed_id 参数(锚解析,全量 tid 回填);删 message_id 前缀校验与通知拒赞——有 origin_tid 的通知可点其原说说,无 origin_tid 的畸形通知显式拒绝。
+- 新增 `FeedContextRegistry`(内存 LRU,128 条/48h):泵注入成功后登记说说上下文(主人/评论者/主评论二元组);工具目标三级解析 registry(精确/前缀)→ seen_store(7 天浏览窗)→ awaiting,解析失败显式拒绝。
+- 消息格式带 ID 锚:浏览动态文本段末尾「(说说 xxx)」(tid 前 12 位,**纯图说说也保留文本段**);通知正文改「评论了你的说说:…(说说 xx · 评论 xx · QQ xx)」/「回复了你的评论:…」自然可读+锚。
+- 场景 prompt v2:说明 ID 锚格式与三工具用法,明示沉默自由与「打字发不出去」。
+- 白名单默认值:删 `reply`(receive 网关下无效)增 `qzone_comment`/`qzone_reply`;旧配置 on_load 兼容告警(缺新工具/含废弃 reply)。
+- 测试:意图/网关路由测试重写为工具行为测试(成功/@前缀/频控/解析失败/AuthError/二元组/通知登记);`test_qzone_routing.py`/`test_qzone_outbound.py` 删除(模块已废弃)。
+
 ## v0.6.0(2026-08-31) M3:统一时间线架构重构
 
 - 浏览流重构为「发现层+充实层」两层混合:feeds3_html_more 1 次调用覆盖全好友统一时间线,仅对新动态按好友拉取充实。API 量从 O(N好友) 降为 O(1+新动态),24/240 好友成本相同。

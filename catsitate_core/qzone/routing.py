@@ -19,6 +19,9 @@ class OutboundIntent:
     # 意图绑定的注入消息 id(qzone_{tid}_{seq},深度审查 A-1):出站 reply 段引用的
     # 目标消息与之不一致=超时推进后旧轮回复错发新目标,网关侧据此拒发
     message_id: str = ""
+    # 已出站次数(多次出站设计变更 2026-09-01):网关成功路径累计,同一意图允许多段
+    # 回复逐条发出(planner 说了三句话→三条评论);上限 5 由网关判定,防无限循环
+    outbound_count: int = 0
 
 
 def route_outbound(intent: OutboundIntent | None, text: str, has_binary: bool) -> tuple[str, str]:

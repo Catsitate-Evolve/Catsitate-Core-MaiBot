@@ -196,9 +196,11 @@ def _out_msg(text):
     return {"raw_message": [{"type": "text", "data": text}]}
 
 
-def test_gateway_comment_success_consumes_intent_and_marks_interacted(tmp_path):
-    """I4-1:reaction 意图下出站→客户端 do_comment 被调(参数对位),远端成功后
-    意图即刻置 None,seen.mark_interacted 落库(interacted=1)且自评登记入评论表。"""
+def test_gateway_comment_success_retains_intent_for_multi_outbound(tmp_path):
+    """I4-1(多次出站改造 2026-09-01):reaction 意图下出站→客户端 do_comment 被调
+    (参数对位),远端成功后**意图保留**(planner 的多段回复逐条发出——人类也会对
+    同一条说说连发多条评论),outbound_count 逐次累计;seen.mark_interacted 落库
+    (interacted=1)且自评登记入评论表(记账幂等)。"""
 
     p = _make_gateway_plugin(tmp_path)
     p.qzone_seen.mark_queued("t1", abstime="1750000000", author_uin="10001", summary="今天天气好")
@@ -206,18 +208,47 @@ def test_gateway_comment_success_consumes_intent_and_marks_interacted(tmp_path):
     res = asyncio.run(p.qzone_gateway(message=_out_msg("好看!"), route={}, metadata={}))
     assert res["success"] is True and res.get("external_message_id")
     assert p.qzone_client.comment_calls == [("t1", "10001", "好看!")]  # Stub client 记录调用
-    assert p._qzone_outbound_intent is None  # 意图一次性消费(远端成功即刻置空)
+    # 意图保留(不置 None):同一意图的第二段回复照常发出,计数累计
+    intent = p._qzone_outbound_intent
+    assert intent is not None and intent.outbound_count == 1
+    res2 = asyncio.run(p.qzone_gateway(message=_out_msg("真的好看!"), route={}, metadata={}))
+    assert res2["success"] is True
+    assert p.qzone_client.comment_calls == [("t1", "10001", "好看!"), ("t1", "10001", "真的好看!")]
+    assert p._qzone_outbound_intent is not None and p._qzone_outbound_intent.outbound_count == 2
     rows = p.qzone_seen.store.query("SELECT interacted FROM qzone_feeds WHERE tid = 't1'")
     assert rows and rows[0][0] == 1  # mark_interacted 已落库
     keys = p.qzone_comment_seen.store.query(
         "SELECT comment_key FROM qzone_comments WHERE comment_key LIKE 't1:bot:%'"
     )
     assert keys  # 自评登记(note_bot_comment)已入评论表
+    assert any(
+        level == "info" and "意图保留,后续同目标出站继续" in str(a[0])
+        for level, a in p.logs
+    )
+
+
+def test_gateway_outbound_limit_five_rejects_sixth(tmp_path):
+    """多次出站防无限循环:同一意图出站达上限(5 次)→ 第 6 次拒发(告警+零写调用),
+    意图保留由超时/窗口边界清除,不因上限自清。"""
+
+    p = _make_gateway_plugin(tmp_path)
+    p.qzone_seen.mark_queued("t1", abstime="1750000000", author_uin="10001", summary="今天天气好")
+    p._qzone_outbound_intent = OutboundIntent(
+        kind="reaction", tid="t1", target_qq="10001", outbound_count=5,
+    )
+    res = asyncio.run(p.qzone_gateway(message=_out_msg("第六条"), route={}, metadata={}))
+    assert res["success"] is False
+    assert "已达上限" in str(res.get("error", ""))
+    assert p.qzone_client.comment_calls == []  # 零写调用(第 6 条不发出)
+    assert any(
+        level == "warning" and "出站达上限" in str(a[0]) for level, a in p.logs
+    )
+    assert p._qzone_outbound_intent is not None  # 上限拒发不清意图(清除仍归超时/窗口)
 
 
 def test_gateway_rejects_when_intent_consumed(tmp_path):
-    """I4-2:意图已消费(None)→出站 reject:返回 success=False 且 error 含「无出站意图」,
-    写路径客户端零调用(不会误发任何评论)。"""
+    """I4-2:意图已消费(None,超时/窗口边界清除)→出站 reject:返回 success=False
+    且 error 含「无出站意图」,写路径客户端零调用(不会误发任何评论)。"""
 
     p = _make_gateway_plugin(tmp_path)
     p._qzone_outbound_intent = None
@@ -231,7 +262,7 @@ def test_gateway_reply_downgrades_to_head_comment_with_at_prefix(tmp_path):
     """楼中楼降级(联调实证:commentlist 的 tid 是显示序号非真实 ID,楼中楼 API 必返
     -10049):comment_reply 意图出站改发头评+napcat @前缀(QQ 空间原生支持)——
     do_reply 零调用,do_comment 目标对位(fid=意图说说,target_qq=说说主人);成功后
-    意图照常即刻消费。"""
+    意图保留(多次出站,计数累计)。"""
 
     p = _make_gateway_plugin(tmp_path)
     p.qzone_seen.mark_queued("f1", abstime="1750000000", author_uin="10001", summary="说说")
@@ -246,7 +277,8 @@ def test_gateway_reply_downgrades_to_head_comment_with_at_prefix(tmp_path):
     assert p.qzone_client.comment_calls == [
         ("f1", "10001", "@{uin:20000,nick:小红,auto:1}谢谢你!")
     ]
-    assert p._qzone_outbound_intent is None  # 意图一次性消费(远端成功即刻置空)
+    # 意图保留(多次出站):reply 型出站成功后同样不置 None
+    assert p._qzone_outbound_intent is not None and p._qzone_outbound_intent.outbound_count == 1
 
 
 def test_notify_poll_self_skip_dedup_and_intent_occupied(tmp_path):
@@ -340,7 +372,7 @@ def test_notify_poll_source_b_reply_routes_to_friend_thread(tmp_path, monkeypatc
     # 登记时刻取当前时间(bot_commented_friends 带时间下界 D-1,硬编码日期会超窗失效)
     fresh = (datetime.now() - timedelta(minutes=1)).strftime("%Y-%m-%dT%H:%M:%S")
     p.qzone_comment_seen.note_bot_comment("ffeed1", "30000", "我的评论", fresh)
-    raw = {"usrinfo": {"uin": "30000"}, "msglist": [{"tid": "ffeed1", "content": "好友的说说正文",
+    raw = {"usrinfo": {"uin": "30000"}, "msglist": [{"tid": "ffeed1", "content": "好友的说说正文" * 10,
         "commentlist": [
         # 空 reply_tid 的畸形回复(T11 审查遗留):跳过不构造通知(防空 tid 畸形请求)
         {"tid": "bc1", "uin": BOT_UIN, "list_3": [
@@ -378,15 +410,16 @@ def test_notify_poll_source_b_reply_routes_to_friend_thread(tmp_path, monkeypatc
     assert len(p._ctx.gateway.calls) == 1
     msg = p._ctx.gateway.calls[0][1]
     assert msg["message_info"]["user_info"]["user_id"] == "30000"
-    # reply 段置首引用原说说注入消息(napcat quote 式上下文关联;源B sender=说说主人)
+    # reply 段置首引用原说说注入消息(napcat quote 式上下文关联;源B sender=说说主人);
+    # 引用内容=原说说正文前 60 字(feed.origin_content,非通知文本)
     reply = msg["raw_message"][0]
     assert reply["type"] == "reply"
     assert reply["data"]["target_message_id"] == "qzone_ffeed1_2"
     assert reply["data"]["target_message_sender_id"] == "30000"
-    assert reply["data"]["target_message_content"] == "好友的说说正文"
+    assert reply["data"]["target_message_content"] == ("好友的说说正文" * 10)[:60]
     text = msg["raw_message"][1]["data"]
-    assert text == "(通知) 阿好 回复了你: 说得对"  # 正文精简(reply 段已带上下文,不重复原文)
-    assert "你曾评论" not in text
+    assert text == "你的评论收到了来自 阿好 的回复: 说得对"  # 一眼可读:谁回复了你的评论
+    assert "你曾评论" not in text and "(通知)" not in text
     assert "notify_reply_ffeed1_rr1" in msg["message_id"]
     intent = p._qzone_outbound_intent
     assert intent is not None and intent.kind == "comment_reply"
@@ -603,7 +636,7 @@ def test_gateway_allows_quote_target_matching_intent(tmp_path):
     res = asyncio.run(p.qzone_gateway(message=_reply_msg("好看!", "qzone_t1_7"), route={}, metadata={}))
     assert res["success"] is True
     assert p.qzone_client.comment_calls == [("t1", "10001", "好看!")]
-    assert p._qzone_outbound_intent is None
+    assert p._qzone_outbound_intent is not None  # 成功后意图保留(多次出站)
 
 
 def test_gateway_binding_check_skipped_without_message_id_or_quote(tmp_path):

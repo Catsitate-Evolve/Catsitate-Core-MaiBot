@@ -33,6 +33,15 @@ def test_replace_scene_empty_config_and_miss():
     assert status2 == "miss"
 
 
+def test_scene_text_distinguishes_feeds_and_notifications():
+    """可读性优化(2026-09-01):场景文案显式区分两类内容(说说动态/互动通知)并
+    说明发布时间前缀,消除 bot 对「这是谁发的什么」的歧义。"""
+    assert "你正在用手机刷QQ空间" in QZONE_SCENE_TEXT
+    assert "说说动态" in QZONE_SCENE_TEXT and "互动通知" in QZONE_SCENE_TEXT
+    assert "时间前缀标注发布时间" in QZONE_SCENE_TEXT  # 与 build_feed_message 的时间前缀呼应
+    assert "qzone_like" in QZONE_SCENE_TEXT
+
+
 def test_filter_tool_definitions_openai_and_flat_forms():
     defs = [
         {"type": "function", "function": {"name": "reply", "description": "d", "parameters": {}}},

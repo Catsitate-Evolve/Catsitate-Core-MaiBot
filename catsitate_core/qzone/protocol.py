@@ -44,7 +44,7 @@ class FeedItem:
     # notify_reply 键含 parent_comment tid(tid 后缀不可还原),故构造时直接传入。
     dedup_key: str = ""
     origin_tid: str = ""       # 通知关联的原说说 tid(reply 段用)
-    origin_content: str = ""   # 原说说正文前30字(reply 段用)
+    origin_content: str = ""   # 原说说正文(reply 段用,注入构造层截前 60 字)
     origin_sender: str = ""    # 原说说作者 uin(reply 段用)
 
 

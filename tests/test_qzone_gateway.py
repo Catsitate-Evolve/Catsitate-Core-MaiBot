@@ -98,13 +98,15 @@ def test_build_message_pure_image_text_policy():
 
 
 def test_build_notify_message_with_reply_segment():
-    """通知专用构造(联调修正):reply 段置首引用原说说的注入消息(napcat quote 式
-    上下文关联),target_message_content 截 60 字;消息 id 形如 qzone_notify_{tid}_{epoch}。"""
+    """通知专用构造(联调修正+可读性优化):reply 段置首引用原说说的注入消息
+    (napcat quote 式上下文关联);target_message_content 直接取 feed.origin_content
+    (原说说正文前 60 字,非通知文本)——bot 一眼看到「这条评论在哪条说说下」。"""
     feed = _feed(tid="notify_comment_f1_c1", uin="20000", nickname="小红",
-                 content="(通知) 小红 评论了你的说说: 好棒")
+                 content="你的说说收到了来自 小红 的评论: 好棒",
+                 origin_content="原说说正文" * 20)
     msg = build_notify_message(feed, group_id="qzone_feed", group_name="QQ空间",
                                now_epoch=1750000100.0, reply_target_id="qzone_f1_3",
-                               reply_target_content="原说说正文" * 20, reply_target_sender="10000")
+                               reply_target_sender="10000")
     assert msg["message_id"] == "qzone_notify_notify_comment_f1_c1_1750000100"
     assert msg["platform"] == QZONE_PLATFORM and msg["timestamp"] == "1750000100"
     info = msg["message_info"]
@@ -114,7 +116,8 @@ def test_build_notify_message_with_reply_segment():
     reply = msg["raw_message"][0]
     assert reply["type"] == "reply"
     assert reply["data"]["target_message_id"] == "qzone_f1_3"
-    assert reply["data"]["target_message_content"] == ("原说说正文" * 20)[:60]  # 截 60 字
+    # 引用内容=原说说正文前 60 字(feed.origin_content,不是通知文本)
+    assert reply["data"]["target_message_content"] == ("原说说正文" * 20)[:60]
     assert reply["data"]["target_message_sender_id"] == "10000"
     assert msg["raw_message"][1] == {"type": "text", "data": feed.content}
 
@@ -123,7 +126,7 @@ def test_build_notify_message_without_reply_segment():
     """reply 目标缺省(原说说未注入过,seen 无 message_id 记录)→ 无 reply 段,
     raw_message 仅文本段,正文原样(通知格式精简后不再重复引用原文)。"""
     feed = _feed(tid="notify_reply_f2_r1", uin="30000", nickname="阿好",
-                 content="(通知) 阿好 回复了你: 说得对")
+                 content="你的评论收到了来自 阿好 的回复: 说得对")
     msg = build_notify_message(feed, group_id="g", group_name="n", now_epoch=1750000200.5)
     assert msg["message_id"] == "qzone_notify_notify_reply_f2_r1_1750000200"
     assert msg["raw_message"] == [{"type": "text", "data": feed.content}]
@@ -161,9 +164,10 @@ def test_m2_wiring_source_assertions():
     # T11 工具双向隔离:非 qzone 流隐藏 qzone_ 前缀专属工具(防模型误调);
     # 终审 I4 抽纯函数 filter_qzone_tools_for_stream(scene.py),plugin 侧接线断言随之更新
     assert "filter_qzone_tools_for_stream(" in src
-    assert 'self._qzone_outbound_intent = None' in src  # 意图一次性消费
-    # 审查必修:远端成功即刻消费意图(记账失败不得把意图留到下一条出站→重复评论)
-    assert 'self._qzone_outbound_intent = None  # 远端成功即刻消费' in src
+    # 多次出站(设计变更 2026-09-01):成功路径不再置 None——意图保留至决策窗口
+    # 超时/窗口边界清除,planner 的多段回复逐条发出;outbound_count 累计+上限防无限循环
+    assert "self._qzone_outbound_intent = None  # 远端成功即刻消费" not in src
+    assert "intent.outbound_count += 1" in src and "outbound_count >= 5" in src
     # T7 接线:好感度显式事件消费(结算素材并入 + 衰减计时基准)
     assert "fav_events_on(" in src and "last_fav_interaction(" in src
     # T7 审查必修:事件合成消息 ts 用原始时刻(created_at)防同日 early→daily 重判;
@@ -174,10 +178,10 @@ def test_m2_wiring_source_assertions():
     assert "SNAPSHOT_CACHE_MAX" in src and "popitem(last=False)" in src
     # T7 M-2:见闻摘要带作者昵称
     assert 'author_nickname=friend["nickname"]' in src and "author_nickname" in src
-    # T11 场景文案:通知回应→楼中楼回复
+    # T11 场景文案(可读性优化 2026-09-01):两类内容(说说动态/互动通知)显式区分
     from catsitate_core.qzone.scene import QZONE_SCENE_TEXT as _scene_text
 
-    assert "通知" in _scene_text and "楼中楼" in _scene_text
+    assert "说说动态" in _scene_text and "互动通知" in _scene_text
 
 
 def test_selfcheck_blocks_talk_value_zero():
@@ -381,10 +385,11 @@ def test_notify_poll_stale_comment_skipped_and_registered(tmp_path):
 
 
 def test_notify_poll_injects_notify_message_with_and_without_reply_segment(tmp_path):
-    """通知注入(联调修正):泵对 source=notify 走 build_notify_message 专用构造——
-    正文精简「(通知) XX 评论了你的说说: 评论内容」(无发布时间前缀/reply 段已带
-    上下文);原说说已在 seen 登记 message_id → 注入消息带 reply 段引用原说说注入
-    消息(napcat quote 式);未登记 → 无 reply 段回退纯文本。"""
+    """通知注入(联调修正+可读性优化):泵对 source=notify 走 build_notify_message
+    专用构造——正文「你的说说收到了来自 XX 的评论: 评论内容」一眼可读(谁在哪条
+    说说下评论了什么);原说说已在 seen 登记 message_id → 注入消息带 reply 段引用
+    原说说注入消息(napcat quote 式,引用内容=原说说正文);未登记 → 无 reply 段
+    回退纯文本。"""
 
     fresh = {"feed2": [_CommentItem(
         comment_tid="ct2", uin="20001", nickname="小明", content="写得好",
@@ -402,14 +407,15 @@ def test_notify_poll_injects_notify_message_with_and_without_reply_segment(tmp_p
     assert reply["type"] == "reply"  # 引用段置首(napcat quote 式上下文关联)
     assert reply["data"]["target_message_id"] == "qzone_feed2_5"
     assert reply["data"]["target_message_sender_id"] == "10000"  # 源A:原说说作者=bot
-    assert msg["raw_message"][1] == {"type": "text", "data": "(通知) 小明 评论了你的说说: 写得好"}
+    assert reply["data"]["target_message_content"] == "今天的心情"  # 引用内容=原说说正文(非通知文本)
+    assert msg["raw_message"][1] == {"type": "text", "data": "你的说说收到了来自 小明 的评论: 写得好"}
     intent = p._qzone_outbound_intent
     assert intent is not None and intent.kind == "comment_reply"
     assert (intent.tid, intent.target_qq, intent.comment_tid, intent.comment_uin) == \
         ("feed2", "10000", "ct2", "20001")  # 源A:说说主人=bot,commentId=好友评论
     assert intent.message_id == msg["message_id"]  # 意图绑定通知注入消息(quote 校验对位)
 
-    # 回退形态:原说说未注入过(无 message_id 记录)→ 无 reply 段,首段即精简正文
+    # 回退形态:原说说未注入过(无 message_id 记录)→ 无 reply 段,首段即通知正文
     no_origin = {"feed3": [_CommentItem(
         comment_tid="ct3", uin="20002", nickname="小刚", content="加油", create_time="",
     )]}
@@ -417,5 +423,5 @@ def test_notify_poll_injects_notify_message_with_and_without_reply_segment(tmp_p
     _asyncio.run(p2._qzone_notify_scan())
     assert len(p2._ctx.gateway.calls) == 1
     raw2 = p2._ctx.gateway.calls[0][1]["raw_message"]
-    assert raw2 == [{"type": "text", "data": "(通知) 小刚 评论了你的说说: 加油"}]
+    assert raw2 == [{"type": "text", "data": "你的说说收到了来自 小刚 的评论: 加油"}]
     assert p2._qzone_outbound_intent is not None and p2._qzone_outbound_intent.comment_tid == "ct3"

@@ -142,7 +142,7 @@ class CatsitatePlugin(MaiBotPlugin):
     _qzone_group_prompt_at: float = 0.0
     _qzone_available: bool = False  # 启动自检+网关就绪后置 True(Task 12)
     _qzone_seq: int = 0  # message_id 序号(on_load 以当前秒播种,防跨重启撞车触发宿主去重)
-    _qzone_outbound_intent: OutboundIntent | None = None  # 当前出站意图(一次性消费,M2;on_load 重置)
+    _qzone_outbound_intent: OutboundIntent | None = None  # 当前出站意图(多次出站:保留至超时/窗口边界;on_load 重置)
     _qzone_notify_task_armed: bool = False  # 统一通知轮询调度任务已注册标记(热重载重注册防重)
     _qzone_poll_running: bool = False  # 浏览轮询后台拉取进行中(深度审查 A-2:tick 防重入标记)
     _qzone_notify_running: bool = False  # 通知轮询后台扫描进行中(同上,通知 tick 独立标记)
@@ -267,7 +267,7 @@ class CatsitatePlugin(MaiBotPlugin):
         # seq 以当前秒播种:重启归零会让 qzone_{tid}_{seq} 与上一轮运行撞车,
         # 被宿主 driver_id:message_id 去重拒绝(联调缺陷#11,静默丢注入)
         self._qzone_seq = int(time.time())
-        # M2 出站意图(实例级重置;成功发出/窗口收泵时置 None,一次性消费)
+        # M2 出站意图(实例级重置;成功出站后保留至超时/窗口边界清除——多次出站设计)
         self._qzone_outbound_intent = None
         # 轮询后台任务防重入标记实例级重置(类属性共享可变态,卸载取消任务后不得残留 True)
         self._qzone_poll_running = False
@@ -744,8 +744,14 @@ class CatsitatePlugin(MaiBotPlugin):
             self.ctx.logger.warning("QQ空间出站被拒(%s;文本预览=%.30s)", reason, text)
             return {"success": False, "error": f"QQ空间出站拒绝: {reason}"}
         intent = self._qzone_outbound_intent
+        # 多次出站防无限循环(设计变更 2026-09-01):同一意图出站达上限即拒发,
+        # 意图清除仍归超时/窗口边界(此处不清,防拒发路径顺手改变意图生命周期)
+        if intent.outbound_count >= 5:
+            self.ctx.logger.warning("QQ空间意图出站达上限(5 次,tid=%s),拒发", intent.tid)
+            return {"success": False, "error": "该意图出站已达上限"}
         # 深度审查 A-1:意图绑定校验——出站消息引用的目标须与意图的注入消息一致
-        # (防超时推进后旧轮回复错发到新目标;无 reply 段或意图无 message_id 时跳过)
+        # (防超时推进后旧轮回复错发到新目标;无 reply 段或意图无 message_id 时跳过;
+        # 多次出站下同样生效——每一段出站都必须对准意图绑定的目标)
         quoted = extract_quote_target(message)
         if quoted and intent.message_id and not quoted.startswith(intent.message_id):
             self.ctx.logger.warning(
@@ -767,9 +773,11 @@ class CatsitatePlugin(MaiBotPlugin):
         except Exception:
             self.ctx.logger.exception("QQ空间出站动作失败(kind=%s,tid=%s),跳过", action, intent.tid)
             return {"success": False, "error": "动作失败,详见插件日志"}
-        # 意图一次性消费(审查必修):远端成功即刻清——若等本地记账后再清,记账抛错会
-        # 走 except 且意图仍在,下一条出站将向同一目标重复发评论;失败路径保留意图待下轮
-        self._qzone_outbound_intent = None  # 远端成功即刻消费
+        # 设计变更(多次出站,2026-09-01):成功路径不再置 None——planner 同一意图的
+        # 多段回复须逐条发出(人类也会对同一条说说连发多条评论);意图保留至决策窗口
+        # 超时(_qzone_pump force_release)或窗口边界(窗口尾/窗口首残留)清除;
+        # outbound_count 累计+上限 5 防无限循环(本函数入口判定)
+        intent.outbound_count += 1
         # 本地记账(seen/评论登记/好感度事件)独立容错:远端已成功,记账失败仅告警,
         # 不影响驱动回执 success=True(错误显式暴露,不静默也不误报失败)
         now_iso = datetime.now().strftime("%Y-%m-%dT%H:%M:%S")
@@ -782,7 +790,10 @@ class CatsitatePlugin(MaiBotPlugin):
                 self.qzone_comment_seen.fav_event(intent.comment_uin, "COMMENT", f"{intent.comment_nick} 评论你被你回复: {text[:40]}")
         except Exception:
             self.ctx.logger.exception("QQ空间出站本地记账失败(kind=%s,tid=%s),仅告警", action, intent.tid)
-        self.ctx.logger.info("QQ空间出站成功(kind=%s,tid=%s,文本预览=%.30s)", action, intent.tid, text)
+        self.ctx.logger.info(
+            "QQ空间出站成功(kind=%s,tid=%s,文本预览=%.30s)(意图保留,后续同目标出站继续)",
+            action, intent.tid, text,
+        )
         return {"success": True, "external_message_id": f"qzone_{action}_{intent.tid}_{int(time.time())}"}
 
     async def _qzone_poll_tick(self) -> None:
@@ -1035,8 +1046,7 @@ class CatsitatePlugin(MaiBotPlugin):
                 msg = build_notify_message(
                     feed, group_id=self.config.qzone.virtual_group_id,
                     group_name=self.config.qzone.virtual_group_name, now_epoch=time.time(),
-                    reply_target_id=reply_target_id, reply_target_content=feed.origin_content,
-                    reply_target_sender=feed.origin_sender,
+                    reply_target_id=reply_target_id, reply_target_sender=feed.origin_sender,
                 )
             else:
                 images: list[tuple[str, bytes]] = []
@@ -1148,8 +1158,10 @@ class CatsitatePlugin(MaiBotPlugin):
         新楼中楼回复(list_3)。通知构造为 FeedItem(source="notify")走 P1
         优先级队列(插队于浏览动态之前),意图在泵注入成功后按 source 设定
         (通知→comment_reply 评论意图,网关降级头评+@前缀;浏览→reaction 头评)。
-        通知注入走 build_notify_message(联调修正):reply 段引用原说说注入消息
-        承载上下文,正文精简不重复引用原文,也不带发布时间前缀。
+        通知注入走 build_notify_message(联调修正+可读性优化 2026-09-01):reply 段
+        引用原说说注入消息承载上下文(target_message_content=原说说正文前 60 字),
+        正文「你的说说收到了来自 XX 的评论: …」/「你的评论收到了来自 XX 的回复: …」
+        一眼可读,不重复引用原文,也不带发布时间前缀。
         """
 
         try:
@@ -1215,11 +1227,14 @@ class CatsitatePlugin(MaiBotPlugin):
                     notifications.append(FeedItem(
                         tid=f"notify_comment_{feed_tid}_{c.comment_tid}",
                         abstime=c.create_time, uin=str(c.uin), nickname=c.nickname,
-                        content=f"(通知) {c.nickname} 评论了你的说说: {c.content}",
+                        # 可读性优化(2026-09-01):一眼知道是谁在你的说说下评论了什么
+                        content=f"你的说说收到了来自 {c.nickname} 的评论: {c.content}",
                         source="notify", dedup_key=dedup_key,
                         # reply 段关联原说说(联调修正):origin_* 供泵构造引用段,
-                        # 正文精简不再重复引用原文(源A:原说说作者=bot 自己)
-                        origin_tid=feed_tid, origin_content=feed_summary, origin_sender=bot_uin,
+                        # 引用内容=原说说正文前 60 字(截断统一在 messages 构造层,
+                        # 源A:原说说作者=bot 自己)
+                        origin_tid=feed_tid, origin_content=ctx.get(feed_tid) or "(无文字)",
+                        origin_sender=bot_uin,
                     ))
                     self.qzone_comment_seen.fav_event(
                         str(c.uin), "COMMENT", f"{c.nickname} 评论了你的说说「{feed_summary}」: {c.content[:40]}"
@@ -1291,15 +1306,16 @@ class CatsitatePlugin(MaiBotPlugin):
                                 "QQ空间楼中楼回复过旧跳过(create_time=%s,昵称=%s)", r.create_time, r.nickname
                             )
                             continue
-                        # 正文精简(联调修正):reply 段已带原说说上下文,bot 原评论
-                        # 留痕不再拼入正文(上下文由引用段承载,不重复引用原文)
+                        # 正文可读性优化(2026-09-01):一眼知道是谁回复了你的评论
+                        # (reply 段已带原说说上下文,bot 原评论留痕不再拼入正文)
                         notifications.append(FeedItem(
                             tid=f"notify_reply_{r.feed_tid}_{r.reply_tid}",
                             abstime=r.create_time, uin=str(r.uin), nickname=r.nickname,
-                            content=f"(通知) {r.nickname} 回复了你: {r.content}",
+                            content=f"你的评论收到了来自 {r.nickname} 的回复: {r.content}",
                             source="notify", friend_uin=friend_uin, dedup_key=key,
-                            # reply 段关联原说说(源B:原说说作者=好友/说说主人)
-                            origin_tid=r.feed_tid, origin_content=r.feed_content[:30],
+                            # reply 段关联原说说(源B:原说说作者=好友/说说主人);
+                            # 引用内容=原说说正文前 60 字(截断统一在 messages 构造层)
+                            origin_tid=r.feed_tid, origin_content=r.feed_content,
                             origin_sender=friend_uin,
                         ))
                         self.qzone_comment_seen.fav_event(

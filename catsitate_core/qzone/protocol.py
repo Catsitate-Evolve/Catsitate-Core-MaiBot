@@ -47,7 +47,7 @@ class FeedItem:
     origin_content: str = ""   # 原说说正文(reply 段用,注入构造层截前 60 字)
     origin_sender: str = ""    # 原说说作者 uin(reply 段用)
     comment_tid: str = ""      # 通知场景:主评论 tid(qzone_reply 用,工具驱动 2026-09-01)
-    comment_uin: str = ""      # 通知场景:主评论作者 uin(楼中楼二元组;源A/B 均=bot 自己)
+    comment_uin: str = ""      # 通知场景:主评论作者 uin(楼中楼二元组;源A=评论好友,源B=bot 自己)
 
 
 def generate_gtk(p_skey: str) -> int:

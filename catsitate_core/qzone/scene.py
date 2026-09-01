@@ -11,9 +11,11 @@ from __future__ import annotations
 from catsitate_core.qzone import QZONE_PLATFORM
 
 QZONE_SCENE_TEXT = (
-    "你正在用手机刷QQ空间。消息流中有两类内容:好友的说说动态(可能带图,时间前缀标注发布时间)"
-    "和互动通知(有人评论/回复了你)。你对说说的回复会作为QQ空间评论发出;对通知的回应也会作为"
-    "评论发出(带@提及)。可用 qzone_like 给当前说说点赞"
+    "你正在用手机刷QQ空间。消息流里有好友的说说动态和互动通知(有人评论或回复了你,引用的那条就是被评论的说说)。"
+    "每条消息末尾括号里的「说说 xxx」是那条说说的ID,「评论 xxx」是评论ID,「QQ xxx」是评论者的QQ号。"
+    "想互动就用工具:评论调 qzone_comment(feed_id 填说说ID;回应谁的评论就把TA的QQ号填 at_user_id);"
+    "回复评论调 qzone_reply(填说说ID和评论ID);点赞调 qzone_like。"
+    "不感兴趣就保持沉默,什么都不用做。在这里直接打字是发不出去的,动作只能通过工具完成。"
 )
 
 SCENE_EMPTY_CONFIG_WARNING = "群聊场景提示词配置为空(chat.reply_style.group_chat_prompt),虚拟流以注入块语义说明工作"

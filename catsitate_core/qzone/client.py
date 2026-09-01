@@ -338,11 +338,13 @@ class QzoneClient:
         return True
 
     async def do_reply(self, *, fid: str, target_qq: str, comment_tid: str, comment_uin: str,
-                       comment_nick: str, content: str) -> bool:
-        """楼中楼回复自己说说下的好友评论(同评论端点 + commentId/commentUin)。"""
+                       comment_nick: str, content: str, at_uin: str = "", at_nick: str = "") -> bool:
+        """楼中楼回复评论(同评论端点 + commentId/commentUin 二元组匹配主评论;
+        at_uin/at_nick 为 @ 前缀目标,与二元组解耦——缺省 @ 主评论作者)。"""
         form = build_reply_form(fid=fid, target_qq=target_qq, bot_uin=self.bot_uin,
                                 comment_tid=comment_tid, comment_uin=comment_uin,
-                                comment_nick=comment_nick, content=content)
+                                comment_nick=comment_nick, content=content,
+                                at_uin=at_uin, at_nick=at_nick)
         await self._post(self.COMMENT_URL, form=form, referer_uin=self.bot_uin)
         return True
 

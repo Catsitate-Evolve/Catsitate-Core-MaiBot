@@ -135,55 +135,57 @@ def test_build_notify_message_without_reply_segment():
 
 
 def test_gateway_declared_platform_constant():
-    """网关平台必须是常量 qzone-qq(连字符别名折叠进 qq 人物命名空间,spec §2.17)。"""
+    """网关平台必须是常量 qzone-qq(连字符别名折叠进 qq 人物命名空间,spec §2.17)。
+    工具驱动 v0.7:网关改 receive(只进不出,动作经工具发出),无出站路由回调。"""
     import inspect
 
     import plugin as _plugin  # tests/conftest 已把插件目录加入 sys.path
 
     src = inspect.getsource(_plugin)
     assert 'MessageGateway(' in src and 'qzone-qq' in src
-    # 网关回调显式拒发(M2 起为按意图路由,无意图仍拒;断言同步为拒发分支告警文案)
-    assert "QQ空间出站拒绝" in src
+    assert 'MessageGateway("receive"' in src and 'MessageGateway("duplex"' not in src  # receive 网关
+    # 出站意外回调显式拒发(防御分支,错误显式暴露)
+    assert "意外出站回调" in src
 
 
-def test_m2_wiring_source_assertions():
-    """M2 接线源码级断言:驱动路由/点赞工具/统一通知轮询/意图消费。"""
+def test_tool_driven_wiring_source_assertions():
+    """工具驱动接线源码级断言(v0.7,2026-09-01):意图系统删除+三工具上线。"""
     import inspect
 
     import plugin as _plugin
 
     src = inspect.getsource(_plugin)
-    assert "route_outbound(" in src and "do_comment(fid=" in src
-    # 楼中楼降级(联调实证 -10049):reply 分支改发头评+@前缀,do_reply 不再接线
-    assert "do_reply(" not in src and "auto:1}}" in src
-    assert '"qzone_like"' in src and "do_like(fid=" in src
-    assert "comment_reply" in src
+    # 意图系统已删:无路由函数调用、无意图属性
+    assert "route_outbound(" not in src and "extract_outbound_text(" not in src
+    assert "_qzone_outbound_intent" not in src and "OutboundIntent" not in src
+    # 三工具接线:评论/楼中楼回复/点赞(真实楼中楼,do_reply 正式接线)
+    assert '"qzone_comment"' in src and '"qzone_reply"' in src and '"qzone_like"' in src
+    assert "do_comment(fid=" in src and "do_reply(fid=" in src and "do_like(fid=" in src
+    # 目标解析走 registry(FeedContext 登记,替代意图绑定)
+    assert "_qzone_registry.register(" in src and "_qzone_resolve_feed(" in src
+    assert "auto:1}}" in src  # @ 前缀格式(napcat 适配器同款)
     # T11 统一通知通道:双源检测(自己说说评论+他人说说楼中楼回复)+P1 插队
     assert "_qzone_notify_poll_tick" in src and "_qzone_comment_poll_tick" not in src
     assert "enqueue_priority(" in src and "parse_feed_replies(" in src
     assert "get_user_feeds_raw(" in src and "notification_interval_seconds" in src
-    assert 'source="notify"' in src  # 通知 FeedItem 标记(泵按 source 区分意图)
-    # T11 工具双向隔离:非 qzone 流隐藏 qzone_ 前缀专属工具(防模型误调);
-    # 终审 I4 抽纯函数 filter_qzone_tools_for_stream(scene.py),plugin 侧接线断言随之更新
+    assert 'source="notify"' in src  # 通知 FeedItem 标记(泵按 source 登记上下文)
+    # T11 工具双向隔离:非 qzone 流隐藏 qzone_ 前缀专属工具(防模型误调)
     assert "filter_qzone_tools_for_stream(" in src
-    # 多次出站(设计变更 2026-09-01):成功路径不再置 None——意图保留至决策窗口
-    # 超时/窗口边界清除,planner 的多段回复逐条发出;outbound_count 累计+上限防无限循环
-    assert "self._qzone_outbound_intent = None  # 远端成功即刻消费" not in src
-    assert "intent.outbound_count += 1" in src and "outbound_count >= 5" in src
+    # 频控:同说说评论计数上限 3(窗口边界重置)
+    assert "_qzone_comment_counts" in src and ">= 3" in src
     # T7 接线:好感度显式事件消费(结算素材并入 + 衰减计时基准)
     assert "fav_events_on(" in src and "last_fav_interaction(" in src
-    # T7 审查必修:事件合成消息 ts 用原始时刻(created_at)防同日 early→daily 重判;
-    # 事件标签按 kind 三分(审查顺手)
+    # T7 审查必修:事件合成消息 ts 用原始时刻(created_at)防同日 early→daily 重判
     assert '"ts": e["created_at"] or' in src
     assert "你评论了TA" in src and "你点赞了TA" in src
-    # T7 M-1:快照缓存 LRU 上限
+    # T7 M-1:快照缓存 LRU 上限;M-2:见闻摘要带作者昵称
     assert "SNAPSHOT_CACHE_MAX" in src and "popitem(last=False)" in src
-    # T7 M-2:见闻摘要带作者昵称
     assert 'author_nickname=friend["nickname"]' in src and "author_nickname" in src
-    # T11 场景文案(可读性优化 2026-09-01):两类内容(说说动态/互动通知)显式区分
+    # 场景文案 v2(工具驱动):三工具用法+ID 锚说明
     from catsitate_core.qzone.scene import QZONE_SCENE_TEXT as _scene_text
 
-    assert "说说动态" in _scene_text and "互动通知" in _scene_text
+    assert "qzone_comment" in _scene_text and "qzone_reply" in _scene_text
+    assert "说说 xxx" in _scene_text
 
 
 def test_selfcheck_blocks_talk_value_zero():
@@ -276,6 +278,7 @@ import time as _time
 from catsitate_core.config import CatsitateConfig as _CatsitateConfig
 from catsitate_core.qzone.comment_seen import CommentSeenStore as _CommentSeenStore
 from catsitate_core.qzone.injector import FeedInjector as _FeedInjector
+from catsitate_core.qzone.registry import FeedContextRegistry as _FeedContextRegistry
 from catsitate_core.qzone.seen_store import SeenStore as _SeenStore
 from catsitate_core.qzone.wire import CommentItem as _CommentItem
 from catsitate_core.storage import SQLiteStore as _SQLiteStore
@@ -355,7 +358,8 @@ def _make_notify_poll_plugin(tmp_path, comments, ctx_map):
     p._qzone_available = True
     p.config.sleep.enabled = False  # 不依赖 self.sleep
     p.config.favorability.bot_user_id = "10000"
-    p._qzone_outbound_intent = None
+    p._qzone_registry = _FeedContextRegistry()  # 实例级(类属性共享,防测试间泄漏)
+    p._qzone_comment_counts = {}
     p._qzone_seq = 0
     p._qzone_pump_lock = _asyncio.Lock()
     p.qzone_seen = _SeenStore(_SQLiteStore(tmp_path / "seen.db"))
@@ -379,7 +383,7 @@ def test_notify_poll_stale_comment_skipped_and_registered(tmp_path):
     p = _make_notify_poll_plugin(tmp_path, comments, {"feed1": "今天的心情"})
     _asyncio.run(p._qzone_notify_scan())
     assert p._ctx.gateway.calls == []  # 不注入
-    assert p._qzone_outbound_intent is None  # 不占意图
+    assert p._qzone_registry.resolve("feed1") is None  # 未注入即未登记(工具无从解析)
     assert p.qzone_injector.queue_size() == 0  # 未入队(不是入队后没泵出)
     # 已登记:is_new 对该键返回 False(下轮判重跳过,不重扫)
     assert p.qzone_comment_seen.is_new("feed1:ct1:20000") is False
@@ -414,11 +418,12 @@ def test_notify_poll_injects_notify_message_with_and_without_reply_segment(tmp_p
         "type": "text",
         "data": "评论了你的说说:写得好(说说 feed2 · 评论 ct2 · QQ 20001)",  # ID 锚形态
     }
-    intent = p._qzone_outbound_intent
-    assert intent is not None and intent.kind == "comment_reply"
-    assert (intent.tid, intent.target_qq, intent.comment_tid, intent.comment_uin) == \
-        ("feed2", "10000", "ct2", "20001")  # 源A:说说主人=bot,commentId=好友评论
-    assert intent.message_id == msg["message_id"]  # 意图绑定通知注入消息(quote 校验对位)
+    # 泵注入成功后登记 FeedContext(工具目标解析;替代意图绑定):键=真实说说 tid
+    ctx = p._qzone_registry.resolve("feed2")
+    assert ctx is not None
+    assert ctx.owner_uin == "10000"  # 源A:说说主人=bot 自己
+    assert ctx.commenter_uin == "20001" and ctx.commenter_nickname == "小明"  # 评论者(@ 目标)
+    assert ctx.comment_tid == "ct2" and ctx.comment_uin == "20001"  # 楼中楼二元组(源A=好友评论)
 
     # 回退形态:原说说未注入过(无 message_id 记录)→ 无 reply 段,首段即通知正文
     no_origin = {"feed3": [_CommentItem(
@@ -429,4 +434,5 @@ def test_notify_poll_injects_notify_message_with_and_without_reply_segment(tmp_p
     assert len(p2._ctx.gateway.calls) == 1
     raw2 = p2._ctx.gateway.calls[0][1]["raw_message"]
     assert raw2 == [{"type": "text", "data": "评论了你的说说:加油(说说 feed3 · 评论 ct3 · QQ 20002)"}]
-    assert p2._qzone_outbound_intent is not None and p2._qzone_outbound_intent.comment_tid == "ct3"
+    ctx2 = p2._qzone_registry.resolve("feed3")
+    assert ctx2 is not None and ctx2.comment_tid == "ct3"

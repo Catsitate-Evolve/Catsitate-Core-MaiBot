@@ -1,9 +1,8 @@
-"""QQ空间组合层行为测试(终审修复波 I1/I4):plugin 接线的行为断言,非源码字符串。
+"""QQ空间组合层行为测试(工具驱动架构 v0.7):plugin 接线的行为断言,非源码字符串。
 
 _StubCtx 模式参照 test_integration.py:离线装配插件实例,依赖全部注入桩,
-只验证「组合层」行为——窗口开启作废残留评论意图 / 网关出站意图消费 /
-统一通知轮询三重守卫(自评跳过+判重+意图占用,T11 重写)与源B楼中楼路由。
-终审修复波追加:qzone_like 通知隔离(I1)/源B请求间隔(I2)/窗口尾通知残留告警(I3)。
+只验证「组合层」行为——工具目标解析(registry/seen_store/awaiting)/评论频控/
+@ 前缀/AuthError 自愈/统一通知轮询守卫(T11)与源B楼中楼上下文登记。
 """
 
 from __future__ import annotations
@@ -17,7 +16,7 @@ from catsitate_core.qzone.comment_seen import CommentSeenStore
 from catsitate_core.qzone.discovery import FeedDiscovery
 from catsitate_core.qzone.injector import FeedInjector
 from catsitate_core.qzone.protocol import FeedItem
-from catsitate_core.qzone.routing import OutboundIntent
+from catsitate_core.qzone.registry import FeedContext, FeedContextRegistry
 from catsitate_core.qzone.seen_store import SeenStore
 from catsitate_core.qzone.wire import CommentItem
 from catsitate_core.storage import SQLiteStore
@@ -88,18 +87,24 @@ class _StubCommentClient:
 
 
 class _StubWriteClient:
-    """出站动作桩:记录 do_comment/do_reply 调用,恒成功。"""
+    """出站动作桩:记录 do_comment/do_reply/do_like 调用,恒成功。"""
 
     def __init__(self):
         self.comment_calls = []
         self.reply_calls = []
+        self.like_calls = []
 
     async def do_comment(self, *, fid, target_qq, content):
         self.comment_calls.append((fid, target_qq, content))
         return True
 
-    async def do_reply(self, *, fid, target_qq, comment_tid, comment_uin, comment_nick, content):
-        self.reply_calls.append((fid, target_qq, comment_tid, comment_uin, comment_nick, content))
+    async def do_reply(self, *, fid, target_qq, comment_tid, comment_uin, comment_nick,
+                       content, at_uin="", at_nick=""):
+        self.reply_calls.append((fid, target_qq, comment_tid, comment_uin, comment_nick, content, at_uin, at_nick))
+        return True
+
+    async def do_like(self, *, fid, target_qq):
+        self.like_calls.append((fid, target_qq))
         return True
 
 
@@ -115,7 +120,8 @@ def _make_plugin(tmp_path):
     p.config.sleep.enabled = False  # 不依赖 self.sleep
     p.config.favorability.bot_user_id = BOT_UIN
     p._qzone_available = True
-    p._qzone_outbound_intent = None
+    p._qzone_registry = FeedContextRegistry()  # 实例级(类属性共享,防测试间泄漏)
+    p._qzone_comment_counts = {}
     p._qzone_seq = 0
     p._qzone_pump_lock = asyncio.Lock()  # 泵互斥锁(on_load 装配,离线测试手工补)
     p._background_tasks = set()  # 后台任务引用集(tick 派发 feeds/scan 用,on_load 装配)
@@ -129,6 +135,7 @@ def _make_plugin(tmp_path):
     p.qzone_injector = FeedInjector(decision_window_s=75)
     p._qzone_session_ids = set()  # 实例级覆盖(类属性为共享 set,防测试间状态泄漏)
     p.qzone_client = _StubUnifiedClient([])  # 默认发现层桩:空时间线(各测试按需覆盖)
+    p.qzone_cookie = _StubCookie()
     p.logs = logs  # 测试侧便捷引用(非插件属性约定)
     return p
 
@@ -155,9 +162,9 @@ def _patch_sleep(monkeypatch, record: list) -> None:
     monkeypatch.setattr(asyncio, "sleep", _fake_sleep)
 
 
-def test_poll_tick_voids_pending_comment_intent_on_window_start(tmp_path):
-    """终审 I1:窗口开始时作废未消费的 comment_reply 意图并告警——否则注入泵
-    覆盖为 reaction 后,迟到的评论回复将错发为新动态的头评;窗口仍正常开启(不饿死)。"""
+def test_poll_tick_resets_comment_counts_on_window_start(tmp_path):
+    """工具驱动 v0.7:窗口开始时重置同说说评论频控计数——上限语义是「本轮逛空间
+    期间」对同说说最多 3 条,跨窗口不得累计误伤;窗口仍正常开启(不饿死注入)。"""
 
     p = _make_plugin(tmp_path)
     now = datetime.now()
@@ -166,125 +173,207 @@ def test_poll_tick_voids_pending_comment_intent_on_window_start(tmp_path):
         "end": (now + timedelta(hours=1)).strftime("%Y-%m-%dT%H:%M"),
         "activity": "逛空间", "plan_speak": False, "topic": "", "qzone": True,
     }]}
-    p._qzone_outbound_intent = OutboundIntent(
-        kind="comment_reply", tid="feed1", target_qq=BOT_UIN,
-        comment_tid="ct1", comment_uin="20000", comment_nick="小红",
-    )
+    p._qzone_comment_counts = {"oldfeed1": 3, "oldfeed2": 1}  # 上一窗口的计数残留
 
-    # 发现层空时间线(默认桩):窗口开始分支后本轮提前返回,足以断言意图处置
+    # 发现层空时间线(默认桩):窗口开始分支后本轮提前返回,足以断言计数处置
     asyncio.run(p._qzone_poll_feeds())
-    assert p._qzone_outbound_intent is None  # 残留评论意图作废
+    assert p._qzone_comment_counts == {}  # 计数已重置
     assert p.qzone_injector.window_active is True  # 窗口正常开启(不跳过注入)
-    assert any(
-        level == "warning" and "窗口开始,未消费评论意图作废" in str(a[0]) and a[1] == "comment_reply"
-        for level, a in p.logs
-    )
 
 
-# ---- I4:组合层行为测试(网关出站意图消费/无意图拒发/评论轮询三重守卫) ----
+# ---- 工具驱动 v0.7:qzone_comment/qzone_reply/qzone_like 工具行为测试 ----
 
 
-def _make_gateway_plugin(tmp_path):
-    """qzone_gateway 直调装配:写路径客户端桩 + 真实 seen/comment_seen 存储。"""
+def _make_tool_plugin(tmp_path):
+    """工具直调装配:写路径客户端桩 + 真实 seen/comment_seen 存储。"""
 
     p = _make_plugin(tmp_path)
     p.qzone_client = _StubWriteClient()
+    p._qzone_session_ids.add("s1")  # 虚拟流会话(硬门控放行)
     return p
 
 
-def _out_msg(text):
-    return {"raw_message": [{"type": "text", "data": text}]}
+def _register_feed(p, tid="fulltid0001", owner="10001", nickname="小明", **kw):
+    """登记一条浏览 FeedContext(等价泵注入成功后的登记动作)。"""
+    p._qzone_registry.register(FeedContext(tid=tid, owner_uin=owner, owner_nickname=nickname, **kw))
 
 
-def test_gateway_comment_success_retains_intent_for_multi_outbound(tmp_path):
-    """I4-1(多次出站改造 2026-09-01):reaction 意图下出站→客户端 do_comment 被调
-    (参数对位),远端成功后**意图保留**(planner 的多段回复逐条发出——人类也会对
-    同一条说说连发多条评论),outbound_count 逐次累计;seen.mark_interacted 落库
-    (interacted=1)且自评登记入评论表(记账幂等)。"""
+def test_qzone_comment_success_via_registry(tmp_path):
+    """qzone_comment 成功路径:registry 解析目标(锚前缀→全量 tid 回填),
+    do_comment 参数对位(fid=全量 tid,target_qq=说说主人);记账三件套落库
+    (interacted/自评登记/好感度事件),计数累计。"""
 
-    p = _make_gateway_plugin(tmp_path)
-    p.qzone_seen.mark_queued("t1", abstime="1750000000", author_uin="10001", summary="今天天气好")
-    p._qzone_outbound_intent = OutboundIntent(kind="reaction", tid="t1", target_qq="10001")
-    res = asyncio.run(p.qzone_gateway(message=_out_msg("好看!"), route={}, metadata={}))
-    assert res["success"] is True and res.get("external_message_id")
-    assert p.qzone_client.comment_calls == [("t1", "10001", "好看!")]  # Stub client 记录调用
-    # 意图保留(不置 None):同一意图的第二段回复照常发出,计数累计
-    intent = p._qzone_outbound_intent
-    assert intent is not None and intent.outbound_count == 1
-    res2 = asyncio.run(p.qzone_gateway(message=_out_msg("真的好看!"), route={}, metadata={}))
-    assert res2["success"] is True
-    assert p.qzone_client.comment_calls == [("t1", "10001", "好看!"), ("t1", "10001", "真的好看!")]
-    assert p._qzone_outbound_intent is not None and p._qzone_outbound_intent.outbound_count == 2
-    rows = p.qzone_seen.store.query("SELECT interacted FROM qzone_feeds WHERE tid = 't1'")
+    p = _make_tool_plugin(tmp_path)
+    _register_feed(p, tid="fulltid0001abc", owner="10001")
+    # seen 预登记(mark_interacted 的落库对象;registry-only 通知说说无行则 UPDATE 空转,无害)
+    p.qzone_seen.mark_queued("fulltid0001abc", abstime="1", author_uin="10001", summary="动态")
+    res = asyncio.run(p.qzone_comment(feed_id="fulltid0001", content="好看!", stream_id="s1"))
+    assert res == "已评论。"
+    # fid 回填为全量 tid(锚前缀不可直接发 API);target_qq=说说主人
+    assert p.qzone_client.comment_calls == [("fulltid0001abc", "10001", "好看!")]
+    rows = p.qzone_seen.store.query("SELECT interacted FROM qzone_feeds WHERE tid = 'fulltid0001abc'")
     assert rows and rows[0][0] == 1  # mark_interacted 已落库
     keys = p.qzone_comment_seen.store.query(
-        "SELECT comment_key FROM qzone_comments WHERE comment_key LIKE 't1:bot:%'"
+        "SELECT comment_key FROM qzone_comments WHERE comment_key LIKE 'fulltid0001abc:bot:%'"
     )
     assert keys  # 自评登记(note_bot_comment)已入评论表
-    assert any(
-        level == "info" and "意图保留,后续同目标出站继续" in str(a[0])
-        for level, a in p.logs
-    )
+    assert p._qzone_comment_counts == {"fulltid0001abc": 1}  # 频控计数累计
 
 
-def test_gateway_outbound_limit_five_rejects_sixth(tmp_path):
-    """多次出站防无限循环:同一意图出站达上限(5 次)→ 第 6 次拒发(告警+零写调用),
-    意图保留由超时/窗口边界清除,不因上限自清。"""
+def test_qzone_comment_at_prefix_uses_commenter_nickname(tmp_path):
+    """@ 前缀:通知场景回应评论——at_user_id=registry 登记的评论者时用其昵称,
+    @ 格式与 napcat 适配器一致(uin/nick/auto);好感度事件记 COMMENT 指向被@者。"""
 
-    p = _make_gateway_plugin(tmp_path)
-    p.qzone_seen.mark_queued("t1", abstime="1750000000", author_uin="10001", summary="今天天气好")
-    p._qzone_outbound_intent = OutboundIntent(
-        kind="reaction", tid="t1", target_qq="10001", outbound_count=5,
-    )
-    res = asyncio.run(p.qzone_gateway(message=_out_msg("第六条"), route={}, metadata={}))
-    assert res["success"] is False
-    assert "已达上限" in str(res.get("error", ""))
-    assert p.qzone_client.comment_calls == []  # 零写调用(第 6 条不发出)
-    assert any(
-        level == "warning" and "出站达上限" in str(a[0]) for level, a in p.logs
-    )
-    assert p._qzone_outbound_intent is not None  # 上限拒发不清意图(清除仍归超时/窗口)
-
-
-def test_gateway_rejects_when_intent_consumed(tmp_path):
-    """I4-2:意图已消费(None,超时/窗口边界清除)→出站 reject:返回 success=False
-    且 error 含「无出站意图」,写路径客户端零调用(不会误发任何评论)。"""
-
-    p = _make_gateway_plugin(tmp_path)
-    p._qzone_outbound_intent = None
-    res = asyncio.run(p.qzone_gateway(message=_out_msg("迟到的回复"), route={}, metadata={}))
-    assert res["success"] is False
-    assert "无出站意图" in str(res.get("error", ""))
-    assert p.qzone_client.comment_calls == [] and p.qzone_client.reply_calls == []  # 零写调用
-
-
-def test_gateway_reply_downgrades_to_head_comment_with_at_prefix(tmp_path):
-    """楼中楼降级(联调实证:commentlist 的 tid 是显示序号非真实 ID,楼中楼 API 必返
-    -10049):comment_reply 意图出站改发头评+napcat @前缀(QQ 空间原生支持)——
-    do_reply 零调用,do_comment 目标对位(fid=意图说说,target_qq=说说主人);成功后
-    意图保留(多次出站,计数累计)。"""
-
-    p = _make_gateway_plugin(tmp_path)
-    p.qzone_seen.mark_queued("f1", abstime="1750000000", author_uin="10001", summary="说说")
-    p._qzone_outbound_intent = OutboundIntent(
-        kind="comment_reply", tid="f1", target_qq="10001",
-        comment_tid="c9", comment_uin="20000", comment_nick="小红",
-    )
-    res = asyncio.run(p.qzone_gateway(message=_out_msg("谢谢你!"), route={}, metadata={}))
-    assert res["success"] is True and res.get("external_message_id")
-    assert p.qzone_client.reply_calls == []  # do_reply 不再调用(-10049 降级)
-    # 头评+@前缀:@ 格式与 napcat 适配器一致(uin/nick/auto)
+    p = _make_tool_plugin(tmp_path)
+    _register_feed(p, tid="notifyfeed01", owner=BOT_UIN, commenter_uin="20000", commenter_nickname="小红")
+    res = asyncio.run(p.qzone_comment(feed_id="notifyfeed01", content="谢谢你!",
+                                      at_user_id="20000", stream_id="s1"))
+    assert res == "已评论并@了 小红。"
+    # 源A:说说主人=bot 自己,评论带 @ 前缀(napcat 适配器同格式)
     assert p.qzone_client.comment_calls == [
-        ("f1", "10001", "@{uin:20000,nick:小红,auto:1}谢谢你!")
+        ("notifyfeed01", BOT_UIN, "@{uin:20000,nick:小红,auto:1}谢谢你!")
     ]
-    # 意图保留(多次出站):reply 型出站成功后同样不置 None
-    assert p._qzone_outbound_intent is not None and p._qzone_outbound_intent.outbound_count == 1
+    events = p.qzone_comment_seen.store.query(
+        "SELECT user_id, kind FROM qzone_fav_events WHERE user_id = '20000'"
+    )
+    assert events and events[0][1] == "COMMENT"  # @ 互动记向被@者
 
 
-def test_notify_poll_self_skip_dedup_and_intent_occupied(tmp_path):
-    """I4-3(承 T11 重写,深度审查 B-1 守卫改判 awaiting):统一通知轮询三重守卫——
-    ①bot 自评跳过不注入;②is_new 判重(二次轮询不重注入);③awaiting 占用时
-    不取数(上一条还在等回复;意图在超时/窗口边界已清,awaiting 才是真互斥信号)。"""
+def test_qzone_comment_frequency_limit_three(tmp_path):
+    """频控:同说说评论上限 3 次——第 4 次拒绝(零写调用),提示适可而止;
+    不同说说互不影响(计数按 tid 分键)。"""
+
+    p = _make_tool_plugin(tmp_path)
+    _register_feed(p, tid="feedA", owner="10001")
+    _register_feed(p, tid="feedB", owner="10002")
+    for i in range(3):
+        res = asyncio.run(p.qzone_comment(feed_id="feedA", content=f"第{i}条", stream_id="s1"))
+        assert res == "已评论。"
+    res4 = asyncio.run(p.qzone_comment(feed_id="feedA", content="第四条", stream_id="s1"))
+    assert res4 == "这条说说你已经评论过 3 次了,适可而止～"
+    assert len(p.qzone_client.comment_calls) == 3  # 第 4 条零写调用
+    res_b = asyncio.run(p.qzone_comment(feed_id="feedB", content="另一条", stream_id="s1"))
+    assert res_b == "已评论。"  # 其它说说不受影响
+    assert len(p.qzone_client.comment_calls) == 4
+
+
+def test_qzone_comment_target_resolution_failure_and_fallback(tmp_path):
+    """目标解析失败:registry/seen_store/awaiting 均未命中 → 显式失败提示
+    (零写调用,不臆造目标);seen_store 回退:7 天内浏览过的动态按前缀命中。"""
+
+    p = _make_tool_plugin(tmp_path)
+    res = asyncio.run(p.qzone_comment(feed_id="nosuchid", content="?", stream_id="s1"))
+    assert "未找到说说" in res
+    assert p.qzone_client.comment_calls == []
+    # 回退:registry 无记录,但 seen_store 有 7 天内浏览记录(前缀匹配)
+    p.qzone_seen.mark_queued("seentid0001", abstime="1", author_uin="10003", summary="旧动态")
+    p.qzone_seen.mark_seen("seentid0001", datetime.now().strftime("%Y-%m-%dT%H:%M:%S"))
+    res2 = asyncio.run(p.qzone_comment(feed_id="seentid0001", content="补一条", stream_id="s1"))
+    assert res2 == "已评论。"
+    assert p.qzone_client.comment_calls == [("seentid0001", "10003", "补一条")]
+
+
+def test_qzone_comment_auth_error_invalidates_cookie(tmp_path):
+    """AuthError 自愈链:登录态失效→cookie 作废(下轮重取)+ 明确提示;
+    频控计数不累计(远端未成功),seen_store 回退链不动。"""
+
+    class _AuthFailClient(_StubWriteClient):
+        async def do_comment(self, *, fid, target_qq, content):
+            raise QzoneAuthError("登录态失效(code=-3000)")
+
+    p = _make_tool_plugin(tmp_path)
+    _register_feed(p, tid="feedX", owner="10001")
+    p.qzone_client = _AuthFailClient()
+    res = asyncio.run(p.qzone_comment(feed_id="feedX", content="你好", stream_id="s1"))
+    assert res == "登录态失效已重置,请稍后再试。"
+    assert p.qzone_cookie.invalidate_calls == 1  # cookie 已作废(下轮重取)
+    assert p._qzone_comment_counts == {}  # 失败不计入频控
+
+
+def test_qzone_reply_real_thread_with_correct_pair(tmp_path):
+    """qzone_reply 真实楼中楼(源A 形态):commentId+commentUin 二元组精确匹配
+    主评论(通知登记:主评论作者=评论好友),@ 目标=评论者昵称;do_reply 正式接线
+    (不再降级头评)。"""
+
+    p = _make_tool_plugin(tmp_path)
+    _register_feed(p, tid="feedR1", owner=BOT_UIN,
+                   commenter_uin="20000", commenter_nickname="小红",
+                   comment_tid="ct9", comment_uin="20000")
+    res = asyncio.run(p.qzone_reply(feed_id="feedR1", comment_id="ct9", content="谢谢!", stream_id="s1"))
+    assert res == "已回复 小红 的评论。"
+    # 二元组对位:fid=全量 tid,target_qq=说说主人(源A=bot),commentUin=主评论作者
+    assert p.qzone_client.reply_calls == [
+        ("feedR1", BOT_UIN, "ct9", "20000", "小红", "谢谢!", "20000", "小红")
+    ]
+    assert p.qzone_client.comment_calls == []  # 不再降级头评
+    events = p.qzone_comment_seen.store.query(
+        "SELECT user_id, kind FROM qzone_fav_events WHERE user_id = '20000'"
+    )
+    assert events and events[0][1] == "COMMENT"  # 回复互动记向评论者
+
+
+def test_qzone_reply_source_b_pair_bot_head_commenter_target(tmp_path):
+    """源B 形态:被回复的主评论是 bot 自己的(二元组 commentUin=bot),@
+    的是回复者——二元组与 @ 目标解耦(wire.build_reply_form 承载)。"""
+
+    p = _make_tool_plugin(tmp_path)
+    _register_feed(p, tid="feedR2", owner="30000",
+                   commenter_uin="30000", commenter_nickname="阿好",
+                   comment_tid="bc1", comment_uin=BOT_UIN)
+    res = asyncio.run(p.qzone_reply(feed_id="feedR2", comment_id="bc1", content="说得对", stream_id="s1"))
+    assert res == "已回复 阿好 的评论。"
+    fid, target_qq, ctid, cuin, cnick, content, at_uin, at_nick = p.qzone_client.reply_calls[0]
+    assert (fid, target_qq, ctid) == ("feedR2", "30000", "bc1")
+    assert cuin == BOT_UIN  # 二元组:主评论作者=bot(线程头)
+    assert at_uin == "30000" and at_nick == "阿好"  # @ 目标=回复者(解耦)
+
+
+def test_qzone_reply_requires_all_params_and_session(tmp_path):
+    """入参校验:缺说说ID/评论ID/内容 → 显式提示;非虚拟流会话 → 拒绝(零写调用)。"""
+
+    p = _make_tool_plugin(tmp_path)
+    _register_feed(p, tid="feedR3", owner="10001")
+    res = asyncio.run(p.qzone_reply(feed_id="", comment_id="c1", content="x", stream_id="s1"))
+    assert "都不能为空" in res
+    res2 = asyncio.run(p.qzone_reply(feed_id="feedR3", comment_id="c1", content="x", stream_id="other"))
+    assert res2 == "这个工具只能在QQ空间动态流里使用。"
+    assert p.qzone_client.reply_calls == []
+
+
+def test_qzone_like_via_feed_id_and_notify_origin(tmp_path):
+    """qzone_like v0.7:feed_id 参数(锚前缀)经 registry 解析为全量 tid;
+    通知 awaiting 不再拒赞——缺省目标取 origin_tid(真实说说),owner=源A=bot。"""
+
+    import time as _time
+
+    p = _make_tool_plugin(tmp_path)
+    _register_feed(p, tid="likefeed0001", owner="10001", nickname="小明")
+    res = asyncio.run(p.qzone_like(feed_id="likefeed0001", stream_id="s1"))
+    assert res == "已点赞 小明 的说说。"
+    assert p.qzone_client.like_calls == [("likefeed0001", "10001")]  # 全量 tid+主人
+
+    # 通知项 awaiting(合成 tid):缺省目标=origin_tid 真实说说,可点其原说说;
+    # 泵注入时会登记 FeedContext(owner=源A主人=bot,昵称=评论者)——此处按同款登记模拟
+    p2 = _make_tool_plugin(tmp_path)
+    _register_feed(p2, tid="realtid", owner=BOT_UIN, nickname="小红")
+    p2.qzone_injector.window_started()
+    p2.qzone_injector.enqueue_priority([FeedItem(
+        tid="notify_comment_realtid_c1", abstime="1750000000", uin="20000",
+        nickname="小红", content="评论了你的说说:好棒(说说 realtid · 评论 c1 · QQ 20000)",
+        source="notify", origin_tid="realtid", friend_uin="",
+    )])
+    popped = p2.qzone_injector.next_to_inject(_time.monotonic())
+    assert popped is not None
+    p2.qzone_injector.mark_injected(popped.tid, _time.monotonic())
+    res2 = asyncio.run(p2.qzone_like(stream_id="s1"))
+    assert res2 == "已点赞 小红 的说说。"
+    assert p2.qzone_client.like_calls == [("realtid", BOT_UIN)]  # 真实 tid+源A主人=bot
+
+
+def test_notify_poll_self_skip_dedup_and_awaiting_occupied(tmp_path):
+    """统一通知轮询三重守卫(T11):①bot 自评跳过不注入;②is_new 判重(二次轮询
+    不重注入);③awaiting 占用时不取数(上一条还在等回复——工具驱动下无需意图
+    互斥,registry 登记常驻,awaiting 即串行信号)。"""
 
     import time as _time
 
@@ -304,28 +393,28 @@ def test_notify_poll_self_skip_dedup_and_intent_occupied(tmp_path):
     asyncio.run(p._qzone_notify_scan())
     assert len(p._ctx.gateway.calls) == 1
     assert p._ctx.gateway.calls[0][1]["message_info"]["user_info"]["user_id"] == "20000"
-    intent = p._qzone_outbound_intent
-    assert intent is not None and intent.kind == "comment_reply"
-    assert (intent.tid, intent.target_qq, intent.comment_tid) == ("feed1", BOT_UIN, "c1")
+    ctx = p._qzone_registry.resolve("feed1")
+    assert ctx is not None  # 泵登记 FeedContext(源A:主人=bot,评论者=小红)
+    assert (ctx.owner_uin, ctx.commenter_uin, ctx.comment_tid, ctx.comment_uin) == \
+        (BOT_UIN, "20000", "c1", "20000")
 
     # ②awaiting 占用(轮未完成):不取数不注入(上一条通知还在等回复,不叠加)
     assert p.qzone_injector.awaiting_feed is not None
     asyncio.run(p._qzone_notify_scan())
     assert len(p._ctx.gateway.calls) == 1 and p.qzone_client.fetches == 1
 
-    # ③轮完成后重扫:释放 awaiting+清意图(bot 回复已消费),自评仍跳过,
+    # ③轮完成后重扫:释放 awaiting(bot 已用工具回应或保持沉默),自评仍跳过,
     # 好友评论 is_new 判重 → 不重注入(只多了一次取数)
     p.qzone_injector.on_turn_complete(_time.monotonic())
-    p._qzone_outbound_intent = None
     asyncio.run(p._qzone_notify_scan())
     assert len(p._ctx.gateway.calls) == 1
     assert p.qzone_client.fetches == 2  # 取数发生(判重生效,不是早退)
     assert p.qzone_comment_seen.is_new("feed1:c1:20000") is False  # 已登记,判重依据
 
 
-def test_notify_scan_guard_awaits_even_with_intent_cleared(tmp_path):
-    """深度审查 B-1:守卫判 awaiting 而非意图——意图被清(超时/窗口边界)但 awaiting
-    仍在(轮未完成)时,通知轮询仍不取数不叠加;awaiting 释放后才恢复。"""
+def test_notify_scan_guard_awaits_until_turn_complete(tmp_path):
+    """深度审查 B-1:守卫判 awaiting——轮未完成时通知轮询不取数不叠加;
+    awaiting 释放后才恢复(工具驱动:registry 上下文常驻,无意图互斥概念)。"""
 
     import time as _time
 
@@ -338,7 +427,6 @@ def test_notify_scan_guard_awaits_even_with_intent_cleared(tmp_path):
     popped = p.qzone_injector.next_to_inject(_time.monotonic())
     assert popped is not None
     p.qzone_injector.mark_injected(popped.tid, _time.monotonic())
-    p._qzone_outbound_intent = None  # 意图已被清(模拟超时清意图/窗口边界)
     fetches: list = []
 
     class _ProbeClient(_StubUnifiedClient):
@@ -351,15 +439,16 @@ def test_notify_scan_guard_awaits_even_with_intent_cleared(tmp_path):
 
     p.qzone_client = _ProbeClient()
     asyncio.run(p._qzone_notify_scan())
-    assert fetches == []  # awaiting 未释放:意图虽空仍不取数(旧 intent 守卫会漏判)
+    assert fetches == []  # awaiting 未释放:不取数(不叠加)
     p.qzone_injector.on_turn_complete(_time.monotonic())
     asyncio.run(p._qzone_notify_scan())
     assert fetches == [1]  # awaiting 释放后恢复取数
 
 
-def test_notify_poll_source_b_reply_routes_to_friend_thread(tmp_path, monkeypatch):
+def test_notify_poll_source_b_reply_registers_friend_thread_context(tmp_path, monkeypatch):
     """T11/T4-② 源B:发现层显示被评论好友有新活动→拉取其说说→楼中楼回复(list_3)
-    → 通知注入 → 意图 comment_reply 指向好友说说(target_qq=好友,commentId=回复 tid)。"""
+    → 通知注入 → registry 登记指向好友说说(owner=好友,主评论二元组=bot 的评论,
+    评论者=回复者——qzone_reply 的完整素材)。"""
 
     import time as _time
 
@@ -422,11 +511,12 @@ def test_notify_poll_source_b_reply_routes_to_friend_thread(tmp_path, monkeypatc
     assert text == "回复了你的评论:说得对(说说 ffeed1 · 评论 bc1 · QQ 30000)"
     assert "你曾评论" not in text and "(通知)" not in text
     assert "notify_reply_ffeed1_rr1" in msg["message_id"]
-    intent = p._qzone_outbound_intent
-    assert intent is not None and intent.kind == "comment_reply"
-    # 源B 意图对位:fid=好友说说,target_qq=好友(说说主人),commentId=回复 tid
-    assert (intent.tid, intent.target_qq, intent.comment_tid, intent.comment_uin) == \
-        ("ffeed1", "30000", "rr1", "30000")
+    ctx = p._qzone_registry.resolve("ffeed1")
+    assert ctx is not None
+    # 源B 登记对位:owner=好友(说说主人);主评论二元组=bot 的评论(bc1,作者=bot);
+    # 评论者=回复者阿好(@ 目标)
+    assert (ctx.owner_uin, ctx.comment_tid, ctx.comment_uin) == ("30000", "bc1", BOT_UIN)
+    assert (ctx.commenter_uin, ctx.commenter_nickname) == ("30000", "阿好")
     # 楼中楼回复键已登记(下轮判重,不重复通知)
     assert p.qzone_comment_seen.is_new("ffeed1:bc1:reply:rr1") is False
 
@@ -445,16 +535,17 @@ class _StubLikeClient:
         return True
 
 
-def test_qzone_like_rejects_notify_awaiting(tmp_path):
-    """终审 I1:awaiting 是 P1 通知(合成 tid)时 qzone_like 显式拒绝——
-    不向 qzone 发畸形点赞请求(写客户端零调用),返回通知不可点赞提示。"""
+def test_qzone_like_rejects_malformed_notify_without_origin(tmp_path):
+    """畸形通知防护(承终审 I1):awaiting 是无 origin_tid 的 P1 通知(合成 tid)
+    时 qzone_like 缺省路径显式拒绝——不向 qzone 发畸形点赞请求(零写调用);
+    有 origin_tid 的通知则点赞其原说说(见 test_qzone_like_via_feed_id_and_notify_origin)。"""
 
     import time as _time
 
     p = _make_plugin(tmp_path)
     p.qzone_client = _StubLikeClient()
     p._qzone_session_ids.add("s1")
-    # 通知项经真实入队→弹出→注入链进入 awaiting(source="notify" 完整保留)
+    # 通知项经真实入队→弹出→注入链进入 awaiting(source="notify",无 origin_tid 畸形形态)
     p.qzone_injector.window_started()
     p.qzone_injector.enqueue_priority([FeedItem(
         tid="notify_comment_feed1_c1", abstime="1750000000", uin="20000",
@@ -464,8 +555,8 @@ def test_qzone_like_rejects_notify_awaiting(tmp_path):
     assert popped is not None and popped.source == "notify"
     p.qzone_injector.mark_injected(popped.tid, _time.monotonic())
 
-    res = asyncio.run(p.qzone_like(message_id="", stream_id="s1"))
-    assert res == "当前是互动通知,不是说说,无法点赞。"
+    res = asyncio.run(p.qzone_like(stream_id="s1"))
+    assert res == "当前是互动通知且缺少原说说信息,无法点赞。"
     assert p.qzone_client.like_calls == []  # 零写调用(不对合成 tid 发畸形请求)
 
 
@@ -595,73 +686,27 @@ def test_poll_tick_warns_p1_notifications_dropped_at_window_end(tmp_path):
 # ---- 深度审查修复波(F1/F2/F3/F5):组合层行为测试 ----
 
 
-def _reply_msg(text, target_message_id):
-    """带 reply 段的出站消息(planner 引用回复形态;quote 目标在 reply 段)。"""
-    return {"raw_message": [
-        {"type": "reply", "data": {"target_message_id": target_message_id}},
-        {"type": "text", "data": text},
-    ]}
+def test_qzone_like_auth_error_invalidates_cookie(tmp_path):
+    """AuthError 自愈链(点赞路径):登录态失效→cookie 作废+明确提示,零成功记账。"""
+
+    class _AuthFailLikeClient:
+        async def do_like(self, *, fid, target_qq):
+            raise QzoneAuthError("登录态失效(code=-3000)")
+
+    p = _make_plugin(tmp_path)
+    p._qzone_session_ids.add("s1")
+    _register_feed(p, tid="likefail1", owner="10001")
+    p.qzone_client = _AuthFailLikeClient()
+    res = asyncio.run(p.qzone_like(feed_id="likefail1", stream_id="s1"))
+    assert res == "点赞失败:登录态失效已重置,稍后再试。"
+    assert p.qzone_cookie.invalidate_calls == 1
+    rows = p.qzone_comment_seen.store.query("SELECT 1 FROM qzone_fav_events")
+    assert rows == []  # 失败不记好感度事件
 
 
-def test_gateway_rejects_quote_target_mismatch(tmp_path):
-    """深度审查 A-1:意图绑定校验——出站 reply 段引用的目标消息与意图的注入消息
-    不一致(如超时推进后旧轮回复错靶新注入)→ 拒发,零写调用,显式告警。"""
-
-    p = _make_gateway_plugin(tmp_path)
-    p.qzone_seen.mark_queued("t1", abstime="1750000000", author_uin="10001", summary="第一条")
-    p.qzone_seen.mark_queued("t2", abstime="1750000100", author_uin="10002", summary="第二条")
-    # 意图绑定第一条注入消息 qzone_t1_7;出站却引用第二条 qzone_t2_9(错靶)
-    p._qzone_outbound_intent = OutboundIntent(
-        kind="reaction", tid="t1", target_qq="10001", message_id="qzone_t1_7",
-    )
-    res = asyncio.run(p.qzone_gateway(message=_reply_msg("好看!", "qzone_t2_9"), route={}, metadata={}))
-    assert res["success"] is False
-    assert "不匹配" in str(res.get("error", ""))
-    assert p.qzone_client.comment_calls == [] and p.qzone_client.reply_calls == []  # 零写调用
-    assert any(
-        level == "warning" and "出站目标不匹配意图" in str(a[0])
-        for level, a in p.logs
-    )
-    assert p._qzone_outbound_intent is not None  # 拒发不消费意图(非成功出站)
-
-
-def test_gateway_allows_quote_target_matching_intent(tmp_path):
-    """深度审查 A-1 反例:quote 目标与意图注入消息一致(前缀匹配)→ 正常放行,
-    绑定校验不误伤合法回复。"""
-
-    p = _make_gateway_plugin(tmp_path)
-    p.qzone_seen.mark_queued("t1", abstime="1750000000", author_uin="10001", summary="第一条")
-    p._qzone_outbound_intent = OutboundIntent(
-        kind="reaction", tid="t1", target_qq="10001", message_id="qzone_t1_7",
-    )
-    res = asyncio.run(p.qzone_gateway(message=_reply_msg("好看!", "qzone_t1_7"), route={}, metadata={}))
-    assert res["success"] is True
-    assert p.qzone_client.comment_calls == [("t1", "10001", "好看!")]
-    assert p._qzone_outbound_intent is not None  # 成功后意图保留(多次出站)
-
-
-def test_gateway_binding_check_skipped_without_message_id_or_quote(tmp_path):
-    """深度审查 A-1 覆盖面:意图无 message_id(旧意图形态)或出站无 reply 段时
-    跳过绑定校验(大部分 planner 出站不带 reply 段,校验只覆盖带引用的高危场景)。"""
-
-    p = _make_gateway_plugin(tmp_path)
-    p.qzone_seen.mark_queued("t1", abstime="1750000000", author_uin="10001", summary="第一条")
-    # 意图无 message_id + 出站带 reply 段 → 跳过校验,照常放行
-    p._qzone_outbound_intent = OutboundIntent(kind="reaction", tid="t1", target_qq="10001")
-    res = asyncio.run(p.qzone_gateway(message=_reply_msg("好看!", "qzone_tX_9"), route={}, metadata={}))
-    assert res["success"] is True
-    # 意图带 message_id + 出站无 reply 段(纯文本) → 跳过校验,照常放行
-    p.qzone_seen.mark_queued("t2", abstime="1750000100", author_uin="10002", summary="第二条")
-    p._qzone_outbound_intent = OutboundIntent(
-        kind="reaction", tid="t2", target_qq="10002", message_id="qzone_t2_3",
-    )
-    res2 = asyncio.run(p.qzone_gateway(message=_out_msg("同感~"), route={}, metadata={}))
-    assert res2["success"] is True
-
-
-def test_pump_force_release_clears_intent(tmp_path):
-    """深度审查 A-1/B-1:awaiting 超时强制推进时联动清出站意图——原实现只释放
-    awaiting 不清意图,超时后旧轮回复会按残留意图发向旧目标(公开错靶根因)。"""
+def test_pump_timeout_force_release_keeps_registry(tmp_path):
+    """超时强制推进(工具驱动):awaiting 超时释放后 registry 上下文保留——
+    模型在后续轮次仍可对已注入说说调用工具(TTL 48h 兜底),无「清意图」概念。"""
 
     import time as _time
 
@@ -674,15 +719,13 @@ def test_pump_force_release_clears_intent(tmp_path):
     assert popped is not None
     # 注入时刻回拨到远超 decision_window(75s)→ awaiting_timed_out 命中
     p.qzone_injector.mark_injected("f9", _time.monotonic() - 1000)
-    p._qzone_outbound_intent = OutboundIntent(
-        kind="reaction", tid="f9", target_qq="10001", message_id="qzone_f9_1",
-    )
+    p._qzone_registry.register(FeedContext(tid="f9", owner_uin="10001", owner_nickname="小明"))
 
     asyncio.run(p._qzone_pump())
     assert p.qzone_injector.awaiting_tid == ""  # 已强制释放
-    assert p._qzone_outbound_intent is None  # 意图联动清空(队列空,无新注入接管)
+    assert p._qzone_registry.resolve("f9") is not None  # 上下文保留(工具仍可解析)
     assert any(
-        level == "warning" and "强制推进;清意图防错靶" in str(a[0])
+        level == "warning" and "强制推进" in str(a[0])
         for level, a in p.logs
     )
 
@@ -1218,12 +1261,11 @@ def test_notify_scan_source_b_discovery_failure_does_not_block_source_a(tmp_path
     p.qzone_client = _SourceBFailClient()
     asyncio.run(p._qzone_notify_scan())
 
-    # 源A通知照常入队注入恰一次;意图对位源A(comment_reply 指向 bot 自己的说说)
+    # 源A通知照常入队注入恰一次;registry 登记对位源A(owner=bot 自己的说说)
     assert len(p._ctx.gateway.calls) == 1
     assert p._ctx.gateway.calls[0][1]["message_info"]["user_info"]["user_id"] == "20000"
-    intent = p._qzone_outbound_intent
-    assert intent is not None and intent.kind == "comment_reply"
-    assert (intent.tid, intent.target_qq, intent.comment_tid) == ("feed1", BOT_UIN, "c1")
+    ctx = p._qzone_registry.resolve("feed1")
+    assert ctx is not None and ctx.owner_uin == BOT_UIN and ctx.comment_tid == "c1"
     # 源B失败显式告警(不静默)
     assert any(
         level == "exception" and "源B发现层失败" in str(a[0]) for level, a in p.logs
@@ -1266,8 +1308,8 @@ def test_notify_scan_source_b_auth_error_invalidates_cookie_and_keeps_source_a(t
 
     assert cookie.invalidate_calls == 1  # cookie 已作废(下轮重取)
     assert len(p._ctx.gateway.calls) == 1  # 源A通知照常注入(不因登录态失效被阻断)
-    intent = p._qzone_outbound_intent
-    assert intent is not None and (intent.tid, intent.target_qq) == ("feed1", BOT_UIN)
+    ctx = p._qzone_registry.resolve("feed1")
+    assert ctx is not None and ctx.owner_uin == BOT_UIN  # 源A登记对位(主人=bot)
     assert any(
         level == "warning" and "源B登录态失效" in str(a[0]) and "cookie 已作废" in str(a[0])
         for level, a in p.logs

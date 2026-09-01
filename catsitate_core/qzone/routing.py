@@ -1,6 +1,9 @@
 """出站意图路由(spec §3.3):注入侧前置设定意图,驱动回调按意图选动作。
 
-M1 的显式拒发由「无意图即 reject」继承;M3 的 publish 意图在此预留(现 reject)。
+**已废弃(工具驱动架构 2026-09-01,v0.7)**:plugin.py 已删除意图系统全套
+(出站意图/网关回调路由/意图绑定校验),互动改经 qzone_comment/qzone_reply/
+qzone_like 工具发出。本模块无生产调用点,保留仅为 revert 便利与历史测试,
+后续清理批次移除。
 """
 
 from __future__ import annotations

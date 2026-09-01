@@ -222,8 +222,10 @@ class QzoneSection(PluginConfigBase):
     poll_interval_minutes: int = _f(15, "空间窗口内动态拉取间隔(分钟)", label="拉取间隔(分钟)")
     decision_window_seconds: int = _f(150, "注入后等待 planner 轮完成的超时兜底(秒;须大于最坏轮延迟,慢模型实测 53s,150 留余量)", label="决策窗口超时(秒)")
     tool_whitelist: list[str] = _f(
-        ["wait", "reply", "query_memory", "query_person_profile", "memo_write", "memo_read", "inspect_image", "qzone_like"],
-        "虚拟流 planner 工具白名单(按名过滤;硬门控不随此配置放松)",
+        ["wait", "query_memory", "query_person_profile", "memo_write", "memo_read", "inspect_image",
+         "qzone_like", "qzone_comment", "qzone_reply"],
+        "虚拟流 planner 工具白名单(按名过滤;硬门控不随此配置放松。工具驱动 v0.7:reply 已移除——"
+        "receive 网关无出站路径,直接打字发不出去,动作一律走 qzone_* 工具)",
         label="虚拟流工具白名单",
     )
     comment_poll_enabled: bool = _f(True, "统一通知轮询开关(双源:自己说说新评论+他人说说楼中楼新回复,始终运行醒着即可)", label="通知轮询开关")

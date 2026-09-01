@@ -34,12 +34,14 @@ def test_replace_scene_empty_config_and_miss():
 
 
 def test_scene_text_distinguishes_feeds_and_notifications():
-    """可读性优化(2026-09-01):场景文案显式区分两类内容(说说动态/互动通知)并
-    说明发布时间前缀,消除 bot 对「这是谁发的什么」的歧义。"""
+    """场景文案 v2(工具驱动 2026-09-01):说明 ID 锚格式(说说/评论/QQ)与三个
+    互动工具的用法,并明示「直接打字发不出去」(receive 网关无出站路径)。"""
     assert "你正在用手机刷QQ空间" in QZONE_SCENE_TEXT
     assert "说说动态" in QZONE_SCENE_TEXT and "互动通知" in QZONE_SCENE_TEXT
-    assert "时间前缀标注发布时间" in QZONE_SCENE_TEXT  # 与 build_feed_message 的时间前缀呼应
+    assert "「说说 xxx」" in QZONE_SCENE_TEXT and "「评论 xxx」" in QZONE_SCENE_TEXT  # ID 锚说明
+    assert "qzone_comment" in QZONE_SCENE_TEXT and "qzone_reply" in QZONE_SCENE_TEXT
     assert "qzone_like" in QZONE_SCENE_TEXT
+    assert "直接打字是发不出去的" in QZONE_SCENE_TEXT  # receive 网关语义
 
 
 def test_filter_tool_definitions_openai_and_flat_forms():

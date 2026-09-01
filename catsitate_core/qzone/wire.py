@@ -61,10 +61,19 @@ def build_comment_form(*, fid: str, target_qq: str, bot_uin: str, content: str) 
 
 
 def build_reply_form(*, fid: str, target_qq: str, bot_uin: str, comment_tid: str,
-                     comment_uin: str, comment_nick: str, content: str) -> dict:
-    """楼中楼回复表单(同评论端点 + commentId/commentUin;@ 前缀为 QQ 空间回复格式)。"""
+                     comment_uin: str, comment_nick: str, content: str,
+                     at_uin: str = "", at_nick: str = "") -> dict:
+    """楼中楼回复表单(同评论端点 + commentId/commentUin;@ 前缀为 QQ 空间回复格式)。
+
+    二元组与 @ 目标解耦(工具驱动 2026-09-01):commentId+commentUin 精确匹配
+    主评论(源B=bot 自己的评论线程头),而 @ 的是正在对话的评论者/回复者
+    ——两者在「回复他人评论」场景重合(缺省 at_* 回退二元组作者,旧行为不变)。
+    """
+
     form = build_comment_form(fid=fid, target_qq=target_qq, bot_uin=bot_uin, content=content)
-    form["content"] = f"@{{uin:{comment_uin},nick:{comment_nick},auto:1}}{content}"
+    at_target_uin = at_uin or comment_uin
+    at_target_nick = at_nick or comment_nick or at_target_uin
+    form["content"] = f"@{{uin:{at_target_uin},nick:{at_target_nick},auto:1}}{content}"
     form["commentId"] = str(comment_tid)
     form["commentUin"] = str(comment_uin)
     form["richtype"] = ""

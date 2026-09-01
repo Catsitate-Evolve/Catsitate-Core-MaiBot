@@ -95,8 +95,9 @@ def test_qzone_section_defaults():
     assert q.request_timeout_ms == 10000
     assert q.max_retries == 0
     assert q.cookie_refresh_minutes == 60
-    assert "wait" in q.tool_whitelist and "reply" in q.tool_whitelist
-    assert "qzone_like" in q.tool_whitelist  # M2:虚拟流点赞工具默认可用
+    # 工具驱动 v0.7:reply 移除(receive 网关无出站路径),qzone_comment/qzone_reply 进白名单
+    assert "wait" in q.tool_whitelist and "reply" not in q.tool_whitelist
+    assert "qzone_like" in q.tool_whitelist and "qzone_comment" in q.tool_whitelist and "qzone_reply" in q.tool_whitelist
     assert "tool_search" not in q.tool_whitelist and "msg_react" not in q.tool_whitelist
     # M2 评论轮询两字段(spec §5;间隔字段 T11 起废弃,由 notification_interval_seconds 替代)
     assert q.comment_poll_enabled is True

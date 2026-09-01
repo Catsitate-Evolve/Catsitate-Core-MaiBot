@@ -21,6 +21,8 @@ import logging
 import re
 from dataclasses import dataclass
 
+from catsitate_core.qzone.wire import LikeEvent
+
 logger = logging.getLogger(__name__)
 
 # 条目字段在 key 之后出现的最大跨度兜底(实证单条目约 150 字符);有下一
@@ -106,3 +108,37 @@ def parse_unified_timeline(text: str) -> list[FeedDiscovery]:
             )
         )
     return out
+
+
+# 「与我相关」流(scope=1)赞事件锚点(源C,Task 10):事件块起点 data-key=
+# "{liker}_{owner}_{hash}"(同一标签内紧邻 data-tid=目标说说),块体至下一
+# data-key 锚点/文本末尾;块内 data-uin=点赞者昵称锚(与统一时间线的 JS 对象
+# 字面量不同,该流是 HTML 片段,锚为属性形态)
+LIKE_EVENT_RE = re.compile(
+    r'data-key="(?P<liker>\d+)_(?P<owner>\d+)_(?P<hash>[0-9a-fA-F]+)"[^>]*'
+    r'data-tid="(?P<tid>[0-9a-fA-F]+)"(?P<body>.*?)(?=data-key="|$)',
+    re.DOTALL,
+)
+LIKE_UIN_RE = re.compile(r'data-uin="(?P<uin>\d+)"[^>]*>(?P<nick>[^<]{0,24})<')
+
+
+def parse_like_events(text: str) -> list[LikeEvent]:
+    """解析「与我相关」流(scope=1)中的赞事件。
+
+    锚点:事件块 data-key="{liker}_{owner}_{hash}" + 目标 data-tid,
+    块内 data-uin 锚定点赞者昵称。解析锚点来自协议调查;实机响应若与
+    锚点不符,零事件属正常(无人点赞),格式漂移由调用方按响应规模告警。
+    """
+
+    events: list[LikeEvent] = []
+    for m in LIKE_EVENT_RE.finditer(text):
+        body = m.group("body") or ""
+        uin_match = LIKE_UIN_RE.search(body)
+        liker_uin = uin_match.group("uin") if uin_match else m.group("liker")
+        nickname = (uin_match.group("nick").strip() if uin_match else "") or liker_uin
+        events.append(LikeEvent(
+            like_key=f"{m.group('liker')}_{m.group('owner')}_{m.group('hash')}",
+            liker_uin=liker_uin, liker_nickname=nickname,
+            owner_uin=m.group("owner"), target_tid=m.group("tid"),
+        ))
+    return events

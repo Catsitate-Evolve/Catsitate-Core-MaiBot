@@ -182,6 +182,18 @@ def parse_feed_comments(payload: dict) -> dict[str, list[CommentItem]]:
 
 
 @dataclass
+class LikeEvent:
+    """「与我相关」流中的赞事件(键=赞的人_说说主人_说说哈希)。"""
+
+    like_key: str
+    liker_uin: str
+    liker_nickname: str
+    owner_uin: str
+    target_tid: str
+    create_time: str = ""  # epoch 秒字符串,缺失为空(不编造时间)
+
+
+@dataclass
 class ReplyItem:
     """bot 评论下的一条楼中楼回复(msglist.commentlist[].list_3 条目)。
 

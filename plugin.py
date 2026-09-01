@@ -43,9 +43,11 @@ from catsitate_core.qzone.comment_seen import CommentSeenStore
 from catsitate_core.qzone.discovery import FeedDiscovery
 from catsitate_core.qzone.expression import generate_action_text
 from catsitate_core.qzone.injector import FeedInjector
+from catsitate_core.qzone.like_seen import LikeSeenStore
 from catsitate_core.qzone.messages import (
     build_feed_message,
     build_notify_message,
+    comment_time_prefix,
     fit_images_to_rpc_budget,
     format_comment_param_line,
 )
@@ -96,6 +98,7 @@ SNAPSHOT_CACHE_MAX = 256  # 快照项缓存条数上限(背包 M-1,超限 LRU �
 # 空间互动事件 kind → 结算素材标签(spec §3.9;未知 kind 兜底「空间互动」)
 QZONE_FAV_EVENT_LABELS = {
     "COMMENT": "评论了你的说说",
+    "LIKE": "赞了你的说说",  # 源C:入站赞事件(Task 10)
     "OUT_COMMENT": "你评论了TA",
     "OUT_LIKE": "你点赞了TA",
 }
@@ -249,6 +252,8 @@ class CatsitatePlugin(MaiBotPlugin):
         # M2:评论去重与好感度显式事件表(窗口外评论轮询/点赞/出站评论的数据源)
         self.qzone_comment_seen = CommentSeenStore(self.store)
         self.qzone_comment_seen.ensure_schema()
+        # M3 源C:赞事件去重(「与我相关」流,同一人同一条说说只通知一次;Task 10)
+        self.qzone_like_seen = LikeSeenStore(self.store)
         self.qzone_cookie = CookieManager(
             JsonSnapshot(data_dir / "qzone_cookies.json"),
             api_call=self.ctx.api.call,
@@ -1388,15 +1393,16 @@ class CatsitatePlugin(MaiBotPlugin):
         return parse_friend_list(result)
 
     async def _qzone_data_prune(self) -> None:
-        """qzone 数据保留期清理(深度审查 D-1):comment_seen 30 天+seen 表 7 天。
+        """qzone 数据保留期清理(深度审查 D-1):comment_seen/like_seen 30 天+seen 表 7 天。
 
-        qzone_comments/qzone_feeds 无限增长会拖慢每轮判重与通知轮询反查;
-        seen 保留 7 天(recent_seen 只需 summary_days≤3,7 天留余量);
+        qzone_comments/qzone_likes/qzone_feeds 无限增长会拖慢每轮判重与通知
+        轮询反查;seen 保留 7 天(recent_seen 只需 summary_days≤3,7 天留余量);
         queued 行不动——回退未读语义由窗口收泵的 revert_pending 负责,prune 不越权。
         """
 
         now = datetime.now()
         pruned_comments = self.qzone_comment_seen.prune(30, now)
+        pruned_likes = self.qzone_like_seen.prune(days=30, now=now)
         try:
             self.store.execute(
                 "DELETE FROM qzone_feeds WHERE state = 'seen' AND injected_at < ?",
@@ -1405,8 +1411,11 @@ class CatsitatePlugin(MaiBotPlugin):
         except Exception:
             self.ctx.logger.exception("qzone_feeds 清理失败")
             return
-        if pruned_comments:
-            self.ctx.logger.info("QQ空间数据清理:评论去重 %d 行,seen 保留 7 天", pruned_comments)
+        if pruned_comments or pruned_likes:
+            self.ctx.logger.info(
+                "QQ空间数据清理:评论去重 %d 行,赞去重 %d 行,seen 保留 7 天",
+                pruned_comments, pruned_likes,
+            )
 
     async def _qzone_pump(self) -> None:
         """串行注入:超时兜底 → 取队首 → 构造(通知=build_notify_message 带 reply 段
@@ -1642,8 +1651,9 @@ class CatsitatePlugin(MaiBotPlugin):
     async def _qzone_notify_scan(self) -> None:
         """统一通知扫描(原 _qzone_notify_poll_tick 主体,始终运行,醒着即可;M2.1 替代旧评论轮询)。
 
-        双源检测:源A=自己说说下的新评论;源B=自己在他人说说下的评论收到的
-        新楼中楼回复(list_3)。通知构造为 FeedItem(source="notify")走 P1
+        三源检测:源A=自己说说下的新评论;源B=自己在他人说说下的评论收到的
+        新楼中楼回复(list_3);源C=有人赞了我的说说(「与我相关」流 scope=1,
+        Task 10)。通知构造为 FeedItem(source="notify")走 P1
         优先级队列(插队于浏览动态之前),泵注入成功后登记 FeedContext 供
         qzone_comment/qzone_reply 解析目标(工具驱动,替代意图路由)。
         通知注入走 build_notify_message:reply 段引用原说说注入消息承载上下文
@@ -1653,7 +1663,10 @@ class CatsitatePlugin(MaiBotPlugin):
         「回复了你的评论「{bot原评论前20字}」:…」换行同款参数行(action=回复),
         评论内 @{uin,nick} 解析为 @昵称;参数行供模型照抄调用工具(映射由场景
         prompt 解释),不重复引用原文,正文不带发布时间前缀——互动新旧由参数行
-        动作时间承载(create_time 缺失则省略该段,不编造时间)。
+        动作时间承载(create_time 缺失则省略该段,不编造时间);源C 正文
+        「赞了你的说说「{自己说说摘要前20字}」」换行同款参数行(action=点赞,
+        摘要取 seen_store.get_summary——发布回注(Task 4)的 own 说说才有的
+        标题素材,未登记则无标题不臆造)。
         """
 
         try:
@@ -1850,9 +1863,70 @@ class CatsitatePlugin(MaiBotPlugin):
                         if len(notifications) >= 3:
                             break
 
+            # ---- 源C:有人赞了我的说说(feeds3_html_more?scope=1) ----
+            # Task 10:去重走 qzone_likes(键=liker_owner_hash,取消赞再赞不重复
+            # 通知);自愈链同源B 纪律——QzoneAuthError 作废 cookie 但不 return,
+            # 源A/B 已得通知不能丢,仅本轮源C 按空处理
+            if len(notifications) < 3:
+                try:
+                    likes = await self.qzone_client.get_like_events(count=30)
+                except QzoneAuthError:
+                    self.qzone_cookie.invalidate()
+                    self.ctx.logger.warning("QQ空间登录态失效(通知轮询源C),cookie 已作废,下轮重取")
+                    likes = []
+                except Exception:
+                    self.ctx.logger.exception("QQ空间通知轮询源C失败,本轮跳过源C")
+                    likes = []
+                for ev in likes:
+                    # 自己的赞跳过;空 target_tid 的畸形事件跳过(防空 tid 畸形键)
+                    if str(ev.liker_uin) == bot_uin or not ev.target_tid:
+                        continue
+                    if not self.qzone_like_seen.is_new(
+                        ev.like_key, liker_uin=str(ev.liker_uin), target_tid=str(ev.target_tid)
+                    ):
+                        continue
+                    try:
+                        like_epoch = float(str(ev.create_time or "").strip())
+                    except ValueError:
+                        like_epoch = 0.0
+                    if like_epoch > 0 and like_epoch < stale_before:
+                        self.ctx.logger.info(
+                            "QQ空间赞事件过旧跳过(create_time=%s,昵称=%s)", ev.create_time, ev.liker_nickname
+                        )
+                        continue
+                    # 「摘要」标题素材:发布回注(Task 4)的 own 说说才有 summary;
+                    # 他人点赞的目标是自己说说(scope=1 流语义),未登记则无标题不臆造
+                    origin_summary = self.qzone_seen.get_summary(str(ev.target_tid))
+                    time_tag = comment_time_prefix(ev.create_time, now_epoch)
+                    # 参数行自拼(源C 字段集与评论不同:无 comment_id/commenter_uin,
+                    # 动作「点赞于」;时间标签承 comment_time_prefix 括号形态)
+                    param = "〔说说ID=" + str(ev.target_tid)[:12]
+                    if time_tag:
+                        param += f" 点赞于{time_tag}"
+                    param += "〕"
+                    title = f"「{origin_summary[:20]}」" if origin_summary else ""
+                    notifications.append(FeedItem(
+                        tid=f"notify_like_{ev.like_key}",
+                        abstime=ev.create_time, uin=str(ev.liker_uin),
+                        nickname=ev.liker_nickname or str(ev.liker_uin),
+                        content=f"赞了你的说说{title}\n{param}",
+                        source="notify", dedup_key=ev.like_key,
+                        origin_tid=str(ev.target_tid), origin_content=origin_summary,
+                        origin_sender=bot_uin,
+                    ))
+                    try:
+                        self.qzone_comment_seen.fav_event(
+                            str(ev.liker_uin), "LIKE",
+                            f"{ev.liker_nickname or ev.liker_uin} 赞了你的说说{title or '(我的内容)'}",
+                        )
+                    except Exception:
+                        self.ctx.logger.exception("QQ空间赞事件好感度记账失败(仅告警)")
+                    if len(notifications) >= 3:
+                        break
+
             if notifications:
                 added = self.qzone_injector.enqueue_priority(notifications)
-                self.ctx.logger.info("QQ空间通知入队 %d 条(源A+B,P1 插队)", added)
+                self.ctx.logger.info("QQ空间通知入队 %d 条(源A+B+C,P1 插队)", added)
                 # 泵优先取 P1(推送语义,任何时刻可注入);浏览动态仅窗口内注入
                 await self._qzone_pump()
         finally:

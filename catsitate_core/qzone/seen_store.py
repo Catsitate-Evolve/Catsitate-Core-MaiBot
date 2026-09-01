@@ -88,6 +88,15 @@ class SeenStore:
         rows = self.store.query("SELECT message_id FROM qzone_feeds WHERE tid = ?", (tid,))
         return str(rows[0][0]) if rows else ""
 
+    def get_summary(self, tid: str) -> str:
+        """按 tid 取已登记说说的摘要(通知 quote/点赞标题素材)。
+
+        未登记 tid(他人说说未走本地发布回注)→ 空串(调用方按无标题回退)。
+        """
+
+        rows = self.store.query("SELECT summary FROM qzone_feeds WHERE tid = ?", (tid,))
+        return str(rows[0][0]) if rows else ""
+
     def mark_interacted(self, tid: str) -> None:
         self.store.execute("UPDATE qzone_feeds SET interacted = 1 WHERE tid = ?", (tid,))
 

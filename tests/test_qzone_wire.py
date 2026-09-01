@@ -215,3 +215,54 @@ def test_parse_feed_replies_parent_comment_content_defaults_empty():
     ]}]}
     items = parse_feed_replies(payload, bot_uin="3545773341")
     assert len(items) == 1 and items[0].parent_comment_content == ""
+
+
+# ---- 「与我相关」流赞事件解析(源C,Task 10) ----
+
+
+def test_parse_like_events_anchors():
+    from catsitate_core.qzone.discovery import parse_like_events
+    html = (
+        '<li class="fn_like" data-key="100_200_ab12cd34" data-tid="ee3396c49d38">'
+        '<a data-uin="100" href="#">小明</a>赞了你的说说</li>'
+    )
+    events = parse_like_events(html)
+    assert len(events) == 1
+    ev = events[0]
+    assert ev.like_key == "100_200_ab12cd34" and ev.liker_uin == "100"
+    assert ev.owner_uin == "200" and ev.target_tid == "ee3396c49d38"
+    assert ev.liker_nickname == "小明"
+
+
+def test_parse_like_events_body_nickname_fallback_and_empty():
+    """块内无 data-uin 锚点(非实测形态容错):昵称回退 liker_uin;无事件返回空列表。"""
+    from catsitate_core.qzone.discovery import parse_like_events
+    from catsitate_core.qzone.wire import LikeEvent
+
+    # 无昵称锚点:liker_uin 取 data-key 前段,昵称回退 uin 本身(不静默丢事件)
+    html = '<li class="fn_like" data-key="100_200_ab12" data-tid="ee33"></li>'
+    events = parse_like_events(html)
+    assert len(events) == 1
+    ev = events[0]
+    assert isinstance(ev, LikeEvent)
+    assert (ev.liker_uin, ev.liker_nickname) == ("100", "100")
+    # 锚点不构成定位点的文本:零事件(解析层不告警,职责在调用方)
+    assert parse_like_events("") == []
+    assert parse_like_events("普通文本无锚点") == []
+    assert parse_like_events('<li data-key="畸形" data-tid="x"></li>') == []
+
+
+def test_parse_like_events_multi_blocks_no_cross_borrow():
+    """多事件块:块体窗口至下一 data-key 锚点,昵称不跨块借用(tid 锚为实证
+    十六进制形态,与统一时间线 tid 同源)。"""
+    from catsitate_core.qzone.discovery import parse_like_events
+    html = (
+        '<li class="fn_like" data-key="100_200_aaaa" data-tid="ee11">'
+        '<a data-uin="100">小明</a>赞了你的说说</li>'
+        '<li class="fn_like" data-key="300_200_bbbb" data-tid="ee22">'
+        '<a data-uin="300">小红</a>赞了你的说说</li>'
+    )
+    events = parse_like_events(html)
+    assert len(events) == 2
+    assert events[0].liker_nickname == "小明" and events[1].liker_nickname == "小红"
+    assert events[1].like_key == "300_200_bbbb" and events[1].target_tid == "ee22"

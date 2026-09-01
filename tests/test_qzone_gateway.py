@@ -356,6 +356,10 @@ class _StubCommentClient:
         del count
         return []
 
+    async def get_like_events(self, *, count=30):
+        del count
+        return []  # 源C 空:聚焦源A行为(通知扫描三源都要经本接口取数,Task 10)
+
 
 def _make_notify_poll_plugin(tmp_path, comments, ctx_map):
     """离线装配 _qzone_notify_poll_tick 所需最小插件实例(注入窗口开启,泵可推进)。"""

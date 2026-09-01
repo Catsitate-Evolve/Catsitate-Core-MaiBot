@@ -13,7 +13,7 @@ import time
 from typing import Any, Awaitable, Callable
 from urllib.parse import urlparse
 
-from catsitate_core.qzone.discovery import FeedDiscovery, parse_unified_timeline
+from catsitate_core.qzone.discovery import FeedDiscovery, parse_like_events, parse_unified_timeline
 from catsitate_core.qzone.protocol import (
     extract_callback_json,
     generate_gtk,
@@ -21,6 +21,7 @@ from catsitate_core.qzone.protocol import (
 )
 from catsitate_core.qzone.wire import (
     CommentItem,
+    LikeEvent,
     build_comment_form,
     build_like_form,
     build_publish_form,
@@ -298,6 +299,11 @@ class QzoneClient:
     async def _fetch_likes_raw(self, *, count: int) -> str:
         """拉取「与我相关」流原始文本(feeds3_html_more?scope=1,源C 赞事件输入)。"""
         return await self._fetch_unified(count=count, scope=1)
+
+    async def get_like_events(self, *, count: int = 30) -> list[LikeEvent]:
+        """拉取「与我相关」赞事件(feeds3_html_more?scope=1)。"""
+        text = await self._fetch_likes_raw(count=count)
+        return parse_like_events(text)
 
     async def _post(self, url: str, *, form: dict, referer_uin: str, extra_params: dict | None = None) -> dict:
         """写路径 POST 通道(独立于 _request:读路径为 GET 语义,参数全进 query;

@@ -21,10 +21,11 @@ from catsitate_core.qzone.client import QzoneAuthError
 from catsitate_core.qzone.comment_seen import CommentSeenStore
 from catsitate_core.qzone.discovery import FeedDiscovery
 from catsitate_core.qzone.injector import FeedInjector
+from catsitate_core.qzone.like_seen import LikeSeenStore
 from catsitate_core.qzone.protocol import FeedItem
 from catsitate_core.qzone.registry import FeedContext, FeedContextRegistry
 from catsitate_core.qzone.seen_store import SeenStore
-from catsitate_core.qzone.wire import CommentItem
+from catsitate_core.qzone.wire import CommentItem, LikeEvent
 from catsitate_core.storage import JsonSnapshot, SQLiteStore
 
 BOT_UIN = "10000"
@@ -91,6 +92,10 @@ class _StubCommentClient:
         del count
         return []  # 发现层空:源B零拉取,聚焦源A行为
 
+    async def get_like_events(self, *, count=30):
+        del count
+        return []  # 源C 空:聚焦源A行为(通知扫描三源都要经本接口取数)
+
 
 class _StubWriteClient:
     """出站动作桩:记录 do_comment/do_reply/do_like/do_publish 调用,恒成功。
@@ -148,6 +153,8 @@ def _make_plugin(tmp_path):
     p.qzone_seen.ensure_schema()
     p.qzone_comment_seen = CommentSeenStore(store)
     p.qzone_comment_seen.ensure_schema()
+    # 源C 赞事件去重(on_load 装配,离线测试手工补;Task 10)
+    p.qzone_like_seen = LikeSeenStore(store)
     p.qzone_injector = FeedInjector(decision_window_s=75)
     p._qzone_session_ids = set()  # 实例级覆盖(类属性为共享 set,防测试间状态泄漏)
     p.qzone_client = _StubUnifiedClient([])  # 默认发现层桩:空时间线(各测试按需覆盖)
@@ -177,6 +184,10 @@ class _StubUnifiedClient:
         del count
         self.discovery_calls += 1
         return list(self._discoveries) if begin == 0 else []
+
+    async def get_like_events(self, *, count=30):
+        del count
+        return []  # 源C 空:各测试按需子类覆盖(通知扫描三源都要经本接口取数)
 
 
 def _patch_sleep(monkeypatch, record: list) -> None:
@@ -1021,6 +1032,110 @@ def test_notify_scan_source_b_reply_without_parent_content_falls_back(tmp_path, 
     # 同款参数行+动作时间(create_time=注入同刻→今天);HH:MM 随运行时刻→前缀+后缀断言
     assert text.startswith("回复了你的评论「你之前的评论」:说得对\n〔说说ID=ffeed9 评论ID=bc9 评论者QQ=30000 回复于(今天")
     assert text.endswith(")〕")
+
+
+def test_notify_scan_source_c_like_events(tmp_path):
+    """源C(Task 10):「与我相关」流赞事件 → 去重(qzone_likes 发现即登记)/
+    跳过自己/新鲜度截断(过旧已登记不重扫)/fav_event(LIKE)记账/通知构造
+    (「摘要」标题 + 点赞于参数行,ownfeed 未注入过则无 reply 段纯文本)。"""
+
+    import time as _time
+
+    now = int(_time.time())
+    events = [
+        LikeEvent(like_key="20000_10000_aaaa1111", liker_uin="20000", liker_nickname="小红",
+                  owner_uin=BOT_UIN, target_tid="ownfeed1", create_time=str(now)),
+        # bot 自己的赞:跳过不注入(自愈式自我互动排除)
+        LikeEvent(like_key=f"{BOT_UIN}_10000_bbbb2222", liker_uin=BOT_UIN, liker_nickname="我",
+                  owner_uin=BOT_UIN, target_tid="ownfeed1", create_time=str(now)),
+        # 过旧(10 天前,默认 summary_days=3):新鲜度截断跳过(仍登记,下轮判重)
+        LikeEvent(like_key="30000_10000_cccc3333", liker_uin="30000", liker_nickname="小蓝",
+                  owner_uin=BOT_UIN, target_tid="ownfeed2", create_time=str(now - 10 * 86400)),
+    ]
+
+    class _StubLikeClient(_StubUnifiedClient):
+        """源C 输入桩:发现层空(不进源B拉取),「与我相关」流返回固定赞事件。"""
+
+        def __init__(self):
+            super().__init__([])
+            self.like_fetches = 0
+
+        async def get_own_feed_comments(self, *, bot_uin, num=10):
+            del bot_uin, num
+            return {}, {}
+
+        async def get_like_events(self, *, count=30):
+            del count
+            self.like_fetches += 1
+            return list(events)
+
+    p = _make_plugin(tmp_path)
+    p.qzone_injector.window_started()
+    # 自己的说说已发布回注(Task 4):qzone_feeds 有 summary → 通知带「摘要」标题
+    p.qzone_seen.mark_queued("ownfeed1", abstime=str(now), author_uin=BOT_UIN, summary="我的晚间思绪")
+    p.qzone_client = _StubLikeClient()
+
+    asyncio.run(p._qzone_notify_scan())
+    assert len(p._ctx.gateway.calls) == 1  # 只有好友的赞注入(自己跳过/过旧截断)
+    msg = p._ctx.gateway.calls[0][1]
+    assert msg["message_info"]["user_info"]["user_id"] == "20000"
+    assert "notify_like_20000_10000_aaaa1111" in msg["message_id"]
+    # ownfeed1 无注入记录(未 mark_seen)→ 无 reply 段,首段即通知文本;
+    # 正文=「摘要」标题 + 参数行(说说ID 锚 + 点赞于动作时间,create_time=注入
+    # 同刻→今天,HH:MM 随运行时刻→前缀+后缀断言)
+    text = msg["raw_message"][0]["data"]
+    assert text.startswith("赞了你的说说「我的晚间思绪」\n〔说说ID=ownfeed1 点赞于(今天")
+    assert text.endswith(")〕")
+    # fav_event 记账(kind=LIKE):源C 好感度显式事件
+    today = datetime.now().strftime("%Y-%m-%d")
+    evs = p.qzone_comment_seen.fav_events_on(today, "20000")
+    assert any(e["kind"] == "LIKE" and "小红" in e["text"] and "我的晚间思绪" in e["text"] for e in evs)
+    # 过旧事件仍被登记(is_new 已 False,下轮判重不重扫)
+    assert p.qzone_like_seen.is_new("30000_10000_cccc3333", liker_uin="30000", target_tid="ownfeed2") is False
+
+    # 去重:释放 awaiting 后重扫,同 like_key 不再注入(取数发生=判重生效)
+    p.qzone_injector.on_turn_complete(_time.monotonic())
+    asyncio.run(p._qzone_notify_scan())
+    assert len(p._ctx.gateway.calls) == 1
+    assert p.qzone_client.like_fetches == 2
+
+
+def test_notify_scan_source_c_like_auth_error_keeps_source_a_notifications(tmp_path):
+    """源C 自愈链:登录态失效作废 cookie 但不 return——源A 已得通知照常入队注入
+    (源C 仅是增量来源,同源B 纪律)。"""
+
+    import time as _time
+
+    from catsitate_core.qzone.wire import CommentItem
+
+    comments = {"feeda": [CommentItem(
+        comment_tid="ca1", uin="20000", nickname="小红", content="好友评论",
+        create_time=str(int(_time.time())),
+    )]}
+
+    class _AuthFailLikeClient(_StubUnifiedClient):
+        def __init__(self):
+            super().__init__([])
+
+        async def get_own_feed_comments(self, *, bot_uin, num=10):
+            del bot_uin, num
+            return comments, {"feeda": "说说正文"}
+
+        async def get_like_events(self, *, count=30):
+            del count
+            raise QzoneAuthError("空间登录态失效(源C)")
+
+    p = _make_plugin(tmp_path)
+    p.qzone_injector.window_started()
+    p.qzone_client = _AuthFailLikeClient()
+    asyncio.run(p._qzone_notify_scan())
+    # 源A 通知未丢:正常注入 1 条
+    assert len(p._ctx.gateway.calls) == 1
+    assert p._ctx.gateway.calls[0][1]["message_info"]["user_info"]["user_id"] == "20000"
+    # 自愈链:cookie 已作废(下轮重取)+ 失效告警
+    assert p.qzone_cookie.invalidate_calls == 1
+    assert any(level == "warning" and "通知轮询源C" in " ".join(str(x) for x in a)
+               for level, a in p.logs)
 
 
 def test_qzone_block_virtual_stream_state_only(tmp_path):

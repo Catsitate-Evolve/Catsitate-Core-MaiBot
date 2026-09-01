@@ -28,12 +28,13 @@ logger = logging.getLogger(__name__)
 WINDOW_CHARS = 500
 
 _KEY_RE = re.compile(r"key:'([0-9a-fA-F]+)'")  # 非空十六进制 tid(实证小写,容忍大写)
-_ABSTIME_RE = re.compile(r"abstime:'?(\d+)'?")  # 联调实证 abstime:'{int}' 带单引号
+# 联调实证:JS 对象的数值字段(abstime/appid)带单引号——所有数值正则统一容忍 '?..'? 形态
+_ABSTIME_RE = re.compile(r"abstime:'?(\d+)'?")
+_APPID_RE = re.compile(r"appid:'?(\d+)'?")
 # opuin 生产实证为单引号字符串,简化样本为裸数字——两种形态都收,统一转 str
 _OPUIN_RE = re.compile(r"opuin:'?(\d+)'?")
 # 昵称内可含 JS 转义(\' \"):先按「转义对或非引号非反斜杠」原始捕获,解码在使用处
 _NICKNAME_RE = re.compile(r"nickname:'((?:\\.|[^'\\])*)'")
-_APPID_RE = re.compile(r"appid:(\d+)")
 
 
 @dataclass

@@ -2,7 +2,7 @@
 
 from catsitate_core.qzone.wire import (
     CommentItem, build_comment_form, build_like_form, build_publish_form, build_reply_form,
-    parse_feed_comments,
+    extract_publish_tid, parse_feed_comments,
 )
 
 
@@ -71,6 +71,24 @@ def test_parse_feed_comments():
     assert (c1.comment_tid, c1.uin, c1.nickname, c1.content, c1.create_time) == (
         "c1", "10001", "小明", "第一条", "1750000001")
     assert out["tidA"][1].comment_tid == "2"  # 数值 tid 归一为字符串
+
+
+# ---- 发布响应 tid 提取(回注锚/seen/registry 登记的输入) ----
+
+
+def test_extract_publish_tid_variants():
+    """发布响应 tid 提取:键形态按端点历史版本逐层尝试(顶层 tid / data.tid /
+    data.newtid / 顶层 newtid / content[0].tid);取不到返回空串——发布已成功,
+    仅回注缺锚,由调用方告警,不误报发布失败。"""
+    assert extract_publish_tid({"data": {"tid": "abc123"}}) == "abc123"
+    assert extract_publish_tid({"tid": "def456"}) == "def456"
+    assert extract_publish_tid({"content": [{"tid": "ghi789"}]}) == "ghi789"
+    assert extract_publish_tid({"code": 0, "data": {}}) == ""
+    # newtid 变体(端点历史版本的另一键名)与空白归一
+    assert extract_publish_tid({"data": {"newtid": "n1"}}) == "n1"
+    assert extract_publish_tid({"newtid": " n2 "}) == "n2"
+    assert extract_publish_tid({"tid": 12345}) == "12345"  # 数值 tid 归一字符串
+    assert extract_publish_tid({"content": []}) == ""
 
 
 def test_parse_feed_comments_empty():

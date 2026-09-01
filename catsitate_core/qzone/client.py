@@ -25,6 +25,7 @@ from catsitate_core.qzone.wire import (
     build_like_form,
     build_publish_form,
     build_reply_form,
+    extract_publish_tid,
     parse_feed_comments,
 )
 from catsitate_core.storage import JsonSnapshot
@@ -353,15 +354,19 @@ class QzoneClient:
         await self._post(self.COMMENT_URL, form=form, referer_uin=self.bot_uin)
         return True
 
-    async def do_publish(self, *, content: str) -> bool:
+    async def do_publish(self, *, content: str) -> str:
         """发表一条纯文本说说(emotion_cgi_publish_v6,表单由 wire.build_publish_form
         构造;查询串除 g_tk 外带 uin,与上游 Maizone publish_emotion 请求一致;
-        format=json 响应为纯 JSON,成功载荷含新说说 tid)。"""
+        format=json 响应为纯 JSON)。
+
+        返回新说说 tid(wire.extract_publish_tid 提取),取不到为空串——发布已
+        远端成功,仅影响回注锚,由调用方告警,不误报发布失败。
+        """
 
         form = build_publish_form(content=content, bot_uin=self.bot_uin)
-        await self._post(self.PUBLISH_URL, form=form, referer_uin=self.bot_uin,
-                         extra_params={"uin": self.bot_uin})
-        return True
+        payload = await self._post(self.PUBLISH_URL, form=form, referer_uin=self.bot_uin,
+                                   extra_params={"uin": self.bot_uin})
+        return extract_publish_tid(payload)
 
     async def get_own_feed_comments(
         self, *, bot_uin: str, num: int = 10

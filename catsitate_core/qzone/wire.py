@@ -110,6 +110,26 @@ def build_publish_form(*, content: str, bot_uin: str) -> dict:
     }
 
 
+def extract_publish_tid(payload: dict) -> str:
+    """从发布响应载荷提取新说说 tid。
+
+    键形态按端点历史版本逐层尝试(顶层 tid / data.tid / content[0].tid);
+    取不到返回空串由调用方告警——发布本身已成功,tid 缺失只影响回注锚,
+    不应误报发布失败。
+    """
+    data = payload.get("data") if isinstance(payload.get("data"), dict) else {}
+    for candidate in (payload.get("tid"), data.get("tid"), data.get("newtid"), payload.get("newtid")):
+        value = str(candidate or "").strip()
+        if value:
+            return value
+    content = payload.get("content") if isinstance(payload.get("content"), list) else []
+    if content and isinstance(content[0], dict):
+        value = str(content[0].get("tid") or "").strip()
+        if value:
+            return value
+    return ""
+
+
 def build_reply_form(*, fid: str, target_qq: str, bot_uin: str, comment_tid: str,
                      comment_uin: str, comment_nick: str, content: str,
                      at_uin: str = "", at_nick: str = "") -> dict:

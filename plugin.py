@@ -848,7 +848,7 @@ class CatsitatePlugin(MaiBotPlugin):
         if len(content) > 500:
             return f"内容太长了({len(content)} 字,上限 500)。"
         try:
-            await self.qzone_client.do_publish(content=content)
+            tid = await self.qzone_client.do_publish(content=content)
         except QzoneAuthError:
             # 登录态失效自愈链(与评论/点赞同款):作废 cookie 下轮重取,本轮发布放弃
             self.qzone_cookie.invalidate()
@@ -857,9 +857,14 @@ class CatsitatePlugin(MaiBotPlugin):
         except Exception:
             self.ctx.logger.exception("QQ空间说说发布失败")
             return "发布失败,已记录日志。"
+        if not tid:
+            # 发布已远端成功,仅回注缺锚(seen/registry 登记跳过)——显式告警,不误报失败
+            self.ctx.logger.warning("QQ空间说说发布成功但响应未含新说说 tid,回注缺锚")
         # 回注:发布成功的说说以 self 消息注入虚拟流(不触发 planner 决策轮,仅入历史)。
         # 原因:后续好友评论此说说时通知轮询只带说说ID,bot 需要这段历史才知道自己发过什么;
         # 正文只带前 60 字预览——全文已真实发布在空间,回注只是上下文锚,超长会挤占虚拟流。
+        # 尾部锚〔说说ID=前12位〕与浏览注入同款:模型照抄锚值即可对该说说评论/点赞
+        # (registry 前缀解析口径);tid 缺失时无锚。
         # 回注失败不影响回执:说说已远端发布成功,谎报失败会诱导重复发布。
         self._qzone_seq += 1
         bot_uin = str(self.config.favorability.bot_user_id or "").strip()
@@ -875,12 +880,27 @@ class CatsitatePlugin(MaiBotPlugin):
                 },
                 # 不设 is_mentioned:这是 bot 自己发的,不需要触发 planner 决策轮
             },
-            "raw_message": [{"type": "text", "data": f"我发布了一条说说:{content[:60]}"}],
+            "raw_message": [{"type": "text",
+                             "data": f"我发布了一条说说:{content[:60]}" + (f"\n〔说说ID={tid[:12]}〕" if tid else "")}],
         }
         try:
             await self.ctx.gateway.route_message(QZONE_GATEWAY_NAME, echo_msg)
         except Exception:
             self.ctx.logger.exception("QQ空间说说回注失败(发布已成功,仅上下文注入失败)")
+        # 本地锚定三连(seen + registry):自己发布的说说也进已见库与注入上下文
+        # 追踪——own-post 摘要(seen,Task 6 引用)与自锚(registry,模型对自己
+        # 说说评论/点赞)依赖此登记;失败仅告警,远端已成功不回滚回执。
+        if tid:
+            try:
+                self.qzone_seen.mark_queued(tid, abstime=str(int(time.time())), author_uin=bot_uin,
+                                            summary=content[:50], author_nickname="我")
+                self.qzone_seen.mark_seen(tid, datetime.now().strftime("%Y-%m-%dT%H:%M:%S"),
+                                          echo_msg["message_id"])
+                self._qzone_registry.register(FeedContext(
+                    tid=tid, owner_uin=bot_uin, owner_nickname="我", kind="self",
+                ))
+            except Exception:
+                self.ctx.logger.exception("QQ空间说说发布后本地锚定失败(远端已成功,仅告警)")
         self.ctx.logger.info("QQ空间说说发布成功: %s", content[:30])
         return "发布成功。"
 
@@ -2449,15 +2469,20 @@ class CatsitatePlugin(MaiBotPlugin):
             self.ctx.logger.warning("QQ空间日记内容异常(长度=%d),跳过发布", len(diary_text))
             return
         try:
-            await self.qzone_client.do_publish(content=diary_text)
+            tid = await self.qzone_client.do_publish(content=diary_text)
         except Exception:
             self.ctx.logger.exception("QQ空间日记发布失败(内容已生成,发布跳过)")
             return
+        if not tid:
+            # 发布已远端成功,仅醒来回注缺锚——显式告警,不误报失败
+            self.ctx.logger.warning("QQ空间日记发布成功但响应未含新说说 tid,回注缺锚")
         self.ctx.logger.info("QQ空间日记发布成功: %s", diary_text[:30])
-        # 回注延迟到醒来:存入 pending 快照,醒态 sleep_tick 补注
+        # 回注延迟到醒来:存入 pending 快照,醒态 sleep_tick 补注(tid 随快照
+        # 传递,醒后据此锚定 seen/registry;空串同存——旧快照兼容口径)
         self._pending_diary_snapshot.save({
             "text": diary_text,
             "published_at": datetime.now().strftime("%Y-%m-%dT%H:%M:%S"),
+            "tid": tid,
         })
 
     async def _echo_pending_diary(self) -> None:
@@ -2465,14 +2490,17 @@ class CatsitatePlugin(MaiBotPlugin):
 
         回注是上下文锚:好友次日评论日记说说时,bot 需要这段历史才知道自己
         昨晚写过什么;正文只带前 60 字预览(全文已真实发布在空间,超长挤占
-        虚拟流)。不设 is_mentioned——bot 自己的旧说说不需要触发决策轮。
-        route_message 失败保留快照,醒态 sleep_tick 下轮重试。
+        虚拟流)。快照带 tid 时尾部加〔说说ID=前12位〕锚并锚定 seen/registry
+        (与 qzone_post 同款;旧快照无 tid 则无锚)。不设 is_mentioned——
+        bot 自己的旧说说不需要触发决策轮。route_message 失败保留快照,
+        醒态 sleep_tick 下轮重试。
         """
 
         data = self._pending_diary_snapshot.load()
         text = str(data.get("text") or "").strip()
         if not text:
             return
+        tid = str(data.get("tid") or "")
         bot_uin = str(self.config.favorability.bot_user_id or "").strip()
         self._qzone_seq += 1
         msg = {
@@ -2486,10 +2514,25 @@ class CatsitatePlugin(MaiBotPlugin):
                     "group_name": self.config.qzone.virtual_group_name,
                 },
             },
-            "raw_message": [{"type": "text", "data": f"我昨晚发布的日记:{text[:60]}"}],
+            "raw_message": [{"type": "text",
+                             "data": f"我昨晚发布的日记:{text[:60]}" + (f"\n〔说说ID={tid[:12]}〕" if tid else "")}],
         }
         try:
             await self.ctx.gateway.route_message(QZONE_GATEWAY_NAME, msg)
+            # 本地锚定三连(seen + registry,与 qzone_post 同款;summary=日记正文
+            # 前 50 字)。内层独立兜底:锚定失败不拦快照清空——远端已成功,
+            # 补注只做一次,失败仅告警(浏览发现层后续自行补登记)。
+            if tid:
+                try:
+                    self.qzone_seen.mark_queued(tid, abstime=str(int(time.time())), author_uin=bot_uin,
+                                                summary=text[:50], author_nickname="我")
+                    self.qzone_seen.mark_seen(tid, datetime.now().strftime("%Y-%m-%dT%H:%M:%S"),
+                                              msg["message_id"])
+                    self._qzone_registry.register(FeedContext(
+                        tid=tid, owner_uin=bot_uin, owner_nickname="我", kind="self",
+                    ))
+                except Exception:
+                    self.ctx.logger.exception("QQ空间日记补注本地锚定失败(远端已成功,仅告警)")
             self._pending_diary_snapshot.save({})
             self.ctx.logger.info("QQ空间日记醒来补注完成")
         except Exception:

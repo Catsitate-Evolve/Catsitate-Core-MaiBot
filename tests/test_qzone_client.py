@@ -383,9 +383,9 @@ def test_write_auth_error_invalidates_cookie():
 def test_do_publish_posts_form_with_uin_query():
     """发布说说:emotion_cgi_publish_v6 端点,查询串除 g_tk 外还带 uin(与上游
     Maizone publish_emotion 的请求一致);表单由 wire.build_publish_form 构造;
-    format=json 响应走纯 JSON 解析(成功载荷含新说说 tid)。"""
+    format=json 响应走纯 JSON 解析,返回新说说 tid(顶层 tid 形态)。"""
     client, seen = _post_client([(200, b'{"code":0,"subcode":0,"tid":"newtid123"}')], bot_uin="3545773341")
-    assert asyncio.run(client.do_publish(content="今天天气很好")) is True
+    assert asyncio.run(client.do_publish(content="今天天气很好")) == "newtid123"
     req = seen[0]
     assert req["method"] == "POST"
     assert "emotion_cgi_publish_v6" in req["url"]
@@ -395,6 +395,14 @@ def test_do_publish_posts_form_with_uin_query():
     assert req["data"]["hostuin"] == "3545773341" and req["data"]["who"] == "1"
     assert req["headers"]["Referer"] == "https://user.qzone.qq.com/3545773341"
     assert req["headers"]["Origin"] == "https://user.qzone.qq.com"
+
+
+def test_do_publish_response_without_tid_returns_empty():
+    """发布成功但响应无 tid:返回空串,不抛错——发布已远端成功,tid 缺失只影响
+    回注锚,由调用方告警,不误报发布失败。"""
+    client, seen = _post_client([(200, b'{"code":0,"data":{}}')], bot_uin="3545773341")
+    assert asyncio.run(client.do_publish(content="x")) == ""
+    assert len(seen) == 1  # 请求确实发出且成功(非静默跳过)
 
 
 def test_do_publish_business_error_raises():

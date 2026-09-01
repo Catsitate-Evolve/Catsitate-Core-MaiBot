@@ -89,13 +89,18 @@ class _StubCommentClient:
 
 
 class _StubWriteClient:
-    """出站动作桩:记录 do_comment/do_reply/do_like/do_publish 调用,恒成功。"""
+    """出站动作桩:记录 do_comment/do_reply/do_like/do_publish 调用,恒成功。
+
+    publish_tid 为 do_publish 回传的新说说 tid(空串=响应缺 tid 形态,
+    供回注缺锚路径测试)。
+    """
 
     def __init__(self):
         self.comment_calls = []
         self.reply_calls = []
         self.like_calls = []
         self.publish_calls = []
+        self.publish_tid = "newtid0001"
 
     async def do_comment(self, *, fid, target_qq, content):
         self.comment_calls.append((fid, target_qq, content))
@@ -112,7 +117,7 @@ class _StubWriteClient:
 
     async def do_publish(self, *, content):
         self.publish_calls.append(content)
-        return True
+        return self.publish_tid
 
 
 def _make_plugin(tmp_path):
@@ -357,7 +362,8 @@ def test_qzone_reply_requires_all_params_and_session(tmp_path):
 def test_qzone_post_success_publishes_and_echoes(tmp_path):
     """qzone_post 成功路径:do_publish 收到正文;回注 self 消息进虚拟流——
     user_id=bot 自己、无 is_mentioned(bot 自己发的不触发 planner 决策轮,
-    仅入历史供后续互动引用上下文);成功日志含前 30 字预览。"""
+    仅入历史供后续互动引用上下文);尾部带〔说说ID=前12位〕锚(模型照抄锚值
+    即可对该说说评论/点赞);成功日志含前 30 字预览。"""
 
     p = _make_tool_plugin(tmp_path)
     res = asyncio.run(p.qzone_post(content="  今天散步看到一只很亲人的猫  ", stream_id="s1"))
@@ -374,12 +380,52 @@ def test_qzone_post_success_publishes_and_echoes(tmp_path):
     # 无 is_mentioned:主程序只读 message_info.additional_config 位置,回注不设即不触发决策轮
     assert "is_mentioned" not in (msg["message_info"].get("additional_config") or {})
     assert msg["raw_message"] == [
-        {"type": "text", "data": "我发布了一条说说:今天散步看到一只很亲人的猫"}
+        {"type": "text", "data": "我发布了一条说说:今天散步看到一只很亲人的猫\n〔说说ID=newtid0001〕"}
     ]
     assert any(
         level == "info" and "QQ空间说说发布成功" in str(a[0]) and a[1] == "今天散步看到一只很亲人的猫"[:30]
         for level, a in p.logs
     )
+
+
+def test_qzone_post_anchors_seen_and_registry(tmp_path):
+    """发布后本地锚定三连:seen 库 queued→seen(own-post 摘要=正文前 50 字,
+    message_id=回注消息 id,后续通知 reply 段据此引用);registry 登记
+    kind="self" 自锚——模型照抄回注锚(前 12 位)即可解析到该说说。"""
+
+    p = _make_tool_plugin(tmp_path)
+    p.qzone_client.publish_tid = "fullpubtid000123456"
+    asyncio.run(p.qzone_post(content="今天的心情很不错,写点什么好呢", stream_id="s1"))
+    _, msg = p._ctx.gateway.calls[0]
+    assert msg["raw_message"][0]["data"].endswith("\n〔说说ID=fullpubtid00〕")  # 锚取前 12 位
+    rows = p.qzone_seen.recent_seen(limit=5, days=1, now=datetime.now())
+    assert any(
+        r["tid"] == "fullpubtid000123456" and r["author_uin"] == BOT_UIN
+        and r["author_nickname"] == "我" and r["summary"] == "今天的心情很不错,写点什么好呢"
+        for r in rows
+    )  # summary=正文前 50 字(Task 6 own-post 摘要依赖)
+    assert p.qzone_seen.get_message_id("fullpubtid000123456") == msg["message_id"]
+    ctx = p._qzone_registry.resolve("fullpubtid00")  # 前缀锚解析(registry 两级口径)
+    assert ctx is not None and ctx.tid == "fullpubtid000123456"
+    assert ctx.owner_uin == BOT_UIN and ctx.owner_nickname == "我" and ctx.kind == "self"
+
+
+def test_qzone_post_missing_tid_warns_and_skips_anchor(tmp_path):
+    """响应缺 tid:发布不误报失败(回执仍成功),告警显式暴露;回注文本无锚,
+    seen/registry 零登记(tid 未知无从登记,浏览发现层后续自行补)。"""
+
+    p = _make_tool_plugin(tmp_path)
+    p.qzone_client.publish_tid = ""
+    res = asyncio.run(p.qzone_post(content="发了但拿不到 tid", stream_id="s1"))
+    assert res == "发布成功。"
+    _, msg = p._ctx.gateway.calls[0]
+    assert msg["raw_message"][0]["data"] == "我发布了一条说说:发了但拿不到 tid"
+    assert any(
+        level == "warning" and "未含新说说 tid" in str(a[0]) and "回注缺锚" in str(a[0])
+        for level, a in p.logs
+    )
+    assert p.qzone_seen.recent_seen(limit=10, days=1, now=datetime.now()) == []
+    assert p._qzone_registry.resolve("") is None
 
 
 def test_qzone_post_echo_content_truncated_to_sixty(tmp_path):
@@ -391,7 +437,8 @@ def test_qzone_post_echo_content_truncated_to_sixty(tmp_path):
     asyncio.run(p.qzone_post(content=long_content, stream_id="s1"))
     assert p.qzone_client.publish_calls == [long_content]  # 全文发布
     _, msg = p._ctx.gateway.calls[0]
-    assert msg["raw_message"][0]["data"] == f"我发布了一条说说:{'字' * 60}"  # 回注截 60 字
+    # 回注截 60 字;锚行独立成行,不受预览截断影响
+    assert msg["raw_message"][0]["data"] == f"我发布了一条说说:{'字' * 60}\n〔说说ID=newtid0001〕"
 
 
 def test_qzone_post_validation_empty_too_long_and_session(tmp_path):
@@ -504,10 +551,11 @@ def test_diary_generation_publishes_with_daily_material(tmp_path):
     assert "23:00" not in stable  # 睡眠窗口不进素材
     assert "周四交作业" in stable
     assert "今天去公园散步" in stable
-    # 快照已存(醒来回注素材)
+    # 快照已存(醒来回注素材):正文 + 发布时刻 + 新说说 tid(醒后锚定用)
     data = p._pending_diary_snapshot.load()
     assert data.get("text") == "今天窝着刷手机,看到小明去公园散步,有点懒洋洋的。"
     assert data.get("published_at")
+    assert data.get("tid") == "newtid0001"
     assert any(
         level == "info" and "QQ空间日记发布成功" in str(a[0]) for level, a in p.logs
     )
@@ -609,7 +657,31 @@ def test_echo_pending_diary_truncates_to_sixty(tmp_path):
     p._pending_diary_snapshot.save({"text": "字" * 80})
     asyncio.run(p._echo_pending_diary())
     _, msg = p._ctx.gateway.calls[0]
-    assert msg["raw_message"][0]["data"] == f"我昨晚发布的日记:{'字' * 60}"
+    assert msg["raw_message"][0]["data"] == f"我昨晚发布的日记:{'字' * 60}"  # 旧快照无 tid:无锚行
+
+
+def test_echo_pending_diary_with_tid_anchors_seen_and_registry(tmp_path):
+    """快照带 tid 的补注(本任务起的新形态):回注文本尾部带〔说说ID=前12位〕
+    锚;route 成功后 seen(queued→seen,summary=日记正文前 50 字)+
+    registry kind="self" 同款锚定(Task 6/10 own-post 依赖);锚定失败不拦
+    快照清空(远端已成功,补注一次即清)。"""
+
+    p = _make_diary_plugin(tmp_path)
+    p._pending_diary_snapshot.save({"text": "昨晚的日记正文", "published_at": "2026-09-01T23:05:00",
+                                    "tid": "diarytid000456789"})
+    asyncio.run(p._echo_pending_diary())
+    _, msg = p._ctx.gateway.calls[0]
+    assert msg["raw_message"][0]["data"] == "我昨晚发布的日记:昨晚的日记正文\n〔说说ID=diarytid0004〕"
+    rows = p.qzone_seen.recent_seen(limit=5, days=1, now=datetime.now())
+    assert any(
+        r["tid"] == "diarytid000456789" and r["summary"] == "昨晚的日记正文"
+        and r["author_uin"] == BOT_UIN and r["author_nickname"] == "我"
+        for r in rows
+    )
+    assert p.qzone_seen.get_message_id("diarytid000456789") == msg["message_id"]
+    ctx = p._qzone_registry.resolve("diarytid0004")  # 前缀锚解析
+    assert ctx is not None and ctx.kind == "self" and ctx.owner_uin == BOT_UIN
+    assert p._pending_diary_snapshot.load() == {}
 
 
 def test_echo_pending_diary_empty_noop(tmp_path):

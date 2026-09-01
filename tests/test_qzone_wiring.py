@@ -156,6 +156,8 @@ def _make_plugin(tmp_path):
     p.memo = MemoService(store, p.config.memo)
     p.memo.ensure_schema()
     p._pending_diary_snapshot = JsonSnapshot(tmp_path / "qzone_pending_diary.json")
+    # 空间见闻快照(on_load 装配,离线测试手工补;_qzone_block 真实流分支读取)
+    p._qzone_digest_snapshot = JsonSnapshot(tmp_path / "qzone_digest.json")
     p.logs = logs  # 测试侧便捷引用(非插件属性约定)
     return p
 
@@ -1054,6 +1056,65 @@ def test_qzone_block_real_chat_summary_narrative_format(tmp_path):
     assert key == "qzone:s:sumtid1|sumtid2"
     # 叙事格式:昵称发了「摘要前20字」(超长截断);缺昵称回退QQ号;空摘要以「图片」占位
     assert text == "[空间] 近期刷到: 小明发了「今天去公园散步拍了好多照片晚霞很好看心情」;10002发了「图片」"
+
+
+# ---- M3 Task9:见闻系统(窗口结束旁路 LLM 摘要,注入真实聊天) ----
+
+
+def test_digest_generated_on_window_end(tmp_path):
+    """M3 见闻系统:read_qzone 窗口结束旁路 LLM 把当日浏览+互动摘要为「空间见闻」
+    持久化(qzone_digest.json,键 date/text)——虚拟流 receive-only 无发言投递,
+    主程序记忆层不会为它产出摘要,由插件在窗口边界自行生成;生成失败保留上一份。"""
+
+    p = _make_plugin(tmp_path)
+    p.qzone_injector.window_started()
+    # 当日素材两源:近 1 天已注入浏览(seen)+ 当日互动事件(fav_events)
+    now_iso = datetime.now().strftime("%Y-%m-%dT%H:%M:%S")
+    p.qzone_seen.mark_queued("dtid1", abstime="1", author_uin="10001",
+                             summary="发了新猫图", author_nickname="小明")
+    p.qzone_seen.mark_seen("dtid1", now_iso)
+    p.qzone_comment_seen.fav_event("10001", "COMMENT", "小明 评论了你的说说:好看")
+
+    async def llm(messages, model, module, timeout_ms=None):
+        return {"success": True, "response": "今天看到小明发的新猫图,还收到两条评论。"}
+
+    p._side_llm_call = llm
+    # 人设缓存预置(离线桩无 ctx.config,不走异常兜底路径;实例级覆盖防测试间泄漏)
+    p._persona_cache = "猫耳少女"
+    p._style_cache = ""
+    asyncio.run(p._qzone_generate_digest())
+    data = p._qzone_digest_snapshot.load()
+    assert data.get("date") == datetime.now().strftime("%Y-%m-%d")
+    assert data.get("text", "").startswith("今天看到小明")
+    # 窗口结束触发(源码断言):_qzone_poll_feeds 的 window_ended 之后派发生成任务
+    import inspect
+
+    import plugin as plugin_mod
+
+    src = inspect.getsource(plugin_mod)
+    assert "_spawn_background_task(self._qzone_generate_digest())" in src
+
+
+def test_qzone_block_prefers_today_digest(tmp_path):
+    """M3 见闻系统:_qzone_block 真实流分支优先输出当日「[空间见闻]」(LLM 摘要的
+    当日空间印象);无当日见闻(日期过期)回退既有「近期刷到」路径不变。"""
+
+    p = _make_plugin(tmp_path)
+    p._qzone_digest_snapshot = JsonSnapshot(tmp_path / "qzone_digest.json")
+    p._qzone_digest_snapshot.save({
+        "date": datetime.now().strftime("%Y-%m-%d"), "text": "见闻正文",
+    })
+    qz = p._qzone_block(stream_id="非虚拟流id")
+    assert qz and qz[1].startswith("[空间见闻] 见闻正文")
+    # 回退分支:快照日期过期(昨日的旧见闻)→ 既有近期刷到叙事不变
+    yesterday = (datetime.now() - timedelta(days=1)).strftime("%Y-%m-%d")
+    p._qzone_digest_snapshot.save({"date": yesterday, "text": "昨天的旧见闻"})
+    now_iso = datetime.now().strftime("%Y-%m-%dT%H:%M:%S")
+    p.qzone_seen.mark_queued("sumtid1", abstime="1", author_uin="10001",
+                             summary="今天去公园散步", author_nickname="小明")
+    p.qzone_seen.mark_seen("sumtid1", now_iso)
+    qz2 = p._qzone_block(stream_id="非虚拟流id")
+    assert qz2 and qz2[1].startswith("[空间] 近期刷到: ")
 
 
 # ---- 终审修复波 I1/I2/I3:组合层行为测试 ----

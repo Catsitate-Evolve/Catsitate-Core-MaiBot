@@ -215,6 +215,14 @@ class CommentSeenStore:
             for r in rows
         ]
 
+    def fav_events_day(self, day: str) -> list[dict]:
+        """取某日全部好感度事件(见闻素材:谁与我互动/我做了什么)。"""
+
+        rows = self.store.query(
+            "SELECT user_id, kind, text FROM qzone_fav_events WHERE day = ? ORDER BY id", (day,)
+        )
+        return [{"user_id": r[0], "kind": r[1], "text": r[2]} for r in rows]
+
     def last_fav_interaction(self, user_id: str) -> str:
         """该人最近一次任一类事件的 created_at(ISO);无事件返回空串。"""
 

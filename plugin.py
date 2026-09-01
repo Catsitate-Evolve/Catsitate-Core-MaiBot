@@ -205,6 +205,8 @@ class CatsitatePlugin(MaiBotPlugin):
         self._sleep_review_buffer_snapshot = JsonSnapshot(data_dir / "sleep_review_buffer.json")
         # 入睡任务发布的日记正文(醒来回注虚拟流用);持久化防重启丢失
         self._pending_diary_snapshot = JsonSnapshot(data_dir / "qzone_pending_diary.json")
+        # 空间见闻(read_qzone 窗口结束旁路 LLM 摘要的当日印象);持久化跨重启引用
+        self._qzone_digest_snapshot = JsonSnapshot(data_dir / "qzone_digest.json")
         _loaded_buffer = self._sleep_review_buffer_snapshot.load()
         # JsonSnapshot.load 仅接受 dict(非 dict 一律返回 {}):缓冲以 {"messages": [...]} 包装存储
         self._sleep_review_buffer: list[dict] = (
@@ -1207,6 +1209,8 @@ class CatsitatePlugin(MaiBotPlugin):
                 self.ctx.logger.info(
                     "QQ空间浏览窗口结束,浏览队列回退未读(%d 条);通知队列保留等待注入", reverted
                 )
+                # 见闻生成(M3):窗口边界把当日浏览+互动摘要为空间见闻,注入真实聊天
+                self._spawn_background_task(self._qzone_generate_digest())
             if not in_read_window and not in_send_window:
                 return  # 非 qzone 窗口(自由时间/问候/睡眠):按窗口外处理
             # 发布触发武装(Task 8):按窗口标识 "{day}|{start}" 判重——邻接
@@ -2335,6 +2339,12 @@ class CatsitatePlugin(MaiBotPlugin):
         if stream_id in self._qzone_session_id_set():
             state = self.qzone_injector.describe_current()
             return f"qzone:v:{state}", f"[空间] {state}"
+        # 当日空间见闻优先(M3):窗口结束旁路 LLM 摘要的当日印象,比逐条
+        # 「近期刷到」更像人转述见过的事;无当日见闻回退下方既有路径
+        digest = self._qzone_digest_snapshot.load()
+        today = datetime.now().strftime("%Y-%m-%d")
+        if digest.get("text") and digest.get("date") == today:
+            return f"qzone:d:{today}:{len(digest['text'])}", f"[空间见闻] {digest['text']}"
         entries = self.qzone_seen.recent_seen(
             limit=self.config.qzone.summary_count, days=self.config.qzone.summary_days, now=datetime.now()
         )
@@ -2349,6 +2359,55 @@ class CatsitatePlugin(MaiBotPlugin):
         text = "[空间] 近期刷到: " + ";".join(lines)
         key = "qzone:s:" + "|".join(e["tid"] for e in entries)
         return key, text
+
+    async def _qzone_generate_digest(self) -> None:
+        """read_qzone 窗口结束:把当日浏览与互动摘要为见闻。
+
+        主程序会话摘要由 bot 发言后的回写服务生成,虚拟流 receive-only 无
+        发言投递,主程序记忆层不会为虚拟流产出内容,插件亦无 API 读取记忆
+        段落——故由插件在窗口边界自行摘要(素材→摘要→存储→注入,与主程序
+        记忆摘要方法一致)。失败告警并保留上一份。
+        """
+
+        if not (self.config.qzone.enabled and self.config.qzone.digest_enabled):
+            return
+        if not self._qzone_available:
+            return
+        now = datetime.now()
+        day = now.strftime("%Y-%m-%d")
+        seen = self.qzone_seen.recent_seen(limit=15, days=1, now=now)
+        lines = [
+            f"{e['author_nickname'] or e['author_uin']}发了「{(e['summary'] or '图片')[:20]}」"
+            for e in seen
+        ]
+        try:
+            events = self.qzone_comment_seen.fav_events_day(day)
+        except Exception:
+            self.ctx.logger.exception("QQ空间见闻素材(互动事件)读取失败,本轮按空处理")
+            events = []
+        lines += [e["text"][:40] for e in events[:10]]
+        if not lines:
+            return  # 当日无素材:不生成,保留旧见闻
+        persona, _ = await self._persona_context()
+        stable_ctx = [f"bot 人设:{persona}", f"日期:{day}"]
+        messages, _ = build_side_prompt("qzone_digest", stable_ctx, ["素材:\n" + "\n".join(lines)])
+        try:
+            result = await self._side_llm_call(
+                messages, self.config.qzone.digest_llm_model, "qzone_digest",
+                self.config.qzone.digest_llm_timeout_ms,
+            )
+        except Exception:
+            self.ctx.logger.exception("QQ空间见闻生成失败,保留上一份")
+            return
+        if not isinstance(result, dict) or not result.get("success"):
+            self.ctx.logger.warning("QQ空间见闻 LLM 失败,保留上一份")
+            return
+        text = str(result.get("response") or "").strip()
+        if not text or len(text) > 400:
+            self.ctx.logger.warning("QQ空间见闻文本异常(长度 %d),保留上一份", len(text))
+            return
+        self._qzone_digest_snapshot.save({"date": day, "text": text})
+        self.ctx.logger.info("QQ空间见闻已生成(%d 字)", len(text))
 
     async def _qzone_group_prompt(self) -> str:
         """主程序 group_chat_prompt 当前值(1 小时缓存;读失败返回空串并告警)。"""

@@ -92,7 +92,7 @@ QQ空间虚拟流(qzone-qq)── 网关注入(route_message;receive 只进不�
 - **统一结构**:`[任务指令+输出格式(system,固定模板+版本化)] [稳定上下文(5 级规则/白名单/人设背景,配置数据)] [变量素材(时间正序)]`——稳定段在前、变量段在后。
 - **模板加载顺序**:主程序数据目录 `data/custom_prompts/zh-CN/catsitate_<id>.prompt`(WebUI「提示词管理」编辑产物)→ 主程序 `prompts/zh-CN/catsitate_<id>.prompt`(内置层)→ 插件内置默认(`llm_provider.SIDE_TEMPLATES`)。模板缺失时告警一次并回退内置,部署后自动恢复;模板内容变化即缓存键失效。
 - **WebUI 管理前提(自动部署)**:主程序「提示词管理」只扫描主程序 `prompts/` 与 `data/custom_prompts/` 目录,**不会自动扫描插件的 `prompt_templates/`**——插件加载时(`on_load`)自动把 `prompt_templates/catsitate_*.prompt`(11 个)同步到主程序 `prompts/zh-CN/`(`prompt_deploy.sync_prompt_templates`:内容一致跳过、变更覆盖;主程序 `load_prompts()` 在插件启动后调用,**同次启动即生效,无需重启**,见 §8.1 第 4 步)。生效后:主程序加载为内置层 → WebUI 可编辑 → 编辑产物写 `data/custom_prompts/zh-CN/` → 插件旁路调用优先读取(闭环)。插件不在 `plugins/` 下或主程序 `prompts/zh-CN/` 缺失时跳过并告警,插件回退内置默认。插件 `prompt_templates/` 目录保留作源模板。
-- **11 个旁路模板**:`catsitate_favorability`、`catsitate_msg_react`、`catsitate_sentinel`、`catsitate_image_relook`、`catsitate_decay`、`catsitate_schedule_generate`、`catsitate_sleep_confirm`、`catsitate_sleep_review`、`catsitate_qzone_scene`、`catsitate_qzone_diary`、`catsitate_qzone_expression`(与 `prompt_templates/` 下 11 个文件一一对应;前 8 个含 `{{delta_max}}`/`{{decay_max}}` 占位符,`catsitate_qzone_scene` 为空间虚拟流场景文案——场景替换运行时读取,WebUI 改完即生效;`catsitate_qzone_diary` 为睡前日记生成模板;`catsitate_qzone_expression` 为空间动作表达生成模板——评论/回复/说说正文共用,见 §3.13.1)。
+- **12 个旁路模板**:`catsitate_favorability`、`catsitate_msg_react`、`catsitate_sentinel`、`catsitate_image_relook`、`catsitate_decay`、`catsitate_schedule_generate`、`catsitate_sleep_confirm`、`catsitate_sleep_review`、`catsitate_qzone_scene`、`catsitate_qzone_diary`、`catsitate_qzone_expression`、`catsitate_qzone_digest`(与 `prompt_templates/` 下 12 个文件一一对应;前 8 个含 `{{delta_max}}`/`{{decay_max}}` 占位符,`catsitate_qzone_scene` 为空间虚拟流场景文案——场景替换运行时读取,WebUI 改完即生效;`catsitate_qzone_diary` 为睡前日记生成模板;`catsitate_qzone_expression` 为空间动作表达生成模板——评论/回复/说说正文共用,见 §3.13.1;`catsitate_qzone_digest` 为空间见闻摘要模板——read_qzone 窗口结束触发的当日印象生成,M3-r2)。
 - **记账**:每次旁路调用写入 `llm_usage` 表(day/module/calls/tokens 按模块分列)。
 
 ### 2.4 主链路注入纪律(§4.1)
@@ -347,7 +347,8 @@ QQ空间虚拟流(qzone-qq)── 网关注入(route_message;receive 只进不�
 - **memo 按人语义联动(M2)**:虚拟流上写的备忘与真实聊天跨流可见(主 QQ+附带 QQ,见 §3.6.1)。
 - **虚拟流注入(主链可引用, M1)**:每条动态构造为一条消息注入 `qzone-qq` 虚拟群聊流,复用主程序 planner→replyer 链;注入带 `is_mentioned=1.0` 强制触发;消息时间戳=阅读时刻(注入时刻,消息流时钟单调),发布时间以相对时间前缀写入正文(今天 HH:MM/M月d日 HH:MM,bot 不会把老说说当成刚发生;方案 B 2026-08-31);文本段末尾带「〔说说ID=xxx〕」参数独立尾行(v0.7 锚,v0.7.1 起换行独立成行,**纯图说说也保留文本段承载锚**);「刷到但懒得理」由 planner 自主沉默(无工具调用轮)表达——意愿判断权归模型。图片带 base64 交主流水线处理(描述/落 Images 表/可 `inspect_image` 重看);体积治理=压缩到 RPC 帧限内(用户裁定 2026-08-31 终案:超 12MB base64 预算按压缩阶梯收紧,极端不达标丢弃最大图保帧并告警;主程序入站链路兜底),下载失败的图以 `[图片]` 占位。
 - **说说发布回注(qzone_post)**:发布成功的说说立即以 self 消息注入虚拟流(`qzone_self_` 前缀 message_id,user=bot 自己,**无 is_mentioned**——不触发 planner 决策轮,仅入历史)——后续好友评论该说说时,bot 需要这段历史才知道自己发过什么;正文只带前 60 字预览(全文已真实发布在空间,回注只是上下文锚);回注失败不影响发布回执(说说已远端发布,谎报失败会诱导重复发布)。
-- **真实聊天见闻摘要注入(M3 表达叙事格式)**:真实聊天流的注入块附带 `[空间] 近期刷到: 昵称发了「摘要」;…`(近 `summary_days` 天已 seen 的 `summary_count` 条动态,叙事格式与浏览动态的自然文本一致;摘要截 20 字,纯图说说以「图片」占位,缺昵称回退QQ号)——bot 在真实聊天中可自然引用「我看到你发的说说」类见闻。
+- **真实聊天见闻注入(M3-r2 见闻系统优先,当日摘要)**:read_qzone 窗口结束时(含 read→仅 send 邻接切换)旁路 LLM(`qzone_digest` 模板,`digest_llm_model`)把**当日素材**(近 1 天已 seen 的 15 条动态叙事+当日 `qzone_fav_events` 前 10 条互动文本)摘要为 60~150 字「空间见闻」,存 `qzone_digest.json`(键 date/text);真实聊天流的注入块当日优先输出 `[空间见闻] {text}`(注入键 `qzone:d:{date}:{长度}`,见闻更新即换键),**无当日见闻回退既有「近期刷到」路径**。生成走插件侧窗口边界旁路摘要——虚拟流 receive-only 无发言投递,主程序记忆摘要层不会为它产出内容,插件亦无 API 读取记忆段落(素材→摘要→存储→注入,与主程序记忆摘要方法一致)。护栏:当日无素材不生成(保留旧见闻);LLM 失败/输出异常(空或超 400 字)告警并保留上一份。开关 `digest_enabled`(默认开)。
+- **真实聊天见闻摘要注入(M3 表达叙事格式,回退路径)**:真实聊天流的注入块附带 `[空间] 近期刷到: 昵称发了「摘要」;…`(近 `summary_days` 天已 seen 的 `summary_count` 条动态,叙事格式与浏览动态的自然文本一致;摘要截 20 字,纯图说说以「图片」占位,缺昵称回退QQ号)——bot 在真实聊天中可自然引用「我看到你发的说说」类见闻;当日无「空间见闻」(digest)时启用本路径。
 - **串行注入**:一次只允许一条动态处于「已注入待主链处理」状态;推进信号 = 轮完成(planner 响应无工具调用);超时兜底 `decision_window_seconds`(默认 150 秒,须大于最坏轮延迟;慢模型实测 31-53s,150 留余量),wait 态延长至 3 倍硬上限(自注入时刻起算,防 wait 期间注入下一条并入批处理);超时强制推进不清 registry——上下文(48h TTL)保留,后续轮次仍可对已注入说说调工具。
 
 ### 3.13.2 虚拟流与 person 统一(`qzone-qq`)
@@ -388,6 +389,7 @@ QQ空间虚拟流(qzone-qq)── 网关注入(route_message;receive 只进不�
 - `QQ空间说说发布成功: …`(v0.8 `qzone_post`/日记发布成功,前 30 字预览);`QQ空间说说发布失败`(`qzone_post` 动作 API 失败);`QQ空间说说回注失败(发布已成功,仅上下文注入失败)`;`QQ空间说说发布遇登录态失效,cookie 已作废,下轮重取`
 - `QQ空间评论/回复/说说正文生成失败(原因)`(M3-r2 表达生成层:旁路人设生成失败显式报错,回执可重试口径,零写调用);`QQ空间表达生成超长(N 字>上限 …),带字数硬约束重新生成一次` / `QQ空间表达生成重生成仍超长(N 字),截断至 N 字`(护栏路径,不失败)
 - `QQ空间日记发布成功: …`(入睡任务日记直发);`QQ空间日记 LLM 生成失败,跳过本轮` / `QQ空间日记 LLM 失败(success=…),跳过`(旁路生成失败,当夜无日记);`QQ空间日记内容异常(长度=…),跳过发布`(空/超 300 字护栏);`QQ空间日记发布失败(内容已生成,发布跳过)`;`QQ空间日记醒来补注完成`;`QQ空间日记补注失败(下个 tick 重试)`(快照保留,醒态 tick 重试)
+- `QQ空间见闻已生成(N 字)`(M3-r2 见闻系统:read_qzone 窗口结束旁路摘要成功);`QQ空间见闻生成失败,保留上一份` / `QQ空间见闻 LLM 失败,保留上一份`(生成异常/失败,旧见闻继续注入);`QQ空间见闻文本异常(长度 N),保留上一份`(空或超 400 字护栏);`QQ空间见闻素材(互动事件)读取失败,本轮按空处理`(fav_events 读取异常降级)
 - `QQ空间登录态失效,cookie 已作废,下轮重取`(空间工具遇登录态失效,作废 cookie 自愈,该次动作不重试);`QQ空间点赞遇登录态失效,cookie 已作废,下轮重取`
 - `QQ空间网关收到意外出站回调(receive 模式无出站路径,文本预览=…)`(v0.7 防御分支:receive 网关不应被回调,出现即主程序行为变化,回执 success=False)
 - `QQ空间通知入队 N 条(源A+B,P1 插队)`(M2.1 统一通知:双源检测到新评论/楼中楼回复入 P1 队列);`QQ空间通知轮询源A失败,本轮跳过`;`QQ空间通知轮询源B失败(好友 …),该好友跳过`;`QQ空间通知轮询源B好友反查失败,本轮跳过源B`;`QQ空间评论过旧跳过(…)` / `QQ空间楼中楼回复过旧跳过(…)`(早于 `summary_days` 截断);`QQ空间登录态失效(通知轮询源A/源B…),cookie 已作废,下轮重取`(自愈链,该轮不重试);`QQ空间动态注入被宿主拒绝`/`QQ空间动态已注入`(通知注入与浏览注入同走串行泵日志)
@@ -579,13 +581,16 @@ QQ空间虚拟流(qzone-qq)── 网关注入(route_message;receive 只进不�
 | diary_enabled | true | 日记功能开关(入睡时生成并发布空间日记说说;关闭则入睡任务只生成次日日程) |
 | diary_llm_model | "memory" | 日记生成模型(task 名) |
 | diary_llm_timeout_ms | 0 | 日记生成超时(毫秒;0=主程序默认) |
+| digest_enabled | true | 空间见闻开关(read_qzone 窗口结束时旁路 LLM 摘要,注入真实聊天;M3-r2) |
+| digest_llm_model | "memory" | 空间见闻摘要模型(task 名) |
+| digest_llm_timeout_ms | 0 | 空间见闻超时(毫秒;0=主程序默认) |
 | expression_llm_model | "memory" | 表达生成模型(评论/回复/说说正文的旁路人设生成,task 名;M3-r2 两段式) |
 | expression_llm_timeout_ms | 0 | 表达生成超时(毫秒;0=主程序默认) |
 | request_timeout_ms | 10000 | 空间 HTTP 请求超时(毫秒) |
 | max_retries | 0 | 空间动作 API(评论/点赞/发布,M2 生效)失败重试次数;0=失败即告警跳过。M1 读路径(图片下载)固定单次重试(联调实证 CDN 瞬态 404),不受此配置影响 |
 | cookie_refresh_minutes | 60 | cookie 刷新节流(分钟,间隔内跳过重取) |
 
-注:QQ空间动态注入复用主程序 planner→replyer 链不占旁路记账;QQ空间模块的旁路 LLM 调用有二——日记(`qzone_diary` 模块)与表达生成层(`qzone_expression` 模块,评论/回复/发布说说的正文生成,M3-r2 起),各自按模块记账。
+注:QQ空间动态注入复用主程序 planner→replyer 链不占旁路记账;QQ空间模块的旁路 LLM 调用有三——日记(`qzone_diary` 模块)、表达生成层(`qzone_expression` 模块,评论/回复/发布说说的正文生成,M3-r2 起)与空间见闻摘要(`qzone_digest` 模块,read_qzone 窗口结束触发,M3-r2 起),各自按模块记账。
 
 ### 4.13 debug 节(调试)
 
@@ -778,7 +783,7 @@ replyer 出站
 | reply 补传/哨兵 | `reply 补传:[…]`;`哨兵判定:放行回复` / `哨兵判定:撤回回复:{reason}` |
 | 旁路记账 | `旁路 LLM 当日调用次数已达或超过阈值 {n},请注意用量`;llm_usage 表按模块分列 |
 | quote 解析 | `quote 发送者解析: 成功 {n}/{m}(stream=…)`;`quote 发送者解析失败(stream=…):…` |
-| QQ空间 | `QQ空间窗口开始,注入泵激活`;`QQ空间新动态入队 {n} 条`;`QQ空间动态已注入(tid=…,作者=…)`;v0.7 工具:`QQ空间评论失败(feed_id=…)`、`QQ空间楼中楼回复失败(feed=…,comment=…)`、`QQ空间点赞失败(tid=…)`;告警/停用:`QQ空间模块停用:…`、`QQ空间模块停用:person 别名折叠自检失败(…)`、`QQ空间网关收到意外出站回调(…)`(receive 网关防御分支)、`QQ空间场景回退:…`、`QQ空间说说拉取失败(uin=…),该好友本轮跳过` |
+| QQ空间 | `QQ空间窗口开始,注入泵激活`;`QQ空间新动态入队 {n} 条`;`QQ空间动态已注入(tid=…,作者=…)`;见闻:`QQ空间见闻已生成({n} 字)`;v0.7 工具:`QQ空间评论失败(feed_id=…)`、`QQ空间楼中楼回复失败(feed=…,comment=…)`、`QQ空间点赞失败(tid=…)`;告警/停用:`QQ空间模块停用:…`、`QQ空间模块停用:person 别名折叠自检失败(…)`、`QQ空间网关收到意外出站回调(…)`(receive 网关防御分支)、`QQ空间场景回退:…`、`QQ空间说说拉取失败(uin=…),该好友本轮跳过` |
 
 ### 8.3 常见问题排查
 
@@ -788,7 +793,7 @@ replyer 出站
 | 无节日/农历信息 | 日志「lunar-python 未安装:农历节日/节气不可用」→ 安装依赖;「holiday-cn 数据源…获取失败」→ 网络受限时回退链自动生效(库/内置表),环境块仍含日期与城市 |
 | 无天气 | 「天气获取失败,本轮环境块省略天气」→ Open-Meteo 可达性/城市坐标是否正确(默认珠海 22.279410,113.528098) |
 | 旁路 LLM 报「未找到名为 … 的模型配置」 | `llm_model` 填了模型标识而非 task 名;改为 model_task_config 节名 |
-| WebUI「提示词管理」看不到 8 个旁路模板 | 插件加载时自动部署(无需手动);看不到则查日志有无「旁路模板自动部署跳过」(插件不在 `plugins/` 下或主程序 `prompts/zh-CN/` 目录缺失/未识别)→ 插件放回 `plugins/` 后重启;重启后仍看不到再查「旁路模板 … 部署失败」写入告警 |
+| WebUI「提示词管理」看不到 12 个旁路模板 | 插件加载时自动部署(无需手动);看不到则查日志有无「旁路模板自动部署跳过」(插件不在 `plugins/` 下或主程序 `prompts/zh-CN/` 目录缺失/未识别)→ 插件放回 `plugins/` 后重启;重启后仍看不到再查「旁路模板 … 部署失败」写入告警 |
 | 旁路调用超时 | 慢模型超时默认 30s(`*_timeout_ms` 填 0=默认);按 §8.1 配置 120000 |
 | 好感度一直不结算 | 检查 bot_user_id 是否配置;素材为空判定「素材为空,跳过结算」;daily 素材不足 3 条「顺延」属预期 |
 | 睡眠中一切无响应 | 绝对静默设计预期,不是故障;入站消息被拦截记入回顾缓冲,醒来生成报告 |

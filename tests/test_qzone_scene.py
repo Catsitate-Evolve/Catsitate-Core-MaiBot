@@ -50,6 +50,14 @@ def test_scene_text_distinguishes_feeds_and_notifications():
     assert "直接打字是发不出去的" in QZONE_SCENE_TEXT  # receive 网关语义
 
 
+def test_scene_text_matches_two_stage_tools():
+    """v4:文案对齐两段式工具参数形态——qzone_comment/qzone_reply/qzone_post
+    正文由表达生成层产出,模型只填 reply_reference(表达方向);同时覆盖
+    点赞通知源C(「赞了你」也是互动通知,feed_id 归属含 qzone_like)。"""
+    assert "reply_reference" in QZONE_SCENE_TEXT
+    assert "qzone_like" in QZONE_SCENE_TEXT and "qzone_post" in QZONE_SCENE_TEXT
+
+
 def test_scene_text_runtime_chain_from_llm_provider(monkeypatch):
     """可读性优化(2026-09-01):场景文案运行时经 load_side_system("qzone_scene")
     读取(WebUI custom_prompts → 主程序 prompts → 插件内置三层链,可被 WebUI

@@ -164,3 +164,43 @@ def test_qzone_diary_prompt_in_template_dir_and_syncs(tmp_path: Path) -> None:
     assert written >= 1
     deployed = _target_dir(project_root) / "catsitate_qzone_diary.prompt"
     assert deployed.read_text(encoding="utf-8") == src.read_text(encoding="utf-8")
+
+
+def test_qzone_expression_prompt_in_template_dir_and_syncs(tmp_path: Path) -> None:
+    """M3-r2 表达生成层:空间动作表达模板(评论/回复/发布共用)入列插件
+    prompt_templates/,内容与 llm_provider 内置一致(插件为权威源);sync 后
+    落在主程序 prompts/zh-CN/,WebUI 可编辑。"""
+    real_plugin_root = Path(__file__).resolve().parents[1]
+    src = real_plugin_root / "prompt_templates" / "catsitate_qzone_expression.prompt"
+    assert src.is_file()
+
+    from catsitate_core.llm_provider import SIDE_TEMPLATES
+
+    builtin = SIDE_TEMPLATES["qzone_expression"]["system"]
+    assert src.read_text(encoding="utf-8").strip() == builtin
+
+    project_root = _make_project_root(tmp_path)
+    written, _skipped = sync_prompt_templates(project_root, real_plugin_root)
+    assert written >= 1
+    deployed = _target_dir(project_root) / "catsitate_qzone_expression.prompt"
+    assert deployed.read_text(encoding="utf-8") == src.read_text(encoding="utf-8")
+
+
+def test_qzone_digest_prompt_in_template_dir_and_syncs(tmp_path: Path) -> None:
+    """M3-r2 空间见闻:见闻摘要模板(read_qzone 窗口结束旁路生成)入列插件
+    prompt_templates/,内容与 llm_provider 内置一致(插件为权威源);sync 后
+    落在主程序 prompts/zh-CN/,WebUI 可编辑。"""
+    real_plugin_root = Path(__file__).resolve().parents[1]
+    src = real_plugin_root / "prompt_templates" / "catsitate_qzone_digest.prompt"
+    assert src.is_file()
+
+    from catsitate_core.llm_provider import SIDE_TEMPLATES
+
+    builtin = SIDE_TEMPLATES["qzone_digest"]["system"]
+    assert src.read_text(encoding="utf-8").strip() == builtin
+
+    project_root = _make_project_root(tmp_path)
+    written, _skipped = sync_prompt_templates(project_root, real_plugin_root)
+    assert written >= 1
+    deployed = _target_dir(project_root) / "catsitate_qzone_digest.prompt"
+    assert deployed.read_text(encoding="utf-8") == src.read_text(encoding="utf-8")

@@ -29,7 +29,8 @@ def test_fav_events_roundtrip(tmp_path):
     s.fav_event("10001", "OUT_COMMENT", "你评论了小明的说说")
     rows = s.fav_events_on(today, "10001")
     assert len(rows) == 2 and rows[0]["kind"] == "COMMENT"
-    assert s.last_fav_interaction("10001") >= "2026-08-31"
+    # 下界由当天动态推导(登记时刻即当下,不早于当天):任意日期运行均成立,不与真实日历耦合
+    assert s.last_fav_interaction("10001") >= today
     assert s.last_fav_interaction("99999") == ""
 
 

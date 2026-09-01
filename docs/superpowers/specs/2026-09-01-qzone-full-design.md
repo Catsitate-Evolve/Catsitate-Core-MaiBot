@@ -131,19 +131,19 @@ QzoneClient（协议封装）
 | 工具 | 参数 | 描述 |
 |---|---|---|
 | view_friend_feeds | qq*(必填), count?(默认 3, 上限 10) | 查看指定好友最近 n 条说说，返回正文+图片 |
-| inspect_image | message_id?, image_index?, question*, image_hash? | 带具体问题重看图片；message_id 路径搜消息（真实/虚拟流均可），image_hash 路径直接查 Images 表（覆盖 view_friend_feeds 等非消息路径入库的图片） |
+| inspect_image | message_id?, image_index?, question*, image_hash? | 带具体问题重看图片；message_id 路径搜消息（真实/虚拟流均可），image_hash 路径按前缀匹配 Images 表（8 位前缀即可，覆盖 view_friend_feeds 等非消息路径入库的图片） |
 
 `view_friend_feeds` 说明：
 - 调用 `client.get_user_feeds` 复用现有解析
 - **图片返回走主程序原生 tool result media 通道**：工具返回 dict（非 str），`content` 为格式化文本摘要，`content_items` 为图片列表（content_type=image + base64 + mime_type）。主程序自动处理：文本 planner 后台 VLM 识图，视觉 planner 直接看图。图片体积用现有压缩阶梯治理。
 - 主程序 image_manager 的 sha256 去重自动跳过已识图过的图片，插件侧不维护缓存。
-- **hash 随摘要透出**：tool result media 的元数据不向 planner 透出图片 hash——`content` 文本摘要逐图列出（如「图1(ab12cd34)」），planner 需要重看时把该串传给 inspect_image(image_hash=...)
+- **hash 随摘要透出**：tool result media 的元数据不向 planner 透出图片 hash——`content` 文本摘要逐图列出（如「图1(ab12cd34)」，为图片 sha256 的前 8 位），planner 需要重看时把该串传给 inspect_image(image_hash=...)
 - 成功返回时登记 FeedContextRegistry（tid→owner），虚拟流内看完即可续 qzone_comment/qzone_like
 
 `inspect_image` 的 image_hash 路径说明：
 - 现有链路（message_id → find_image_segment → hash）保持不变，仍为默认路径
-- 新增可选参数 `image_hash`：直接用 hash 查 Images 表取 full_path，跳过消息搜索
-- hash 来源：消息流内图片走 message_id 路径即可；view_friend_feeds 返回的图片用 content 摘要中列出的 hash
+- 新增可选参数 `image_hash`：按前缀（8 位即可）匹配 Images 表取 full_path，跳过消息搜索；零命中/多命中显式报错（多命中列候选提示加长前缀），不回退消息搜索
+- hash 来源：消息流内图片走 message_id 路径即可；view_friend_feeds 返回的图片用 content 摘要中列出的 hash 前缀
 
 工具白名单（`qzone.tool_whitelist`）语义：**虚拟流内可使用的工具集**，表外工具一律不可用。主程序 `reply` 工具不在白名单内——虚拟流是 receive-only 网关，replyer 生成的文本无出站路径可投递，放行只会产生必然失败的调用。真实流侧反向隔离：自动隐藏 qzone_* 前缀工具（全域工具不受影响）。
 

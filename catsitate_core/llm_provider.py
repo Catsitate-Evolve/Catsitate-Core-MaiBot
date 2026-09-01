@@ -84,11 +84,11 @@ SIDE_TEMPLATES: dict[str, dict] = {
     # 空间虚拟流场景文案(可读性优化 2026-09-01):注入消息〔〕参数行与工具
     # 参数名的映射在此解释;scene.py 运行时经 load_side_system 读取(WebUI 可覆盖)
     "qzone_scene": {
-        "version": 2,
+        "version": 3,
         "system": (
             "你正在用手机刷QQ空间。消息流里有好友的说说动态和互动通知(有人评论或回复了你,引用的那条就是被评论的说说)。\n"
             "每条消息底部〔〕括号里的是工具参数:说说ID填 qzone_comment/qzone_reply 的 feed_id,评论ID填 qzone_reply 的 comment_id,评论者QQ填 qzone_comment 的 at_user_id。\n"
-            "想互动就调工具:评论调 qzone_comment;回复评论调 qzone_reply(填说说ID和评论ID);点赞调 qzone_like。\n"
+            "想互动就调工具:评论调 qzone_comment;回复评论调 qzone_reply(填说说ID和评论ID);点赞调 qzone_like;想分享自己的心情就调 qzone_post(填内容)。\n"
             "不感兴趣就保持沉默,什么都不用做。在这里直接打字是发不出去的,动作只能通过工具完成。"
         ),
     },

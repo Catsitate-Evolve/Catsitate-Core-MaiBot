@@ -45,14 +45,15 @@ def test_unknown_template_raises():
 
 
 def test_qzone_scene_template_declared():
-    """可读性优化(2026-09-01):空间场景文案入 SIDE_TEMPLATES(WebUI 可覆盖),
-    version=2;说明〔〕参数行与工具参数名(feed_id/comment_id/at_user_id)映射。"""
+    """空间场景文案入 SIDE_TEMPLATES(WebUI 可覆盖),version=3——M3 表达起
+    说明〔〕参数行、工具参数名(feed_id/comment_id/at_user_id)映射与 qzone_post。"""
     t = SIDE_TEMPLATES["qzone_scene"]
-    assert t["version"] == 2
+    assert t["version"] == 3
     assert "刷QQ空间" in t["system"]
     assert "〔〕括号里的是工具参数" in t["system"]
     assert "feed_id" in t["system"] and "comment_id" in t["system"] and "at_user_id" in t["system"]
     assert "qzone_comment" in t["system"] and "qzone_reply" in t["system"] and "qzone_like" in t["system"]
+    assert "qzone_post" in t["system"]  # M3 表达:分享心情发自己的说说
 
 
 def test_qzone_diary_template_declared():

@@ -888,6 +888,25 @@ def test_qzone_block_virtual_stream_state_only(tmp_path):
     assert key2 is None
 
 
+def test_qzone_block_real_chat_summary_narrative_format(tmp_path):
+    """M3 表达:真实聊天见闻摘要用「昵称发了「摘要」」叙事格式——与浏览动态的
+    自然文本一致(比「昵称:摘要」键值对更像转述见闻);摘要截 20 字,纯图说说
+    (无摘要)以「图片」占位;键仍按 tid 集合去重(内容不变即缓存复用)。"""
+
+    p = _make_plugin(tmp_path)
+    now_iso = datetime.now().strftime("%Y-%m-%dT%H:%M:%S")
+    p.qzone_seen.mark_queued("sumtid1", abstime="1", author_uin="10001",
+                             summary="今天去公园散步拍了好多照片晚霞很好看心情也很好", author_nickname="小明")
+    p.qzone_seen.mark_queued("sumtid2", abstime="1", author_uin="10002",
+                             summary="", author_nickname="")  # 纯图说说:无摘要无昵称
+    p.qzone_seen.mark_seen("sumtid1", now_iso)
+    p.qzone_seen.mark_seen("sumtid2", now_iso)
+    key, text = p._qzone_block("real_stream")
+    assert key == "qzone:s:sumtid1|sumtid2"
+    # 叙事格式:昵称发了「摘要前20字」(超长截断);缺昵称回退QQ号;空摘要以「图片」占位
+    assert text == "[空间] 近期刷到: 小明发了「今天去公园散步拍了好多照片晚霞很好看心情」;10002发了「图片」"
+
+
 # ---- 终审修复波 I1/I2/I3:组合层行为测试 ----
 
 

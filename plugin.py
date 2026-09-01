@@ -1996,9 +1996,13 @@ class CatsitatePlugin(MaiBotPlugin):
         )
         if not entries:
             return None
-        text = "[空间] 近期刷到:" + ";".join(
-            f"{e['author_nickname'] or e['author_uin']}:{e['summary'] or '(无文字)'}" for e in entries
-        )
+        # 叙事格式(与浏览动态的自然文本一致):「昵称发了「摘要」」比键值对
+        # 「昵称:摘要」更像转述见闻;摘要截 20 字,纯图说说以「图片」占位
+        lines = [
+            f"{e['author_nickname'] or e['author_uin']}发了「{(e['summary'] or '图片')[:20]}」"
+            for e in entries
+        ]
+        text = "[空间] 近期刷到: " + ";".join(lines)
         key = "qzone:s:" + "|".join(e["tid"] for e in entries)
         return key, text
 

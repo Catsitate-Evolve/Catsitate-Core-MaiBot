@@ -44,6 +44,7 @@ def test_scene_text_distinguishes_feeds_and_notifications():
     assert "评论者QQ" in QZONE_SCENE_TEXT  # 参数键名完整语义
     assert "qzone_comment" in QZONE_SCENE_TEXT and "qzone_reply" in QZONE_SCENE_TEXT
     assert "qzone_like" in QZONE_SCENE_TEXT
+    assert "qzone_post" in QZONE_SCENE_TEXT  # M3 表达:分享心情发自己的说说
     assert "feed_id" in QZONE_SCENE_TEXT and "comment_id" in QZONE_SCENE_TEXT
     assert "at_user_id" in QZONE_SCENE_TEXT  # 参数名映射由场景 prompt 解释
     assert "直接打字是发不出去的" in QZONE_SCENE_TEXT  # receive 网关语义

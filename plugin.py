@@ -194,6 +194,8 @@ class CatsitatePlugin(MaiBotPlugin):
         self._sleep_window_settled: str = ""  # 已处理(入睡/补生成)过的睡眠窗口 end 标记(Q1 防重复)
         # 睡眠期拦截消息缓冲(回顾报告素材);持久化防重启丢失(联调发现)
         self._sleep_review_buffer_snapshot = JsonSnapshot(data_dir / "sleep_review_buffer.json")
+        # 入睡任务发布的日记正文(醒来回注虚拟流用);持久化防重启丢失
+        self._pending_diary_snapshot = JsonSnapshot(data_dir / "qzone_pending_diary.json")
         _loaded_buffer = self._sleep_review_buffer_snapshot.load()
         # JsonSnapshot.load 仅接受 dict(非 dict 一律返回 {}):缓冲以 {"messages": [...]} 包装存储
         self._sleep_review_buffer: list[dict] = (
@@ -1676,7 +1678,7 @@ class CatsitatePlugin(MaiBotPlugin):
         return {"action": "continue", "modified_kwargs": kwargs}
 
     async def _enter_sleep(self) -> None:
-        """入睡:计算 clamp 醒来时刻,状态落盘,触发生成次日日程(睡眠期间唯一 LLM 调用)。"""
+        """入睡:计算 clamp 醒来时刻,状态落盘,触发入睡任务(次日日程生成+日记生成)。"""
 
         if self.sleep.is_sleeping():
             return  # 已睡幂等:晚安判定 await 交错期间不得二次入睡/二次生成(审查 I-3)
@@ -1690,9 +1692,11 @@ class CatsitatePlugin(MaiBotPlugin):
             planned_wake += ":00"  # SleepManager 统一秒格式 %Y-%m-%dT%H:%M:%S
         wake_at = self.sleep.clamp_wake_time(now.strftime("%Y-%m-%dT%H:%M:%S"), planned_wake)
         self.sleep.enter_sleep(now=lambda: now, wake_at=wake_at)
-        self._sleep_window_settled = str(sleep_win.get("end") or "") if sleep_win else ""  # 入睡已生成次日日程,窗口终点不再补执行(Q1)
+        self._sleep_window_settled = str(sleep_win.get("end") or "") if sleep_win else ""  # 入睡已执行入睡任务,窗口终点不再补执行(Q1)
         self.ctx.logger.info("已入睡:醒来 %s", wake_at)
         self._spawn_background_task(self._generate_tomorrow_schedule())
+        # 日记与日程同属入睡任务:旁路 LLM 与发布 API 均不经消息链,睡眠期可执行
+        self._spawn_background_task(self._generate_and_publish_diary())
 
     # ---------- Hook:reply 补传与哨兵 ----------
 
@@ -2168,7 +2172,12 @@ class CatsitatePlugin(MaiBotPlugin):
             if now.strftime("%Y-%m-%dT%H:%M:%S") >= (self.sleep.state.wake_at or "9999"):
                 self.ctx.logger.info("自然醒来: %s", now.strftime("%Y-%m-%dT%H:%M:%S"))
                 await self._wake_up()
+                # 醒来首个动作:补注昨晚发布的日记(睡眠期注入会被 sleep_gate 拦进回顾缓冲)
+                await self._echo_pending_diary()
             return
+        # 醒态兜底补注:入睡任务发布的日记经此回注(含「窗口终点未入睡」路径——
+        # bot 整夜醒着,日记发布后下个 tick 即补注);失败保留快照下个 tick 重试
+        await self._echo_pending_diary()
         win = current_window(self._schedule_data, now_iso)
         if not win or win.get("kind") != "sleep":
             # 睡眠窗口已过而未入睡(Q1 裁定):不入睡,但补执行入睡时会做的任务(次日日程生成)
@@ -2194,9 +2203,9 @@ class CatsitatePlugin(MaiBotPlugin):
         return max(self._last_activity_ts or win_start, win_start)
 
     async def _maybe_settle_passed_sleep_window(self, now: datetime) -> None:
-        """睡眠窗口已过而未入睡(Q1 裁定):不入睡,但执行入睡时会做的任务(次日日程生成);每窗口一次。
+        """睡眠窗口已过而未入睡(Q1 裁定):不入睡,但执行入睡时会做的任务(次日日程生成+日记生成);每窗口一次。
 
-        入睡过(入睡时已生成次日日程)则跳过;窗口结束前不触发。
+        入睡过(入睡时已执行)则跳过;窗口结束前不触发。
         """
 
         sleep_win = next(
@@ -2210,8 +2219,9 @@ class CatsitatePlugin(MaiBotPlugin):
         if self._sleep_window_settled == end:
             return  # 本窗口已入睡(入睡时已生成)或已补执行过
         self._sleep_window_settled = end
-        self.ctx.logger.info("睡眠窗口已过未入睡:补执行次日日程生成(不入睡)")
+        self.ctx.logger.info("睡眠窗口已过未入睡:补执行入睡任务(不入睡)")
         self._spawn_background_task(self._generate_tomorrow_schedule())
+        self._spawn_background_task(self._generate_and_publish_diary())
 
     async def _wake_up(self) -> None:
         self.sleep.wake()
@@ -2352,7 +2362,7 @@ class CatsitatePlugin(MaiBotPlugin):
         self.ctx.logger.info("睡醒回顾已生成: %s", path)
 
     async def _generate_tomorrow_schedule(self) -> None:
-        """入睡确认:生成次日日程(睡眠期间唯一 LLM 调用);失败用默认模板并告警。"""
+        """入睡确认:生成次日日程(入睡任务的日程侧;旁路 LLM 不经消息链,睡眠期可执行);失败用默认模板并告警。"""
 
         now = datetime.now()
         target = (now + timedelta(days=1)).strftime("%Y-%m-%d")
@@ -2374,6 +2384,99 @@ class CatsitatePlugin(MaiBotPlugin):
         self._schedule_edit_history = []
         self._persist_schedule()
         self.ctx.logger.info("次日日程已生成:%s", json.dumps(data, ensure_ascii=False)[:200])
+
+    async def _generate_and_publish_diary(self) -> None:
+        """入睡任务的日记侧:睡前用当日素材生成日记并发布为空间说说。
+
+        与日程生成同属入睡任务——旁路 LLM 与发布 API 均不经消息链,不受睡眠
+        拦截(深夜直发)。素材只取当日真实数据(日程活动/备忘/空间见闻),模板
+        明令不得编造,防日记虚构没发生的事。发布成功后正文存 pending 快照,
+        回注延迟到醒来(睡眠期 route_message 会被 sleep_gate 拦进回顾缓冲,
+        白注入)。
+        """
+
+        if not self.config.qzone.enabled or not self.config.qzone.diary_enabled:
+            return
+        if not self._qzone_available:
+            return
+        today = datetime.now().strftime("%Y-%m-%d")
+        # 日程素材只取活动窗口(睡眠窗口没有「做过什么」);与次日日程生成并发
+        # 时本任务先读今日日程(派发序保证,LLM 调用前完成素材组装)
+        schedule_summary = ";".join(
+            str(w.get("activity") or "") for w in (self._schedule_data.get("windows") or [])
+            if w.get("kind") != "sleep"
+        )
+        memos = ";".join(e["content"] for e in self.memo.due_on(today)[:3])
+        seen_feeds = self.qzone_seen.recent_seen(limit=3, days=1, now=datetime.now())
+        seen_summary = ";".join(e["summary"][:20] for e in seen_feeds)
+        stable_ctx = (
+            f"今天的日程:{schedule_summary or '自由活动'}\n"
+            f"备忘:{memos or '无'}\n看到的好友动态:{seen_summary or '无'}"
+        )
+        messages, _ = build_side_prompt("qzone_diary", [stable_ctx], [])
+        try:
+            result = await self._side_llm_call(
+                messages, self.config.qzone.diary_llm_model, "qzone_diary", self.config.qzone.diary_llm_timeout_ms
+            )
+        except Exception:
+            self.ctx.logger.exception("QQ空间日记 LLM 生成失败,跳过本轮")
+            return
+        if not isinstance(result, dict) or not result.get("success"):
+            # 不落响应原文(安全复审纪律):仅记失败形态
+            detail = f"success={result.get('success')}" if isinstance(result, dict) else f"结果类型={type(result).__name__}"
+            self.ctx.logger.warning("QQ空间日记 LLM 失败(%s),跳过", detail)
+            return
+        diary_text = str(result.get("response") or "").strip()
+        # 模板要求 80~200 字,超 300 字视为模型输出异常(夹带解释/重复),不硬发
+        if not diary_text or len(diary_text) > 300:
+            self.ctx.logger.warning("QQ空间日记内容异常(长度=%d),跳过发布", len(diary_text))
+            return
+        try:
+            await self.qzone_client.do_publish(content=diary_text)
+        except Exception:
+            self.ctx.logger.exception("QQ空间日记发布失败(内容已生成,发布跳过)")
+            return
+        self.ctx.logger.info("QQ空间日记发布成功: %s", diary_text[:30])
+        # 回注延迟到醒来:存入 pending 快照,醒态 sleep_tick 补注
+        self._pending_diary_snapshot.save({
+            "text": diary_text,
+            "published_at": datetime.now().strftime("%Y-%m-%dT%H:%M:%S"),
+        })
+
+    async def _echo_pending_diary(self) -> None:
+        """醒来后补注昨晚发布的日记(self 消息,仅入历史)。
+
+        回注是上下文锚:好友次日评论日记说说时,bot 需要这段历史才知道自己
+        昨晚写过什么;正文只带前 60 字预览(全文已真实发布在空间,超长挤占
+        虚拟流)。不设 is_mentioned——bot 自己的旧说说不需要触发决策轮。
+        route_message 失败保留快照,醒态 sleep_tick 下轮重试。
+        """
+
+        data = self._pending_diary_snapshot.load()
+        text = str(data.get("text") or "").strip()
+        if not text:
+            return
+        bot_uin = str(self.config.favorability.bot_user_id or "").strip()
+        self._qzone_seq += 1
+        msg = {
+            "message_id": f"qzone_self_diary_{int(time.time())}_{self._qzone_seq}",
+            "platform": QZONE_PLATFORM,
+            "timestamp": str(int(time.time())),
+            "message_info": {
+                "user_info": {"user_id": bot_uin, "user_nickname": "我"},
+                "group_info": {
+                    "group_id": self.config.qzone.virtual_group_id,
+                    "group_name": self.config.qzone.virtual_group_name,
+                },
+            },
+            "raw_message": [{"type": "text", "data": f"我昨晚发布的日记:{text[:60]}"}],
+        }
+        try:
+            await self.ctx.gateway.route_message(QZONE_GATEWAY_NAME, msg)
+            self._pending_diary_snapshot.save({})
+            self.ctx.logger.info("QQ空间日记醒来补注完成")
+        except Exception:
+            self.ctx.logger.exception("QQ空间日记补注失败(下个 tick 重试)")
 
     # ---------- 日程窗口 trigger(trigger 模式:插件不 send,只指示主程序) ----------
 

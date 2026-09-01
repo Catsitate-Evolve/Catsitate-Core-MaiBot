@@ -229,6 +229,7 @@ def test_sleep_tick_natural_wake(tmp_path):
     p.config.sleep.enabled = True
     p.config.sleep.review_enabled = True
     p._background_tasks = set()
+    p._pending_diary_snapshot = JsonSnapshot(tmp_path / "qzone_pending_diary.json")  # 醒态 sleep_tick 补注日记读取(on_load 装配,离线手工补)
     p._schedule_data = {}
     p._last_activity_ts = 0.0
     p.sleep = SleepManager(JsonSnapshot(tmp_path / "sleep_state.json"), p.config.sleep)
@@ -409,6 +410,7 @@ def test_enter_sleep_idempotent_when_already_sleeping(tmp_path):
     p._ctx = _StubCtx(tmp_path)
     p._plugin_config_instance = CatsitateConfig()
     p._background_tasks = set()
+    p._pending_diary_snapshot = JsonSnapshot(tmp_path / "qzone_pending_diary.json")  # 醒态 sleep_tick 补注日记读取(on_load 装配,离线手工补)
     p._schedule_data = {}
     p.sleep = SleepManager(JsonSnapshot(tmp_path / "sleep_state.json"), p.config.sleep)
     p.sleep.enter_sleep(wake_at="2099-01-01T07:00:00", now=lambda: datetime(2026, 8, 15, 23, 0, 0))
@@ -569,6 +571,7 @@ def test_schedule_tick_cross_midnight_sleep_window_enters_sleep(tmp_path):
     p.config.sleep.silent_sleep_enabled = False  # 静默关:窗口起点直接睡(Q3)
     p.sleep = SleepManager(JsonSnapshot(tmp_path / "sleep_state.json"), p.config.sleep)
     p._background_tasks = set()
+    p._pending_diary_snapshot = JsonSnapshot(tmp_path / "qzone_pending_diary.json")  # 醒态 sleep_tick 补注日记读取(on_load 装配,离线手工补)
     p._schedule_tick_fired = {}
     p._speak_counts = {}
     p._remind_fired = {}
@@ -614,6 +617,7 @@ def test_sleep_tick_silent_on_quiet_elapsed_enters_sleep(tmp_path):
     p.config.sleep.silent_sleep_minutes = 60
     p.sleep = SleepManager(JsonSnapshot(tmp_path / "sleep_state.json"), p.config.sleep)
     p._background_tasks = set()
+    p._pending_diary_snapshot = JsonSnapshot(tmp_path / "qzone_pending_diary.json")  # 醒态 sleep_tick 补注日记读取(on_load 装配,离线手工补)
     p._sleep_window_settled = ""
 
     async def _fake_gen():
@@ -656,6 +660,7 @@ def test_sleep_window_passed_awake_settles_once(tmp_path):
     p.config.sleep.enabled = True
     p.sleep = SleepManager(JsonSnapshot(tmp_path / "sleep_state.json"), p.config.sleep)
     p._background_tasks = set()
+    p._pending_diary_snapshot = JsonSnapshot(tmp_path / "qzone_pending_diary.json")  # 醒态 sleep_tick 补注日记读取(on_load 装配,离线手工补)
     p._sleep_window_settled = ""
 
     calls = {"gen": 0}
@@ -1091,6 +1096,7 @@ def test_on_unload_removes_debug_handler_and_restores_level(tmp_path):
     p._plugin_config_instance = CatsitateConfig()
     p.config.debug.enabled = True
     p._background_tasks = set()
+    p._pending_diary_snapshot = JsonSnapshot(tmp_path / "qzone_pending_diary.json")  # 醒态 sleep_tick 补注日记读取(on_load 装配,离线手工补)
 
     async def _stop():
         return None

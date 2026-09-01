@@ -104,8 +104,12 @@ def test_qzone_section_defaults():
     # M2 评论轮询两字段(spec §5;间隔字段 T11 起废弃,由 notification_interval_seconds 替代)
     assert q.comment_poll_enabled is True
     assert q.comment_poll_interval_minutes == 30
-    # M2.1 统一通知轮询间隔(T11:高频短间隔模拟推送通知,注册下限 30s)
+    # M2.1 统一通知轮询间隔(T11:高频短间隔模拟推送,注册时下限 30s)
     assert q.notification_interval_seconds == 120
+    # M3 表达:日记三字段(入睡任务生成并发布空间日记说说)
+    assert q.diary_enabled is True
+    assert q.diary_llm_model == "memory"
+    assert q.diary_llm_timeout_ms == 0
 
 
 def test_qzone_constants():

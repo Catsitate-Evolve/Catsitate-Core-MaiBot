@@ -235,6 +235,9 @@ class QzoneSection(PluginConfigBase):
     virtual_group_name: str = _f("QQ空间", "虚拟群聊流显示名", label="虚拟流显示名")
     summary_count: int = _f(5, "真实聊天注入的近期已见动态条数", label="见闻摘要条数")
     summary_days: int = _f(3, "见闻摘要回溯天数", label="见闻回溯天数")
+    diary_enabled: bool = _f(True, "日记功能开关(入睡时生成并发布空间日记说说)", label="日记开关")
+    diary_llm_model: str = _f("memory", "日记生成模型:填主程序 task 名", label="日记模型(task 名)")
+    diary_llm_timeout_ms: int = _f(0, "日记生成 LLM 超时(毫秒);0=主程序默认", label="日记超时(毫秒)")
     request_timeout_ms: int = _f(10000, "空间 HTTP 请求超时(毫秒)", label="HTTP 超时(毫秒)")
     max_retries: int = _f(
         0,

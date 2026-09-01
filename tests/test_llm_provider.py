@@ -53,3 +53,20 @@ def test_qzone_scene_template_declared():
     assert "〔〕括号里的是工具参数" in t["system"]
     assert "feed_id" in t["system"] and "comment_id" in t["system"] and "at_user_id" in t["system"]
     assert "qzone_comment" in t["system"] and "qzone_reply" in t["system"] and "qzone_like" in t["system"]
+
+
+def test_qzone_diary_template_declared():
+    """M3 表达:日记生成模板入 SIDE_TEMPLATES(version=1)——睡前以第一人称写
+    当日日记发布为说说;自包含指令(80~200 字/不编造/基于素材/直接输出正文)。"""
+    t = SIDE_TEMPLATES["qzone_diary"]
+    assert t["version"] == 1
+    s = t["system"]
+    assert "睡前" in s and "日记" in s and "说说" in s
+    assert "80~200字" in s and "第一人称" in s
+    assert "不要编造" in s  # 内容必须基于当日素材
+    assert "直接输出日记正文" in s  # 无 JSON 包裹,纯文本产出
+    assert "简体中文" in s
+    messages, key = build_side_prompt("qzone_diary", ["今天的日程:发呆"], [])
+    assert messages[0]["role"] == "system"
+    assert messages[1]["content"] == "今天的日程:发呆"
+    assert key.startswith("qzone_diary:v1+")

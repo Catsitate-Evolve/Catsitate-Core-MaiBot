@@ -11,6 +11,7 @@ import asyncio
 from datetime import datetime, timedelta
 
 from catsitate_core.config import CatsitateConfig
+from catsitate_core.memo import MemoService
 from catsitate_core.qzone import QZONE_GATEWAY_NAME, QZONE_PLATFORM
 from catsitate_core.qzone.client import QzoneAuthError
 from catsitate_core.qzone.comment_seen import CommentSeenStore
@@ -20,7 +21,7 @@ from catsitate_core.qzone.protocol import FeedItem
 from catsitate_core.qzone.registry import FeedContext, FeedContextRegistry
 from catsitate_core.qzone.seen_store import SeenStore
 from catsitate_core.qzone.wire import CommentItem
-from catsitate_core.storage import SQLiteStore
+from catsitate_core.storage import JsonSnapshot, SQLiteStore
 
 BOT_UIN = "10000"
 
@@ -142,6 +143,10 @@ def _make_plugin(tmp_path):
     p._qzone_session_ids = set()  # 实例级覆盖(类属性为共享 set,防测试间状态泄漏)
     p.qzone_client = _StubUnifiedClient([])  # 默认发现层桩:空时间线(各测试按需覆盖)
     p.qzone_cookie = _StubCookie()
+    # 日记路径依赖(on_load 装配,离线测试手工补):memo 取数 + 待回注快照
+    p.memo = MemoService(store, p.config.memo)
+    p.memo.ensure_schema()
+    p._pending_diary_snapshot = JsonSnapshot(tmp_path / "qzone_pending_diary.json")
     p.logs = logs  # 测试侧便捷引用(非插件属性约定)
     return p
 
@@ -447,6 +452,200 @@ def test_qzone_post_echo_failure_still_reports_success(tmp_path):
         level == "exception" and "回注失败" in str(a[0]) and "发布已成功" in str(a[0])
         for level, a in p.logs
     )
+
+
+# ---- M3 表达:日记(入睡旁路生成 + API 直发 + 延迟回注) ----
+
+
+def _make_diary_plugin(tmp_path):
+    """日记路径装配:发布客户端桩 + 旁路 LLM 记录桩 + 当日素材(日程/备忘/见闻)。"""
+
+    p = _make_tool_plugin(tmp_path)  # _StubWriteClient(记录 do_publish)
+    p._schedule_data = {
+        "date": datetime.now().strftime("%Y-%m-%d"),
+        "windows": [
+            {"kind": "daily", "start": f"{datetime.now().strftime('%Y-%m-%d')}T09:00",
+             "end": f"{datetime.now().strftime('%Y-%m-%d')}T12:00",
+             "activity": "窝着刷手机", "plan_speak": False, "topic": "", "qzone": True},
+            {"kind": "sleep", "start": f"{datetime.now().strftime('%Y-%m-%d')}T23:00",
+             "end": "2026-12-31T07:30"},
+        ],
+    }
+    p.memo.write("周四交作业", "s1", "10001", 24,
+                 remind_at=f"{datetime.now().strftime('%Y-%m-%d')}T20:00")
+    p.qzone_seen.mark_queued("diaryfeed1", abstime="1", author_uin="10001",
+                             summary="今天去公园散步,拍了很多照片", author_nickname="小明")
+    p.qzone_seen.mark_seen("diaryfeed1", datetime.now().strftime("%Y-%m-%dT%H:%M:%S"))
+    llm_calls: list = []
+
+    async def _fake_side_llm(messages, model, module, timeout_ms=None):
+        llm_calls.append({"messages": messages, "model": model, "module": module})
+        return {"success": True, "response": "今天窝着刷手机,看到小明去公园散步,有点懒洋洋的。"}
+
+    p._side_llm_call = _fake_side_llm
+    p.llm_calls = llm_calls
+    return p
+
+
+def test_diary_generation_publishes_with_daily_material(tmp_path):
+    """日记成功路径:入睡任务用当日素材(日程活动+备忘+空间见闻)组装 prompt
+    (模板 qzone_diary),LLM 产出正文直接 do_publish(API 直发不经消息链,
+    不受睡眠拦截);发布后正文+发布时刻存 pending 快照供醒来回注。"""
+
+    p = _make_diary_plugin(tmp_path)
+    asyncio.run(p._generate_and_publish_diary())
+    assert p.qzone_client.publish_calls == ["今天窝着刷手机,看到小明去公园散步,有点懒洋洋的。"]
+    # 旁路调用:模块名与模型走 qzone 节日记配置
+    assert p.llm_calls[0]["module"] == "qzone_diary"
+    assert p.llm_calls[0]["model"] == p.config.qzone.diary_llm_model
+    # 素材:当日日程活动(睡眠窗口不进摘要)+备忘+当日见闻
+    stable = p.llm_calls[0]["messages"][1]["content"]
+    assert "今天的日程:" in stable and "窝着刷手机" in stable
+    assert "23:00" not in stable  # 睡眠窗口不进素材
+    assert "周四交作业" in stable
+    assert "今天去公园散步" in stable
+    # 快照已存(醒来回注素材)
+    data = p._pending_diary_snapshot.load()
+    assert data.get("text") == "今天窝着刷手机,看到小明去公园散步,有点懒洋洋的。"
+    assert data.get("published_at")
+    assert any(
+        level == "info" and "QQ空间日记发布成功" in str(a[0]) for level, a in p.logs
+    )
+
+
+def test_diary_generation_disabled_or_unavailable_skips(tmp_path):
+    """开关守卫:diary_enabled 关闭 / qzone 模块停用时零 LLM 零发布零快照。"""
+
+    p = _make_diary_plugin(tmp_path)
+    p.config.qzone.diary_enabled = False
+    asyncio.run(p._generate_and_publish_diary())
+    assert p.llm_calls == [] and p.qzone_client.publish_calls == []
+    p.config.qzone.diary_enabled = True
+    p._qzone_available = False
+    asyncio.run(p._generate_and_publish_diary())
+    assert p.llm_calls == [] and p.qzone_client.publish_calls == []
+    assert p._pending_diary_snapshot.load() == {}
+
+
+def test_diary_generation_llm_failure_skips_publish(tmp_path):
+    """LLM 失败(异常/不成功)显式告警跳过:零发布零快照(不编造日记)。"""
+
+    p = _make_diary_plugin(tmp_path)
+
+    async def _fail(messages, model, module, timeout_ms=None):
+        return {"success": False, "response": "boom"}
+
+    p._side_llm_call = _fail
+    asyncio.run(p._generate_and_publish_diary())
+    assert p.qzone_client.publish_calls == []
+    assert p._pending_diary_snapshot.load() == {}
+    assert any(
+        level == "warning" and "QQ空间日记 LLM 失败" in str(a[0]) for level, a in p.logs
+    )
+
+
+def test_diary_generation_abnormal_length_skips_publish(tmp_path):
+    """内容护栏:模板要求 80~200 字,超 300 字视为异常输出跳过发布(不截断硬发)。"""
+
+    p = _make_diary_plugin(tmp_path)
+
+    async def _long(messages, model, module, timeout_ms=None):
+        return {"success": True, "response": "字" * 301}
+
+    p._side_llm_call = _long
+    asyncio.run(p._generate_and_publish_diary())
+    assert p.qzone_client.publish_calls == []
+    assert p._pending_diary_snapshot.load() == {}
+    assert any(
+        level == "warning" and "内容异常" in str(a[0]) for level, a in p.logs
+    )
+
+
+def test_diary_generation_publish_failure_no_snapshot(tmp_path):
+    """发布 API 失败:告警跳过,不落 pending 快照——没发出去的日记不该在
+    醒来后以「昨晚发布的日记」回注成假上下文。"""
+
+    class _BoomPublish(_StubWriteClient):
+        async def do_publish(self, *, content):
+            raise RuntimeError("空间写请求业务错误: code=-3")
+
+    p = _make_diary_plugin(tmp_path)
+    p.qzone_client = _BoomPublish()
+    asyncio.run(p._generate_and_publish_diary())
+    assert p._pending_diary_snapshot.load() == {}
+    assert any(
+        level == "exception" and "QQ空间日记发布失败" in str(a[0]) for level, a in p.logs
+    )
+
+
+def test_echo_pending_diary_routes_self_message_and_clears(tmp_path):
+    """醒来补注:pending 快照非空 → self 消息经网关注入虚拟流(user=bot 自己,
+    无 is_mentioned 不触发决策轮,仅入历史供后续互动引用);正文截 60 字预览;
+    成功后快照清空(只补注一次)。"""
+
+    p = _make_diary_plugin(tmp_path)
+    p._pending_diary_snapshot.save({"text": "昨晚的日记正文", "published_at": "2026-09-01T23:05:00"})
+    asyncio.run(p._echo_pending_diary())
+    assert len(p._ctx.gateway.calls) == 1
+    gw_name, msg = p._ctx.gateway.calls[0]
+    assert gw_name == QZONE_GATEWAY_NAME
+    assert msg["message_id"].startswith("qzone_self_diary_")
+    assert msg["platform"] == QZONE_PLATFORM
+    assert msg["message_info"]["user_info"]["user_id"] == BOT_UIN
+    assert msg["message_info"]["group_info"]["group_id"] == p.config.qzone.virtual_group_id
+    assert "is_mentioned" not in (msg["message_info"].get("additional_config") or {})
+    assert msg["raw_message"] == [{"type": "text", "data": "我昨晚发布的日记:昨晚的日记正文"}]
+    assert p._pending_diary_snapshot.load() == {}
+    assert any(
+        level == "info" and "日记醒来补注完成" in str(a[0]) for level, a in p.logs
+    )
+
+
+def test_echo_pending_diary_truncates_to_sixty(tmp_path):
+    """补注正文只带前 60 字预览:全文已真实发布在空间,回注只是上下文锚,
+    超长正文整段塞进虚拟流会挤占上下文(与 qzone_post 回注同纪律)。"""
+
+    p = _make_diary_plugin(tmp_path)
+    p._pending_diary_snapshot.save({"text": "字" * 80})
+    asyncio.run(p._echo_pending_diary())
+    _, msg = p._ctx.gateway.calls[0]
+    assert msg["raw_message"][0]["data"] == f"我昨晚发布的日记:{'字' * 60}"
+
+
+def test_echo_pending_diary_empty_noop(tmp_path):
+    """快照为空(无待回注日记):零注入零日志,静默返回。"""
+
+    p = _make_diary_plugin(tmp_path)
+    asyncio.run(p._echo_pending_diary())
+    assert p._ctx.gateway.calls == []
+
+
+def test_echo_pending_diary_failure_keeps_pending(tmp_path):
+    """补注失败(网关异常):快照保留,醒态 sleep_tick 下轮重试——上下文锚
+    丢了会让 bot 忘记自己发过日记,值得重试而非放弃。"""
+
+    p = _make_diary_plugin(tmp_path)
+    p._pending_diary_snapshot.save({"text": "待补注日记"})
+    p._ctx.gateway = _ExplodingGateway()
+    asyncio.run(p._echo_pending_diary())
+    assert p._pending_diary_snapshot.load().get("text") == "待补注日记"
+    assert any(
+        level == "exception" and "补注失败" in str(a[0]) for level, a in p.logs
+    )
+
+
+def test_diary_wired_into_sleep_flow():
+    """接线断言:入睡与「睡眠窗口终点未入睡补执行」两条路径都派生日记任务;
+    sleep_tick 醒态(自然醒瞬间与醒着兜底)补注待回注日记(失败下轮重试)。"""
+    import inspect
+
+    import plugin as plugin_mod
+
+    assert "_generate_and_publish_diary" in inspect.getsource(plugin_mod.CatsitatePlugin._enter_sleep)
+    assert "_generate_and_publish_diary" in inspect.getsource(
+        plugin_mod.CatsitatePlugin._maybe_settle_passed_sleep_window
+    )
+    assert "_echo_pending_diary" in inspect.getsource(plugin_mod.CatsitatePlugin._sleep_tick)
 
 
 def test_qzone_like_via_feed_id_and_notify_origin(tmp_path):

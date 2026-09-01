@@ -1007,7 +1007,7 @@ class CatsitatePlugin(MaiBotPlugin):
             if not self._schedule_data:
                 return  # 日程未生成/未恢复(日程节禁用等):无窗口可言,按窗口外处理
             win = current_window(self._schedule_data, datetime.now().strftime("%Y-%m-%dT%H:%M"))
-            in_qzone_window = bool(win and win.get("kind") == "daily" and win.get("qzone"))
+            in_qzone_window = bool(win and win.get("kind") == "daily" and win.get("read_qzone"))
             if not in_qzone_window:
                 if self.qzone_injector.window_active:
                     # 通知残留须在 window_ended 清队前读取(其后 p1_queued 恒 0,终审 I3)

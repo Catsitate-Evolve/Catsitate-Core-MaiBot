@@ -182,7 +182,7 @@ def test_poll_tick_resets_comment_counts_on_window_start(tmp_path):
     p._schedule_data = {"date": now.strftime("%Y-%m-%d"), "windows": [{
         "kind": "daily", "start": (now - timedelta(hours=1)).strftime("%Y-%m-%dT%H:%M"),
         "end": (now + timedelta(hours=1)).strftime("%Y-%m-%dT%H:%M"),
-        "activity": "逛空间", "plan_speak": False, "topic": "", "qzone": True,
+        "activity": "逛空间", "plan_speak": False, "topic": "", "read_qzone": True,
     }]}
     p._qzone_comment_counts = {"oldfeed1": 3, "oldfeed2": 1}  # 上一窗口的计数残留
 
@@ -466,7 +466,7 @@ def _make_diary_plugin(tmp_path):
         "windows": [
             {"kind": "daily", "start": f"{datetime.now().strftime('%Y-%m-%d')}T09:00",
              "end": f"{datetime.now().strftime('%Y-%m-%d')}T12:00",
-             "activity": "窝着刷手机", "plan_speak": False, "topic": "", "qzone": True},
+             "activity": "窝着刷手机", "plan_speak": False, "topic": "", "read_qzone": True},
             {"kind": "sleep", "start": f"{datetime.now().strftime('%Y-%m-%d')}T23:00",
              "end": "2026-12-31T07:30"},
         ],
@@ -1049,7 +1049,7 @@ def test_poll_tick_warns_p1_notifications_dropped_at_window_end(tmp_path):
     p._schedule_data = {"date": now.strftime("%Y-%m-%d"), "windows": [{
         "kind": "daily", "start": (now - timedelta(hours=2)).strftime("%Y-%m-%dT%H:%M"),
         "end": (now - timedelta(hours=1)).strftime("%Y-%m-%dT%H:%M"),
-        "activity": "逛空间", "plan_speak": False, "topic": "", "qzone": True,
+        "activity": "逛空间", "plan_speak": False, "topic": "", "read_qzone": True,
     }]}
     p.qzone_injector.window_started()
     p.qzone_injector.enqueue_priority([
@@ -1176,7 +1176,7 @@ def _active_qzone_schedule() -> dict:
     return {"date": now.strftime("%Y-%m-%d"), "windows": [{
         "kind": "daily", "start": (now - timedelta(hours=1)).strftime("%Y-%m-%dT%H:%M"),
         "end": (now + timedelta(hours=1)).strftime("%Y-%m-%dT%H:%M"),
-        "activity": "逛空间", "plan_speak": False, "topic": "", "qzone": True,
+        "activity": "逛空间", "plan_speak": False, "topic": "", "read_qzone": True,
     }]}
 
 

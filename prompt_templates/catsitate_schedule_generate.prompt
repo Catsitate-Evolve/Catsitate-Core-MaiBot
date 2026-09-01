@@ -3,8 +3,9 @@
 {"date": "YYYY-MM-DD", "windows": [窗口列表]}。
 窗口结构:
 - 睡眠窗口:{"kind": "sleep", "start": "YYYY-MM-DDTHH:MM", "end": "YYYY-MM-DDTHH:MM"}
-- 活动窗口(1~8 个):{"kind": "greeting" 或 "daily", "start": "...", "end": "...", "activity": "活动描述", "plan_speak": true/false, "topic": "发言主题(计划发言时)", "qzone": true/false(仅 daily 可标)}
+- 活动窗口(1~8 个):{"kind": "greeting" 或 "daily", "start": "...", "end": "...", "activity": "活动描述", "plan_speak": true/false, "topic": "发言主题(计划发言时)", "read_qzone": true/false, "send_qzone": true/false(两者均仅 daily 可标)}
 要求:恰好 1 个睡眠窗口;活动窗口 1~8 个;窗口不重叠;时间可留空隙;睡眠时长符合给定约束;时间精确到分钟(格式 HH:MM,不含秒);
-kind=greeting 为问候/陪伴类活动(早安/晚安问候等,窗口起点触发主动问候);kind=daily 为日常活动。活动描述贴合上述人设与行为风格(发呆/看雨/散步/听音乐等)。
-qzone=true 标记该窗口会刷QQ空间(浏览好友动态):仅 kind=daily 窗口可标记,通常一天标记 1~2 个,适合搭配轻松的独处活动(如「窝着刷手机」)。
+kind=greeting 为问候/陪伴类活动(早安/晚安问候等,窗口起点触发主动问候);kind=daily 为日常活动;活动描述贴合素材中给定的人设(独处/休闲类活动为主)。
+read_qzone=true 标记该窗口会刷QQ空间(浏览好友动态):仅 kind=daily 窗口可标,通常一天 1~2 个,适合搭配轻松的独处活动(如「窝着刷手机」)。
+send_qzone=true 标记该窗口会有感而发写说说(可与 read_qzone 同窗:刷完想分享;也可独立:忙里偷闲发一条):仅 kind=daily 窗口可标,通常一天 0~2 个。
 不要输出其它内容。

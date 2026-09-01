@@ -82,8 +82,9 @@ def validate_schedule(data: dict, *, min_sleep: int, max_sleep: int) -> tuple[di
             return None, f"窗口结束须晚于开始: {w}"
         if w.get("kind") not in ("sleep", "daily", "greeting"):
             return None, f"非法 kind: {w.get('kind')}"
-        if w.get("qzone") and w.get("kind") != "daily":
-            return None, f"qzone 属性仅允许 daily 窗口: {w}"
+        for attr in ("read_qzone", "send_qzone"):
+            if w.get(attr) and w.get("kind") != "daily":
+                return None, f"{attr} 属性仅允许 daily 窗口: {w}"
         for s2, e2 in spans:
             if s < e2 and s2 < e:
                 return None, f"窗口重叠: {w}"
@@ -114,9 +115,10 @@ def fix_schedule(data: dict, *, min_sleep: int, max_sleep: int) -> dict:
         if default_sleep is not None:
             sleep = [default_sleep]
     keep = sleep[:1] + acts[:8]  # 恰好 1 睡眠 + 活动裁到 8
-    for w in keep:  # 钳制:非 daily 窗口的 qzone 标记清除(spec §5「校验一条」的兜底链)
-        if w.get("qzone") and w.get("kind") != "daily":
-            w.pop("qzone", None)
+    for w in keep:  # 钳制:非 daily 窗口的读/发空间标记清除(含旧 qzone 键一并迁移清理,spec §5「校验一条」的兜底链)
+        if w.get("kind") != "daily":
+            for attr in ("qzone", "read_qzone", "send_qzone"):
+                w.pop(attr, None)
     # 睡眠时长钳制
     if sleep:
         s, e = _parse_t(sleep[0])
@@ -168,8 +170,10 @@ def schedule_overview_text(data: dict) -> str:
         kind_label = "睡眠" if w.get("kind") == "sleep" else ("问候" if w.get("kind") == "greeting" else "活动")
         time_range = f"{w.get('start', '?')[11:16]}-{w.get('end', '?')[11:16]}"
         activity = w.get("activity") or ("睡觉" if w.get("kind") == "sleep" else "自由时间")
-        if w.get("qzone"):
+        if w.get("read_qzone"):
             activity += "(刷空间)"
+        if w.get("send_qzone"):
+            activity += "(发说说)"
         lines.append(f"{i}. {kind_label} {time_range} {activity}")
     return "\n".join(lines) or "(空)"
 

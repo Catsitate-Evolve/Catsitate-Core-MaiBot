@@ -502,41 +502,78 @@ def test_edit_sleep_time_respects_min_max():
     assert "最短" in err  # 2h < 240min 拒绝
 
 
-def test_validate_qzone_attr_only_on_daily():
-    good = _copy.deepcopy(GOOD)
-    good["windows"][1]["qzone"] = True  # daily 窗口标记 → 合法
-    data, err = validate_schedule(good, min_sleep=240, max_sleep=660)
-    assert err == "" and data is not None
-    bad = _copy.deepcopy(GOOD)
-    bad["windows"][2]["qzone"] = True  # greeting 窗口标记 → 拒绝
-    data, err = validate_schedule(bad, min_sleep=240, max_sleep=660)
-    assert data is None and "qzone" in err
-    bad2 = _copy.deepcopy(GOOD)
-    bad2["windows"][0]["qzone"] = True  # 睡眠窗口标记 → 拒绝
-    data, err = validate_schedule(bad2, min_sleep=240, max_sleep=660)
-    assert data is None and "qzone" in err
-
-
 def test_fix_schedule_strips_illegal_qzone_attr():
     bad = _copy.deepcopy(GOOD)
-    bad["windows"][0]["qzone"] = True  # 睡眠窗口的非法标记
-    bad["windows"][1]["qzone"] = True  # daily 窗口的合法标记(应保留;brief 用例漏写此行,按断言注释意图补上)
-    bad["windows"][2]["qzone"] = True  # greeting 窗口的非法标记
+    bad["windows"][0]["qzone"] = True  # 睡眠窗口的旧键残留(迁移清理一并剥除)
+    bad["windows"][0]["read_qzone"] = True  # 睡眠窗口的非法标记
+    bad["windows"][1]["read_qzone"] = True  # daily 窗口的合法标记(应保留)
+    bad["windows"][2]["send_qzone"] = True  # greeting 窗口的非法标记
     fixed = fix_schedule(bad, min_sleep=240, max_sleep=660)
     w0, w1, w2 = fixed["windows"][0], fixed["windows"][1], fixed["windows"][2]
-    assert not w0.get("qzone") and not w2.get("qzone")
-    assert w1.get("qzone") is True  # daily 的合法标记保留
+    assert not w0.get("qzone") and not w0.get("read_qzone") and not w2.get("send_qzone")
+    assert w1.get("read_qzone") is True  # daily 的合法标记保留
 
 
 def test_overview_marks_qzone_window():
     data = _copy.deepcopy(GOOD)
-    data["windows"][1]["qzone"] = True
+    data["windows"][1]["read_qzone"] = True
+    data["windows"][1]["send_qzone"] = True
     text = schedule_overview_text(data)
-    assert "刷空间" in text
+    assert "(刷空间)" in text and "(发说说)" in text
+    legacy = _copy.deepcopy(GOOD)
+    legacy["windows"][1]["qzone"] = True  # 旧键不再消费 → 不标注
+    assert "(刷空间)" not in schedule_overview_text(legacy)
 
 
-def test_schedule_generate_template_v3_mentions_qzone():
+def test_validate_schedule_attribute_split():
+    """read_qzone/send_qzone 仅 daily 窗口合法;旧键 qzone 不再消费(放行)。"""
+    base = {"date": "2026-09-02", "windows": [
+        {"kind": "sleep", "start": "2026-09-01T23:00", "end": "2026-09-02T07:30"},
+        {"kind": "daily", "start": "2026-09-02T09:00", "end": "2026-09-02T12:00",
+         "activity": "窝着刷手机", "read_qzone": True, "send_qzone": True},
+    ]}
+    data, err = validate_schedule(base, min_sleep=240, max_sleep=660)
+    assert err == "" and data is not None
+    # 非 daily 窗口带任一新键 → 拒绝
+    bad = {"date": "2026-09-02", "windows": [
+        {"kind": "sleep", "start": "2026-09-01T23:00", "end": "2026-09-02T07:30", "read_qzone": True},
+        {"kind": "daily", "start": "2026-09-02T09:00", "end": "2026-09-02T12:00", "activity": "x"},
+    ]}
+    data2, err2 = validate_schedule(bad, min_sleep=240, max_sleep=660)
+    assert data2 is None and "read_qzone" in err2
+    bad2 = {"date": "2026-09-02", "windows": [
+        {"kind": "sleep", "start": "2026-09-01T23:00", "end": "2026-09-02T07:30"},
+        {"kind": "greeting", "start": "2026-09-02T09:00", "end": "2026-09-02T10:00",
+         "activity": "早安", "send_qzone": True},
+    ]}
+    data3, err3 = validate_schedule(bad2, min_sleep=240, max_sleep=660)
+    assert data3 is None and "send_qzone" in err3
+    # 旧键 qzone 不再消费:非 daily 窗口带旧键不再校验拒绝(消费点已迁移)
+    legacy = {"date": "2026-09-02", "windows": [
+        {"kind": "sleep", "start": "2026-09-01T23:00", "end": "2026-09-02T07:30", "qzone": True},
+        {"kind": "daily", "start": "2026-09-02T09:00", "end": "2026-09-02T12:00", "activity": "x"},
+    ]}
+    data4, err4 = validate_schedule(legacy, min_sleep=240, max_sleep=660)
+    assert err4 == "" and data4 is not None
+
+
+def test_fix_schedule_strips_attributes_on_nondaily():
+    day = "2026-09-02"
+    data = {"date": day, "windows": [
+        {"kind": "sleep", "start": "2026-09-01T23:00", "end": "2026-09-02T07:30",
+         "read_qzone": True, "send_qzone": True},
+        {"kind": "daily", "start": "2026-09-02T09:00", "end": "2026-09-02T12:00",
+         "activity": "窝着刷手机", "read_qzone": True},
+    ]}
+    fixed = fix_schedule(data, min_sleep=240, max_sleep=660)
+    sleep_win = fixed["windows"][0]
+    assert "read_qzone" not in sleep_win and "send_qzone" not in sleep_win
+    assert fixed["windows"][1].get("read_qzone") is True
+
+
+def test_schedule_generate_template_v4_splits_qzone_attributes():
     from catsitate_core.llm_provider import SIDE_TEMPLATES
 
-    assert SIDE_TEMPLATES["schedule_generate"]["version"] == 3
-    assert "qzone" in SIDE_TEMPLATES["schedule_generate"]["system"]
+    assert SIDE_TEMPLATES["schedule_generate"]["version"] == 4
+    assert "read_qzone" in SIDE_TEMPLATES["schedule_generate"]["system"]
+    assert "send_qzone" in SIDE_TEMPLATES["schedule_generate"]["system"]

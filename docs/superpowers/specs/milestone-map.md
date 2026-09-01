@@ -25,3 +25,15 @@
 2. **日记**：入睡任务旁路 LLM 生成→深夜直发→醒来后回注
 3. **回注**：bot 自己的说说以 self 消息注入虚拟流
 4. **真实聊天见闻摘要**：真实聊天流注入块带「近期刷到」（数据已就绪，注入块框架已就绪）
+
+## v0.3.2→v0.7.0 全量终审结论（2026-09-01，评级 A-）
+
+升级就绪。按清单处置后可推生产。遗留项：
+- [Important] A1: qzone.enabled 默认 true——升级清单第 2 步显式决策
+- [Important] A4: WebUI 自定义 schedule_generate 需手动同步 v3——清单第 4 步
+- [Important→E] D4: 通知轮询 ~1000 次/天常量 API 量——观察期后调 interval
+- [Minor] B4: qzone_reply 源A comment_uin 回退失真（LRU 淘汰后）
+- [Minor] C2: inject.enabled 关闭时白名单过滤跳过（硬门控仍有效）
+- [Minor] C4: spec 未回写 AR-3（以 milestone-map 为准）
+- [Minor] C5: manual 模块表计数过期（9 工具/11 任务）
+- [Minor] D5: cookie 持续失败无退避节流

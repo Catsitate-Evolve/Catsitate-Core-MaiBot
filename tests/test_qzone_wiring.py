@@ -11,6 +11,7 @@ import asyncio
 from datetime import datetime, timedelta
 
 from catsitate_core.config import CatsitateConfig
+from catsitate_core.qzone import QZONE_GATEWAY_NAME, QZONE_PLATFORM
 from catsitate_core.qzone.client import QzoneAuthError
 from catsitate_core.qzone.comment_seen import CommentSeenStore
 from catsitate_core.qzone.discovery import FeedDiscovery
@@ -87,12 +88,13 @@ class _StubCommentClient:
 
 
 class _StubWriteClient:
-    """出站动作桩:记录 do_comment/do_reply/do_like 调用,恒成功。"""
+    """出站动作桩:记录 do_comment/do_reply/do_like/do_publish 调用,恒成功。"""
 
     def __init__(self):
         self.comment_calls = []
         self.reply_calls = []
         self.like_calls = []
+        self.publish_calls = []
 
     async def do_comment(self, *, fid, target_qq, content):
         self.comment_calls.append((fid, target_qq, content))
@@ -105,6 +107,10 @@ class _StubWriteClient:
 
     async def do_like(self, *, fid, target_qq):
         self.like_calls.append((fid, target_qq))
+        return True
+
+    async def do_publish(self, *, content):
+        self.publish_calls.append(content)
         return True
 
 
@@ -338,6 +344,109 @@ def test_qzone_reply_requires_all_params_and_session(tmp_path):
     res2 = asyncio.run(p.qzone_reply(feed_id="feedR3", comment_id="c1", content="x", stream_id="other"))
     assert res2 == "这个工具只能在QQ空间动态流里使用。"
     assert p.qzone_client.reply_calls == []
+
+
+# ---- M3 表达:qzone_post 工具行为测试 ----
+
+
+def test_qzone_post_success_publishes_and_echoes(tmp_path):
+    """qzone_post 成功路径:do_publish 收到正文;回注 self 消息进虚拟流——
+    user_id=bot 自己、无 is_mentioned(bot 自己发的不触发 planner 决策轮,
+    仅入历史供后续互动引用上下文);成功日志含前 30 字预览。"""
+
+    p = _make_tool_plugin(tmp_path)
+    res = asyncio.run(p.qzone_post(content="  今天散步看到一只很亲人的猫  ", stream_id="s1"))
+    assert res == "发布成功。"
+    assert p.qzone_client.publish_calls == ["今天散步看到一只很亲人的猫"]  # 首尾空白已剥
+    # 回注:经网关进虚拟流,qzone_self_ 前缀 message_id
+    assert len(p._ctx.gateway.calls) == 1
+    gw_name, msg = p._ctx.gateway.calls[0]
+    assert gw_name == QZONE_GATEWAY_NAME
+    assert msg["message_id"].startswith("qzone_self_")
+    assert msg["platform"] == QZONE_PLATFORM
+    assert msg["message_info"]["user_info"]["user_id"] == BOT_UIN
+    assert msg["message_info"]["group_info"]["group_id"] == p.config.qzone.virtual_group_id
+    # 无 is_mentioned:主程序只读 message_info.additional_config 位置,回注不设即不触发决策轮
+    assert "is_mentioned" not in (msg["message_info"].get("additional_config") or {})
+    assert msg["raw_message"] == [
+        {"type": "text", "data": "我发布了一条说说:今天散步看到一只很亲人的猫"}
+    ]
+    assert any(
+        level == "info" and "QQ空间说说发布成功" in str(a[0]) and a[1] == "今天散步看到一只很亲人的猫"[:30]
+        for level, a in p.logs
+    )
+
+
+def test_qzone_post_echo_content_truncated_to_sixty(tmp_path):
+    """回注正文只带前 60 字预览:说说全文已真实发布在空间,回注只是让 bot 记得
+    自己发过什么,超长正文整段塞进虚拟流会挤占上下文。"""
+
+    long_content = "字" * 80
+    p = _make_tool_plugin(tmp_path)
+    asyncio.run(p.qzone_post(content=long_content, stream_id="s1"))
+    assert p.qzone_client.publish_calls == [long_content]  # 全文发布
+    _, msg = p._ctx.gateway.calls[0]
+    assert msg["raw_message"][0]["data"] == f"我发布了一条说说:{'字' * 60}"  # 回注截 60 字
+
+
+def test_qzone_post_validation_empty_too_long_and_session(tmp_path):
+    """入参校验:空内容/超 500 字 → 显式提示;非虚拟流会话/模块未启用 → 拒绝;
+    四种拒绝形态均零发布调用、零回注。"""
+
+    p = _make_tool_plugin(tmp_path)
+    assert asyncio.run(p.qzone_post(content="   ", stream_id="s1")) == "说说内容不能为空。"
+    assert asyncio.run(p.qzone_post(content="长" * 501, stream_id="s1")) == "内容太长了(501 字,上限 500)。"
+    assert asyncio.run(p.qzone_post(content="你好", stream_id="other")) == "这个工具只能在QQ空间动态流里使用。"
+    p._qzone_available = False
+    assert asyncio.run(p.qzone_post(content="你好", stream_id="s1")) == "QQ空间模块未启用。"
+    assert p.qzone_client.publish_calls == []
+    assert p._ctx.gateway.calls == []
+
+
+def test_qzone_post_auth_error_invalidates_cookie(tmp_path):
+    """AuthError 自愈链(发布路径):登录态失效→cookie 作废(下轮重取)+明确提示;
+    不回注(bot 没发出去,虚拟流里不该出现「我发了」的假上下文)。"""
+
+    class _AuthFailPostClient(_StubWriteClient):
+        async def do_publish(self, *, content):
+            raise QzoneAuthError("登录态失效(code=-3000)")
+
+    p = _make_tool_plugin(tmp_path)
+    p.qzone_client = _AuthFailPostClient()
+    res = asyncio.run(p.qzone_post(content="想发点什么都发不出去", stream_id="s1"))
+    assert res == "登录态失效已重置,请稍后再试。"
+    assert p.qzone_cookie.invalidate_calls == 1
+    assert p._ctx.gateway.calls == []
+
+
+def test_qzone_post_generic_failure_logs_and_no_echo(tmp_path):
+    """普通失败:异常显式记录日志(不静默),回执失败提示,零回注。"""
+
+    class _BoomPostClient(_StubWriteClient):
+        async def do_publish(self, *, content):
+            raise RuntimeError("空间写请求业务错误: code=-3")
+
+    p = _make_tool_plugin(tmp_path)
+    p.qzone_client = _BoomPostClient()
+    res = asyncio.run(p.qzone_post(content="测试", stream_id="s1"))
+    assert res == "发布失败,已记录日志。"
+    assert any(level == "exception" for level, _a in p.logs)
+    assert p._ctx.gateway.calls == []
+
+
+def test_qzone_post_echo_failure_still_reports_success(tmp_path):
+    """回注失败不影响发布回执:说说已真实发布在空间,回注只是本地上下文注入
+    (网关拒绝/异常时告警即可,不能向 bot 谎报「发布失败」导致重复发布)。"""
+
+    p = _make_tool_plugin(tmp_path)
+    p._ctx.gateway = _ExplodingGateway()
+    res = asyncio.run(p.qzone_post(content="发布成功但回注会炸", stream_id="s1"))
+    assert res == "发布成功。"
+    assert p.qzone_client.publish_calls == ["发布成功但回注会炸"]
+    assert any(
+        level == "exception" and "回注失败" in str(a[0]) and "发布已成功" in str(a[0])
+        for level, a in p.logs
+    )
 
 
 def test_qzone_like_via_feed_id_and_notify_origin(tmp_path):

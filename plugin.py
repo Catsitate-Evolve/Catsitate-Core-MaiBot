@@ -263,13 +263,18 @@ class CatsitatePlugin(MaiBotPlugin):
                 "qzone.max_retries=%s 当前版本不消费(动作 API 固定不重试,读路径固定单次),配置仅预留",
                 self.config.qzone.max_retries,
             )
-        # 工具驱动 v0.7 旧配置兼容:持久化的白名单缺新工具时告警(不静默改配置)——
-        # 旧配置含已废弃的 reply(receive 网关下无害但无效),且 qzone_comment/
-        # qzone_reply 缺席会让 bot 在虚拟流里无法互动
-        if "qzone_comment" not in self.config.qzone.tool_whitelist or "qzone_reply" not in self.config.qzone.tool_whitelist:
+        # 工具驱动旧配置兼容:持久化的白名单缺空间工具时告警(不静默改配置)——
+        # 旧配置含已废弃的 reply(receive 网关下无害但无效);qzone_comment/
+        # qzone_reply 缺席会让 bot 在虚拟流里无法互动,qzone_post 缺席则无法发说说
+        missing_qzone_tools = [
+            t for t in ("qzone_comment", "qzone_reply", "qzone_post")
+            if t not in self.config.qzone.tool_whitelist
+        ]
+        if missing_qzone_tools:
             self.ctx.logger.warning(
-                "qzone.tool_whitelist 缺少 qzone_comment/qzone_reply(旧配置残留),"
-                "虚拟流将无法评论/回复——请在配置中补入这两个工具"
+                "qzone.tool_whitelist 缺少 %s(旧配置残留),"
+                "虚拟流将无法使用对应空间工具——请在配置中补入",
+                "/".join(missing_qzone_tools),
             )
         if "reply" in self.config.qzone.tool_whitelist:
             self.ctx.logger.warning(
@@ -813,6 +818,64 @@ class CatsitatePlugin(MaiBotPlugin):
         except Exception:
             self.ctx.logger.exception("QQ空间楼中楼记账失败(仅告警)")
         return f"已回复 {at_nick} 的评论。"
+
+    @Tool(
+        "qzone_post",
+        description="发布一条自己的说说(QQ空间)。想说点什么、分享心情或见闻时使用。内容自然即可,不要刻意。",
+        brief_description="发说说",
+        parameters=[
+            ToolParameterInfo(name="content", param_type="string", description="说说内容(≤500字,自然表达)", required=True),
+        ],
+        visibility="visible",
+    )
+    async def qzone_post(self, content: str = "", **kwargs: Any) -> str:
+        """发布说说——bot 自主决定是否/何时发,发布后自动注入虚拟流供后续互动引用。"""
+        if not self._qzone_available:
+            return "QQ空间模块未启用。"
+        stream_id = str(kwargs.get("stream_id") or "")
+        if stream_id not in self._qzone_session_id_set():
+            return "这个工具只能在QQ空间动态流里使用。"
+        content = content.strip()
+        if not content:
+            return "说说内容不能为空。"
+        if len(content) > 500:
+            return f"内容太长了({len(content)} 字,上限 500)。"
+        try:
+            await self.qzone_client.do_publish(content=content)
+        except QzoneAuthError:
+            # 登录态失效自愈链(与评论/点赞同款):作废 cookie 下轮重取,本轮发布放弃
+            self.qzone_cookie.invalidate()
+            self.ctx.logger.warning("QQ空间说说发布遇登录态失效,cookie 已作废,下轮重取")
+            return "登录态失效已重置,请稍后再试。"
+        except Exception:
+            self.ctx.logger.exception("QQ空间说说发布失败")
+            return "发布失败,已记录日志。"
+        # 回注:发布成功的说说以 self 消息注入虚拟流(不触发 planner 决策轮,仅入历史)。
+        # 原因:后续好友评论此说说时通知轮询只带说说ID,bot 需要这段历史才知道自己发过什么;
+        # 正文只带前 60 字预览——全文已真实发布在空间,回注只是上下文锚,超长会挤占虚拟流。
+        # 回注失败不影响回执:说说已远端发布成功,谎报失败会诱导重复发布。
+        self._qzone_seq += 1
+        bot_uin = str(self.config.favorability.bot_user_id or "").strip()
+        echo_msg = {
+            "message_id": f"qzone_self_{int(time.time())}_{self._qzone_seq}",
+            "platform": QZONE_PLATFORM,
+            "timestamp": str(int(time.time())),
+            "message_info": {
+                "user_info": {"user_id": bot_uin, "user_nickname": "我"},
+                "group_info": {
+                    "group_id": self.config.qzone.virtual_group_id,
+                    "group_name": self.config.qzone.virtual_group_name,
+                },
+                # 不设 is_mentioned:这是 bot 自己发的,不需要触发 planner 决策轮
+            },
+            "raw_message": [{"type": "text", "data": f"我发布了一条说说:{content[:60]}"}],
+        }
+        try:
+            await self.ctx.gateway.route_message(QZONE_GATEWAY_NAME, echo_msg)
+        except Exception:
+            self.ctx.logger.exception("QQ空间说说回注失败(发布已成功,仅上下文注入失败)")
+        self.ctx.logger.info("QQ空间说说发布成功: %s", content[:30])
+        return "发布成功。"
 
     # ---------- QQ空间(M1 感知 / M2 互动) ----------
 

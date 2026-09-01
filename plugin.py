@@ -41,7 +41,12 @@ from catsitate_core.qzone.client import CookieManager, QzoneAuthError, QzoneClie
 from catsitate_core.qzone.comment_seen import CommentSeenStore
 from catsitate_core.qzone.discovery import FeedDiscovery
 from catsitate_core.qzone.injector import FeedInjector
-from catsitate_core.qzone.messages import build_feed_message, build_notify_message, fit_images_to_rpc_budget
+from catsitate_core.qzone.messages import (
+    build_feed_message,
+    build_notify_message,
+    fit_images_to_rpc_budget,
+    format_comment_param_line,
+)
 from catsitate_core.qzone.registry import FeedContext, FeedContextRegistry
 from catsitate_core.qzone.scene import (
     SCENE_EMPTY_CONFIG_WARNING, SCENE_MISS_WARNING,
@@ -1315,10 +1320,11 @@ class CatsitatePlugin(MaiBotPlugin):
         通知注入走 build_notify_message:reply 段引用原说说注入消息承载上下文
         (target_message_content=原说说正文前 60 字),正文自然可读并带参数独立
         尾行(可读性优化 2026-09-01)——源A「评论了你的说说:…」换行
-        「〔说说ID=xx 评论ID=xx 评论者QQ=xx〕」、源B「回复了你的评论
-        「{bot原评论前20字}」:…」换行同款参数行,评论内 @{uin,nick} 解析为
-        @昵称;参数行供模型照抄调用工具(映射由场景 prompt 解释),不重复引用
-        原文,也不带发布时间前缀。
+        「〔说说ID=xx 评论ID=xx 评论者QQ=xx 评论于(今天HH:MM)〕」、源B
+        「回复了你的评论「{bot原评论前20字}」:…」换行同款参数行(action=回复),
+        评论内 @{uin,nick} 解析为 @昵称;参数行供模型照抄调用工具(映射由场景
+        prompt 解释),不重复引用原文,正文不带发布时间前缀——互动新旧由参数行
+        动作时间承载(create_time 缺失则省略该段,不编造时间)。
         """
 
         try:
@@ -1385,12 +1391,16 @@ class CatsitatePlugin(MaiBotPlugin):
                         tid=f"notify_comment_{feed_tid}_{c.comment_tid}",
                         abstime=c.create_time, uin=str(c.uin), nickname=c.nickname,
                         # 正文=自然可读+参数独立尾行(可读性优化 2026-09-01):评论内
-                        # @{uin,nick} 解析为 @昵称;〔〕参数行(说说ID/评论ID/评论者QQ)
-                        # 供模型照抄调用 qzone_comment/qzone_reply,与工具参数名
-                        # (feed_id/comment_id/at_user_id)的映射由场景 prompt 解释
+                        # @{uin,nick} 解析为 @昵称;〔〕参数行(说说ID/评论ID/评论者QQ/
+                        # 评论于时间)供模型照抄调用 qzone_comment/qzone_reply,与工具参数名
+                        # (feed_id/comment_id/at_user_id)的映射由场景 prompt 解释;
+                        # 动作时间让 bot 分得清互动新旧(Task 3,缺失省略不编造)
                         content=(
                             f"评论了你的说说:{parse_qzone_mentions(c.content, bot_uin=bot_uin)}\n"
-                            f"〔说说ID={feed_tid[:12]} 评论ID={c.comment_tid} 评论者QQ={c.uin}〕"
+                            + format_comment_param_line(
+                                feed_tid=feed_tid, comment_tid=c.comment_tid, commenter_uin=str(c.uin),
+                                action="评论", create_time=str(c.create_time or ""), now_epoch=now_epoch,
+                            )
                         ),
                         source="notify", dedup_key=dedup_key,
                         # reply 段关联原说说(联调修正):origin_* 供泵构造引用段,
@@ -1475,7 +1485,8 @@ class CatsitatePlugin(MaiBotPlugin):
                         # 正文=自然可读+楼中楼上下文+参数独立尾行(可读性优化
                         # 2026-09-01):引用 bot 原评论前 20 字(缺内容回退
                         # 「你之前的评论」),@{uin,nick} 解析为 @昵称;〔〕参数行
-                        # 供模型照抄调用 qzone_reply(说说ID/主评论ID/回复者QQ);
+                        # 供模型照抄调用 qzone_reply(说说ID/主评论ID/回复者QQ/
+                        # 回复于时间,create_time 缺失省略不编造);
                         # 楼中楼二元组的 commentUin=bot 自己(主评论作者是 bot)
                         bot_ctx = r.parent_comment_content[:20] if r.parent_comment_content else "你之前的评论"
                         notifications.append(FeedItem(
@@ -1484,7 +1495,10 @@ class CatsitatePlugin(MaiBotPlugin):
                             content=(
                                 f"回复了你的评论「{bot_ctx}」:"
                                 f"{parse_qzone_mentions(r.content, bot_uin=bot_uin)}\n"
-                                f"〔说说ID={r.feed_tid[:12]} 评论ID={r.parent_comment_tid} 评论者QQ={r.uin}〕"
+                                + format_comment_param_line(
+                                    feed_tid=r.feed_tid, comment_tid=r.parent_comment_tid, commenter_uin=str(r.uin),
+                                    action="回复", create_time=str(r.create_time or ""), now_epoch=now_epoch,
+                                )
                             ),
                             source="notify", friend_uin=friend_uin, dedup_key=key,
                             # reply 段关联原说说(源B:原说说作者=好友/说说主人);

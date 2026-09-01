@@ -816,8 +816,10 @@ def test_notify_poll_source_b_reply_registers_friend_thread_context(tmp_path, mo
     assert reply["data"]["target_message_content"] == ("好友的说说正文" * 10)[:60]
     text = msg["raw_message"][1]["data"]
     # 工具驱动+可读性优化:楼中楼上下文(bot 原评论前 20 字)+参数独立尾行;
-    # 评论ID=主评论 tid(bc1,bot 的评论),评论者QQ=回复者
-    assert text == "回复了你的评论「我的评论」:说得对\n〔说说ID=ffeed1 评论ID=bc1 评论者QQ=30000〕"
+    # 评论ID=主评论 tid(bc1,bot 的评论),评论者QQ=回复者;尾段动作时间
+    # (回复于…)=create_time(注入同刻→今天,HH:MM 随运行时刻→前缀+后缀断言)
+    assert text.startswith("回复了你的评论「我的评论」:说得对\n〔说说ID=ffeed1 评论ID=bc1 评论者QQ=30000 回复于(今天")
+    assert text.endswith(")〕")
     assert "你曾评论" not in text and "(通知)" not in text
     assert "notify_reply_ffeed1_rr1" in msg["message_id"]
     ctx = p._qzone_registry.resolve("ffeed1")
@@ -869,7 +871,9 @@ def test_notify_scan_source_b_reply_without_parent_content_falls_back(tmp_path, 
     asyncio.run(p._qzone_notify_scan())
     assert len(p._ctx.gateway.calls) == 1
     text = p._ctx.gateway.calls[0][1]["raw_message"][-1]["data"]
-    assert text == "回复了你的评论「你之前的评论」:说得对\n〔说说ID=ffeed9 评论ID=bc9 评论者QQ=30000〕"
+    # 同款参数行+动作时间(create_time=注入同刻→今天);HH:MM 随运行时刻→前缀+后缀断言
+    assert text.startswith("回复了你的评论「你之前的评论」:说得对\n〔说说ID=ffeed9 评论ID=bc9 评论者QQ=30000 回复于(今天")
+    assert text.endswith(")〕")
 
 
 def test_qzone_block_virtual_stream_state_only(tmp_path):

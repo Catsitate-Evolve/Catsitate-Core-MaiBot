@@ -404,7 +404,7 @@ def test_notify_poll_stale_comment_skipped_and_registered(tmp_path):
 def test_notify_poll_injects_notify_message_with_and_without_reply_segment(tmp_path):
     """通知注入(工具驱动 2026-09-01+可读性优化):泵对 source=notify 走
     build_notify_message 专用构造——正文「评论了你的说说:内容」自然可读,
-    参数独立尾行〔说说ID=… 评论ID=… 评论者QQ=…〕(模型照抄调用
+    参数独立尾行〔说说ID=… 评论ID=… 评论者QQ=… 评论于(今天HH:MM)〕(模型照抄调用
     qzone_comment/qzone_reply);评论内 @{uin,nick} 解析为 @昵称;原说说已在
     seen 登记 message_id → 注入消息带 reply 段引用原说说注入消息(napcat quote
     式,引用内容=原说说正文);未登记 → 无 reply 段回退纯文本。"""
@@ -426,11 +426,13 @@ def test_notify_poll_injects_notify_message_with_and_without_reply_segment(tmp_p
     assert reply["data"]["target_message_id"] == "qzone_feed2_5"
     assert reply["data"]["target_message_sender_id"] == "10000"  # 源A:原说说作者=bot
     assert reply["data"]["target_message_content"] == "今天的心情"  # 引用内容=原说说正文(非通知文本)
-    assert msg["raw_message"][1] == {
-        "type": "text",
-        # @ 解析(可读性)+参数独立尾行:完整语义键名,映射关系由场景 prompt 解释
-        "data": "评论了你的说说:@猫猫 写得好\n〔说说ID=feed2 评论ID=ct2 评论者QQ=20001〕",
-    }
+    assert msg["raw_message"][1]["type"] == "text"
+    # @ 解析(可读性)+参数独立尾行:完整语义键名,映射关系由场景 prompt 解释;
+    # 尾段动作时间(评论于…)=create_time(注入同刻→今天),括号形态承 comment_time_prefix,
+    # HH:MM 随运行时刻 → 前缀+后缀断言不硬编码
+    data = msg["raw_message"][1]["data"]
+    assert data.startswith("评论了你的说说:@猫猫 写得好\n〔说说ID=feed2 评论ID=ct2 评论者QQ=20001 评论于(今天")
+    assert data.endswith(")〕")
     # 泵注入成功后登记 FeedContext(工具目标解析;替代意图绑定):键=真实说说 tid
     ctx = p._qzone_registry.resolve("feed2")
     assert ctx is not None
@@ -449,3 +451,33 @@ def test_notify_poll_injects_notify_message_with_and_without_reply_segment(tmp_p
     assert raw2 == [{"type": "text", "data": "评论了你的说说:加油\n〔说说ID=feed3 评论ID=ct3 评论者QQ=20002〕"}]
     ctx2 = p2._qzone_registry.resolve("feed3")
     assert ctx2 is not None and ctx2.comment_tid == "ct3"
+
+
+# ---------- format_comment_param_line:通知参数行携带动作时间(M3-r2 Task 3) ----------
+
+from datetime import datetime  # noqa: E402(与文件中途 import 风格一致)
+
+from catsitate_core.qzone.messages import format_comment_param_line  # noqa: E402
+
+
+def test_format_comment_param_line_with_time():
+    """带动作时间:参数行追加「评论于(今天HH:MM)」段(时间让 bot 分得清互动新旧)。"""
+
+    now = datetime.now().timestamp()
+    create = str(int(now - 60))
+    line = format_comment_param_line(
+        feed_tid="ee3396c49d38abcdef", comment_tid="2", commenter_uin="10001",
+        action="评论", create_time=create, now_epoch=now,
+    )
+    assert line.startswith("〔说说ID=ee3396c49d38 评论ID=2 评论者QQ=10001 评论于")
+    assert line.endswith("〕")
+
+
+def test_format_comment_param_line_without_time():
+    """create_time 缺失:省略时间段,不编造时间(错误显式暴露,参数行保 ID 锚)。"""
+
+    line = format_comment_param_line(
+        feed_tid="ee3396c49d38abcdef", comment_tid="2", commenter_uin="10001",
+        action="回复", create_time="", now_epoch=0.0,
+    )
+    assert line == "〔说说ID=ee3396c49d38 评论ID=2 评论者QQ=10001〕"

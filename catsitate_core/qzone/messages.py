@@ -110,10 +110,10 @@ def _time_prefix(post_dt: datetime, now_dt: datetime) -> str:
 def comment_time_prefix(create_time: str, now_epoch: float) -> str:
     """评论注入正文的时间前缀薄封装(终审 I2,方案 B 同款语义):发布时间由正文承载。
 
-    当前无调用方,保留待复用(M2.1 联调修正 2026-08-31):通知内容现在经
-    build_feed_message 从 abstime 统一处理时间前缀,本函数不再被轮询侧直接
-    调用;语义与 _time_prefix 一致,留作未来需要单独拼评论时间前缀的消费者
-    复用,不删以防重造。
+    调用方为 format_comment_param_line(M3-r2 Task 3,2026-09-01):通知参数行的
+    动作时间(评论于/回复于)经本函数产出;通知内容的时间前缀仍由
+    build_feed_message 从 abstime 统一处理,本函数不直接面向轮询侧;
+    语义与 _time_prefix 一致。
 
     create_time 为 msglist commentlist 的 epoch 秒字符串;空/非法/非正返回空串
     (回退形态,调用方不截断注入)。新鲜度截断的判定在 plugin 轮询侧,此处只管前缀。
@@ -126,6 +126,26 @@ def comment_time_prefix(create_time: str, now_epoch: float) -> str:
     if candidate <= 0:
         return ""
     return _time_prefix(datetime.fromtimestamp(candidate), datetime.fromtimestamp(now_epoch))
+
+
+def format_comment_param_line(
+    *, feed_tid: str, comment_tid: str = "", commenter_uin: str = "",
+    action: str = "评论", create_time: str = "", now_epoch: float = 0.0,
+) -> str:
+    """通知参数行:ID 锚 + 动作时间(评论于/回复于 (今天HH:MM)/(M月d日 HH:MM),括号形态承 comment_time_prefix)。
+
+    动作时间让 bot 分得清互动新旧(新鲜度窗口内 3 天前的评论与 3 分钟前的
+    长得一样);create_time 缺失/非法时省略时间段,不编造时间。
+    """
+    parts = [f"说说ID={str(feed_tid)[:12]}"]
+    if str(comment_tid or "").strip():
+        parts.append(f"评论ID={comment_tid}")
+    if str(commenter_uin or "").strip():
+        parts.append(f"评论者QQ={commenter_uin}")
+    tag = comment_time_prefix(create_time, now_epoch)
+    if tag:
+        parts.append(f"{action}于{tag}")
+    return "〔" + " ".join(parts) + "〕"
 
 
 def build_notify_message(

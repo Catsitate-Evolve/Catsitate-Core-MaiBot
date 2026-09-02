@@ -44,7 +44,15 @@ class _StubCtx:
     def __init__(self, data_dir, recent=None, by_id=None):
         self.logger = _StubLogger()
         self.paths = _StubPaths(data_dir)
-        self.config = type("_C", (), {"get": staticmethod(lambda key, default="": None)})()
+        class _AsyncConfig:
+            """异步 config.get 桩:#33 裁定后回注昵称必读(bot.nickname)。"""
+
+            async def get(self, key, default=None):
+                if key == "bot.nickname":
+                    return "Catsitate-dev"
+                return default
+
+        self.config = _AsyncConfig()
         # call_capability 桩数据:recent = message.get_recent 返回;by_id = message_id -> 序列化消息 dict
         self._recent = [] if recent is None else recent
         self._by_id = {} if by_id is None else by_id
@@ -217,7 +225,16 @@ def test_sleep_tick_natural_wake(tmp_path):
     class _StubCtx:
         def __init__(self):
             self.logger = _StubLogger()
-            self.config = type("_C", (), {"get": staticmethod(lambda key, default="": None)})()
+
+            class _AsyncConfig:
+                """异步 config.get 桩(#33 裁定后回注昵称必读)。"""
+
+                async def get(self, key, default=None):
+                    if key == "bot.nickname":
+                        return "Catsitate-dev"
+                    return default
+
+            self.config = _AsyncConfig()
 
         async def call_capability(self, *a, **k):
             return {"success": True, "response": "{}"}

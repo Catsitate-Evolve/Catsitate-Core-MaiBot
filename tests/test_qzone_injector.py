@@ -249,3 +249,25 @@ def test_window_ended_keeps_p1():
     st = inj.stats()
     assert st["p2_queued"] == 0 and st["p1_queued"] == 1
     assert inj.next_to_inject(0.0) is not None  # P1 仍可注入
+
+
+def test_requeue_popped_restores_cancelled_item():
+    """取消回队(2026-09-02 终审修复):泵在弹出与标记之间被取消时,在途项
+    回原队列队首(P1 回 P1/P2 回 P2),不静默丢失;无弹出项时 no-op。"""
+    from catsitate_core.qzone.protocol import FeedItem
+
+    inj = FeedInjector(decision_window_s=60)
+    inj.window_started()
+    notify = FeedItem(tid="n1", abstime="1", uin="1", nickname="a", content="c", source="notify")
+    feed = FeedItem(tid="f1", abstime="2", uin="2", nickname="b", content="d")
+    inj.enqueue_priority([notify])
+    inj.enqueue([feed])
+
+    popped = inj.next_to_inject(0.0)
+    assert popped.tid == "n1"
+    inj.requeue_popped()
+    assert inj.next_to_inject(0.0).tid == "n1"  # 回 P1 队首,可重新弹出
+    inj.requeue_popped()  # 回队后再弹出→再回队
+    assert inj.queue_size() == 2  # P1 一条 + P2 一条
+    inj.requeue_popped()  # 无在途弹出项:no-op
+    assert inj.queue_size() == 2

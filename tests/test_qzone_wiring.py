@@ -67,12 +67,25 @@ class _StubGateway:
         return True
 
 
+class _StubConfig:
+    """主程序配置面最小桩:bot.nickname(#33 裁定后回注昵称必读)。"""
+
+    def __init__(self, nickname="Catsitate-dev"):
+        self.nickname = nickname
+
+    async def get(self, key, default=""):
+        if key == "bot.nickname":
+            return self.nickname
+        return default
+
+
 class _StubCtx:
-    """组合层测试的最小 ctx 面:logger + gateway。"""
+    """组合层测试的最小 ctx 面:logger + gateway + config。"""
 
     def __init__(self, logs):
         self.logger = _CollectLogger(logs)
         self.gateway = _StubGateway()
+        self.config = _StubConfig()
 
 
 class _StubCommentClient:
@@ -142,7 +155,6 @@ def _make_plugin(tmp_path):
     p.config.favorability.bot_user_id = BOT_UIN
     p._qzone_available = True
     p._qzone_registry = FeedContextRegistry()  # 实例级(类属性共享,防测试间泄漏)
-    p._qzone_comment_counts = {}
     p._qzone_seq = 0
     p._qzone_pump_lock = asyncio.Lock()  # 泵互斥锁(on_load 装配,离线测试手工补)
     p._background_tasks = set()  # 后台任务引用集(tick 派发 feeds/scan 用,on_load 装配)
@@ -199,9 +211,9 @@ def _patch_sleep(monkeypatch, record: list) -> None:
     monkeypatch.setattr(asyncio, "sleep", _fake_sleep)
 
 
-def test_poll_tick_resets_comment_counts_on_window_start(tmp_path):
-    """工具驱动 v0.7:窗口开始时重置同说说评论频控计数——上限语义是「本轮逛空间
-    期间」对同说说最多 3 条,跨窗口不得累计误伤;窗口仍正常开启(不饿死注入)。"""
+def test_poll_tick_window_start_opens_injector(tmp_path):
+    """窗口开启冒烟(频控删除后,2026-09-02 用户裁定:同说说评论硬上限删除,
+    防护交 QQ 侧频控+-10049 限制回执):read_qzone 窗口开始,注入泵正常激活。"""
 
     p = _make_plugin(tmp_path)
     now = datetime.now()
@@ -210,11 +222,9 @@ def test_poll_tick_resets_comment_counts_on_window_start(tmp_path):
         "end": (now + timedelta(hours=1)).strftime("%Y-%m-%dT%H:%M"),
         "activity": "逛空间", "plan_speak": False, "topic": "", "read_qzone": True,
     }]}
-    p._qzone_comment_counts = {"oldfeed1": 3, "oldfeed2": 1}  # 上一窗口的计数残留
 
-    # 发现层空时间线(默认桩):窗口开始分支后本轮提前返回,足以断言计数处置
+    # 发现层空时间线(默认桩):窗口开始分支后本轮提前返回,足以断言窗口状态
     asyncio.run(p._qzone_poll_feeds())
-    assert p._qzone_comment_counts == {}  # 计数已重置
     assert p.qzone_injector.window_active is True  # 窗口正常开启(不跳过注入)
 
 
@@ -279,7 +289,6 @@ def test_qzone_comment_success_via_registry(tmp_path):
         "SELECT comment_key FROM qzone_comments WHERE comment_key LIKE 'fulltid0001abc:bot:%'"
     )
     assert keys  # 自评登记(note_bot_comment)已入评论表(正文=生成结果)
-    assert p._qzone_comment_counts == {"fulltid0001abc": 1}  # 频控计数累计
 
 
 def test_qzone_comment_polish_failure_falls_back_to_draft(tmp_path):
@@ -296,7 +305,6 @@ def test_qzone_comment_polish_failure_falls_back_to_draft(tmp_path):
     res = asyncio.run(p.qzone_comment(feed_id="genfail1", content="夸一下", stream_id="s1"))
     assert res.startswith("评论成功,已发出:")
     assert p.qzone_client.comment_calls == [("genfail1", "10001", "夸一下")]  # 草稿直发
-    assert p._qzone_comment_counts == {"genfail1": 1}
     assert any(level == "warning" and "表达润色失败" in str(a[0]) for level, a in p.logs)
 
 
@@ -318,23 +326,6 @@ def test_qzone_comment_at_prefix_uses_commenter_nickname(tmp_path):
     )
     assert events and events[0][1] == "COMMENT"  # @ 互动记向被@者
 
-
-def test_qzone_comment_frequency_limit_three(tmp_path):
-    """频控:同说说评论上限 3 次——第 4 次拒绝(零写调用),提示适可而止;
-    不同说说互不影响(计数按 tid 分键)。"""
-
-    p = _make_tool_plugin(tmp_path)
-    _register_feed(p, tid="feedA", owner="10001")
-    _register_feed(p, tid="feedB", owner="10002")
-    for i in range(3):
-        res = asyncio.run(p.qzone_comment(feed_id="feedA", content=f"第{i}条", stream_id="s1"))
-        assert res.startswith("评论成功,已发出:")
-    res4 = asyncio.run(p.qzone_comment(feed_id="feedA", content="第四条", stream_id="s1"))
-    assert res4 == "这条说说你已经评论过 3 次了,适可而止～"
-    assert len(p.qzone_client.comment_calls) == 3  # 第 4 条零写调用
-    res_b = asyncio.run(p.qzone_comment(feed_id="feedB", content="另一条", stream_id="s1"))
-    assert res_b.startswith("评论成功,已发出:")  # 其它说说不受影响
-    assert len(p.qzone_client.comment_calls) == 4
 
 
 def test_qzone_comment_target_resolution_failure_and_fallback(tmp_path):
@@ -365,9 +356,31 @@ def test_qzone_comment_auth_error_invalidates_cookie(tmp_path):
     _register_feed(p, tid="feedX", owner="10001")
     p.qzone_client = _AuthFailClient()
     res = asyncio.run(p.qzone_comment(feed_id="feedX", content="你好", stream_id="s1"))
-    assert "登录态失效已重置" in res
-    assert p.qzone_cookie.invalidate_calls == 1  # cookie 已作废(下轮重取)
-    assert p._qzone_comment_counts == {}  # 失败不计入频控
+    # 同轮自愈(2026-09-02 #7):作废→重取(桩默认重取失败)→显式回执,不再「下轮再试」
+    assert "登录态失效且 cookie 重取失败" in res
+    assert p.qzone_cookie.invalidate_calls == 1  # cookie 已作废并尝试重取
+    assert p.qzone_client.comment_calls == []  # 零写调用
+
+    # 重取成功→原地重试一次(动作不放弃);仍失效→显式回执
+    p2 = _make_tool_plugin(tmp_path)
+    _register_feed(p2, tid="feedX", owner="10001")
+
+    class _AuthOnceClient(_StubWriteClient):
+        def __init__(self):
+            super().__init__()
+            self.calls = 0
+
+        async def do_comment(self, *, fid, target_qq, content):
+            self.calls += 1
+            if self.calls == 1:
+                raise QzoneAuthError("登录态失效(code=-3000)")
+            return True
+
+    p2.qzone_client = _AuthOnceClient()
+    p2.qzone_cookie.get_result = {"p_skey": "fresh"}
+    res = asyncio.run(p2.qzone_comment(feed_id="feedX", content="你好", stream_id="s1"))
+    assert res.startswith("评论成功,已发出:")  # 同轮重试成功,动作未放弃
+    assert p2.qzone_cookie.invalidate_calls == 1 and p2.qzone_client.calls == 2
 
 
 def test_qzone_biz_error_too_frequent_receipts(tmp_path):
@@ -603,7 +616,8 @@ def test_qzone_post_auth_error_invalidates_cookie(tmp_path):
     p = _make_tool_plugin(tmp_path)
     p.qzone_client = _AuthFailPostClient()
     res = asyncio.run(p.qzone_post(content="想发点什么都发不出去", stream_id="s1"))
-    assert "登录态失效已重置" in res
+    # 同轮自愈(2026-09-02 #7):作废→重取(桩默认失败)→显式回执;零回注
+    assert "登录态失效且 cookie 重取失败" in res
     assert p.qzone_cookie.invalidate_calls == 1
     assert p._ctx.gateway.calls == []
 
@@ -1377,9 +1391,10 @@ def test_notify_scan_source_c_like_auth_error_keeps_source_a_notifications(tmp_p
     # 源A 通知未丢:正常注入 1 条
     assert len(p._ctx.gateway.calls) == 1
     assert p._ctx.gateway.calls[0][1]["message_info"]["user_info"]["user_id"] == "20000"
-    # 自愈链:cookie 已作废(下轮重取)+ 失效告警
+    # 同轮自愈(2026-09-02 #7):作废→重取(桩默认失败)→源C 按空处理不中断
     assert p.qzone_cookie.invalidate_calls == 1
-    assert any(level == "warning" and "通知轮询源C" in " ".join(str(x) for x in a)
+    assert any("cookie 重取失败" in " ".join(str(x) for x in a) for level, a in p.logs if level == "warning")
+    assert any(level == "warning" and "通知源C" in " ".join(str(x) for x in a)
                for level, a in p.logs)
 
 
@@ -1418,6 +1433,62 @@ def test_notify_retry_backoff_source_c_like_gives_up_without_misleading_retry(tm
         level == "info" and "待下轮重试" in str(a[0]) for level, a in p.logs
     )
     assert p.qzone_comment_seen.is_new(key) is True  # 键已回退,下轮重新发现
+
+
+def test_notify_scan_reverts_registered_keys_on_failure(tmp_path):
+    """原子性兜底(终审 H-1 修复,2026-09-02):源A 登记后发现侧异常(源C 取数
+    抛非 Auth 异常)——已登记未入队的去重键回退(pending_retry=1),下轮重新
+    发现,通知不永久静默丢失。"""
+
+    import time as _time
+
+    from catsitate_core.qzone.wire import CommentItem
+
+    comments = {"feedh1": [CommentItem(
+        comment_tid="ch1", uin="20000", nickname="小红", content="会被回退的评论",
+        create_time=str(int(_time.time())),
+    )]}
+
+    class _BoomLikeClient(_StubUnifiedClient):
+        def __init__(self):
+            super().__init__([])
+
+        async def get_own_feed_comments(self, *, bot_uin, num=10):
+            del bot_uin, num
+            return comments, {"feedh1": "正文"}
+
+        async def get_like_events(self, *, count=30):
+            del count
+            raise RuntimeError("源C 炸了")
+
+    p = _make_plugin(tmp_path)
+    p.qzone_injector.window_started()
+    p.qzone_client = _BoomLikeClient()
+    with pytest.raises(RuntimeError):
+        asyncio.run(p._qzone_notify_scan())
+    rows = p.qzone_comment_seen.store.query(
+        "SELECT pending_retry FROM qzone_comments WHERE comment_key LIKE 'feedh1:%'"
+    )
+    assert rows and int(rows[0][0]) == 1  # 键已软回退:下轮 is_new 重新激活
+    assert any("回退本轮已登记去重键" in " ".join(str(x) for x in a) for level, a in p.logs if level == "exception")
+    assert p._ctx.gateway.calls == []  # 未注入(下轮重发现后注入)
+
+
+def test_validate_schedule_threshold_falls_back_with_warning(tmp_path):
+    """speak_threshold_level 非法值(终审 M-4 修复):显式告警+回退「熟悉」,
+    不再静默停用日程主动发言;合法值零告警零改动。"""
+
+    p = _make_plugin(tmp_path)
+    p.config.schedule.speak_threshold_level = "好友"  # 非法(合法:陌生/熟悉/亲近/挚友/特别)
+    p._validate_schedule_threshold()
+    assert p.config.schedule.speak_threshold_level == "熟悉"
+    assert any(level == "warning" and "speak_threshold_level" in " ".join(str(x) for x in a)
+               for level, a in p.logs)
+    p.logs.clear()
+    p.config.schedule.speak_threshold_level = "亲近"
+    p._validate_schedule_threshold()
+    assert p.config.schedule.speak_threshold_level == "亲近"  # 合法值不动
+    assert not any(level == "warning" for level, a in p.logs)
 
 
 def test_notify_scan_drives_pump_on_stale_awaiting(tmp_path):
@@ -1803,7 +1874,7 @@ def test_qzone_like_auth_error_invalidates_cookie(tmp_path):
     _register_feed(p, tid="likefail1", owner="10001")
     p.qzone_client = _AuthFailLikeClient()
     res = asyncio.run(p.qzone_like(feed_id="likefail1", stream_id="s1"))
-    assert res == "点赞失败:登录态失效已重置,稍后再试。"
+    assert "登录态失效且 cookie 重取失败" in res  # 同轮自愈(2026-09-02 #7)
     assert p.qzone_cookie.invalidate_calls == 1
     rows = p.qzone_comment_seen.store.query("SELECT 1 FROM qzone_fav_events")
     assert rows == []  # 失败不记好感度事件
@@ -2310,13 +2381,18 @@ def test_poll_feeds_falls_back_to_legacy_on_discovery_failure(tmp_path, monkeypa
 
 
 class _StubCookie:
-    """cookie 管理桩:只记录 invalidate 调用次数(登录态自愈链断言用)。"""
+    """cookie 管理桩:记录 invalidate;get 模拟 adapter 重取(默认 None=重取失败,
+    同轮自愈链断言用,2026-09-02 #7)。"""
 
     def __init__(self):
         self.invalidate_calls = 0
+        self.get_result = None
 
     def invalidate(self):
         self.invalidate_calls += 1
+
+    async def get(self):
+        return self.get_result
 
 
 def test_poll_feeds_excludes_bot_own_feed_from_enrichment(tmp_path, monkeypatch):

@@ -166,7 +166,6 @@ class CatsitatePlugin(MaiBotPlugin):
     _qzone_available: bool = False  # 启动自检+网关就绪后置 True(Task 12)
     _qzone_seq: int = 0  # message_id 序号(on_load 以当前秒播种,防跨重启撞车触发宿主去重)
     _qzone_registry: FeedContextRegistry = FeedContextRegistry()  # 注入上下文追踪(工具目标解析;on_load 实例级重置)
-    _qzone_comment_counts: dict[str, int] = {}  # 同说说评论频控计数(上限 3;窗口边界重置,on_load 实例级重置)
     _qzone_notify_task_armed: bool = False  # 统一通知轮询调度任务已注册标记(热重载重注册防重)
     _qzone_poll_running: bool = False  # 浏览轮询后台拉取进行中(深度审查 A-2:tick 防重入标记)
     _qzone_notify_running: bool = False  # 通知轮询后台扫描进行中(同上,通知 tick 独立标记)
@@ -301,14 +300,13 @@ class CatsitatePlugin(MaiBotPlugin):
         # 用户裁定),白名单只管其余虚拟流工具;view_friend_feeds 缺席则虚拟流无法
         # 查看好友说说(仍检查);白名单里残留 qzone_*/reply 项提示可移除(不再消费)
         self._warn_qzone_tool_whitelist()
+        self._validate_schedule_threshold()
         self.qzone_injector = FeedInjector(decision_window_s=self.config.qzone.decision_window_seconds)
         # seq 以当前秒播种:重启归零会让 qzone_{tid}_{seq} 与上一轮运行撞车,
         # 被宿主 driver_id:message_id 去重拒绝(联调缺陷#11,静默丢注入)
         self._qzone_seq = int(time.time())
         # 工具驱动架构:注入上下文登记表实例级重置(类属性为共享可变态,按次加载初始化)
         self._qzone_registry = FeedContextRegistry()
-        # 同说说评论频控计数实例级重置(窗口边界亦重置,防跨加载残留)
-        self._qzone_comment_counts = {}
         # 轮询后台任务防重入标记实例级重置(类属性共享可变态,卸载取消任务后不得残留 True)
         self._qzone_poll_running = False
         self._qzone_notify_running = False
@@ -360,6 +358,21 @@ class CatsitatePlugin(MaiBotPlugin):
         except ImportError:
             self.ctx.logger.warning("lunar-python 未安装:农历节日/节气不可用(公历回退链不受影响)")
         self.ctx.logger.info("catsitate_core 已加载:注入/备忘录/好感度/贴表情/戳一戳/reply补传/图片重看")
+
+    def _validate_schedule_threshold(self) -> None:
+        """schedule.speak_threshold_level 非法值显式告警并回退默认(终审 M-4 修复,
+        2026-09-02):threshold_met 对未知等级取 99,非法配置会永久静默停用日程
+        主动发言且无任何日志——违反错误显式暴露纪律。"""
+
+        from catsitate_core.favorability import LEVEL_INDEX
+
+        value = str(self.config.schedule.speak_threshold_level or "").strip()
+        if value not in LEVEL_INDEX:
+            self.ctx.logger.warning(
+                "schedule.speak_threshold_level=%s 非法(合法值:%s),按默认「熟悉」处理——请修正配置",
+                value, "/".join(LEVEL_INDEX),
+            )
+            self.config.schedule.speak_threshold_level = "熟悉"
 
     def _warn_qzone_tool_whitelist(self) -> None:
         """白名单语义告警(on_load 调用;不静默改配置,只提示)。
@@ -774,12 +787,11 @@ class CatsitatePlugin(MaiBotPlugin):
         if not fid:
             return f"未找到说说 {target[:12]},可能已过期,请核对消息尾部的说说ID。"
         try:
-            await self.qzone_client.do_like(fid=fid, target_qq=owner_uin)
-        except QzoneAuthError:
-            # 与轮询同款自愈链:作废 cookie 下轮重取,点赞留给下次浏览
-            self.qzone_cookie.invalidate()
-            self.ctx.logger.warning("QQ空间点赞遇登录态失效,cookie 已作废,下轮重取")
-            return "点赞失败:登录态失效已重置,稍后再试。"
+            # 同轮自愈(用户裁定 #7):AuthError 作废并重取 cookie 后原地重试一次
+            _, auth_err = await self._qzone_auth_retry(
+                lambda: self.qzone_client.do_like(fid=fid, target_qq=owner_uin), "点赞")
+            if auth_err:
+                return f"点赞失败:{auth_err}。"
         except QzoneBizError as exc:
             self.ctx.logger.warning("QQ空间点赞业务错误(code=%s)", exc.code)
             if exc.code == BIZ_CODE_TOO_FREQUENT:
@@ -809,6 +821,29 @@ class CatsitatePlugin(MaiBotPlugin):
             draft=draft, scene=scene, limit=limit, logger=self.ctx.logger,
         )
         return polished or draft
+
+    async def _qzone_auth_retry(self, call, label: str) -> tuple[Any, str]:
+        """QzoneAuthError 同轮自愈(用户裁定 2026-09-02 #7:不得放弃本轮动作)。
+
+        作废 cookie → 经 adapter 强制重取(NapCat 在线会话,免扫码)→ 原地重试
+        一次;重取失败/重试仍失效返回 (None, 错误文本)交调用方生成显式回执。
+        重试抛出的非 Auth 异常原样上抛(走调用方既有 Biz/Exception 分支)。"""
+
+        try:
+            return await call(), ""
+        except QzoneAuthError:
+            self.qzone_cookie.invalidate()
+            cookies = await self.qzone_cookie.get()
+            if not cookies:
+                self.ctx.logger.warning("QQ空间%s遇登录态失效,cookie 重取失败(adapter 无有效登录态)", label)
+                return None, "登录态失效且 cookie 重取失败——请检查 NapCat 的 QQ 登录状态"
+            self.ctx.logger.warning("QQ空间%s遇登录态失效,cookie 已重取,本轮原地重试", label)
+            try:
+                return await call(), ""
+            except QzoneAuthError:
+                self.qzone_cookie.invalidate()
+                self.ctx.logger.warning("QQ空间%s重取后仍登录态失效,cookie 再次作废", label)
+                return None, "登录态失效,cookie 重取后仍未通过"
 
     @Tool(
         "qzone_comment",
@@ -840,10 +875,6 @@ class CatsitatePlugin(MaiBotPlugin):
         fid, owner_uin, ctx = self._qzone_resolve_feed(feed_id)
         if not fid:
             return f"未找到说说 {feed_id[:12]},可能已过期,请核对消息尾部的说说ID。"
-        # 频控:同说说评论计数上限 3(窗口边界重置,防对同一条说说刷屏)
-        count = self._qzone_comment_counts.get(fid, 0)
-        if count >= 3:
-            return "这条说说你已经评论过 3 次了,适可而止～"
         # @ 前缀(napcat 适配器同格式,QQ 空间原生支持):nick 默认 QQ 号,
         # registry 有该评论者昵称则用昵称(通知场景回应评论最自然)
         at_nick = ""
@@ -856,11 +887,11 @@ class CatsitatePlugin(MaiBotPlugin):
             receipt_body = f"@{at_nick} {content}"
             content = f"@{{uin:{at_uin},nick:{at_nick},auto:1}}{content}"
         try:
-            await self.qzone_client.do_comment(fid=fid, target_qq=owner_uin, content=content)
-        except QzoneAuthError:
-            self.qzone_cookie.invalidate()
-            self.ctx.logger.warning("QQ空间评论遇登录态失效,cookie 已作废,下轮重取")
-            return "评论失败:登录态失效已重置,稍后再试。"
+            # 同轮自愈(用户裁定 #7):AuthError 作废并重取 cookie 后原地重试一次
+            _, auth_err = await self._qzone_auth_retry(
+                lambda: self.qzone_client.do_comment(fid=fid, target_qq=owner_uin, content=content), "评论")
+            if auth_err:
+                return f"评论失败:{auth_err}。"
         except QzoneBizError as exc:
             self.ctx.logger.warning("QQ空间评论业务错误(code=%s)", exc.code)
             if exc.code == BIZ_CODE_TOO_FREQUENT:
@@ -879,7 +910,6 @@ class CatsitatePlugin(MaiBotPlugin):
             self.qzone_comment_seen.fav_event(fav_target, fav_kind, fav_text)
         except Exception:
             self.ctx.logger.exception("QQ空间评论记账失败(远端已成功,仅告警)")
-        self._qzone_comment_counts[fid] = count + 1
         return f"评论成功,已发出:「{receipt_body}」"
 
     @Tool(
@@ -923,14 +953,16 @@ class CatsitatePlugin(MaiBotPlugin):
         at_uin = ctx.commenter_uin if ctx and ctx.commenter_uin else comment_uin
         at_nick = (ctx.commenter_nickname if ctx else "") or at_uin or "好友"
         try:
-            await self.qzone_client.do_reply(fid=fid, target_qq=target_qq,
-                                             comment_tid=comment_id.strip(), comment_uin=comment_uin,
-                                             comment_nick=at_nick, content=content,
-                                             at_uin=at_uin, at_nick=at_nick)
-        except QzoneAuthError:
-            self.qzone_cookie.invalidate()
-            self.ctx.logger.warning("QQ空间楼中楼回复遇登录态失效,cookie 已作废,下轮重取")
-            return "回复失败:登录态失效已重置,稍后再试。"
+            # 同轮自愈(用户裁定 #7):AuthError 作废并重取 cookie 后原地重试一次
+            _, auth_err = await self._qzone_auth_retry(
+                lambda: self.qzone_client.do_reply(
+                    fid=fid, target_qq=target_qq,
+                    comment_tid=comment_id.strip(), comment_uin=comment_uin,
+                    comment_nick=at_nick, content=content,
+                    at_uin=at_uin, at_nick=at_nick),
+                "楼中楼回复")
+            if auth_err:
+                return f"回复失败:{auth_err}。"
         except QzoneBizError as exc:
             self.ctx.logger.warning("QQ空间楼中楼回复业务错误(code=%s)", exc.code)
             if exc.code == BIZ_CODE_TOO_FREQUENT:
@@ -968,12 +1000,11 @@ class CatsitatePlugin(MaiBotPlugin):
         # 表达润色:planner 草稿按人设+表达方式+场景语改写(失败以草稿直发)
         content = await self._qzone_polish(content, limit=500, scene="QQ空间里,想发一条自己的说说")
         try:
-            tid = await self.qzone_client.do_publish(content=content)
-        except QzoneAuthError:
-            # 登录态失效自愈链(与评论/点赞同款):作废 cookie 下轮重取,本轮发布放弃
-            self.qzone_cookie.invalidate()
-            self.ctx.logger.warning("QQ空间说说发布遇登录态失效,cookie 已作废,下轮重取")
-            return "发布失败:登录态失效已重置,稍后再试。"
+            # 同轮自愈(用户裁定 #7):AuthError 作废并重取 cookie 后原地重试一次
+            tid, auth_err = await self._qzone_auth_retry(
+                lambda: self.qzone_client.do_publish(content=content), "说说发布")
+            if auth_err:
+                return f"发布失败:{auth_err}。"
         except QzoneBizError as exc:
             self.ctx.logger.warning("QQ空间说说发布业务错误(code=%s)", exc.code)
             if exc.code == BIZ_CODE_TOO_FREQUENT:
@@ -1063,12 +1094,12 @@ class CatsitatePlugin(MaiBotPlugin):
             return "请提供好友的QQ号(纯数字)。"
         count = max(1, min(int(count or 3), 10))
         try:
+            # 同轮自愈(用户裁定 #7):AuthError 作废并重取 cookie 后原地重试一次;
             # nickname 无上下文可用,传 QQ 号占位(仅请求参数,不影响拉取)
-            feeds = await self.qzone_client.get_user_feeds(target_uin=qq, nickname=qq, num=count)
-        except QzoneAuthError:
-            self.qzone_cookie.invalidate()
-            self.ctx.logger.warning("QQ空间登录态失效(view_friend_feeds),cookie 已作废,下轮重取")
-            return "登录态失效已重置,请稍后再试。"
+            feeds, auth_err = await self._qzone_auth_retry(
+                lambda: self.qzone_client.get_user_feeds(target_uin=qq, nickname=qq, num=count), "好友说说查看")
+            if auth_err:
+                return f"查看失败:{auth_err}。"
         except Exception:
             self.ctx.logger.exception("QQ空间好友说说拉取失败(qq=%s)", qq)
             return "拉取失败,已记录日志。"
@@ -1088,13 +1119,20 @@ class CatsitatePlugin(MaiBotPlugin):
             ))
             pairs: list[tuple[str, bytes]] = []
             for url in f.image_urls[:3]:  # 单条说说最多带 3 图(防 media 项爆炸)
-                data = await self.qzone_client.download_image(url)
-                if data:
-                    pairs.append((url, data))
+                try:
+                    data = await self.qzone_client.download_image(url)
+                except Exception:
+                    # 单图失败不炸整个工具调用(终审 L-2 修复,2026-09-02):
+                    # 说说已取到且已登记,瞬态网络失败只丢该图
+                    self.ctx.logger.exception("QQ空间好友说说图片下载异常(%s),该图跳过", url)
+                    data = None
+                pairs.append((url, data))
             # RPC 帧预算同浏览注入链:压缩优先,极端丢弃置 None(摘要行只列实际
-            # 进入 content_items 的图,丢弃不占图号不误导 hash 反查)
-            fitted = fit_images_to_rpc_budget(
-                pairs, on_drop=lambda u: self.ctx.logger.warning(
+            # 进入 content_items 的图,丢弃不占图号不误导 hash 反查);压缩移出
+            # 事件循环(终审 M-3:PIL 同步编码多图会阻塞主程序秒级)
+            fitted = await asyncio.to_thread(
+                fit_images_to_rpc_budget, pairs,
+                on_drop=lambda u: self.ctx.logger.warning(
                     "QQ空间好友说说图片压缩后仍超 RPC 帧预算,丢弃保帧: %s", u),
             )
             img_tags: list[str] = []
@@ -1105,7 +1143,9 @@ class CatsitatePlugin(MaiBotPlugin):
                 content_items.append({
                     "content_type": "image",
                     "data": base64.b64encode(data).decode("ascii"),
-                    "mime_type": "image/jpeg",
+                    # mime 按魔数探测(终审 L-3 修复:未压缩的 PNG/GIF/WebP 原样
+                    # 字节此前被硬标 jpeg,误导宿主入库与 VLM 管线)
+                    "mime_type": _sniff_image_mime(data),
                 })
             body = f.content or "(纯图)"
             if len(body) > 300:
@@ -1255,9 +1295,14 @@ class CatsitatePlugin(MaiBotPlugin):
             in_send_window = bool(win and win.get("kind") == "daily" and win.get("send_qzone"))
             if not in_read_window and self.qzone_injector.window_active:
                 # 浏览窗口结束(含 read→仅 send 邻接切换:send 窗口无浏览语义,
-                # 浏览队列同样回退未读);通知队列保留 P1 等待注入
-                self.qzone_injector.window_ended()
-                reverted = self.qzone_seen.revert_pending()
+                # 浏览队列同样回退未读);通知队列保留 P1 等待注入。
+                # 持泵锁收窗(终审竞态修复,2026-09-02):window_ended/revert_pending
+                # 与在途泵(弹出→下载→route→mark_seen 的秒级 await 间隙)竞态会
+                # 删掉在途动态的 queued 行/清掉已弹出 P1 状态——下窗口重复注入
+                # 同一条说说、P1 被占位 awaiting 卡住
+                async with self._qzone_pump_lock:
+                    self.qzone_injector.window_ended()
+                    reverted = self.qzone_seen.revert_pending()
                 self.ctx.logger.info(
                     "QQ空间浏览窗口结束,浏览队列回退未读(%d 条);通知队列保留等待注入", reverted
                 )
@@ -1283,9 +1328,6 @@ class CatsitatePlugin(MaiBotPlugin):
                 return  # 仅 send 窗口:发布触发已发,无浏览语义,不做发现/充实
             if not self.qzone_injector.window_active:
                 self.qzone_injector.window_started()
-                # 评论频控计数随窗口边界重置(工具驱动 2026-09-01):新窗口重新计数,
-                # 防跨窗口累计误伤(上限语义=「本轮逛空间期间」对同说说最多 3 条)
-                self._qzone_comment_counts.clear()
                 # 回收跨窗口/跨启动的 queued 残留:注入泵队列在内存,重启即丢,
                 # 而 seen 的 queued 行会让新轮拉取全部判重跳过(联调缺陷#12)
                 stale = self.qzone_seen.revert_pending()
@@ -1487,36 +1529,55 @@ class CatsitatePlugin(MaiBotPlugin):
             feed = self.qzone_injector.next_to_inject(now)
             if feed is None:
                 return
-            if feed.source == "notify":
-                # 通知走专用构造(联调修正):带 reply 段引用**原说说**的注入消息
-                # (napcat quote 式上下文关联)——引用目标经 seen_store.get_message_id
-                # 查原说说注入时记录的 message_id;原说说未注入过(窗口外通知/已被
-                # 7 天清理/旧库未记录)时查无 id → reply 段省略,回退纯文本不静默臆造
-                reply_target_id = self.qzone_seen.get_message_id(feed.origin_tid)
-                if feed.origin_tid and not reply_target_id:
-                    self.ctx.logger.debug(
-                        "QQ空间通知原说说无注入记录(origin_tid=%s),reply 段省略", feed.origin_tid
-                    )
-                msg = build_notify_message(
-                    feed, group_id=QZONE_VIRTUAL_GROUP_ID,
-                    group_name=QZONE_VIRTUAL_GROUP_NAME, now_epoch=time.time(),
-                    reply_target_id=reply_target_id, reply_target_sender=feed.origin_sender,
+            try:
+                await self._qzone_inject_one(feed)
+            except asyncio.CancelledError:
+                # 取消落点在弹出之后(热重载/任务回收,2026-09-02 终审修复):
+                # to_thread 等真实挂起点使「弹出→标记」间隙可被取消命中——
+                # 在途项回队首,防 P1 通知静默丢失
+                self.qzone_injector.requeue_popped()
+                self.ctx.logger.warning("QQ空间注入在途被取消,该项已回队首(tid=%s)", feed.tid)
+                raise
+
+    async def _qzone_inject_one(self, feed: FeedItem) -> None:
+        """单条注入(泵弹出后的主体):构造(通知=带 reply 段/浏览=图片链)→
+        route → mark_seen → registry 登记。异常分支内各自处理;取消由泵层
+        统一回队。"""
+        if feed.source == "notify":
+            # 通知走专用构造(联调修正):带 reply 段引用**原说说**的注入消息
+            # (napcat quote 式上下文关联)——引用目标经 seen_store.get_message_id
+            # 查原说说注入时记录的 message_id;原说说未注入过(窗口外通知/已被
+            # 7 天清理/旧库未记录)时查无 id → reply 段省略,回退纯文本不静默臆造
+            reply_target_id = self.qzone_seen.get_message_id(feed.origin_tid)
+            if feed.origin_tid and not reply_target_id:
+                self.ctx.logger.debug(
+                    "QQ空间通知原说说无注入记录(origin_tid=%s),reply 段省略", feed.origin_tid
                 )
-            else:
-                images: list[tuple[str, bytes]] = []
-                for url in feed.image_urls:
-                    try:
-                        data = await self.qzone_client.download_image(url)
-                    except Exception:
-                        # 单图异常降级为占位,不中止该条动态的注入(网络抖动等瞬态)
-                        self.ctx.logger.exception("QQ空间图片下载异常(%s),以占位注入", url)
-                        data = None
-                    if data is not None:
-                        images.append((url, data))
-                # RPC 帧预算(用户裁定 2026-08-31):体积治理=压缩而非拒收,压到帧限内
-                images = fit_images_to_rpc_budget(
-                    images,
-                    on_drop=lambda u: self.ctx.logger.warning("QQ空间图片压缩后仍超 RPC 帧预算,丢弃保帧: %s", u),
+            msg = build_notify_message(
+                feed, group_id=QZONE_VIRTUAL_GROUP_ID,
+                group_name=QZONE_VIRTUAL_GROUP_NAME, now_epoch=time.time(),
+                reply_target_id=reply_target_id, reply_target_sender=feed.origin_sender,
+            )
+        else:
+            images: list[tuple[str, bytes]] = []
+            for url in feed.image_urls:
+                try:
+                    data = await self.qzone_client.download_image(url)
+                except Exception:
+                    # 单图异常降级为占位,不中止该条动态的注入(网络抖动等瞬态)
+                    self.ctx.logger.exception("QQ空间图片下载异常(%s),以占位注入", url)
+                    data = None
+                # 失败图保留 (url, None):build_feed_message 按图给 [图片] 占位
+                # (终审 M-2 修复,2026-09-02:此前失败图被静默丢弃,模型对缺图无感知)
+                images.append((url, data))
+            try:
+                # RPC 帧预算(用户裁定 2026-08-31):体积治理=压缩而非拒收,压到
+                # 帧限内;压缩移出事件循环(终审 M-3:PIL 同步编码多图会阻塞主
+                # 程序秒级),损坏字节在压缩层兜底返回原样,极端异常降级全占位
+                images = await asyncio.to_thread(
+                    fit_images_to_rpc_budget, images,
+                    on_drop=lambda u: self.ctx.logger.warning(
+                        "QQ空间图片压缩后仍超 RPC 帧预算,丢弃保帧: %s", u),
                 )
                 self._qzone_seq += 1
                 msg = build_feed_message(
@@ -1524,47 +1585,56 @@ class CatsitatePlugin(MaiBotPlugin):
                     group_name=QZONE_VIRTUAL_GROUP_NAME, images=images,
                     now_epoch=time.time(),
                 )
-            try:
-                # SDK route_message 返回 bool accepted(不抛异常):宿主 adapter policy
-                # 或网关状态拒绝时返回 False,不得当成功继续标记
-                accepted = await self.ctx.gateway.route_message(QZONE_GATEWAY_NAME, msg)
             except Exception:
-                self.ctx.logger.exception("QQ空间动态注入失败(tid=%s),本轮跳过", feed.tid)
-                # 深度审查 B-4+A-N1:通知项注入未成功不永久丢失,但重试有上限(见
-                # _qzone_notify_retry_backoff);浏览动态无此问题(queued 行由窗口
-                # 尾 revert_pending 回退未读)
-                self._qzone_notify_retry_backoff(feed)
-                return
-            if not accepted:
-                # 拒绝时不 mark_injected/mark_seen:feed 已从内存队列弹出,但 DB 仍
-                # queued,窗口尾 revert_pending 会回退未读——不丢数据,下窗口可重试
-                self.ctx.logger.warning("QQ空间动态注入被宿主拒绝(tid=%s,adapter policy 或网关状态),跳过且不标记已见", feed.tid)
-                # 深度审查 B-4+A-N1:通知项被拒不永久丢失,重试上限内回退待重检
-                self._qzone_notify_retry_backoff(feed)
-                return
-            self.qzone_injector.mark_injected(feed.tid, time.monotonic())
-            # message_id 随 mark_seen 落库:后续通知的 reply 段据此引用本条注入消息
-            self.qzone_seen.mark_seen(feed.tid, datetime.now().strftime("%Y-%m-%dT%H:%M:%S"), msg["message_id"])
-            # 工具驱动架构:登记 FeedContext(替代意图绑定,工具按 tid 解析目标)。
-            # 键=真实说说 tid(通知项用 origin_tid——消息尾部锚展示真实 tid,合成 tid
-            # 模型不可见);owner=说说主人(浏览=作者;通知源B=好友;源A=bot 自己);
-            # commenter/comment_tid/comment_uin=通知场景的评论者与主评论二元组素材;
-            # content_summary/recent_comments=说说正文与近评摘要(上下文素材,通知项
-            # 取 origin_content,正文空以「(无文字)」占位)
-            bot_uin = str(self.config.favorability.bot_user_id or "").strip()
-            self._qzone_registry.register(FeedContext(
-                tid=feed.origin_tid or feed.tid,
-                owner_uin=(feed.friend_uin or bot_uin) if feed.source == "notify" else feed.uin,
-                owner_nickname=feed.nickname,
-                commenter_uin=feed.uin if feed.source == "notify" else "",
-                commenter_nickname=feed.nickname if feed.source == "notify" else "",
-                comment_tid=feed.comment_tid,
-                comment_uin=feed.comment_uin,
-                kind=feed.source,
-                content_summary=(feed.origin_content if feed.source == "notify" else feed.content) or "(无文字)",
-                recent_comments=list(feed.comments),
-            ))
-            self.ctx.logger.info("QQ空间动态已注入(tid=%s,作者=%s)", feed.tid, feed.nickname)
+                self.ctx.logger.exception("QQ空间图片压缩/消息构造异常(tid=%s),降级全占位注入", feed.tid)
+                images = [(url, None) for url in feed.image_urls]
+                self._qzone_seq += 1
+                msg = build_feed_message(
+                    feed, seq=self._qzone_seq, group_id=QZONE_VIRTUAL_GROUP_ID,
+                    group_name=QZONE_VIRTUAL_GROUP_NAME, images=images,
+                    now_epoch=time.time(),
+                )
+        try:
+            # SDK route_message 返回 bool accepted(不抛异常):宿主 adapter policy
+            # 或网关状态拒绝时返回 False,不得当成功继续标记
+            accepted = await self.ctx.gateway.route_message(QZONE_GATEWAY_NAME, msg)
+        except Exception:
+            self.ctx.logger.exception("QQ空间动态注入失败(tid=%s),本轮跳过", feed.tid)
+            # 深度审查 B-4+A-N1:通知项注入未成功不永久丢失,但重试有上限(见
+            # _qzone_notify_retry_backoff);浏览动态无此问题(queued 行由窗口
+            # 尾 revert_pending 回退未读)
+            self._qzone_notify_retry_backoff(feed)
+            return
+        if not accepted:
+            # 拒绝时不 mark_injected/mark_seen:feed 已从内存队列弹出,但 DB 仍
+            # queued,窗口尾 revert_pending 会回退未读——不丢数据,下窗口可重试
+            self.ctx.logger.warning("QQ空间动态注入被宿主拒绝(tid=%s,adapter policy 或网关状态),跳过且不标记已见", feed.tid)
+            # 深度审查 B-4+A-N1:通知项被拒不永久丢失,重试上限内回退待重检
+            self._qzone_notify_retry_backoff(feed)
+            return
+        self.qzone_injector.mark_injected(feed.tid, time.monotonic())
+        # message_id 随 mark_seen 落库:后续通知的 reply 段据此引用本条注入消息
+        self.qzone_seen.mark_seen(feed.tid, datetime.now().strftime("%Y-%m-%dT%H:%M:%S"), msg["message_id"])
+        # 工具驱动架构:登记 FeedContext(替代意图绑定,工具按 tid 解析目标)。
+        # 键=真实说说 tid(通知项用 origin_tid——消息尾部锚展示真实 tid,合成 tid
+        # 模型不可见);owner=说说主人(浏览=作者;通知源B=好友;源A=bot 自己);
+        # commenter/comment_tid/comment_uin=通知场景的评论者与主评论二元组素材;
+        # content_summary/recent_comments=说说正文与近评摘要(上下文素材,通知项
+        # 取 origin_content,正文空以「(无文字)」占位)
+        bot_uin = str(self.config.favorability.bot_user_id or "").strip()
+        self._qzone_registry.register(FeedContext(
+            tid=feed.origin_tid or feed.tid,
+            owner_uin=(feed.friend_uin or bot_uin) if feed.source == "notify" else feed.uin,
+            owner_nickname=feed.nickname,
+            commenter_uin=feed.uin if feed.source == "notify" else "",
+            commenter_nickname=feed.nickname if feed.source == "notify" else "",
+            comment_tid=feed.comment_tid,
+            comment_uin=feed.comment_uin,
+            kind=feed.source,
+            content_summary=(feed.origin_content if feed.source == "notify" else feed.content) or "(无文字)",
+            recent_comments=list(feed.comments),
+        ))
+        self.ctx.logger.info("QQ空间动态已注入(tid=%s,作者=%s)", feed.tid, feed.nickname)
 
     def _qzone_notify_retry_backoff(self, feed: FeedItem) -> None:
         """通知项注入失败(被拒/异常)的回退决策(深度审查 B-4 + A-N1)。
@@ -1760,20 +1830,23 @@ class CatsitatePlugin(MaiBotPlugin):
             # create_time 为 epoch 秒字符串按数值比较,不可解析不截断(保守注入)
             stale_before = now_epoch - max(self.config.qzone.summary_days, 1) * 86400
             notifications: list[FeedItem] = []
+            registered_keys: list[str] = []  # 本轮已登记去重键(入队前异常时回退,防静默丢失)
+            enqueued = False  # 入队成功后不再回退(队列已持有,pump 异常不视为丢失)
 
             # ---- 源A:自己说说下的新评论 ----
             try:
-                comments, ctx = await self.qzone_client.get_own_feed_comments(
-                    bot_uin=bot_uin, num=max(self.config.qzone.own_feed_scan_count, 1)
+                # 同轮自愈(用户裁定 #7):AuthError 作废并重取 cookie 后原地重试一次
+                scanned_a, auth_err = await self._qzone_auth_retry(
+                    lambda: self.qzone_client.get_own_feed_comments(
+                        bot_uin=bot_uin, num=max(self.config.qzone.own_feed_scan_count, 1)),
+                    "通知源A",
                 )
-            except QzoneAuthError:
-                # 与浏览轮询同款自愈链(联调缺陷#7):作废 cookie,下轮重取
-                self.qzone_cookie.invalidate()
-                self.ctx.logger.warning("QQ空间登录态失效(通知轮询源A),cookie 已作废,下轮重取")
-                return
             except Exception:
                 self.ctx.logger.exception("QQ空间通知轮询源A失败,本轮跳过")
                 return
+            if auth_err:
+                return  # 同轮自愈失败已显式告警,下轮(120s)再试
+            comments, ctx = scanned_a
             for feed_tid, items in comments.items():
                 for c in items:
                     if not c.comment_tid:
@@ -1791,6 +1864,7 @@ class CatsitatePlugin(MaiBotPlugin):
                     dedup_key = f"{feed_tid}:{c.comment_tid}:{c.uin}"
                     if not self.qzone_comment_seen.is_new(dedup_key):
                         continue
+                    registered_keys.append(dedup_key)  # 原子性:入队前异常时回退(终审 H-1)
                     try:
                         comment_epoch = float(str(c.create_time or "").strip())
                     except ValueError:
@@ -1826,9 +1900,12 @@ class CatsitatePlugin(MaiBotPlugin):
                         # (源A=评论好友的评论,作者=好友;源B=bot 的评论,作者=bot)
                         comment_tid=c.comment_tid, comment_uin=str(c.uin),
                     ))
-                    self.qzone_comment_seen.fav_event(
-                        str(c.uin), "COMMENT", f"{c.nickname} 评论了你的说说「{feed_summary}」: {c.content[:40]}"
-                    )
+                    try:
+                        self.qzone_comment_seen.fav_event(
+                            str(c.uin), "COMMENT", f"{c.nickname} 评论了你的说说「{feed_summary}」: {c.content[:40]}"
+                        )
+                    except Exception:
+                        self.ctx.logger.exception("QQ空间评论事件好感度记账失败(仅告警)")
                     if len(notifications) >= 3:  # 单轮上限,防通知风暴
                         break
                 if len(notifications) >= 3:
@@ -1872,17 +1949,17 @@ class CatsitatePlugin(MaiBotPlugin):
                         break
                     await asyncio.sleep(2.0)  # 好友前固定间隔(终审 I2 防风控,与浏览流同款 2 秒)
                     try:
-                        raw = await self.qzone_client.get_user_feeds_raw(target_uin=friend_uin, num=10)
-                    except QzoneAuthError:
-                        # 登录态失效对源B所有好友同源:作废 cookie 并终止源B(下轮重取)
-                        self.qzone_cookie.invalidate()
-                        self.ctx.logger.warning(
-                            "QQ空间登录态失效(通知轮询源B,好友 %s),cookie 已作废,本轮终止源B", friend_uin
+                        # 同轮自愈(用户裁定 #7):AuthError 作废并重取 cookie 后原地重试一次
+                        scanned_b, auth_err = await self._qzone_auth_retry(
+                            lambda uin=friend_uin: self.qzone_client.get_user_feeds_raw(target_uin=uin, num=10),
+                            f"通知源B(好友 {friend_uin})",
                         )
-                        break
                     except Exception:
                         self.ctx.logger.exception("QQ空间通知轮询源B拉取失败(好友 %s),该好友跳过", friend_uin)
                         continue
+                    if auth_err:
+                        break  # 同轮自愈失败(已告警):登录态同源失效,终止源B
+                    raw = scanned_b
                     for r in parse_feed_replies(raw, bot_uin=bot_uin):
                         if not r.feed_tid:
                             continue  # 批①遗留:空 feed_tid 的 ReplyItem 过滤
@@ -1891,6 +1968,7 @@ class CatsitatePlugin(MaiBotPlugin):
                         key = f"{r.feed_tid}:{r.parent_comment_tid}:reply:{r.reply_tid}"
                         if not self.qzone_comment_seen.is_new(key):
                             continue
+                        registered_keys.append(key)  # 原子性:入队前异常时回退(终审 H-1)
                         try:
                             reply_epoch = float(str(r.create_time or "").strip())
                         except ValueError:
@@ -1927,9 +2005,12 @@ class CatsitatePlugin(MaiBotPlugin):
                             # (源B=被回复的 bot 评论,作者=bot;@ 目标另由 commenter 承载)
                             comment_tid=r.parent_comment_tid, comment_uin=bot_uin,
                         ))
-                        self.qzone_comment_seen.fav_event(
-                            str(r.uin), "COMMENT", f"{r.nickname} 回复了你的评论: {r.content[:40]}"
-                        )
+                        try:
+                            self.qzone_comment_seen.fav_event(
+                                str(r.uin), "COMMENT", f"{r.nickname} 回复了你的评论: {r.content[:40]}"
+                            )
+                        except Exception:
+                            self.ctx.logger.exception("QQ空间楼中楼事件好感度记账失败(仅告警)")
                         if len(notifications) >= 3:
                             break
 
@@ -1938,16 +2019,13 @@ class CatsitatePlugin(MaiBotPlugin):
             # 通知);自愈链同源B 纪律——QzoneAuthError 作废 cookie 但不 return,
             # 源A/B 已得通知不能丢,仅本轮源C 按空处理
             if len(notifications) < 3:
-                likes: list = []
-                parsed_ok = False  # 取数成功(区别于 AuthError/异常按空处理,不参与漂移观测)
-                try:
-                    likes = await self.qzone_client.get_like_events(count=30)
-                    parsed_ok = True
-                except QzoneAuthError:
-                    self.qzone_cookie.invalidate()
-                    self.ctx.logger.warning("QQ空间登录态失效(通知轮询源C),cookie 已作废,下轮重取")
-                except Exception:
-                    self.ctx.logger.exception("QQ空间通知轮询源C失败,本轮跳过源C")
+                # 同轮自愈(用户裁定 #7):AuthError 作废并重取 cookie 后原地重试一次;
+                # 自愈失败按空处理(源A/B 已得通知不丢);非 Auth 异常上抛至扫描级
+                # 原子性兜底(登记键回退,终审 H-1)
+                scanned_c, auth_err = await self._qzone_auth_retry(
+                    lambda: self.qzone_client.get_like_events(count=30), "通知源C")
+                likes = scanned_c or []
+                parsed_ok = scanned_c is not None  # 取数成功(自愈失败不参与漂移观测)
                 # 解析观测线(2026-09-02 收敛):常规轮次不打解析条数日志(信息噪音),
                 # 仅保留异常信号——解析失败走上方 except 告警;连续 3 轮取数成功但
                 # 零事件 → 锚点漂移告警(warn-once,恢复有事件即复位)
@@ -1983,7 +2061,11 @@ class CatsitatePlugin(MaiBotPlugin):
                         continue
                     # 「摘要」标题素材:发布回注(Task 4)的 own 说说才有 summary;
                     # 他人点赞的目标是自己说说(scope=1 流语义),未登记则无标题不臆造
-                    origin_summary = self.qzone_seen.get_summary(str(ev.target_tid))
+                    try:
+                        origin_summary = self.qzone_seen.get_summary(str(ev.target_tid))
+                    except Exception:
+                        self.ctx.logger.exception("QQ空间源C 标题素材读取失败,标题省略")
+                        origin_summary = ""
                     time_tag = comment_time_prefix(ev.create_time, now_epoch)
                     # 参数行自拼(源C 字段集与评论不同:无 comment_id/commenter_uin,
                     # 动作「点赞于」;时间标签承 comment_time_prefix 括号形态)
@@ -2013,9 +2095,26 @@ class CatsitatePlugin(MaiBotPlugin):
 
             if notifications:
                 added = self.qzone_injector.enqueue_priority(notifications)
+                enqueued = True
                 self.ctx.logger.info("QQ空间通知入队 %d 条(源A+B+C,P1 插队)", added)
                 # 泵优先取 P1(推送语义,任何时刻可注入);浏览动态仅窗口内注入
                 await self._qzone_pump()
+        except BaseException:
+            # 原子性兜底(终审 H-1 修复,2026-09-02):发现侧「登记即消费」与队尾
+            # 入队非原子——登记后入队前异常/热重载取消,已登记键的通知会永久
+            # 静默丢失(is_new 恒 False)。回退本轮已登记且未入队的键,下轮重新
+            # 发现(fav_events 同日去重,重发现不重复入库);CancelledError 回退后
+            # 原样上抛,不打断取消语义
+            if not enqueued and registered_keys:
+                self.ctx.logger.exception(
+                    "QQ空间通知扫描异常,回退本轮已登记去重键 %d 个(下轮重新发现)", len(registered_keys)
+                )
+                for k in registered_keys:
+                    try:
+                        self.qzone_comment_seen.revert(k)
+                    except Exception:
+                        self.ctx.logger.exception("QQ空间通知去重键回退失败(键前缀=%s)", k[:60])
+            raise
         finally:
             self._qzone_notify_running = False
 
@@ -3921,13 +4020,14 @@ class CatsitatePlugin(MaiBotPlugin):
         失败/为空时回退「我」(历史形态,告警不静默)。
         """
 
-        try:
-            value = await self.ctx.config.get("bot.nickname", "")
-        except Exception:
-            self.ctx.logger.exception("读取 bot 昵称失败,回注发送者昵称回退「我」")
-            value = ""
+        # 直接抛错不兜底(用户裁定 2026-09-02 #33:除非主程序有 bug 才会空,
+        # 静默回退「我」反而掩盖——曾把 bot 当普通用户污染统计);调用方外层
+        # 回注 try 会以异常栈浮出
+        value = await self.ctx.config.get("bot.nickname", "")
         nickname = str(value or "").strip()
-        return nickname or "我"
+        if not nickname:
+            raise RuntimeError("bot 昵称(bot.nickname)读取失败或为空——主程序配置异常,请检查 bot_config")
+        return nickname
 
     async def _recent_context_text(self, stream_id: str, limit: int) -> str:
         raw = await self._fetch_recent(stream_id, limit)
@@ -3939,6 +4039,20 @@ class CatsitatePlugin(MaiBotPlugin):
                 text = "".join(s.get("data", "") for s in (m.get("raw_message") or []) if isinstance(s, dict) and s.get("type") == "text")
             lines.append(f"[{m.get('message_id')}] {text}")
         return "\n".join(lines)
+
+
+def _sniff_image_mime(data: bytes) -> str:
+    """图片魔数探测(PNG/GIF/WebP,其余按 jpeg)——content_items 的 mime 按
+    真实字节标注,未压缩原图不再被硬标 jpeg(终审 L-3 修复)。"""
+
+    head = bytes(data[:12])
+    if head.startswith(b"\x89PNG\r\n\x1a\n"):
+        return "image/png"
+    if head.startswith(b"GIF8"):
+        return "image/gif"
+    if head[:4] == b"RIFF" and head[8:12] == b"WEBP":
+        return "image/webp"
+    return "image/jpeg"
 
 
 def create_plugin() -> CatsitatePlugin:

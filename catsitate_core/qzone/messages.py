@@ -53,12 +53,18 @@ def _b64_total(images: list[tuple[str, bytes | None]]) -> int:
 def _pil_compress(data: bytes, max_dim: int, quality: int) -> bytes:
     if not _HAS_PIL:
         return data  # 告警收敛到 fit_images_to_rpc_budget 入口(一次性)
-    img = _PILImage.open(io.BytesIO(data))
-    img = img.convert("RGB")
-    img.thumbnail((max_dim, max_dim))
-    buf = io.BytesIO()
-    img.save(buf, format="JPEG", quality=quality)
-    out = buf.getvalue()
+    try:
+        img = _PILImage.open(io.BytesIO(data))
+        img = img.convert("RGB")
+        img.thumbnail((max_dim, max_dim))
+        buf = io.BytesIO()
+        img.save(buf, format="JPEG", quality=quality)
+        out = buf.getvalue()
+    except Exception:
+        # 损坏/非图字节(CDN 200 错误页等)解码失败:返回原样交丢弃路径兜底
+        # (终审 M-1 修复,2026-09-02:此前异常会炸掉整轮注入)
+        logger.warning("图片压缩解码失败(字节数=%d),保留原样走丢弃路径兜底", len(data))
+        return data
     return out if len(out) < len(data) else data  # 压缩反而更大(如小图)则保留原样
 
 

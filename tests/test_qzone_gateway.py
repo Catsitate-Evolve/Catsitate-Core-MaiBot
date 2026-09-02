@@ -165,7 +165,8 @@ def test_tool_driven_wiring_source_assertions():
     assert "_qzone_outbound_intent" not in src and "OutboundIntent" not in src
     # 三工具接线:评论/楼中楼回复/点赞(真实楼中楼,do_reply 正式接线)
     assert '"qzone_comment"' in src and '"qzone_reply"' in src and '"qzone_like"' in src
-    assert "do_comment(fid=" in src and "do_reply(fid=" in src and "do_like(fid=" in src
+    assert "do_comment(fid=" in src and "do_like(fid=" in src
+    assert "do_reply(" in src  # 同轮自愈改造后 reply 调用经 lambda 多行形态
     # 目标解析走 registry(FeedContext 登记,替代意图绑定)
     assert "_qzone_registry.register(" in src and "_qzone_resolve_feed(" in src
     assert "auto:1}}" in src  # @ 前缀格式(napcat 适配器同款)
@@ -176,8 +177,8 @@ def test_tool_driven_wiring_source_assertions():
     assert 'source="notify"' in src  # 通知 FeedItem 标记(泵按 source 登记上下文)
     # T11 工具双向隔离:非 qzone 流隐藏 qzone_ 前缀专属工具(防模型误调)
     assert "filter_qzone_tools_for_stream(" in src
-    # 频控:同说说评论计数上限 3(窗口边界重置)
-    assert "_qzone_comment_counts" in src and ">= 3" in src
+    # 同说说评论硬上限已删(2026-09-02 用户裁定:防护交 QQ 侧频控+-10049 回执)
+    assert "_qzone_comment_counts" not in src
     # T7 接线:好感度显式事件消费(结算素材并入 + 衰减计时基准)
     assert "fav_events_on(" in src and "last_fav_interaction(" in src
     # T7 审查必修:事件合成消息 ts 用原始时刻(created_at)防同日 early→daily 重判
@@ -386,7 +387,6 @@ def _make_notify_poll_plugin(tmp_path, comments, ctx_map):
     p.config.sleep.enabled = False  # 不依赖 self.sleep
     p.config.favorability.bot_user_id = "10000"
     p._qzone_registry = _FeedContextRegistry()  # 实例级(类属性共享,防测试间泄漏)
-    p._qzone_comment_counts = {}
     p._qzone_seq = 0
     p._qzone_pump_lock = _asyncio.Lock()
     p.qzone_seen = _SeenStore(_SQLiteStore(tmp_path / "seen.db"))

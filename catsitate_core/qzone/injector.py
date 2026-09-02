@@ -110,6 +110,23 @@ class FeedInjector:
             return None
         return self._popped
 
+    def requeue_popped(self) -> None:
+        """把已弹出未标记的项放回原队列队首(2026-09-02 终审修复)。
+
+        动机:泵在 next_to_inject(弹出)与 mark_injected(标记)之间有图片下载/
+        压缩/route 等真实挂起点——取消(热重载/任务回收)落在该间隙时,弹出项
+        会从队列消失且无 awaiting/seen 记录,通知(P1)静默丢失。取消路径据此
+        回队,P1/P2 各回各的队首(重注时重新弹出,语义不变);无在途弹出项为
+        no-op。"""
+        if self._popped is None:
+            return
+        feed = self._popped
+        self._popped = None
+        if feed.source == "notify":
+            self._queue_p1.insert(0, feed)
+        else:
+            self._queue_p2.insert(0, feed)
+
     def mark_injected(self, tid: str, now: float) -> None:
         """标记 tid 已注入:保留完整 FeedItem 供 describe_current 呈现 tid 与内容摘要。
 

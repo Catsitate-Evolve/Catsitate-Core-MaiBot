@@ -1,9 +1,9 @@
-"""表达生成层:空间动作正文由带完整人设的旁路 LLM 产出。
+"""表达润色层:planner 直写 content 草稿,旁路 LLM 按人设与表达方式润色。
 
-两段式分工(与主程序 reply 工具/planner 同构):planner 决定「是否动作、
-表达什么方向」(reply_reference/reply_style),本层按人设写正文——planner
-提示词只含行为风格摘要,完整人设在表达层,空间动作与真实聊天由此共享
-同一个人设出口。
+分工与主程序同构:planner 决定「说什么」(草稿,带全量上下文与意图),
+本层只管「怎么说」——按 bot 人设(personality.personality)与表达方式
+(personality.reply_style)把草稿顺成 bot 平时的样子。润色失败不阻断
+动作:告警后以草稿直发(草稿本身即 planner 的完整表达,显式回退)。
 """
 
 from __future__ import annotations
@@ -12,49 +12,44 @@ from typing import Any, Awaitable, Callable
 
 from catsitate_core.llm_provider import build_side_prompt
 
-MODE_LABELS = {"comment": "评论好友的说说", "reply": "回复好友的评论", "post": "发一条自己的说说"}
-VALID_STYLES = ("简短表达", "正常回复", "长回复")
-
 
 def _sanitize(text: str) -> str:
     """输出卫生:剥首尾引号与空白(模型偶尔给正文套引号)。"""
     return text.strip().strip('"“”').strip()
 
 
-async def generate_action_text(
+async def polish_action_text(
     llm_call: Callable[[list[dict]], Awaitable[dict[str, Any]]],
-    *, mode: str, persona: str, reference: str, style: str = "",
-    context_lines: list[str] | None = None, limit: int = 200, logger: Any = None,
-) -> tuple[str, str]:
-    """生成动作正文。返回 (正文, 错误串),二者互斥;失败不静默兜底。"""
+    *, persona: str, voice: str, draft: str, limit: int = 200, logger: Any = None,
+) -> str:
+    """按人设与表达方式润色草稿。返回润色后文本;失败/为空返回空串
+    (调用方告警后以草稿直发,不静默、不阻断)。"""
 
-    if mode not in MODE_LABELS:
-        return "", f"未知动作类型:{mode}"
-    reference = (reference or "").strip()
-    if not reference:
-        return "", "缺少 reply_reference(表达方向)"
-    style = style if style in VALID_STYLES else "正常回复"
-    context_lines = [str(x) for x in (context_lines or []) if str(x).strip()]
-    # prompt 构造仿主程序回复器:人设→自然任务语→参考信息(视情况而定)→输出要求;
-    # 动作与篇幅以自然语句给出,不做机械化字段罗列
+    draft = (draft or "").strip()
+    if not draft:
+        return ""
     stable_ctx = [
         f"bot 人设:{(persona or '').strip() or '(未配置,按轻松自然的口吻)'}",
-        f"这次要做的事:{MODE_LABELS[mode]}。篇幅偏好:{style}。",
+        f"你平时说话的方式:\n{(voice or '').strip() or '简短自然,像平时说话'}",
     ]
-    variable_tail = context_lines + [f"【表达参考】\n{reference}"]
+    variable_tail = [f"【待发内容】\n{draft}"]
     messages, _ = build_side_prompt("qzone_expression", stable_ctx, variable_tail)
     result = await llm_call(messages)
     if not isinstance(result, dict) or not result.get("success"):
-        return "", "表达生成 LLM 调用失败"
+        if logger:
+            logger.warning("QQ空间表达润色失败,以草稿直发")
+        return ""
     text = _sanitize(str(result.get("response") or ""))
     if not text:
-        return "", "表达生成返回空文本"
+        if logger:
+            logger.warning("QQ空间表达润色返回空文本,以草稿直发")
+        return ""
     if len(text) > limit:
         if logger:
-            logger.warning("QQ空间表达生成超长(%d 字>上限 %d),带字数要求重新生成一次", len(text), limit)
+            logger.warning("QQ空间表达润色超长(%d 字>上限 %d),这次改短一些重新润色", len(text), limit)
         retry_messages, _ = build_side_prompt(
             "qzone_expression", stable_ctx,
-            variable_tail + [f"这次写短一些,不超过 {limit} 字。"],
+            variable_tail + [f"这次改短一些,不超过 {limit} 字。"],
         )
         result2 = await llm_call(retry_messages)
         if isinstance(result2, dict) and result2.get("success"):
@@ -63,6 +58,6 @@ async def generate_action_text(
                 text = retry_text
     if len(text) > limit:
         if logger:
-            logger.warning("QQ空间表达生成重生成仍超长(%d 字),截断至 %d 字", len(text), limit)
+            logger.warning("QQ空间表达润色仍超长(%d 字),截断至 %d 字", len(text), limit)
         text = text[:limit]
-    return text, ""
+    return text

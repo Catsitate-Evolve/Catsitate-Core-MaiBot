@@ -42,7 +42,6 @@ from catsitate_core.qzone.protocol import FEED_APPID_SHUOSHUO, FeedItem, parse_f
 from catsitate_core.qzone.client import CookieManager, QzoneAuthError, QzoneClient
 from catsitate_core.qzone.comment_seen import CommentSeenStore
 from catsitate_core.qzone.discovery import FeedDiscovery
-from catsitate_core.qzone.expression import generate_action_text
 from catsitate_core.qzone.injector import FeedInjector
 from catsitate_core.qzone.like_seen import LikeSeenStore
 from catsitate_core.qzone.messages import (
@@ -52,6 +51,7 @@ from catsitate_core.qzone.messages import (
     fit_images_to_rpc_budget,
     format_comment_param_line,
 )
+from catsitate_core.qzone.expression import polish_action_text
 from catsitate_core.qzone.registry import FeedContext, FeedContextRegistry
 from catsitate_core.qzone.scene import (
     SCENE_EMPTY_CONFIG_WARNING, SCENE_MISS_WARNING,
@@ -141,6 +141,7 @@ class CatsitatePlugin(MaiBotPlugin):
 
     _persona_cache: str | None = None  # bot 人设缓存(config.get 一次,bot 配置变更时失效)
     _style_cache: str | None = None  # bot 行为风格缓存(同上)
+    _reply_style_cache: str | None = None  # bot 表达方式(personality.reply_style)缓存(表达润色用)
     _debug_handler: logging.Handler | None = None  # debug 日志文件 handler(配置开关控制)
     _debug_prev_level: int = logging.NOTSET  # 开启前 logger 级别(关闭时恢复)
     _module_log_forwarder: logging.Handler | None = None  # 模块日志转发(on_load 挂载,unload 清理)
@@ -415,6 +416,7 @@ class CatsitatePlugin(MaiBotPlugin):
             self._snapshot_cache.clear()
             self._persona_cache = None
             self._style_cache = None
+            self._reply_style_cache = None
 
     # ---------- 工具 ----------
 
@@ -778,28 +780,36 @@ class CatsitatePlugin(MaiBotPlugin):
         return f"已点赞 {nickname} 的说说。"
 
     def _qzone_expression_call(self):
-        """表达生成层 llm_call 装配:旁路统一出口 + qzone 节模型/超时配置
+        """表达润色 llm_call 装配:旁路统一出口 + qzone 节模型/超时配置
         (三动作工具共用;partial 冻结 model/module/timeout,调用侧只传 messages)。"""
 
         return partial(self._side_llm_call, model=self.config.qzone.expression_llm_model,
                        module="qzone_expression", timeout_ms=self.config.qzone.expression_llm_timeout_ms)
 
+    async def _qzone_polish(self, draft: str, *, limit: int) -> str:
+        """表达润色:planner 草稿按人设+表达方式顺一遍;失败告警后原样返回(草稿直发)。"""
+
+        persona, _ = await self._persona_context()
+        polished = await polish_action_text(
+            self._qzone_expression_call(), persona=persona, voice=await self._voice_style(),
+            draft=draft, limit=limit, logger=self.ctx.logger,
+        )
+        return polished or draft
+
     @Tool(
         "qzone_comment",
-        description="评论好友的QQ空间说说。reply_reference 填你想表达的方向(要点/事实/语气),正文会按你的口吻生成。",
+        description="评论好友的QQ空间说说。content 填你想说的内容,用你平时的口吻直接写。",
         brief_description="评论说说",
         parameters=[
             ToolParameterInfo(name="feed_id", param_type="string", description="目标说说ID(照抄消息尾部「说说ID=」)", required=True),
-            ToolParameterInfo(name="reply_reference", param_type="string", description="想表达什么:要点/事实/关系/语气倾向(不是正文,正文按人设生成)", required=True),
-            ToolParameterInfo(name="reply_style", param_type="string", description="篇幅:简短表达/正常回复/长回复(默认正常回复)", required=False),
+            ToolParameterInfo(name="content", param_type="string", description="评论内容(≤200字,用你平时的口吻直接写)", required=True),
             ToolParameterInfo(name="at_user_id", param_type="string", description="回应评论时填评论者QQ,会自动@TA", required=False),
         ],
         visibility="visible",
     )
-    async def qzone_comment(self, feed_id: str = "", reply_reference: str = "", reply_style: str = "",
-                            at_user_id: str = "", **kwargs: Any) -> str:
-        """评论说说(两段式):planner 决定是否评论与表达方向,正文由带完整
-        bot 人设的旁路 LLM 生成——空间动作与真实聊天共享同一个人设出口。"""
+    async def qzone_comment(self, feed_id: str = "", content: str = "", at_user_id: str = "",
+                            **kwargs: Any) -> str:
+        """评论说说——bot 自主决定是否/如何评论(工具驱动,替代意图路由)。"""
         if not self._qzone_available:
             return "QQ空间模块未启用。"
         stream_id = str(kwargs.get("stream_id") or "")
@@ -807,6 +817,13 @@ class CatsitatePlugin(MaiBotPlugin):
             return "这个工具只能在QQ空间动态流里使用。"
         if not feed_id.strip():
             return "缺少说说ID,请照抄消息末尾〔〕里的说说ID。"
+        content = content.strip()
+        if not content:
+            return "评论内容不能为空。"
+        if len(content) > 200:
+            return f"评论太长了({len(content)} 字,上限 200),请精简。"
+        # 表达润色:planner 草稿按人设+表达方式顺一遍(失败以草稿直发)
+        content = await self._qzone_polish(content, limit=200)
         # 目标解析:registry → seen_store → awaiting → 显式失败(fid 回填全量 tid)
         fid, owner_uin, ctx = self._qzone_resolve_feed(feed_id)
         if not fid:
@@ -815,21 +832,6 @@ class CatsitatePlugin(MaiBotPlugin):
         count = self._qzone_comment_counts.get(fid, 0)
         if count >= 3:
             return "这条说说你已经评论过 3 次了,适可而止～"
-        # 表达生成层:场景素材(说说正文+作者+近期评论防复读)
-        ctx_lines = [f"说说作者:{(ctx.owner_nickname if ctx else '') or owner_uin}"]
-        if ctx and ctx.content_summary:
-            ctx_lines.append(f"说说内容:{ctx.content_summary}")
-        if ctx and ctx.recent_comments:
-            ctx_lines.append("该说说下的近期评论:" + ";".join(ctx.recent_comments))
-        persona, _ = await self._persona_context()
-        content, err = await generate_action_text(
-            self._qzone_expression_call(),
-            mode="comment", persona=persona, reference=reply_reference, style=reply_style,
-            context_lines=ctx_lines, limit=200, logger=self.ctx.logger,
-        )
-        if err:
-            self.ctx.logger.warning("QQ空间评论正文生成失败:%s", err)
-            return f"评论正文生成失败({err}),可以稍后重试。"
         # @ 前缀(napcat 适配器同格式,QQ 空间原生支持):nick 默认 QQ 号,
         # registry 有该评论者昵称则用昵称(通知场景回应评论最自然)
         at_nick = ""
@@ -863,41 +865,33 @@ class CatsitatePlugin(MaiBotPlugin):
 
     @Tool(
         "qzone_reply",
-        description="回复好友在你说说下的评论或对你评论的回复(QQ空间楼中楼)。reply_reference 填你想表达的方向,回复正文会按你的口吻生成。",
+        description="回复好友在你说说下的评论或对你评论的回复(QQ空间楼中楼)。feed_id 和 comment_id 都照抄消息尾部括号里的标注。",
         brief_description="回复评论(楼中楼)",
         parameters=[
             ToolParameterInfo(name="feed_id", param_type="string", description="目标说说ID(照抄消息尾部「说说ID=」)", required=True),
             ToolParameterInfo(name="comment_id", param_type="string", description="要回复的主评论ID(照抄消息尾部「评论ID=」)", required=True),
-            ToolParameterInfo(name="reply_reference", param_type="string", description="想表达什么:要点/事实/关系/语气倾向(不是正文,正文按人设生成)", required=True),
-            ToolParameterInfo(name="reply_style", param_type="string", description="篇幅:简短表达/正常回复/长回复(默认正常回复)", required=False),
+            ToolParameterInfo(name="content", param_type="string", description="回复内容(≤200字,用你平时的口吻直接写)", required=True),
         ],
         visibility="visible",
     )
-    async def qzone_reply(self, feed_id: str = "", comment_id: str = "", reply_reference: str = "",
-                          reply_style: str = "", **kwargs: Any) -> str:
-        """楼中楼回复(两段式):commentId+commentUin 二元组精确匹配主评论(联调实证),
-        正文由带完整 bot 人设的旁路 LLM 按 reply_reference 生成。"""
+    async def qzone_reply(self, feed_id: str = "", comment_id: str = "", content: str = "",
+                          **kwargs: Any) -> str:
+        """楼中楼回复——commentId+commentUin 二元组精确匹配主评论(联调实证)。"""
         if not self._qzone_available:
             return "QQ空间模块未启用。"
         stream_id = str(kwargs.get("stream_id") or "")
         if stream_id not in self._qzone_session_id_set():
             return "这个工具只能在QQ空间动态流里使用。"
-        if not (feed_id.strip() and comment_id.strip() and reply_reference.strip()):
-            return "说说ID、评论ID和表达方向(reply_reference)都不能为空,请照抄消息尾部的标注。"
+        if not (feed_id.strip() and comment_id.strip() and content.strip()):
+            return "说说ID、评论ID和回复内容都不能为空,请照抄消息尾部的标注。"
+        content = content.strip()
+        if len(content) > 200:
+            return f"回复太长了({len(content)} 字,上限 200)。"
+        # 表达润色:planner 草稿按人设+表达方式顺一遍(失败以草稿直发)
+        content = await self._qzone_polish(content, limit=200)
         fid, target_qq, ctx = self._qzone_resolve_feed(feed_id)
         if not fid:
             return f"未找到说说 {feed_id[:12]},可能已过期。"
-        # 表达生成层:场景素材=被评论说说的正文摘要(registry 登记,无则仅方向)
-        ctx_lines = [f"说说内容:{ctx.content_summary}"] if ctx and ctx.content_summary else []
-        persona, _ = await self._persona_context()
-        content, err = await generate_action_text(
-            self._qzone_expression_call(),
-            mode="reply", persona=persona, reference=reply_reference, style=reply_style,
-            context_lines=ctx_lines, limit=200, logger=self.ctx.logger,
-        )
-        if err:
-            self.ctx.logger.warning("QQ空间回复正文生成失败:%s", err)
-            return f"回复正文生成失败({err}),可以稍后重试。"
         # 楼中楼二元组:commentId=主评论 tid(消息锚「评论 xxx」),commentUin=主评论
         # 作者(通知场景经 FeedItem.comment_uin 传递:源A=评论好友/源B=bot 自己;
         # 无上下文回退 bot——bot 只在自己的评论线程里收到回复通知)
@@ -927,31 +921,28 @@ class CatsitatePlugin(MaiBotPlugin):
 
     @Tool(
         "qzone_post",
-        description="发布一条自己的说说(QQ空间)。reply_reference 填你想表达的方向(想分享什么/什么心情),正文会按你的口吻生成。",
+        description="发布一条自己的说说(QQ空间)。想说点什么、分享心情或见闻时使用。内容自然即可,不要刻意。",
         brief_description="发说说",
         parameters=[
-            ToolParameterInfo(name="reply_reference", param_type="string", description="想表达什么:想分享的事/心情/语气倾向(不是正文,正文按人设生成)", required=True),
-            ToolParameterInfo(name="reply_style", param_type="string", description="篇幅:简短表达/正常回复/长回复(默认正常回复)", required=False),
+            ToolParameterInfo(name="content", param_type="string", description="说说内容(≤500字,自然表达)", required=True),
         ],
         visibility="visible",
     )
-    async def qzone_post(self, reply_reference: str = "", reply_style: str = "", **kwargs: Any) -> str:
-        """发布说说(两段式)——正文按 bot 人设生成,发布后自动注入虚拟流供后续
-        互动引用;tid 流程(回注锚/seen/registry 锚定)沿用 Task 4 成果。"""
+    async def qzone_post(self, content: str = "", **kwargs: Any) -> str:
+        """发布说说——bot 自主决定是否/何时发,发布后自动注入虚拟流供后续互动引用;
+        tid 流程(回注锚/seen/registry 锚定)沿用既有成果。"""
         if not self._qzone_available:
             return "QQ空间模块未启用。"
         stream_id = str(kwargs.get("stream_id") or "")
         if stream_id not in self._qzone_session_id_set():
             return "这个工具只能在QQ空间动态流里使用。"
-        persona, _ = await self._persona_context()
-        content, err = await generate_action_text(
-            self._qzone_expression_call(),
-            mode="post", persona=persona, reference=reply_reference, style=reply_style,
-            context_lines=[], limit=500, logger=self.ctx.logger,
-        )
-        if err:
-            self.ctx.logger.warning("QQ空间说说正文生成失败:%s", err)
-            return f"说说正文生成失败({err}),可以稍后重试。"
+        content = content.strip()
+        if not content:
+            return "说说内容不能为空。"
+        if len(content) > 500:
+            return f"内容太长了({len(content)} 字,上限 500)。"
+        # 表达润色:planner 草稿按人设+表达方式顺一遍(失败以草稿直发)
+        content = await self._qzone_polish(content, limit=500)
         try:
             tid = await self.qzone_client.do_publish(content=content)
         except QzoneAuthError:
@@ -1518,8 +1509,8 @@ class CatsitatePlugin(MaiBotPlugin):
             # 键=真实说说 tid(通知项用 origin_tid——消息尾部锚展示真实 tid,合成 tid
             # 模型不可见);owner=说说主人(浏览=作者;通知源B=好友;源A=bot 自己);
             # commenter/comment_tid/comment_uin=通知场景的评论者与主评论二元组素材;
-            # content_summary/recent_comments=表达生成层场景素材(说说正文前 100 字
-            # +近期评论摘要,通知项取 origin_content,正文空以「(无文字)」占位)
+            # content_summary/recent_comments=说说正文与近评摘要(上下文素材,通知项
+            # 取 origin_content,正文空以「(无文字)」占位)
             bot_uin = str(self.config.favorability.bot_user_id or "").strip()
             self._qzone_registry.register(FeedContext(
                 tid=feed.origin_tid or feed.tid,
@@ -1606,13 +1597,13 @@ class CatsitatePlugin(MaiBotPlugin):
         if browsed:
             intent = (
                 "你刚刷完QQ空间,现在有点想分享点什么。"
-                "如果确实想发,用 qzone_post 工具(reply_reference 填想表达的方向);"
+                "如果确实想发,用 qzone_post 工具直接写你想发的内容);"
                 f"不想发就保持沉默,什么都不用做。当前活动:{activity}"
             )
         else:
             intent = (
                 f"你在忙{activity},忙里偷闲想上QQ空间发条说说。"
-                "如果确实想发,用 qzone_post 工具(reply_reference 填想表达的方向);"
+                "如果确实想发,用 qzone_post 工具直接写你想发的内容);"
                 "不想发就保持沉默,什么都不用做。"
             )
         stream_id = self._qzone_expected_session_id()
@@ -1632,18 +1623,25 @@ class CatsitatePlugin(MaiBotPlugin):
         err_text = str((result or {}).get("error") or "") if isinstance(result, dict) else ""
         if "未找到" in err_text and "聊天流" in err_text:
             # 冷启动自举:虚拟流会话在首条消息进入后才诞生,proactive.trigger
-            # 需要已存在会话——注入无 is_mentioned 的种子消息仅建会话后重试一次
+            # 需要已存在会话——注入无 is_mentioned 的种子消息仅建会话后重试。
+            # 种子消息的会话注册是异步的,立即重试会早于会话建立(实机观测:
+            # 种子已入库但重试仍报「未找到」),带间隔重试数次
             if await self._qzone_seed_virtual_session():
-                try:
-                    result2 = await self.ctx.maisaka.proactive.trigger(
-                        stream_id=stream_id, intent=intent,
-                        reason="日程窗口send_qzone(种子自举重试)", priority="",
-                    )
-                    if isinstance(result2, dict) and result2.get("success"):
-                        self.ctx.logger.info("QQ空间发布触发已发出(种子自举,browsed=%s)", browsed)
-                        return
-                except Exception:
-                    self.ctx.logger.exception("QQ空间发布触发重试失败(种子自举后)")
+                for attempt in range(3):
+                    await asyncio.sleep(2)
+                    try:
+                        result2 = await self.ctx.maisaka.proactive.trigger(
+                            stream_id=stream_id, intent=intent,
+                            reason="日程窗口send_qzone(种子自举重试)", priority="",
+                        )
+                        if isinstance(result2, dict) and result2.get("success"):
+                            self.ctx.logger.info(
+                                "QQ空间发布触发已发出(种子自举第 %d 次重试,browsed=%s)", attempt + 1, browsed
+                            )
+                            return
+                    except Exception:
+                        self.ctx.logger.exception("QQ空间发布触发重试失败(种子自举后,第 %d 次)", attempt + 1)
+                        break
         self.ctx.logger.warning("QQ空间发布触发未成功(%s),等下个窗口", err_text[:60])
 
     async def _qzone_seed_virtual_session(self) -> bool:
@@ -3808,6 +3806,19 @@ class CatsitatePlugin(MaiBotPlugin):
 
         persona, _ = await self._persona_context()
         return persona
+
+    async def _voice_style(self) -> str:
+        """bot 表达方式(主程序全局配置 personality.reply_style,带缓存;空则润色层按无人设口吻)。"""
+
+        if self._reply_style_cache is not None:
+            return self._reply_style_cache
+        try:
+            value = await self.ctx.config.get("personality.reply_style", "")
+        except Exception:
+            self.ctx.logger.exception("读取 bot 表达方式失败,润色按默认口吻")
+            value = ""
+        self._reply_style_cache = str(value or "").strip()
+        return self._reply_style_cache
 
     async def _recent_context_text(self, stream_id: str, limit: int) -> str:
         raw = await self._fetch_recent(stream_id, limit)

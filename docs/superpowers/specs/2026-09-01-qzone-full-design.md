@@ -11,7 +11,7 @@
 - bot 看到什么（信息流）与 bot 做什么（工具调用）完全分离
 - 所有动作由 bot 自主决策（不预设路由），插件只提供执行通道
 - API 调用量与好友数量解耦（统一时间线发现层，1 次调用覆盖全好友）
-- 动作正文由表达生成层按完整人设产出——planner 决定「是否动作、表达什么方向」，正文由带完整人设的生成层书写（与主程序 reply 工具/planner 的分工同构）
+- 动作正文由 planner 直写草稿、表达润色层按人设与表达方式顺成 bot 平时的样子——「说什么」归 planner，「怎么说」归润色层（与主程序 planner/replyer 的分工同构）
 
 ## 2. 架构
 
@@ -34,12 +34,12 @@ QzoneClient（协议封装）
 │   ├── 浏览流: 统一时间线→新动态→充实→串行注入（read_qzone 窗口内）
 │   └── 通知流: 评论/回复/赞通知→P1 优先注入（醒着即可，不依赖窗口）
 ├── 动作执行（bot 做的——全部通过工具）
-│   ├── qzone_comment(feed_id, reply_reference, reply_style?, at_user_id?)
-│   ├── qzone_reply(feed_id, comment_id, reply_reference, reply_style?)
+│   ├── qzone_comment(feed_id, content, at_user_id?)
+│   ├── qzone_reply(feed_id, comment_id, content)
 │   ├── qzone_like(feed_id?)
-│   └── qzone_post(reply_reference, reply_style?)
-├── 表达生成层
-│   └── reply_reference → 旁路人设 LLM（模板 catsitate_qzone_expression）→ 正文 → 写 API
+│   └── qzone_post(content)
+├── 表达润色层
+│   └── planner 直写 content 草稿 → 旁路人设 LLM 按人设+表达方式顺一遍 → 写 API
 └── 说说发布（主动触发）
     ├── read+send 同窗: 首轮浏览注入完成后 proactive.trigger
     └── 仅 send 窗口: 窗口开始时 proactive.trigger（冷启动种子自举）
@@ -121,10 +121,10 @@ QzoneClient（协议封装）
 
 | 工具 | 参数 | 描述 |
 |---|---|---|---|
-| qzone_comment | feed_id*(必填), reply_reference*(必填), reply_style?(简短表达/正常回复/长回复), at_user_id? | 评论说说；正文由表达生成层产出；回应评论时填 at_user_id 自动@TA |
-| qzone_reply | feed_id*(必填), comment_id*(必填), reply_reference*(必填), reply_style? | 楼中楼回复评论；comment_id 二元组来自通知参数行 |
+| qzone_comment | feed_id*(必填), content*(必填), at_user_id? | 评论说说；content 直接写你想说的，发出前自动按口吻润色；回应评论时填 at_user_id 自动@TA |
+| qzone_reply | feed_id*(必填), comment_id*(必填), content*(必填) | 楼中楼回复评论；comment_id 二元组来自通知参数行 |
 | qzone_like | feed_id?（缺省=当前浏览的说说） | 点赞 |
-| qzone_post | reply_reference*(必填), reply_style? | 发布说说；正文由表达生成层产出 |
+| qzone_post | content*(必填) | 发布说说；content 直接写，发出前自动按口吻润色 |
 
 **全域可用**（真实聊天流和虚拟流均可调用，不以 qzone_ 为前缀；真实流内 view_friend_feeds 仅供获取信息——空间动作工具在真实流隐藏）：
 
@@ -147,21 +147,18 @@ QzoneClient（协议封装）
 
 工具白名单（`qzone.tool_whitelist`）语义：**虚拟流内可使用的工具集**，表外工具一律不可用。主程序 `reply` 工具不在白名单内——虚拟流是 receive-only 网关，replyer 生成的文本无出站路径可投递，放行只会产生必然失败的调用。真实流侧反向隔离：自动隐藏 qzone_* 前缀工具（全域工具不受影响）。
 
-### 4.2 表达生成层
+### 4.2 表达润色层
 
-动作工具不接收 planner 直写的正文。参数形态仿主程序 reply 内置工具：planner 传 `reply_reference`（表达方向：要点/事实/关系/语气倾向）与 `reply_style`（篇幅），正文由表达生成层产出。
+动作工具的 `content` 由 planner 直写草稿（planner 持有全量上下文与表达意图，写什么由它决定），发出前经旁路人设 LLM 润色成 bot 平时的样子——「说什么」归 planner、「怎么说」归润色层，与主程序 planner/replyer 的分工同构。
 
-两段式分工的原因：主程序 planner 的提示词只携带行为风格摘要，完整人设（人格/口癖/表达风格）在表达层——真实聊天的回复正文由 replyer 按完整人设书写。空间动作走同一分工，让评论/回复/说说与真实聊天共享同一个人设出口，而不是 planner 的「转述腔」。
-
-生成要素：
-- **人设前置**：bot 人设正文（主程序全局配置 `personality.personality`，经 config.get 读取、带缓存、bot 配置变更自动失效）作为稳定上下文首段注入；模板承载表达指令与空间表达场景，按动作类型（评论/回复/发布）分模式
-- 场景素材：评论=目标说说正文+作者+该说说近几条评论（防复读）；回复=被回复的主评论+原说说正文；发布=reference 本身
-- reply_reference 与 reply_style 原样传入
+润色要素：
+- **人设前置**：bot 人设正文（主程序全局配置 `personality.personality`）与表达方式（`personality.reply_style`）作为稳定上下文前两段注入，均经 config.get 读取、带缓存、bot 配置变更自动失效
+- 草稿以【待发内容】素材段传入；模板 `catsitate_qzone_expression`（WebUI 可编辑）只承载润色指令
 
 输出纪律：
-- 评论/回复 ≤200 字、说说 ≤500 字：模板约束+生成后验证，超长时带字数硬约束重新生成一次，仍超截断并告警
-- 输出卫生：不加引号/前后缀，直接输出正文；at_user_id 的 @ 前缀由写路径表单层附加在正文前
-- 生成失败显式报错给 planner（可重试），不静默兜底——宁可不动作，不可发错内容
+- 评论/回复 ≤200 字、说说 ≤500 字：入参即校验，润色超长时带字数要求重新润色一次，仍超截断并告警
+- 输出卫生：剥首尾引号，直接输出润色结果；at_user_id 的 @ 前缀由写路径表单层附加在润色结果前
+- **润色失败不阻断动作**：告警后以草稿直发（草稿本身即 planner 的完整表达，显式回退不静默）
 
 ### 4.3 楼中楼 API 参数
 
@@ -176,7 +173,7 @@ QzoneClient（协议封装）
 流程：
 1. Plugin 调 `maisaka.proactive.trigger(虚拟流, intent=...)`
 2. Planner 看到触发指示（同窗形态下还有刚注入的动态上下文）
-3. Planner 自主决定：想发 → 调 qzone_post(reply_reference=想分享的方向)；不想发 → 沉默（正常结束，不重试）
+3. Planner 自主决定：想发 → 调 qzone_post(content=想分享的内容)；不想发 → 沉默（正常结束，不重试）
 
 冷启动自举：proactive.trigger 要求虚拟流会话已存在，而会话在第一条消息进入后才诞生——开机后尚未浏览过则触发必失败。处理：触发返回「未找到已存在的聊天流」时，先注入一条种子消息（无 is_mentioned，仅建会话不触发决策轮）再重试一次；仍失败告警跳过，等下个窗口。
 
@@ -275,13 +272,13 @@ QzoneClient（协议封装）
 | digest_llm_model / timeout | memory / 0 | 见闻摘要模型 |
 | diary_enabled | true | 日记开关 |
 | diary_llm_model / timeout | memory / 0 | 日记生成模型 |
-| expression_llm_model / timeout | memory / 0 | 表达生成模型（评论/回复/说说正文） |
+| expression_llm_model / timeout | memory / 0 | 表达润色模型（评论/回复/说说正文按人设口吻润色；失败以草稿直发） |
 | virtual_group_id / name | qzone_feed / QQ空间 | 虚拟流标识 |
 
 ## 10. 风控注意
 
 - 写路径（评论/点赞/发布）有真实不可逆副作用
-- 表达生成层失败时动作不执行（宁可不动，不可发错内容）；写路径动作失败不重试，告警后由 planner 决定是否再次调用
+- 表达润色失败时以草稿直发（草稿即 planner 的完整表达，显式回退）；写路径动作失败不重试，告警后由 planner 决定是否再次调用
 - cookie 约 24 小时过期，在过期前务必自动经 NapCat adapter 重取
 - 图片下载域名白名单（*.qpic.cn / *.qq.com），非白名单不带 Cookie
 - 好友间拉取间隔 2 秒（防风控）

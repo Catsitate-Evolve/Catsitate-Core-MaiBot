@@ -26,8 +26,8 @@ class FeedContext:
     comment_tid: str = ""     # 通知场景:主评论 tid(楼中楼回复用)
     comment_uin: str = ""     # 通知场景:主评论作者 uin(楼中楼二元组)
     kind: str = "feed"        # "feed"=浏览动态 / "notify_comment"=说说被评论 / "notify_reply"=评论被回复 / "self"=自己发布
-    # M3-r2 表达生成层场景素材:说说正文摘要(前 100 字)与近期评论(「昵称:内容」),
-    # qzone_comment/qzone_reply 生成正文时作防复读上下文;旧登记点不传保持默认空。
+    # 说说正文摘要(前 100 字)与近期评论(「昵称:内容」):注入历史与
+    # 工具上下文素材(view_friend_feeds 亦复用);旧登记点不传保持默认空。
     content_summary: str = ""
     recent_comments: list[str] = field(default_factory=list)
 

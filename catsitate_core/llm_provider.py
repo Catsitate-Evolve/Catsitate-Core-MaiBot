@@ -84,18 +84,18 @@ SIDE_TEMPLATES: dict[str, dict] = {
     },
     # 空间虚拟流场景文案(可读性优化 2026-09-01):注入消息〔〕参数行与工具
     # 参数名的映射在此解释;scene.py 运行时经 load_side_system 读取(WebUI 可覆盖)
-    # v4:对齐两段式工具参数(qzone_comment/qzone_reply/qzone_post 的 reply_reference)
-    # 与点赞通知(源C)——互动通知含「赞了你」,feed_id 归属扩至 qzone_like
+    # v5:对齐润色架构——工具 content 由 planner 直写,发出前自动按口吻顺一遍
+    # (v4:两段式参数;更早:点赞通知源C 与 feed_id 归属扩至 qzone_like)
     "qzone_scene": {
-        "version": 4,
+        "version": 5,
         "system": (
             "你正在用手机刷QQ空间。消息流里有好友的说说动态和互动通知"
             "(有人评论/回复/赞了你,引用的那条就是被评论的说说)。\n"
             "每条消息底部〔〕括号里的是工具参数:说说ID填 qzone_comment/qzone_reply/qzone_like 的 feed_id,"
             "评论ID填 qzone_reply 的 comment_id,评论者QQ填 qzone_comment 的 at_user_id。\n"
-            "想互动就调工具:评论调 qzone_comment(reply_reference 填你想表达的方向,正文会按你的口吻生成);"
-            "回复评论调 qzone_reply(填说说ID、评论ID和 reply_reference);点赞调 qzone_like;"
-            "想分享自己的心情就调 qzone_post(reply_reference 填想分享什么,正文会按你的口吻生成)。\n"
+            "想互动就调工具:评论调 qzone_comment(feed_id 填说说ID,content 直接写你想说的);"
+            "回复评论调 qzone_reply(填说说ID、评论ID和 content);点赞调 qzone_like;"
+            "想分享自己的心情就调 qzone_post(content 直接写)——发出的内容会自动按你的口吻顺一遍。\n"
             "不感兴趣就保持沉默,什么都不用做。在这里直接打字是发不出去的,动作只能通过工具完成。"
         ),
     },
@@ -119,12 +119,11 @@ SIDE_TEMPLATES: dict[str, dict] = {
     # 空间动作表达生成(评论/回复/发布共用,mode/reference 在素材段;
     # 构造仿主程序回复器:人设→自然任务语→参考视情况而定→输出要求)
     "qzone_expression": {
-        "version": 3,
+        "version": 4,
         "system": (
-            "现在请你读读素材里的说说和互动语境,把握对方在说什么,"
-            "然后像平时刷空间时那样,给出日常且口语化的回应。"
-            "你可以参考【表达参考】中的信息,但是视情况而定,不用完全遵守。"
-            "直接输出要发出去的内容本身,不要输出别的。用简体中文。"
+            "现在请你按你平时说话的方式,把【待发内容】顺一遍:意思不变,"
+            "用词和语气换成你自己平时的样子。"
+            "直接输出顺好之后的内容本身,不要输出别的。用简体中文。"
         ),
     },
     # 空间见闻摘要(read_qzone 窗口结束触发,注入真实聊天的当日空间印象)

@@ -45,18 +45,18 @@ def test_unknown_template_raises():
 
 
 def test_qzone_scene_template_declared():
-    """空间场景文案入 SIDE_TEMPLATES(WebUI 可覆盖),version=4——说明〔〕参数行、
-    工具参数名(feed_id/comment_id/at_user_id)映射;两段式工具(qzone_comment/
-    qzone_reply/qzone_post 的正文由表达生成层产出,模型只填 reply_reference);
-    互动通知含点赞(「赞了你」,feed_id 归属含 qzone_like)。"""
+    """空间场景文案入 SIDE_TEMPLATES(WebUI 可覆盖),version=5——说明〔〕参数行、
+    工具参数名(feed_id/comment_id/at_user_id/content)映射;润色架构(content
+    由 planner 直写,发出前自动按口吻顺一遍);互动通知含点赞(「赞了你」,
+    feed_id 归属含 qzone_like)。"""
     t = SIDE_TEMPLATES["qzone_scene"]
-    assert t["version"] == 4
+    assert t["version"] == 5
     assert "刷QQ空间" in t["system"]
     assert "〔〕括号里的是工具参数" in t["system"]
     assert "feed_id" in t["system"] and "comment_id" in t["system"] and "at_user_id" in t["system"]
     assert "qzone_comment" in t["system"] and "qzone_reply" in t["system"] and "qzone_like" in t["system"]
     assert "qzone_post" in t["system"]  # M3 表达:分享心情发自己的说说
-    assert "reply_reference" in t["system"]  # 两段式:正文由表达生成层产出
+    assert "content 直接写" in t["system"]  # 润色架构:planner 直写,自动顺口吻
 
 
 def test_qzone_diary_template_declared():

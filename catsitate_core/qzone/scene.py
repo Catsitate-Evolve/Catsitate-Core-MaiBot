@@ -25,9 +25,9 @@ QZONE_SCENE_TEXT = (
     "(有人评论/回复/赞了你,引用的那条就是被评论的说说)。\n"
     "每条消息底部〔〕括号里的是工具参数:说说ID填 qzone_comment/qzone_reply/qzone_like 的 feed_id,"
     "评论ID填 qzone_reply 的 comment_id,评论者QQ填 qzone_comment 的 at_user_id。\n"
-    "想互动就调工具:评论调 qzone_comment(reply_reference 填你想表达的方向,正文会按你的口吻生成);"
-    "回复评论调 qzone_reply(填说说ID、评论ID和 reply_reference);点赞调 qzone_like;"
-    "想分享自己的心情就调 qzone_post(reply_reference 填想分享什么,正文会按你的口吻生成)。\n"
+    "想互动就调工具:评论调 qzone_comment(feed_id 填说说ID,content 直接写你想说的);"
+    "回复评论调 qzone_reply(填说说ID、评论ID和 content);点赞调 qzone_like;"
+    "想分享自己的心情就调 qzone_post(content 直接写)——发出的内容会自动按你的口吻顺一遍。\n"
     "不感兴趣就保持沉默,什么都不用做。在这里直接打字是发不出去的,动作只能通过工具完成。"
 )
 

@@ -225,9 +225,8 @@ class QzoneSection(PluginConfigBase):
         ["wait", "query_memory", "query_person_profile", "memo_write", "memo_read", "inspect_image",
          "view_friend_feeds", "qzone_like", "qzone_comment", "qzone_reply", "qzone_post"],
         "虚拟流 planner 工具白名单(按名过滤;硬门控不随此配置放松。工具驱动 v0.7:reply 已移除——"
-        "receive 网关无出站路径,直接打字发不出去,动作一律走 qzone_* 工具;M3-r2 表达生成层:"
-        "qzone_comment/qzone_reply/qzone_post 为两段式——planner 传 reply_reference(表达方向),"
-        "正文按 bot 人设由旁路 LLM 生成;全域工具(view_friend_feeds/inspect_image)同时在此列,"
+        "receive 网关无出站路径,直接打字发不出去,动作一律走 qzone_* 工具;planner 直写 content"
+        " 草稿,发出前按人设口吻自动润色;全域工具(view_friend_feeds/inspect_image)同时在此列,"
         "表外工具一律不可用)",
         label="虚拟流工具白名单",
     )
@@ -247,8 +246,8 @@ class QzoneSection(PluginConfigBase):
     digest_enabled: bool = _f(True, "空间见闻开关(read_qzone 窗口结束时旁路 LLM 摘要,注入真实聊天)", label="空间见闻开关")
     digest_llm_model: str = _f("memory", "空间见闻摘要模型", label="见闻模型")
     digest_llm_timeout_ms: int = _f(0, "空间见闻超时(毫秒,0=默认)", label="见闻超时(ms)")
-    expression_llm_model: str = _f("memory", "表达生成模型(评论/回复/说说正文的旁路人设生成)", label="表达生成模型")
-    expression_llm_timeout_ms: int = _f(0, "表达生成超时(毫秒,0=默认)", label="表达生成超时(ms)")
+    expression_llm_model: str = _f("memory", "表达润色模型(评论/回复/说说正文按人设口吻润色;失败时以草稿直发)", label="表达润色模型")
+    expression_llm_timeout_ms: int = _f(0, "表达润色超时(毫秒,0=默认)", label="表达润色超时(ms)")
     request_timeout_ms: int = _f(10000, "空间 HTTP 请求超时(毫秒)", label="HTTP 超时(毫秒)")
     max_retries: int = _f(
         0,

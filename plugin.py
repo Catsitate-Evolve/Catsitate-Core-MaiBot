@@ -1741,9 +1741,17 @@ class CatsitatePlugin(MaiBotPlugin):
             if self.config.sleep.enabled and self.sleep.is_sleeping():
                 self.ctx.logger.debug("通知轮询跳过:睡眠中(绝对静默,spec §2.6)")
                 return
+            # awaiting 占用时先驱动泵(2026-09-02 联调缺陷修复):超时兜底与下一条
+            # P1 注入只在泵里做,而泵的两个常规入口是浏览窗口 tick 与轮完成信号——
+            # 窗口结束后自然概率下 planner 可能长期不跑轮,awaiting 会无限卡住,
+            # 「awaiting 占用→跳过扫描」随之死锁(实机:20:22 注入后卡 18 分钟,
+            # 期间好友新评论全部未被扫描)。通知 tick 属 P1 推送语义,这里驱动泵:
+            # 超时则强制推进并注入下一条;未超时才维持「不叠加」。
             if self.qzone_injector.awaiting_feed is not None:
-                self.ctx.logger.debug("通知轮询跳过:上一条还在等回复(awaiting 占用,不叠加)")
-                return  # 上一条通知/动态还在等 bot 回复,不叠加(下轮再取)
+                await self._qzone_pump()
+                if self.qzone_injector.awaiting_feed is not None:
+                    self.ctx.logger.debug("通知轮询跳过:上一条还在等回复(awaiting 占用,不叠加)")
+                    return  # 上一条通知/动态还在等 bot 回复,不叠加(下轮再取)
             bot_uin = str(self.config.favorability.bot_user_id or "").strip()
             if not bot_uin:
                 return  # 写路径身份缺失(on_load 自检已停用模块,防御性再判)

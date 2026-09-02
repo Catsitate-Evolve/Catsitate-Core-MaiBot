@@ -1420,6 +1420,63 @@ def test_notify_retry_backoff_source_c_like_gives_up_without_misleading_retry(tm
     assert p.qzone_comment_seen.is_new(key) is True  # 键已回退,下轮重新发现
 
 
+def test_notify_scan_drives_pump_on_stale_awaiting(tmp_path):
+    """awaiting 死锁解锁(2026-09-02 联调缺陷):窗口结束后 planner 长期不跑轮
+    (自然概率「等待更多消息」),awaiting 超时兜底本只在泵里做而泵的常规入口
+    是浏览窗口 tick 与轮完成信号——通知扫描被「awaiting 占用」门挡住,好友
+    新评论全部未被扫描(实机卡 18 分钟)。修复后:扫描遇 awaiting 先驱动泵
+    (超时则强制推进并注入下一条),未超时才维持不叠加。"""
+
+    import time as _time
+
+    p = _make_plugin(tmp_path)
+    p.qzone_injector.decision_window_s = 1  # 注入后 1s 即超时(hard_cap 不涉:无 wait 态)
+
+    # 通知项 A 注入,占用 awaiting(窗口外 P1 推送语义)
+    feed_a = FeedItem(tid="notifyA", abstime=str(int(_time.time())), uin="20000",
+                      nickname="小红", content="(通知) A", source="notify", origin_tid="realtidA")
+    p.qzone_injector.enqueue_priority([feed_a])
+    asyncio.run(p._qzone_pump())
+    assert len(p._ctx.gateway.calls) == 1 and p.qzone_injector.awaiting_feed is not None
+
+    # 源A 桩:好友在自己说说下的新评论(create_time=当前,新鲜度窗内)
+    class _Client(_StubCommentClient):
+        def __init__(self):
+            import time as _t
+            super().__init__(
+                {"feedown1": [CommentItem(comment_tid="c9", uin="20000", nickname="小红",
+                                          content="新的评论", create_time=str(int(_t.time())))]},
+                {"feedown1": "自己说说的正文"},
+            )
+
+        async def get_unified_timeline(self, *, count=20, begin=0):
+            return []
+
+        async def get_like_events(self, *, count=30):
+            return []
+
+    client = _Client()
+    p.qzone_client = client
+
+    # 未超时时扫描维持不叠加(不取数不注入)
+    asyncio.run(p._qzone_notify_scan())
+    assert client.fetches == 0 and len(p._ctx.gateway.calls) == 1
+
+    # 过决策窗后扫描:驱动泵→超时强制推进→发现新评论→注入(死锁解除)
+    import asyncio as _asyncio
+    awaitable = p._qzone_notify_scan()
+
+    async def _run_after_expiry():
+        await _asyncio.sleep(1.2)
+        await awaitable
+
+    asyncio.run(_run_after_expiry())
+    assert client.fetches == 1  # 扫描真正执行(不再被卡死的 awaiting 挡住)
+    assert len(p._ctx.gateway.calls) == 2  # 新评论通知已注入
+    assert any(level == "warning" and "强制推进" in str(a[0]) for level, a in p.logs)
+    assert p.qzone_injector.awaiting_feed is not None  # 新通知占用 awaiting(串行语义)
+
+
 def test_notify_scan_source_c_drift_warn_once(tmp_path):
     """源C 漂移告警(v0.8.2 收敛:常规轮次不打「解析 N 条」观测日志,仅保留
     异常信号):连续 3 轮取数成功但零事件打一次锚点漂移 warning(去重标记,

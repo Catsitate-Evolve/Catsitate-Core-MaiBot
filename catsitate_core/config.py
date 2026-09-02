@@ -210,7 +210,13 @@ class ScheduleSection(PluginConfigBase):
     speak_threshold_level: str = _f("熟悉", "日常发言最低好感度等级(陌生/熟悉/亲近/挚友/特别)", label="日常发言等级门槛")
     speak_max_streams_per_window: int = _f(1, "每窗口最多主动触发流数(按等级+活跃度排序取前 n)", label="每窗口触发流数上限")
     schedule_llm_model: str = _f("memory", "日程生成模型:填主程序 task 名", label="日程生成模型(task 名)")
-    schedule_llm_timeout_ms: int | None = _f(0, "日程生成 LLM 超时(毫秒);0=主程序默认", label="日程生成超时(毫秒)")
+    schedule_llm_timeout_ms: int | None = _f(
+        120000,
+        "日程生成 RPC 超时(毫秒)。此值是插件→主程序 RPC 请求死线,不设(0/None)时 RPC 层固定 30s"
+        "——memory 模型跑日程大 prompt 实测超 30s,每晚 RPCError(E_TIMEOUT) 走模板兜底(2026-09-02 定位),"
+        "故默认 120s",
+        label="日程生成超时(毫秒)",
+    )
     daily_speak_limit: int = _f(5, "全天主动发言次数上限(每次发言计 1)", label="每日发言上限")
 
 

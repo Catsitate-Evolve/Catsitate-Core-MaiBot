@@ -52,6 +52,9 @@ def test_phase2_sections_defaults():
     assert cfg.schedule.speak_threshold_level == "熟悉"
     assert cfg.schedule.speak_max_streams_per_window == 1
     assert cfg.schedule.daily_speak_limit == 5
+    # RPC 死线默认 120s(2026-09-02 定位:不设时 RPC 层固定 30s,memory 模型跑
+    # 日程大 prompt 必超 → 每晚 RPCError 走模板兜底)
+    assert cfg.schedule.schedule_llm_timeout_ms == 120000
     assert cfg.favorability.decay_enabled is True
     assert cfg.favorability.decay_after_days == 7
     assert cfg.favorability.decay_max == 3

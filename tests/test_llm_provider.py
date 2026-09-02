@@ -59,6 +59,18 @@ def test_qzone_scene_template_declared():
     assert "content 直接写" in t["system"]  # 润色架构:planner 直写,自动顺口吻
 
 
+def test_qzone_expression_template_preserves_facts():
+    """润色模板 v6(2026-09-02 用户裁定):改写许可之外加「不修改关键事实部分」
+    ——完全重组许可曾把人名/数字/明确说过的话改掉,事实保持约束进模板。"""
+    t = SIDE_TEMPLATES["qzone_expression"]
+    assert t["version"] == 6
+    s = t["system"]
+    assert "你可以完全重组内容" in s  # 重组许可保留(怎么说仍自由)
+    assert "不要修改关键事实部分" in s  # 事实保持约束
+    assert "人名、数字、时间、地点" in s and "明确说过的话、做过的事" in s
+    assert "改写后的内容:" in s
+
+
 def test_qzone_diary_template_declared():
     """M3 表达:日记生成模板入 SIDE_TEMPLATES(v6,照搬 diary_plugin prompts.py
     原文,仅占位符适配两段式布局)——指令块=蓝本编号要求+书写风格+输出卫生;

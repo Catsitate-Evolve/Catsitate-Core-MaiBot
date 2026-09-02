@@ -220,49 +220,85 @@ def test_parse_feed_replies_parent_comment_content_defaults_empty():
 # ---- 「与我相关」流赞事件解析(源C,Task 10) ----
 
 
-def test_parse_like_events_anchors():
-    from catsitate_core.qzone.discovery import parse_like_events
-    html = (
-        '<li class="fn_like" data-key="100_200_ab12cd34" data-tid="ee3396c49d38">'
-        '<a data-uin="100" href="#">小明</a>赞了你的说说</li>'
+def _scope1_like_feed(liker_uin: str, owner_uin: str, nick: str, tid: str, fhash: str,
+                      action: str = "赞了我的说说", when: str = "昨天 13:20") -> str:
+    """构造实机形态的「与我相关」条目:外层 JSON 内嵌 JS 对象,HTML 片段以 \\xHH 转义存储。"""
+    fkey = f"{liker_uin}_{owner_uin}_{fhash}"
+    return (
+        '\\x3Cli data-key=\\x22' + fkey + '\\x22\\x3E'
+        '\\x3Cdiv data-fkey=\\x22' + fkey + '\\x22 data-tid=\\x22' + tid + '\\x22 data-uin=\\x22' + owner_uin + '\\x22\\x3E'
+        '\\x3Cdiv class=\\x22f-nick\\x22\\x3E\\x3Ca class=\\x22f-name q_namecard \\x22 link=\\x22nameCard_' + liker_uin + '\\x22\\x3E' + nick + '\\x3C/a\\x3E'
+        '\\x3Cspan class=\\x22 ui-mr10 state \\x22 \\x3E\\t\\t' + action + '\\t\\t\\x3C/span\\x3E'
+        '\\x3Cspan class=\\x22 ui-mr8 state \\x22 \\x3E\\t\\t' + when + '\\t\\t\\x3C/span\\x3E'
     )
+
+
+def test_parse_like_events_real_shape():
+    """实机形态:转义归一后按 data-fkey/data-tid 锚提取,相对时间折算 epoch。"""
+    from datetime import datetime, timedelta
+
+    from catsitate_core.qzone.discovery import parse_like_events
+
+    html = _scope1_like_feed("11111", "22222", "小明", "1d3558d0a9b1", "e478ef4cf")
     events = parse_like_events(html)
     assert len(events) == 1
     ev = events[0]
-    assert ev.like_key == "100_200_ab12cd34" and ev.liker_uin == "100"
-    assert ev.owner_uin == "200" and ev.target_tid == "ee3396c49d38"
+    assert ev.like_key == "11111_22222_e478ef4cf" and ev.liker_uin == "11111"
+    assert ev.owner_uin == "22222" and ev.target_tid == "1d3558d0a9b1"
     assert ev.liker_nickname == "小明"
+    # 昨天 13:20 → epoch(天级精度折算,允许 ±2 分钟误差)
+    expect = datetime.now().replace(hour=13, minute=20, second=0, microsecond=0) - timedelta(days=1)
+    assert abs(int(ev.create_time) - int(expect.timestamp())) < 120
 
 
-def test_parse_like_events_body_nickname_fallback_and_empty():
-    """块内无 data-uin 锚点(非实测形态容错):昵称回退 liker_uin;无事件返回空列表。"""
+def test_parse_like_events_excludes_tips_and_nonlike():
+    """推广位(LikeTipsFeeds,无三元组形态)与评论类条目不产出赞事件。"""
+    from catsitate_core.qzone.discovery import parse_like_events
+
+    html = (
+        '<div data-fkey="LikeTipsFeeds" data-tid="LikeTipsFeeds" data-uin="">'
+        '<p>好友点赞通知设置</p></div>'
+        + _scope1_like_feed("11111", "22222", "小明", "aa11", "ff00", action="评论了我的说说")
+    )
+    assert parse_like_events(html) == []
+
+
+def test_parse_like_events_multi_entries_no_cross_borrow():
+    """多条目:昵称/时间不跨条目借用(窗口至下一 fkey 锚)。"""
+    from datetime import datetime, timedelta
+
+    from catsitate_core.qzone.discovery import parse_like_events
+
+    html = (
+        _scope1_like_feed("11111", "22222", "小明", "ee11", "aaaa", when="今天 09:00")
+        + _scope1_like_feed("33333", "44444", "小红", "ee22", "bbbb", when="前天 20:30")
+    )
+    events = parse_like_events(html)
+    assert len(events) == 2
+    first = next(e for e in events if e.liker_nickname == "小明")
+    second = next(e for e in events if e.liker_nickname == "小红")
+    assert first.target_tid == "ee11" and first.owner_uin == "22222"
+    assert second.target_tid == "ee22" and second.owner_uin == "44444"
+    expect1 = datetime.now().replace(hour=9, minute=0, second=0, microsecond=0)
+    expect2 = datetime.now().replace(hour=20, minute=30, second=0, microsecond=0) - timedelta(days=2)
+    assert abs(int(first.create_time) - int(expect1.timestamp())) < 120
+    assert abs(int(second.create_time) - int(expect2.timestamp())) < 120
+
+
+def test_parse_like_events_no_nick_fallback_and_empty():
+    """异常形态容错:无昵称锚回退 fkey 前段(不静默丢事件);无锚文本零事件。"""
     from catsitate_core.qzone.discovery import parse_like_events
     from catsitate_core.qzone.wire import LikeEvent
 
-    # 无昵称锚点:liker_uin 取 data-key 前段,昵称回退 uin 本身(不静默丢事件)
-    html = '<li class="fn_like" data-key="100_200_ab12" data-tid="ee33"></li>'
+    html = (
+        '\\x3Cdiv data-fkey=\\x22100_200_ab12\\x22 data-tid=\\x22ee33\\x22 data-uin=\\x22200\\x22\\x3E'
+        '\\x3Cspan class=\\x22 ui-mr10 state \\x22 \\x3E\\t\\t赞了我的说说\\t\\t\\x3C/span\\x3E'
+    )
     events = parse_like_events(html)
     assert len(events) == 1
     ev = events[0]
     assert isinstance(ev, LikeEvent)
     assert (ev.liker_uin, ev.liker_nickname) == ("100", "100")
-    # 锚点不构成定位点的文本:零事件(解析层不告警,职责在调用方)
     assert parse_like_events("") == []
     assert parse_like_events("普通文本无锚点") == []
-    assert parse_like_events('<li data-key="畸形" data-tid="x"></li>') == []
-
-
-def test_parse_like_events_multi_blocks_no_cross_borrow():
-    """多事件块:块体窗口至下一 data-key 锚点,昵称不跨块借用(tid 锚为实证
-    十六进制形态,与统一时间线 tid 同源)。"""
-    from catsitate_core.qzone.discovery import parse_like_events
-    html = (
-        '<li class="fn_like" data-key="100_200_aaaa" data-tid="ee11">'
-        '<a data-uin="100">小明</a>赞了你的说说</li>'
-        '<li class="fn_like" data-key="300_200_bbbb" data-tid="ee22">'
-        '<a data-uin="300">小红</a>赞了你的说说</li>'
-    )
-    events = parse_like_events(html)
-    assert len(events) == 2
-    assert events[0].liker_nickname == "小明" and events[1].liker_nickname == "小红"
-    assert events[1].like_key == "300_200_bbbb" and events[1].target_tid == "ee22"
+    assert parse_like_events('<li data-fkey="畸形" data-tid="x"></li>') == []

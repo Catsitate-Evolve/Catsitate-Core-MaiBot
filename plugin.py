@@ -32,7 +32,7 @@ from catsitate_core.config import CatsitateConfig
 from catsitate_core.favorability import LEVELS, LEVEL_INDEX, EXCLUSIVE_LEVEL, BatchEngine, SettleExecutor, build_favorability_block
 from catsitate_core.image_relook import build_relook_prompt, find_image_segment
 from catsitate_core.inject import InjectAssembler, InjectionBlock
-from catsitate_core.llm_provider import build_side_prompt
+from catsitate_core.llm_provider import build_side_prompt, rpc_error_brief
 from catsitate_core.memo import MemoService, validate_remind_at
 from catsitate_core.msg_react import MsgReactEngine, parse_choice_resp
 from catsitate_core.poke import PokeEngine
@@ -708,7 +708,7 @@ class CatsitatePlugin(MaiBotPlugin):
             result = await self._side_llm_call(messages, self.config.image_relook.llm_model, "image_relook", self.config.image_relook.llm_timeout_ms)
         except Exception as exc:  # noqa: BLE001
             # 失败显式日志并返回失败(与哨兵层同款纪律,审查 M9);仅记异常类型防 PII
-            msg = f"图片重看 LLM 调用异常({type(exc).__name__})"
+            msg = f"图片重看 LLM 调用异常({rpc_error_brief(exc)})"
             self.ctx.logger.warning(msg)
             return msg
         if not isinstance(result, dict) or not result.get("success"):
@@ -2174,7 +2174,7 @@ class CatsitatePlugin(MaiBotPlugin):
             result = await self._side_llm_call(messages, "memory", "sleep_confirm")
         except Exception as exc:  # noqa: BLE001
             # 失败显式日志并跳过本轮(与哨兵层同款纪律,审查 M9);仅记异常类型防 PII
-            self.ctx.logger.warning("晚安判定 LLM 调用异常(%s),本轮不入睡", type(exc).__name__)
+            self.ctx.logger.warning("晚安判定 LLM 调用异常(%s),本轮不入睡", rpc_error_brief(exc))
             return {"action": "continue", "modified_kwargs": kwargs}
         if not isinstance(result, dict) or not result.get("success"):
             # 不落响应原文(安全复审):仅记失败形态
@@ -2874,7 +2874,7 @@ class CatsitatePlugin(MaiBotPlugin):
                 try:
                     event_ts = self.qzone_comment_seen.last_fav_interaction(user_id)
                 except Exception as exc:  # noqa: BLE001
-                    self.ctx.logger.warning("衰减取空间互动事件失败,该人事件基准按空处理(user=%s):%s", user_id, type(exc).__name__)
+                    self.ctx.logger.warning("衰减取空间互动事件失败,该人事件基准按空处理(user=%s):%s", user_id, rpc_error_brief(exc))
                 # 最近一次衰减判定时间作为基准参与取 max(该人全局,跨流)
                 decay_rows = self.store.query(
                     "SELECT judged_at FROM favorability_log WHERE user_id = ? AND judge_id LIKE 'decay-%' "
@@ -3537,7 +3537,7 @@ class CatsitatePlugin(MaiBotPlugin):
                 events = self.qzone_comment_seen.fav_events_on(today, user_id)
             except Exception as exc:  # noqa: BLE001
                 events = []
-                self.ctx.logger.warning("空间互动事件读取失败,本次结算不含事件素材(user=%s):%s", user_id, type(exc).__name__)
+                self.ctx.logger.warning("空间互动事件读取失败,本次结算不含事件素材(user=%s):%s", user_id, rpc_error_brief(exc))
             for i, e in enumerate(events[:5]):
                 label = QZONE_FAV_EVENT_LABELS.get(e["kind"], "空间互动")
                 history.append({
@@ -3637,7 +3637,7 @@ class CatsitatePlugin(MaiBotPlugin):
             )
         except Exception as exc:  # noqa: BLE001
             # 仅记异常类型,不插值 exc 本体(安全复审纪律,同 decay.py)
-            return None, f"能力调用异常({type(exc).__name__})"
+            return None, f"能力调用异常({rpc_error_brief(exc)})"
         if result is None:
             return None, f"消息 {reply_to_id} 解析返回 None"
         if not isinstance(result, dict):

@@ -7,7 +7,7 @@ import re
 from datetime import datetime, timedelta
 
 from .favorability import LEVEL_INDEX
-from .llm_provider import build_side_prompt
+from .llm_provider import build_side_prompt, rpc_error_brief
 
 _ISO = "%Y-%m-%dT%H:%M"
 _ISO_SEC = "%Y-%m-%dT%H:%M:%S"  # 容忍格式(仅解析用,落库一律归一化到 _ISO)
@@ -270,7 +270,7 @@ class ScheduleGenerator:
                 result = await self.llm_call(messages, self.cfg.schedule_llm_model)
             except Exception as exc:  # noqa: BLE001
                 # 仅记异常类型,不插值 exc 本体:LLM API 错误可能含请求体/PII(安全复审)
-                return _materialize_template(DEFAULT_TEMPLATE_SCHEDULE, target_date), f"日程生成 LLM 异常: {type(exc).__name__}"
+                return _materialize_template(DEFAULT_TEMPLATE_SCHEDULE, target_date), f"日程生成 LLM 异常: {rpc_error_brief(exc)}"
             if not isinstance(result, dict) or not result.get("success"):
                 # 不落响应原文(安全复审):仅记失败形态
                 if isinstance(result, dict):
@@ -300,7 +300,7 @@ class ScheduleGenerator:
             return _materialize_template(DEFAULT_TEMPLATE_SCHEDULE, target_date), f"日程钳制修复后仍无效: {last_err or verr}"
         except Exception as exc:  # noqa: BLE001
             # 仅记异常类型,不插值 exc 本体:LLM API 错误可能含请求体/PII(安全复审)
-            return _materialize_template(DEFAULT_TEMPLATE_SCHEDULE, target_date), f"日程钳制修复异常: {type(exc).__name__}"
+            return _materialize_template(DEFAULT_TEMPLATE_SCHEDULE, target_date), f"日程钳制修复异常: {rpc_error_brief(exc)}"
 
 
 def threshold_met(level_name: str, threshold_level: str) -> bool:

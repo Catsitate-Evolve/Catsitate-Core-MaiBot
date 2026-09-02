@@ -63,3 +63,32 @@ async def test_polish_overlong_regenerates_then_truncates():
     # 2026-09-02 用户裁定:不再设硬截断——重润仍超长按模型原样返回(300 字全量)
     assert text2 == "还是长" * 100
     assert "..." not in text2
+
+
+@pytest.mark.asyncio
+async def test_polish_rpc_exception_falls_back_to_draft():
+    """润色调用异常兜底(2026-09-02):RPC 超时等异常原先上抛会炸掉整个动作
+    工具——契约是失败以草稿直发;E_TIMEOUT 以「RPC 超时」明显警告浮出。"""
+
+    class _FakeCode:
+        def __init__(self, value):
+            self.value = value
+
+    class _RPCExp(Exception):
+        def __init__(self):
+            self.code = _FakeCode("E_TIMEOUT")
+            self.message = "请求 cap.llm.generate 超时 (30000ms)"
+            super().__init__("timeout")
+
+    warned: list = []
+
+    class _Logger:
+        def warning(self, msg, *args):
+            warned.append(msg % args if args else msg)
+
+    async def call(_messages):
+        raise _RPCExp()
+
+    text = await polish_action_text(call, persona="p", voice="v", draft="草稿内容", logger=_Logger())
+    assert text == ""  # 空=调用方以草稿直发
+    assert any(w.startswith("QQ空间表达润色调用异常(RPC 超时") for w in warned)

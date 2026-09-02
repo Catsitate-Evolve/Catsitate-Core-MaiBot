@@ -10,7 +10,7 @@ from __future__ import annotations
 
 from typing import Any, Awaitable, Callable
 
-from catsitate_core.llm_provider import build_side_prompt
+from catsitate_core.llm_provider import build_side_prompt, rpc_error_brief
 
 
 def _sanitize(text: str) -> str:
@@ -40,7 +40,15 @@ async def polish_action_text(
         stable_ctx.append(f"你正在{scene.strip()}。")
     variable_tail = [f"【待发内容】\n{draft}"]
     messages, _ = build_side_prompt("qzone_expression", stable_ctx, variable_tail)
-    result = await llm_call(messages)
+    # 调用异常兜底(2026-09-02):RPC 超时(E_TIMEOUT)等异常原先直接上抛会炸掉
+    # 整个动作工具——契约是「润色失败不阻断动作,以草稿直发」;E_TIMEOUT 以
+    # 明显的超时警告浮出(用户裁定),异常简报走 rpc_error_brief
+    try:
+        result = await llm_call(messages)
+    except Exception as exc:  # noqa: BLE001
+        if logger:
+            logger.warning("QQ空间表达润色调用异常(%s),以草稿直发", rpc_error_brief(exc))
+        return ""
     if not isinstance(result, dict) or not result.get("success"):
         if logger:
             logger.warning("QQ空间表达润色失败,以草稿直发")
@@ -59,7 +67,12 @@ async def polish_action_text(
             "qzone_expression", stable_ctx,
             variable_tail + [f"这次改短一些,不超过 {limit} 字。"],
         )
-        result2 = await llm_call(retry_messages)
+        try:
+            result2 = await llm_call(retry_messages)
+        except Exception as exc:  # noqa: BLE001
+            if logger:
+                logger.warning("QQ空间表达润色重润调用异常(%s),沿用首次润色结果", rpc_error_brief(exc))
+            return text
         if isinstance(result2, dict) and result2.get("success"):
             retry_text = _sanitize(str(result2.get("response") or ""))
             if retry_text:

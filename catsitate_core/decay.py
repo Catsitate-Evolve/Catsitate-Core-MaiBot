@@ -9,7 +9,7 @@ from datetime import datetime
 from typing import Awaitable, Callable
 
 from .favorability import BatchEngine
-from .llm_provider import build_side_prompt
+from .llm_provider import build_side_prompt, rpc_error_brief
 
 logger = logging.getLogger(__name__)
 
@@ -136,7 +136,7 @@ class DecayExecutor:
                 result = await self.llm_call(messages, self.config.decay_llm_model)
             except Exception as exc:  # noqa: BLE001
                 # 仅记异常类型,不插值 exc 本体:LLM API 错误可能含请求体/PII(安全复审)
-                logger.warning("好感度衰减判定失败(user=%s): %s", user_id, type(exc).__name__)
+                logger.warning("好感度衰减判定失败(user=%s): %s", user_id, rpc_error_brief(exc))
                 continue  # 显式日志后跳过(规格 §3.1 失败不得静默)
             if not isinstance(result, dict) or not result.get("success"):
                 logger.warning("衰减判定 LLM 失败(user=%s): %s", user_id, str(result)[:120])

@@ -286,7 +286,7 @@ import re
 from datetime import datetime
 from typing import Awaitable, Callable
 
-from .llm_provider import build_side_prompt
+from .llm_provider import build_side_prompt, rpc_error_brief
 
 LlMCall = Callable[[list[dict], str], Awaitable[dict]]
 
@@ -361,7 +361,7 @@ class SettleExecutor:
         except Exception as exc:  # noqa: BLE001
             # 仅记异常类型,不插值 exc 本体:LLM API 错误可能含请求体/PII(安全复审,同 decay.py)
             # 未触达 apply_delta,独占钳制状态恒 False(最终审查 M3 统一字段)
-            return {"status": "failed", "error": f"LLM 调用异常: {type(exc).__name__}", "exclusive_clamped": False}
+            return {"status": "failed", "error": f"LLM 调用异常: {rpc_error_brief(exc)}", "exclusive_clamped": False}
         if not isinstance(result, dict) or not result.get("success"):
             # 不落响应原文(LLM 响应可能含用户内容/PII,安全复审):仅记失败形态
             if isinstance(result, dict):

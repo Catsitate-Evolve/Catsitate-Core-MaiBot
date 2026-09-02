@@ -2,7 +2,12 @@
 
 import pytest
 
-from catsitate_core.llm_provider import SIDE_TEMPLATES, build_side_prompt, load_side_system
+from catsitate_core.llm_provider import (
+    SIDE_TEMPLATES,
+    build_side_prompt,
+    load_side_system,
+    rpc_error_brief,
+)
 
 
 def test_stable_prefix_first():
@@ -118,3 +123,31 @@ def test_visible_output_templates_natural_tone():
     assert "回想一下今天在QQ空间的事" in SIDE_TEMPLATES["qzone_digest"]["system"]
     # 工具向模板保持原样(image_relook 是给 bot 用的工具,输出不直接可见)
     assert SIDE_TEMPLATES["image_relook"]["version"] == 1
+
+
+class _FakeRPCCode:
+    """RPCError.code 形态(enum 带 value)。"""
+
+    def __init__(self, value: str):
+        self.value = value
+
+
+class _FakeRPCError(Exception):
+    """RPCError 形态(code+message,鸭子类型)。"""
+
+    def __init__(self, value: str, message: str = ""):
+        self.code = _FakeRPCCode(value)
+        self.message = message
+        super().__init__(f"[{value}] {message}")
+
+
+def test_rpc_error_brief_marks_timeout_clearly():
+    """E_TIMEOUT 明显超时警告(2026-09-02 用户裁定):RPC 超时以「RPC 超时」
+    开头+框架 message(方法名/毫秒数,无请求体可安全输出);其它 RPC 错误带
+    code;非 RPC 异常只回类型名(安全复审纪律维持)。"""
+    err = _FakeRPCError("E_TIMEOUT", "请求 cap.llm.generate 超时 (30000ms)")
+    brief = rpc_error_brief(err)
+    assert brief.startswith("RPC 超时")
+    assert "E_TIMEOUT" in brief and "30000ms" in brief
+    assert rpc_error_brief(_FakeRPCError("E_UNKNOWN", "连接关闭")).startswith("RPC 错误")
+    assert rpc_error_brief(RuntimeError("boom")) == "RuntimeError"  # 非 RPC:仅类型名

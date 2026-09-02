@@ -158,6 +158,25 @@ SIDE_TEMPLATES: dict[str, dict] = {
 }
 
 
+def rpc_error_brief(exc: Exception) -> str:
+    """RPC 异常简报(2026-09-02 用户裁定:E_TIMEOUT 要作为明显的超时警告输出)。
+
+    RPCError 的 code 与 message 由主程序框架生成(方法名+毫秒数,如
+    「请求 cap.llm.generate 超时 (30000ms)」),不含请求体/PII,可安全输出;
+    E_TIMEOUT 命中时以「RPC 超时」开头显式标出。非 RPC 异常只回类型名
+    (维持既有安全复审纪律:异常文本可能夹带请求体)。鸭子类型取 code,
+    不 import 主程序内部模块(只依赖 SDK 表面)。"""
+
+    code = getattr(exc, "code", None)
+    if code is None:
+        return type(exc).__name__
+    value = str(getattr(code, "value", code))
+    message = str(getattr(exc, "message", "") or "")
+    if "TIMEOUT" in value.upper():
+        return f"RPC 超时({value}: {message})" if message else f"RPC 超时({value})"
+    return f"RPC 错误({value}: {message})" if message else f"RPC 错误({value})"
+
+
 _PROJECT_ROOT = Path("/MaiMBot")
 _TEMPLATE_LOCALE = "zh-CN"
 _template_cache: dict[str, tuple[float, str]] = {}  # template_id -> (mtime, 文本)

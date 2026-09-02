@@ -122,23 +122,27 @@ def _mixed_defs():
 
 
 def test_filter_qzone_tools_for_stream_qzone_whitelist():
-    """I4-1:qzone 流走白名单——白名单外工具(含 memo_write)剥离,白名单内原样保留。"""
+    """qzone 流:qzone_* 工具全域默认放行(不受白名单管理,2026-09-02);
+    其余工具走白名单——白名单外(含 memo_write/tool_search)剥离。"""
 
     defs = _mixed_defs()
-    out = filter_qzone_tools_for_stream(defs, is_qzone=True, whitelist=["wait", "qzone_like"])
+    out = filter_qzone_tools_for_stream(defs, is_qzone=True, whitelist=["wait"])
     names = [d.get("function", {}).get("name") or d.get("name") for d in out]
-    assert names == ["qzone_like", "wait"]  # memo_write/tool_search/qzone_view 均被白名单剥离
+    # qzone_like/qzone_view 不在白名单也放行(默认可用不可剔除);wait 在白名单放行;
+    # memo_write/tool_search 白名单外剥离
+    assert names == ["qzone_like", "wait", "qzone_view"]
     assert out[0] is defs[0]  # 原样保留(重建缺键会炸整轮请求)
 
 
 def test_filter_qzone_tools_for_stream_non_qzone_strips_qzone_tools():
-    """I4-2:非 qzone 流剥离全部 qzone_* 工具(OpenAI 与扁平形态),memo_write 等保留。"""
+    """非 qzone 流(2026-09-02 改单向):不再剥离 qzone_* 工具(view_friend_feeds
+    提供说说ID后全域可互动),非 dict 条目仍被容忍剔除,其余原样放行。"""
 
     defs = _mixed_defs() + ["非 dict 条目容忍"]
     out = filter_qzone_tools_for_stream(defs, is_qzone=False, whitelist=[])
     names = [d.get("function", {}).get("name") or d.get("name") for d in out]
-    assert names == ["wait", "memo_write", "tool_search"]  # qzone_like/qzone_view 剥离,memo_write 保留
-    assert out[0] is defs[1]
+    assert names == ["qzone_like", "wait", "memo_write", "tool_search", "qzone_view"]
+    assert out[0] is defs[0]
 
 
 def test_strip_deferred_reminder_only_removes_standalone_reminder():

@@ -87,16 +87,25 @@ def filter_tool_definitions(defs: list[dict], whitelist: list[str]) -> list[dict
 
 
 def filter_qzone_tools_for_stream(defs: list[dict], *, is_qzone: bool, whitelist: list[str]) -> list[dict]:
-    """双向工具隔离:qzone 流走白名单;非 qzone 流剥离 qzone_* 工具。
+    """qzone_* 工具全域默认可用(2026-09-02 用户裁定:不可剔除,不受白名单管理);
+    其余工具仅在 qzone 流走白名单过滤,非 qzone 流原样放行(主程序自选)。
 
-    qzone 流正向隔离(硬门控不随白名单配置放松);非 qzone 流反向隔离——
-    qzone_like 等工具在真实聊天流不可见,防模型误调(T11/终审 I4)。
-    """
+    view_friend_feeds 为真实流提供说说ID/图片hash,是 qzone 动作工具在真实
+    聊天里的参数来源(全域化前提);qzone_reply 虽同在放行之列,但其自身
+    流门控仍在(comment_id 锚只存在于空间流通知)。"""
 
-    if is_qzone:
-        return filter_tool_definitions(defs, whitelist)
-    return [d for d in defs if isinstance(d, dict)
-            and not _tool_name(d).startswith("qzone_")]
+    out: list[dict] = []
+    for d in defs:
+        if not isinstance(d, dict):
+            continue
+        name = _tool_name(d)
+        if name.startswith("qzone_"):
+            out.append(d)
+        elif is_qzone and name and name in {str(w) for w in whitelist}:
+            out.append(d)
+        elif not is_qzone:
+            out.append(d)
+    return out
 
 
 def _item_text(item: dict) -> str:

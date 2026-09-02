@@ -1317,6 +1317,7 @@ def test_diary_stable_ctx_includes_persona(tmp_path):
 
     stable = captured["messages"][1]["content"]
     assert stable.startswith("bot 人设:温柔猫娘")  # 人设前置为 stable_ctx 首段
+    assert "今天是" in stable  # v5 蓝本:日期入素材(开头必须是日期和天气的依据)
     assert "今天的日程:自由活动" in stable  # 原有当日素材段保留(人设前置不挤掉素材)
     assert captured["messages"][0]["role"] == "system"
     data = p._pending_diary_snapshot.load()  # 发布链走完:tid 随快照透传(Task 4 口径)

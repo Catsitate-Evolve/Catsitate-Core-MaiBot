@@ -99,12 +99,10 @@ def test_qzone_section_defaults():
     assert q.request_timeout_ms == 10000
     assert q.max_retries == 0
     assert q.cookie_refresh_minutes == 60
-    # 工具驱动 v0.7:reply 移除(receive 网关无出站路径),qzone_comment/qzone_reply 进白名单;
-    # M3 表达:qzone_post(发布自己的说说)进白名单;M3-r2 Task7:全域查看工具
-    # view_friend_feeds 进白名单(排在 inspect_image 后)
+    # 2026-09-02 全域化:qzone_* 工具不再由白名单管理(默认可用不可剔除),
+    # 白名单只管其余虚拟流工具;view_friend_feeds 仍在(虚拟流查看好友说说)
     assert "wait" in q.tool_whitelist and "reply" not in q.tool_whitelist
-    assert "qzone_like" in q.tool_whitelist and "qzone_comment" in q.tool_whitelist and "qzone_reply" in q.tool_whitelist
-    assert "qzone_post" in q.tool_whitelist
+    assert not any(t.startswith("qzone_") for t in q.tool_whitelist)
     assert "view_friend_feeds" in q.tool_whitelist
     assert q.tool_whitelist.index("view_friend_feeds") == q.tool_whitelist.index("inspect_image") + 1
     assert "tool_search" not in q.tool_whitelist and "msg_react" not in q.tool_whitelist

@@ -4,7 +4,8 @@
 单调递增,主程序时序机制(get_recent 24h 窗/间隔样本/连发过滤)消费正确的到达
 语义;**发布时间由正文相对时间前缀承载**(今天 HH:MM / M月d日 HH:MM,联调缺陷#5
 防 bot 把老说说当刚发生);message_id 全局唯一(tid+时间播种序号);is_mentioned
-嵌在 message_info.additional_config(主程序只读该位置);图片段带 binary_data_base64,
+仅浏览注入设置(嵌 message_info.additional_config,主程序只读该位置;通知消息
+不设——走自然回复概率,2026-09-02);图片段带 binary_data_base64,
 下载失败的图以 [图片] 占位;文本段末尾带参数独立尾行「〔说说ID=xxx〕」(tid 前 12 位,
 工具驱动 2026-09-01;可读性优化后换行独立成行,纯图说说也保留文本段承载锚);
 纯图说说正文为空时参数行即整段内容。
@@ -181,9 +182,9 @@ def build_notify_message(
         "message_info": {
             "user_info": {"user_id": str(feed.uin), "user_nickname": feed.nickname},
             "group_info": {"group_id": group_id, "group_name": group_name},
-            # is_mentioned 必须嵌在 message_info.additional_config 内(联调缺陷#3,
-            # 与 build_feed_message 同款):主程序只读该位置,顶层键会被丢弃
-            "additional_config": {"is_mentioned": 1.0},
+            # 不设 is_mentioned(2026-09-02 用户裁定):通知走主程序自然回复概率,
+            # 不再强制触发 planner 轮——bot 看到通知但不必然回应(拟人化留白);
+            # 浏览注入(build_feed_message)保留强制=串行浏览决策环的设计依赖
         },
         "raw_message": raw,
     }
@@ -260,7 +261,9 @@ def build_feed_message(
             "user_info": {"user_id": str(feed.uin), "user_nickname": feed.nickname},
             "group_info": {"group_id": group_id, "group_name": group_name},
             # is_mentioned 必须嵌在 message_info.additional_config 内:主程序
-            # is_mentioned_bot_in_message 只读该位置(联调缺陷#3,顶层键会被丢弃)
+            # is_mentioned_bot_in_message 只读该位置(联调缺陷#3,顶层键会被丢弃)。
+            # 浏览注入保留强制触发:串行浏览决策环(每条说说注入后 planner 轮决定
+            # 互动与否)依赖它;通知消息已移除(走自然概率,见 build_notify_message)
             "additional_config": {"is_mentioned": 1.0},
         },
         "raw_message": raw,

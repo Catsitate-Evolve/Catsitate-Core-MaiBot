@@ -60,21 +60,24 @@ def test_qzone_scene_template_declared():
 
 
 def test_qzone_diary_template_declared():
-    """M3 表达:日记生成模板入 SIDE_TEMPLATES(version=3,口吻自然化)——
-    睡前写当日日记发布为说说;自包含指令(80~200 字/不编造/基于
-    素材/直接输出正文)。"""
+    """M3 表达:日记生成模板入 SIDE_TEMPLATES(v5,仿 diary_plugin 蓝本重排)——
+    睡前写当日日记发布为说说;编号要求+书写风格+输出卫生,自包含指令
+    (80~200 字/不编造/基于素材/直接输出正文)。"""
     t = SIDE_TEMPLATES["qzone_diary"]
-    assert t["version"] == 3
+    assert t["version"] == 5
     s = t["system"]
     assert "睡前" in s and "日记" in s and "说说" in s
     assert "80~200字" in s and "第一人称" in s
     assert "不要编造" in s  # 内容必须基于当日素材
-    assert "直接输出日记正文" in s  # 无 JSON 包裹,纯文本产出
+    assert "开头必须是日期和天气" in s  # 蓝本核心:日记形态开头
+    assert "不要写成流水账" in s and "要有重点和感情色彩" in s  # 蓝本核心:反流水账
+    assert "书写风格" in s and "可以有个性" in s  # 蓝本核心:风格段+个性许可
+    assert "只输出一段日记内容" in s  # 无 JSON 包裹,纯文本产出
     assert "简体中文" in s
     messages, key = build_side_prompt("qzone_diary", ["今天的日程:发呆"], [])
     assert messages[0]["role"] == "system"
     assert messages[1]["content"] == "今天的日程:发呆"
-    assert key.startswith("qzone_diary:v3+")
+    assert key.startswith("qzone_diary:v5+")
 
 
 def test_qzone_diary_template_natural_tone():
@@ -83,4 +86,4 @@ def test_qzone_diary_template_natural_tone():
     system, _ = load_side_system("qzone_diary")  # 无部署文件时取内置默认
     assert "你就是这位用户本人" not in system
     assert "人设见素材" not in system
-    assert "口吻" in system and "睡前" in system
+    assert "睡前" in system and "随手写" in system

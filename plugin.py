@@ -285,10 +285,9 @@ class CatsitatePlugin(MaiBotPlugin):
                 "qzone.max_retries=%s 当前版本不消费(动作 API 固定不重试,读路径固定单次),配置仅预留",
                 self.config.qzone.max_retries,
             )
-        # 工具驱动旧配置兼容:持久化的白名单缺空间工具时告警(不静默改配置)——
-        # 旧配置含已废弃的 reply(receive 网关下无害但无效);qzone_comment/
-        # qzone_reply 缺席会让 bot 在虚拟流里无法互动,qzone_post 缺席则无法发
-        # 说说,view_friend_feeds 缺席则全域查看工具不可用(v0.8 兼容承诺)
+        # 工具驱动旧配置兼容:qzone_* 工具全域默认可用(不受白名单管理,2026-09-02
+        # 用户裁定),白名单只管其余虚拟流工具;view_friend_feeds 缺席则虚拟流无法
+        # 查看好友说说(仍检查);白名单里残留 qzone_*/reply 项提示可移除(不再消费)
         self._warn_qzone_tool_whitelist()
         self.qzone_injector = FeedInjector(decision_window_s=self.config.qzone.decision_window_seconds)
         # seq 以当前秒播种:重启归零会让 qzone_{tid}_{seq} 与上一轮运行撞车,
@@ -351,25 +350,24 @@ class CatsitatePlugin(MaiBotPlugin):
         self.ctx.logger.info("catsitate_core 已加载:注入/备忘录/好感度/贴表情/戳一戳/reply补传/图片重看")
 
     def _warn_qzone_tool_whitelist(self) -> None:
-        """工具驱动旧配置兼容告警(on_load 调用;不静默改配置,只提示补入)。
+        """白名单语义告警(on_load 调用;不静默改配置,只提示)。
 
-        缺席后果:qzone_comment/qzone_reply→虚拟流内无法互动;qzone_post→无法
-        发说说;view_friend_feeds→全域查看工具不可用(v0.8 新增,旧持久化白名单
-        常缺——CHANGELOG/手册承诺的兼容告警);含已废弃 reply 另独立告警。"""
+        2026-09-02 起 qzone_* 工具全域默认可用、不受 tool_whitelist 管理
+        (不可剔除):白名单只管其余虚拟流工具;view_friend_feeds 缺席→虚拟流
+        无法查看好友说说(仍检查);残留 qzone_*/已废弃 reply 项→提示可移除。"""
 
-        missing_qzone_tools = [
-            t for t in ("qzone_comment", "qzone_reply", "qzone_post", "view_friend_feeds")
-            if t not in self.config.qzone.tool_whitelist
-        ]
-        if missing_qzone_tools:
+        if "view_friend_feeds" not in self.config.qzone.tool_whitelist:
             self.ctx.logger.warning(
-                "qzone.tool_whitelist 缺少 %s(旧配置残留),"
-                "对应空间工具将不可用——请在配置中补入",
-                "/".join(missing_qzone_tools),
+                "qzone.tool_whitelist 缺少 view_friend_feeds(旧配置残留),"
+                "虚拟流内将无法查看好友说说——请在配置中补入"
             )
-        if "reply" in self.config.qzone.tool_whitelist:
+        stale = [t for t in self.config.qzone.tool_whitelist
+                 if t.startswith("qzone_") or t == "reply"]
+        if stale:
             self.ctx.logger.warning(
-                "qzone.tool_whitelist 含已废弃的 reply(v0.7 工具驱动:receive 网关无出站路径),该项无效可移除"
+                "qzone.tool_whitelist 含不再由白名单管理的项:%s"
+                "(qzone_* 工具全域默认可用;reply 已废弃)——该项无效可移除",
+                "/".join(stale),
             )
 
     async def on_unload(self) -> None:
@@ -739,23 +737,22 @@ class CatsitatePlugin(MaiBotPlugin):
 
     @Tool(
         "qzone_like",
-        description="给好友说说点赞(QQ空间)。仅在浏览动态或收到点赞/评论通知时可用;可传 feed_id 精确指定(照抄消息尾部〔〕里的说说ID),缺省对当前说说点赞。",
-        brief_description="给当前说说点赞",
-        parameters=[ToolParameterInfo(name="feed_id", param_type="string", description="目标说说ID(照抄消息尾部〔〕里的说说ID;可选,缺省当前说说)", required=False)],
+        description="给好友说说点赞(QQ空间)。传 feed_id 精确指定(浏览消息尾部〔〕里或 view_friend_feeds 结果里都有说说ID);正在浏览动态时不传,默认对当前说说点赞。",
+        brief_description="给说说点赞",
+        parameters=[ToolParameterInfo(name="feed_id", param_type="string", description="目标说说ID(照抄消息尾部〔〕或 view_friend_feeds 结果里的说说ID;可选,缺省当前说说)", required=False)],
         visibility="visible",
     )
     async def qzone_like(self, feed_id: str = "", **kwargs: Any) -> str:
-        # 硬门控(SDK @Tool 无类级 allowed_session 通道,实测结论见任务报告):
-        # 仅虚拟流会话可用,真实聊天流调用直接拒绝
-        if str(kwargs.get("stream_id") or "") not in self._qzone_session_id_set():
-            return "该工具仅在浏览QQ空间动态时可用。"
+        # 全域工具(view_friend_feeds 提供说说ID 后任何聊天里都可互动);
+        # 缺省目标依赖浏览态(awaiting_feed),非浏览流调用须显式带 feed_id
+        del kwargs
         if not self._qzone_available:
             return "QQ空间模块未启用。"
         target = str(feed_id or "").strip()
         if not target:
             awaiting = self.qzone_injector.awaiting_feed
             if awaiting is None:
-                return "当前没有正在浏览的说说,想点赞请带上消息尾部的说说ID。"
+                return "当前没有正在浏览的说说,想点赞请带上说说ID(可用 view_friend_feeds 查看好友说说)。"
             # 通知项取真实说说 tid(可点其原说说);无 origin_tid 的畸形通知显式拒绝
             target = awaiting.origin_tid or ("" if awaiting.source == "notify" else awaiting.tid)
             if not target:
@@ -810,13 +807,11 @@ class CatsitatePlugin(MaiBotPlugin):
     async def qzone_comment(self, feed_id: str = "", content: str = "", at_user_id: str = "",
                             **kwargs: Any) -> str:
         """评论说说——bot 自主决定是否/如何评论(工具驱动,替代意图路由)。"""
+        del kwargs  # 全域工具:view_friend_feeds 提供说说ID 后任何聊天里都可评论
         if not self._qzone_available:
             return "QQ空间模块未启用。"
-        stream_id = str(kwargs.get("stream_id") or "")
-        if stream_id not in self._qzone_session_id_set():
-            return "这个工具只能在QQ空间动态流里使用。"
         if not feed_id.strip():
-            return "缺少说说ID,请照抄消息末尾〔〕里的说说ID。"
+            return "缺少说说ID(浏览消息尾部〔〕里或 view_friend_feeds 结果里都有)。"
         content = content.strip()
         if not content:
             return "评论内容不能为空。"
@@ -881,6 +876,8 @@ class CatsitatePlugin(MaiBotPlugin):
         """楼中楼回复——commentId+commentUin 二元组精确匹配主评论(联调实证)。"""
         if not self._qzone_available:
             return "QQ空间模块未启用。"
+        # 保留流门控(与 like/comment/post 全域化不同):comment_id 锚只存在于
+        # 空间流的通知参数行,真实流无来源,放开只会诱导无效调用
         stream_id = str(kwargs.get("stream_id") or "")
         if stream_id not in self._qzone_session_id_set():
             return "这个工具只能在QQ空间动态流里使用。"
@@ -933,11 +930,9 @@ class CatsitatePlugin(MaiBotPlugin):
     async def qzone_post(self, content: str = "", **kwargs: Any) -> str:
         """发布说说——bot 自主决定是否/何时发,发布后自动注入虚拟流供后续互动引用;
         tid 流程(回注锚/seen/registry 锚定)沿用既有成果。"""
+        del kwargs  # 全域工具:任何聊天里想分享心情都能发(qzone_post 自产内容无需锚)
         if not self._qzone_available:
             return "QQ空间模块未启用。"
-        stream_id = str(kwargs.get("stream_id") or "")
-        if stream_id not in self._qzone_session_id_set():
-            return "这个工具只能在QQ空间动态流里使用。"
         content = content.strip()
         if not content:
             return "说说内容不能为空。"
@@ -1018,7 +1013,8 @@ class CatsitatePlugin(MaiBotPlugin):
         visibility="visible",
     )
     async def view_friend_feeds(self, qq: str = "", count: int = 3, **kwargs: Any) -> dict | str:
-        """全域查看工具:真实流仅供获取信息(空间动作工具在真实流隐藏)。
+        """全域查看工具:任何聊天里都可看,也是 qzone_like/qzone_comment 等空间
+        动作工具在真实聊天流里的参数来源(view_friend_feeds 结果带说说ID)。
 
         回 dict 而非 str:图片以 content_items(content_type=image+base64)经 tool
         result media 返回,宿主入库 Images 表后可被 inspect_image 的 image_hash
@@ -1046,9 +1042,14 @@ class CatsitatePlugin(MaiBotPlugin):
             return "拉取失败,已记录日志。"
         if not feeds:
             return f"{qq} 最近没有可见的说说。"
-        text_parts: list[str] = []
+        # 可读性格式(2026-09-02):同主免重复——所有条目同作者,头部点名一次;
+        # 条目编号+发布时间前缀(浏览注入同款相对时间)分清新旧;正文超长截断;
+        # 说说ID/图片hash 锚契约不变(模型照抄锚值即可评论/点赞/看图)
+        nickname = feeds[0].nickname or qq
+        now_epoch = time.time()
+        text_parts: list[str] = [f"{nickname}(QQ:{qq})最近的说说,共 {len(feeds)} 条:"]
         content_items: list[dict] = []
-        for f in feeds:
+        for idx, f in enumerate(feeds, start=1):
             self._qzone_registry.register(FeedContext(
                 tid=f.tid, owner_uin=qq, owner_nickname=f.nickname or qq, kind="feed",
                 content_summary=(f.content or "(纯图)")[:100], recent_comments=list(f.comments),
@@ -1074,7 +1075,10 @@ class CatsitatePlugin(MaiBotPlugin):
                     "data": base64.b64encode(data).decode("ascii"),
                     "mime_type": "image/jpeg",
                 })
-            line = f"作者:{f.nickname or qq}\n内容:{f.content or '(纯图)'}"
+            body = f.content or "(纯图)"
+            if len(body) > 300:
+                body = body[:300] + "…"
+            line = f"〔{idx}〕{comment_time_prefix(f.abstime, now_epoch)}{body}"
             if img_tags:
                 line += "\n" + " ".join(img_tags)
             line += f"\n〔说说ID={f.tid[:12]}〕"
@@ -2017,8 +2021,8 @@ class CatsitatePlugin(MaiBotPlugin):
                 new_kwargs = {**new_kwargs, self._MESSAGES_KEY: messages}
             defs = kwargs.get("tool_definitions")
             if isinstance(defs, list):
-                # 双向隔离(T11/终审 I4):qzone 流走白名单(硬门控不随配置放松);
-                # 非 qzone 流剥离 qzone_* 工具(qzone_like 等),防模型误调
+                # qzone_* 工具全域默认可用(2026-09-02);其余工具 qzone 流走白名单,
+                # 非 qzone 流原样放行(view_friend_feeds 为真实流提供说说ID/图片hash)
                 filtered = filter_qzone_tools_for_stream(
                     [d for d in defs if isinstance(d, dict)],
                     is_qzone=is_qzone_session, whitelist=self.config.qzone.tool_whitelist,
@@ -3016,6 +3020,7 @@ class CatsitatePlugin(MaiBotPlugin):
         target_words = random.randint(80, 200)
         stable_ctx = (
             f"bot 人设:{persona}\n"
+            f"今天是{today}\n"
             f"今天的日程:{schedule_summary or '自由活动'}\n"
             f"备忘:{memos or '无'}\n看到的好友动态:{seen_summary or '无'}"
         )

@@ -116,7 +116,9 @@ def test_build_notify_message_with_reply_segment():
     info = msg["message_info"]
     assert info["user_info"] == {"user_id": "20000", "user_nickname": "小红"}
     assert info["group_info"] == {"group_id": "qzone_feed", "group_name": "QQ空间"}
-    assert info["additional_config"]["is_mentioned"] == 1.0  # 同 build_feed_message(联调缺陷#3)
+    # 2026-09-02:通知不设 is_mentioned——走主程序自然回复概率,不强制触发
+    # planner 轮(浏览注入 build_feed_message 仍保留,串行决策环依赖)
+    assert "is_mentioned" not in (info.get("additional_config") or {})
     reply = msg["raw_message"][0]
     assert reply["type"] == "reply"
     assert reply["data"]["target_message_id"] == "qzone_f1_3"

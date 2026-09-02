@@ -527,17 +527,21 @@ def test_qzone_post_echo_content_truncated_to_sixty(tmp_path):
 
 
 def test_qzone_post_validation_empty_content_and_session(tmp_path):
-    """入参校验:空内容 → 显式拒绝;非虚拟流会话/模块未启用 → 拒绝;
-    三种拒绝形态均零 LLM 调用、零发布调用、零回注。"""
+    """入参校验:空内容 → 显式拒绝;模块未启用 → 拒绝;两种拒绝形态均零
+    发布调用、零回注。2026-09-02 起全域工具:不再有流门控(真实流亦可发,
+    任意 stream_id 一视同仁)。"""
 
     p = _make_tool_plugin(tmp_path)
     res = asyncio.run(p.qzone_post(content="   ", stream_id="s1"))
     assert "说说内容不能为空" in res
-    assert asyncio.run(p.qzone_post(content="你好", stream_id="other")) == "这个工具只能在QQ空间动态流里使用。"
     p._qzone_available = False
     assert asyncio.run(p.qzone_post(content="你好", stream_id="s1")) == "QQ空间模块未启用。"
     assert p.qzone_client.publish_calls == []
     assert p._ctx.gateway.calls == []
+    # 全域化回归锁:恢复可用后,非虚拟流 stream_id 不再被流门控拒绝(直通发布)
+    p._qzone_available = True
+    res = asyncio.run(p.qzone_post(content="你好", stream_id="other"))
+    assert "发布成功" in res and p.qzone_client.publish_calls
 
 
 def test_qzone_post_auth_error_invalidates_cookie(tmp_path):
@@ -1698,29 +1702,29 @@ def test_qzone_data_prune_registered_in_on_load():
 
 
 def test_on_load_whitelist_warning_covers_view_friend_feeds(tmp_path):
-    """v0.8 兼容告警(M3 修正 I-1):旧持久化 tool_whitelist 缺 view_friend_feeds
-    时 on_load 告警提示补入(CHANGELOG/手册承诺);白名单齐全时零告警;
-    已废弃 reply 的告警独立保留。"""
+    """白名单语义告警(2026-09-02 全域化后):缺 view_friend_feeds 仍告警
+    (虚拟流无法查看好友说说);残留 qzone_*/reply 项提示可移除(不再消费);
+    齐全新语义白名单零告警。"""
 
     p = _make_plugin(tmp_path)
-    p.config.qzone.tool_whitelist = ["qzone_like", "qzone_comment", "qzone_reply", "qzone_post"]
+    p.config.qzone.tool_whitelist = ["wait"]
     p._warn_qzone_tool_whitelist()
     assert any(
         level == "warning" and "view_friend_feeds" in " ".join(str(x) for x in a)
         for level, a in p.logs
     )
 
-    # 齐全白名单:零告警(含废弃 reply 检查)
+    # 齐全新语义白名单(无 qzone_*/reply 项):零告警
     p.logs.clear()
     p.config.qzone.tool_whitelist = list(CatsitateConfig().qzone.tool_whitelist)
     p._warn_qzone_tool_whitelist()
     assert not any(level == "warning" for level, a in p.logs)
 
-    # 已废弃 reply:独立告警保留(v0.7 起语义)
-    p.config.qzone.tool_whitelist.append("reply")
+    # 旧配置残留(qzone_* 与废弃 reply 混入):一并提示可移除
+    p.config.qzone.tool_whitelist += ["qzone_like", "reply"]
     p._warn_qzone_tool_whitelist()
     assert any(
-        level == "warning" and "已废弃的 reply" in str(a[0]) for level, a in p.logs
+        level == "warning" and "不再由白名单管理" in str(a[0]) for level, a in p.logs
     )
 
 
@@ -2470,9 +2474,13 @@ def test_view_friend_feeds_returns_media_dict(tmp_path):
     # 拉取参数对位:nickname 回退 QQ 号(全域工具无昵称上下文),num=请求条数
     assert feed_calls == [("100", "100", 2)]
     assert downloads == ["http://img.qpic.cn/a.jpg"]  # 每图恰下载一次
-    # content 摘要:作者/正文/图标注(sha256 前 8 位,与 inspect_image 前缀口径一致)/锚
+    # content 摘要(2026-09-02 可读性格式):头部同主点名一次+条目编号+
+    # 发布时间前缀(浏览注入同款相对时间)+正文,图标注(sha256 前 8 位,
+    # inspect_image 前缀口径不变)/说说ID 锚契约不变
     content = result["content"]
-    assert "作者:小明" in content and "说说ID=tid1" in content and "内容:今天天气好" in content
+    assert "小明(QQ:100)最近的说说,共 1 条:" in content
+    assert "〔1〕" in content and "今天天气好" in content and "说说ID=tid1" in content
+    assert "(" in content.split("〔1〕", 1)[1].split("今天天气好", 1)[0]  # 时间前缀在正文前
     expected_tag = f"图1({hashlib.sha256(b'fakejpeg').hexdigest()[:8]})"
     assert expected_tag in content and "图2" not in content
     # 媒体项:base64 图 + mime(宿主 _parse_tool_content_items 消费形态)

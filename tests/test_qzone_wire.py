@@ -222,14 +222,17 @@ def test_parse_feed_replies_parent_comment_content_defaults_empty():
 
 def _scope1_like_feed(liker_uin: str, owner_uin: str, nick: str, tid: str, fhash: str,
                       action: str = "赞了我的说说", when: str = "昨天 13:20") -> str:
-    """构造实机形态的「与我相关」条目:外层 JSON 内嵌 JS 对象,HTML 片段以 \\xHH 转义存储。"""
+    """构造实机形态的「与我相关」条目:外层 JSON 内嵌 JS 对象,HTML 片段以 \\xHH/\\t 转义存储;
+    条目内顺序=头部(user-info:昵称/动作/时间)在前,data-key 与 data-fkey/data-tid 在后。"""
     fkey = f"{liker_uin}_{owner_uin}_{fhash}"
     return (
+        '\\x3Cdiv class=\\x22user-info\\x22\\x3E\\x3Cdiv class=\\x22f-nick\\x22\\x3E'
+        '\\x3Ca class=\\x22f-name q_namecard \\x22 link=\\x22nameCard_' + liker_uin + '\\x22\\x3E' + nick + '\\x3C/a\\x3E'
+        '\\x3Cspan  class=\\x22 ui-mr10 state\\x22 \\x3E\\t\\t' + action + '\\t\\t\\x3C/span\\x3E'
+        '\\x3Cspan  class=\\x22 ui-mr8 state\\x22 \\x3E\\t\\t' + when + '\\t\\t\\x3C/span\\x3E'
+        '\\x3C/div\\x3E\\x3C/div\\x3E'
         '\\x3Cli data-key=\\x22' + fkey + '\\x22\\x3E'
         '\\x3Cdiv data-fkey=\\x22' + fkey + '\\x22 data-tid=\\x22' + tid + '\\x22 data-uin=\\x22' + owner_uin + '\\x22\\x3E'
-        '\\x3Cdiv class=\\x22f-nick\\x22\\x3E\\x3Ca class=\\x22f-name q_namecard \\x22 link=\\x22nameCard_' + liker_uin + '\\x22\\x3E' + nick + '\\x3C/a\\x3E'
-        '\\x3Cspan class=\\x22 ui-mr10 state \\x22 \\x3E\\t\\t' + action + '\\t\\t\\x3C/span\\x3E'
-        '\\x3Cspan class=\\x22 ui-mr8 state \\x22 \\x3E\\t\\t' + when + '\\t\\t\\x3C/span\\x3E'
     )
 
 
@@ -291,8 +294,9 @@ def test_parse_like_events_no_nick_fallback_and_empty():
     from catsitate_core.qzone.wire import LikeEvent
 
     html = (
+        '\\x3Cspan  class=\\x22 ui-mr10 state\\x22 \\x3E\\t\\t赞了我的说说\\t\\t\\x3C/span\\x3E'
+        '\\x3Cli data-key=\\x22100_200_ab12\\x22\\x3E'
         '\\x3Cdiv data-fkey=\\x22100_200_ab12\\x22 data-tid=\\x22ee33\\x22 data-uin=\\x22200\\x22\\x3E'
-        '\\x3Cspan class=\\x22 ui-mr10 state \\x22 \\x3E\\t\\t赞了我的说说\\t\\t\\x3C/span\\x3E'
     )
     events = parse_like_events(html)
     assert len(events) == 1

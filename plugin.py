@@ -773,11 +773,11 @@ class CatsitatePlugin(MaiBotPlugin):
             return "点赞失败:登录态失效已重置,稍后再试。"
         except Exception:
             self.ctx.logger.exception("QQ空间点赞失败(tid=%s)", fid)
-            return "点赞失败,已记录日志。"
+            return "点赞失败:远端接口异常,已记录日志。"
         self.qzone_seen.mark_interacted(fid)
         nickname = ctx.owner_nickname if ctx else owner_uin
         self.qzone_comment_seen.fav_event(owner_uin, "OUT_LIKE", f"你点赞了 {owner_uin} 的说说")
-        return f"已点赞 {nickname} 的说说。"
+        return f"点赞成功:{nickname} 的说说(说说ID={fid[:12]})"
 
     def _qzone_expression_call(self):
         """表达润色 llm_call 装配:旁路统一出口 + qzone 节模型/超时配置
@@ -835,21 +835,23 @@ class CatsitatePlugin(MaiBotPlugin):
         # @ 前缀(napcat 适配器同格式,QQ 空间原生支持):nick 默认 QQ 号,
         # registry 有该评论者昵称则用昵称(通知场景回应评论最自然)
         at_nick = ""
+        receipt_body = content  # 回执正文(不含 @ 标记,可读形态)
         if at_user_id.strip():
             at_uin = at_user_id.strip()
             at_nick = at_uin
             if ctx and ctx.commenter_uin == at_uin:
                 at_nick = ctx.commenter_nickname or at_uin
+            receipt_body = f"@{at_nick} {content}"
             content = f"@{{uin:{at_uin},nick:{at_nick},auto:1}}{content}"
         try:
             await self.qzone_client.do_comment(fid=fid, target_qq=owner_uin, content=content)
         except QzoneAuthError:
             self.qzone_cookie.invalidate()
             self.ctx.logger.warning("QQ空间评论遇登录态失效,cookie 已作废,下轮重取")
-            return "登录态失效已重置,请稍后再试。"
+            return "评论失败:登录态失效已重置,稍后再试。"
         except Exception:
             self.ctx.logger.exception("QQ空间评论失败(feed_id=%s)", fid[:16])
-            return "评论失败,已记录日志。"
+            return "评论失败:远端接口异常,已记录日志。"
         # 记账(远端已成功,记账失败仅告警——错误显式暴露但不误报失败)
         try:
             self.qzone_seen.mark_interacted(fid)
@@ -861,7 +863,7 @@ class CatsitatePlugin(MaiBotPlugin):
         except Exception:
             self.ctx.logger.exception("QQ空间评论记账失败(远端已成功,仅告警)")
         self._qzone_comment_counts[fid] = count + 1
-        return f"已评论{'并@了 ' + at_nick if at_user_id.strip() else ''}。"
+        return f"评论成功,已发出:「{receipt_body}」"
 
     @Tool(
         "qzone_reply",
@@ -909,15 +911,15 @@ class CatsitatePlugin(MaiBotPlugin):
         except QzoneAuthError:
             self.qzone_cookie.invalidate()
             self.ctx.logger.warning("QQ空间楼中楼回复遇登录态失效,cookie 已作废,下轮重取")
-            return "登录态失效已重置,请稍后再试。"
+            return "回复失败:登录态失效已重置,稍后再试。"
         except Exception:
             self.ctx.logger.exception("QQ空间楼中楼回复失败(feed=%s,comment=%s)", fid[:12], comment_id)
-            return "回复失败,已记录日志。"
+            return "回复失败:远端接口异常,已记录日志。"
         try:
             self.qzone_comment_seen.fav_event(at_uin, "COMMENT", f"你回复了 {at_nick} 的评论")
         except Exception:
             self.ctx.logger.exception("QQ空间楼中楼记账失败(仅告警)")
-        return f"已回复 {at_nick} 的评论。"
+        return f"回复成功,已回复 {at_nick} 的评论:「{content}」"
 
     @Tool(
         "qzone_post",
@@ -949,7 +951,7 @@ class CatsitatePlugin(MaiBotPlugin):
             # 登录态失效自愈链(与评论/点赞同款):作废 cookie 下轮重取,本轮发布放弃
             self.qzone_cookie.invalidate()
             self.ctx.logger.warning("QQ空间说说发布遇登录态失效,cookie 已作废,下轮重取")
-            return "登录态失效已重置,请稍后再试。"
+            return "发布失败:登录态失效已重置,稍后再试。"
         except Exception:
             self.ctx.logger.exception("QQ空间说说发布失败")
             return "发布失败,已记录日志。"
@@ -1003,7 +1005,7 @@ class CatsitatePlugin(MaiBotPlugin):
         except Exception:
             self.ctx.logger.exception("QQ空间说说回注失败(发布已成功,仅上下文注入失败)")
         self.ctx.logger.info("QQ空间说说发布成功: %s", content[:30])
-        return "发布成功。"
+        return f"发布成功,已发出说说:「{content}」" + (f"(说说ID={tid[:12]})" if tid else "")
 
     @Tool(
         "view_friend_feeds",

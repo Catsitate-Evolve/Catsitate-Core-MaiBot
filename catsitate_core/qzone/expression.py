@@ -11,7 +11,6 @@ from __future__ import annotations
 from typing import Any, Awaitable, Callable
 
 from catsitate_core.llm_provider import build_side_prompt
-from catsitate_core.qzone.messages import clip_text
 
 
 def _sanitize(text: str) -> str:
@@ -52,6 +51,8 @@ async def polish_action_text(
             logger.warning("QQ空间表达润色返回空文本,以草稿直发")
         return ""
     if len(text) > limit:
+        # 超长只做一次软性改短重润(2026-09-02 用户裁定:不再设硬截断——
+        # 重润仍超长就按模型原样发出,长度交给措辞约束与模型自律)
         if logger:
             logger.warning("QQ空间表达润色超长(%d 字>上限 %d),这次改短一些重新润色", len(text), limit)
         retry_messages, _ = build_side_prompt(
@@ -63,8 +64,4 @@ async def polish_action_text(
             retry_text = _sanitize(str(result2.get("response") or ""))
             if retry_text:
                 text = retry_text
-    if len(text) > limit:
-        if logger:
-            logger.warning("QQ空间表达润色仍超长(%d 字),截断至 %d 字", len(text), limit)
-        text = clip_text(text, limit)  # 截断尾加"..."(2026-09-02):读的人知道被截了
     return text

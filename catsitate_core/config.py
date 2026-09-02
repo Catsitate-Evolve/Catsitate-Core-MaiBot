@@ -233,8 +233,9 @@ class QzoneSection(PluginConfigBase):
     comment_poll_enabled: bool = _f(True, "统一通知轮询开关(双源:自己说说新评论+他人说说楼中楼新回复,始终运行醒着即可)", label="通知轮询开关")
     comment_poll_interval_minutes: int = _f(30, "评论轮询间隔(分钟;废弃,由 notification_interval_seconds 替代,不再消费)", label="评论轮询间隔(分钟)")
     notification_interval_seconds: int = _f(120, "统一通知轮询间隔(秒,模拟推送通知的检查频率;最小30)", label="通知间隔(秒)")
-    virtual_group_id: str = _f("qzone_feed", "虚拟群聊流伪群号(勿与真实群号相同)", label="虚拟伪群号")
-    virtual_group_name: str = _f("QQ空间", "虚拟群聊流显示名", label="虚拟流显示名")
+    # 虚拟流会话身份不配置(2026-09-02 用户裁定):QZONE_VIRTUAL_GROUP_ID/NAME
+    # 常量固化于 catsitate_core.qzone——伪群号可配置会被改成与真实群号相同的
+    # 值,会话路由与 person 折叠随之漂移;旧配置残留键由加载侧告警提示可移除
     summary_count: int = _f(5, "真实聊天注入的近期已见动态条数", label="见闻摘要条数")
     summary_days: int = _f(3, "见闻摘要回溯天数", label="见闻回溯天数")
     discovery_count: int = _f(50, "发现层单页拉取条数(统一时间线)", label="发现页大小")
@@ -246,7 +247,7 @@ class QzoneSection(PluginConfigBase):
     digest_enabled: bool = _f(True, "空间见闻开关(read_qzone 窗口结束时旁路 LLM 摘要,注入真实聊天)", label="空间见闻开关")
     digest_llm_model: str = _f("memory", "空间见闻摘要模型", label="见闻模型")
     digest_llm_timeout_ms: int = _f(0, "空间见闻超时(毫秒,0=默认)", label="见闻超时(ms)")
-    expression_llm_model: str = _f("memory", "表达润色模型(评论/回复/说说正文按人设口吻润色;失败时以草稿直发)", label="表达润色模型")
+    expression_llm_model: str = _f("replyer", "表达润色模型(评论/回复/说说正文按人设口吻润色;默认与主程序回复模型同源,失败时以草稿直发)", label="表达润色模型")
     expression_llm_timeout_ms: int = _f(0, "表达润色超时(毫秒,0=默认)", label="表达润色超时(ms)")
     request_timeout_ms: int = _f(10000, "空间 HTTP 请求超时(毫秒)", label="HTTP 超时(毫秒)")
     max_retries: int = _f(

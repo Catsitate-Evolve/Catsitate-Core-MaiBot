@@ -88,8 +88,10 @@ def test_qzone_section_defaults():
     assert q.poll_interval_minutes == 15
     # 深度审查 F:慢模型实测轮延迟 31-53s,75s 无余量——默认 150 留余量
     assert q.decision_window_seconds == 150
-    assert q.virtual_group_id == "qzone_feed"
-    assert q.virtual_group_name == "QQ空间"
+    # 2026-09-02:伪群号/显示名固化为常量(不可配置),配置节不再有这两字段
+    assert not hasattr(q, "virtual_group_id") and not hasattr(q, "virtual_group_name")
+    from catsitate_core.qzone import QZONE_VIRTUAL_GROUP_ID, QZONE_VIRTUAL_GROUP_NAME
+    assert QZONE_VIRTUAL_GROUP_ID == "qzone_feed" and QZONE_VIRTUAL_GROUP_NAME == "QQ空间"
     assert q.summary_count == 5
     assert q.summary_days == 3
     # M3-r2 Task5:发现层翻页与拉取数量(源A自扫/源B单页与浏览流同口径)

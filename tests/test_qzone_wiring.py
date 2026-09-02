@@ -444,7 +444,7 @@ def test_qzone_post_success_publishes_and_echoes(tmp_path):
     assert msg["message_id"].startswith("qzone_self_")
     assert msg["platform"] == QZONE_PLATFORM
     assert msg["message_info"]["user_info"]["user_id"] == BOT_UIN
-    assert msg["message_info"]["group_info"]["group_id"] == p.config.qzone.virtual_group_id
+    assert msg["message_info"]["group_info"]["group_id"] == "qzone_feed"  # 虚拟伪群号常量(v0.8.2 固化)
     # 无 is_mentioned:主程序只读 message_info.additional_config 位置,回注不设即不触发决策轮
     assert "is_mentioned" not in (msg["message_info"].get("additional_config") or {})
     assert msg["raw_message"] == [
@@ -843,21 +843,28 @@ def test_diary_generation_llm_failure_skips_publish(tmp_path):
     )
 
 
-def test_diary_generation_abnormal_length_skips_publish(tmp_path):
-    """内容护栏:模板要求 80~200 字,超 300 字视为异常输出跳过发布(不截断硬发)。"""
+def test_diary_generation_empty_skips_and_long_publishes(tmp_path):
+    """内容护栏(v0.8.2 对齐 diary_plugin):空文本跳过发布;**不再设超长硬上限**
+    ——301 字照常发布(长度完全由模板目标字数软约束)。"""
 
     p = _make_diary_plugin(tmp_path)
+
+    async def _empty(messages, model, module, timeout_ms=None):
+        return {"success": True, "response": "   "}
+
+    p._side_llm_call = _empty
+    asyncio.run(p._generate_and_publish_diary())
+    assert p.qzone_client.publish_calls == []
+    assert any(
+        level == "warning" and "内容为空" in str(a[0]) for level, a in p.logs
+    )
 
     async def _long(messages, model, module, timeout_ms=None):
         return {"success": True, "response": "字" * 301}
 
     p._side_llm_call = _long
     asyncio.run(p._generate_and_publish_diary())
-    assert p.qzone_client.publish_calls == []
-    assert p._pending_diary_snapshot.load() == {}
-    assert any(
-        level == "warning" and "内容异常" in str(a[0]) for level, a in p.logs
-    )
+    assert p.qzone_client.publish_calls == ["字" * 301]  # 超长照发(无硬上限)
 
 
 def test_diary_generation_publish_failure_no_snapshot(tmp_path):
@@ -891,7 +898,7 @@ def test_echo_pending_diary_routes_self_message_and_clears(tmp_path):
     assert msg["message_id"].startswith("qzone_self_diary_")
     assert msg["platform"] == QZONE_PLATFORM
     assert msg["message_info"]["user_info"]["user_id"] == BOT_UIN
-    assert msg["message_info"]["group_info"]["group_id"] == p.config.qzone.virtual_group_id
+    assert msg["message_info"]["group_info"]["group_id"] == "qzone_feed"  # 虚拟伪群号常量(v0.8.2 固化)
     assert "is_mentioned" not in (msg["message_info"].get("additional_config") or {})
     assert msg["raw_message"] == [{"type": "text", "data": "我昨晚发布的日记:昨晚的日记正文"}]
     assert p._pending_diary_snapshot.load() == {}
@@ -1341,11 +1348,11 @@ def test_notify_retry_backoff_source_c_like_gives_up_without_misleading_retry(tm
     assert p.qzone_comment_seen.is_new(key) is True  # 键已回退,下轮重新发现
 
 
-def test_notify_scan_source_c_observation_line_and_drift_warn_once(tmp_path):
-    """源C 解析观测线(M3 修正 I-5):每轮取数成功后 info「源C 赞事件解析 {N}
-    条」;连续 3 轮 N==0 且模块可用(取数成功)打一次锚点漂移 warning(去重
-    标记,后续空轮不重复告警);恢复有事件后计数与标记复位,再次连续 3 轮空
-    才会告警第二次(新漂移段落)。"""
+def test_notify_scan_source_c_drift_warn_once(tmp_path):
+    """源C 漂移告警(v0.8.2 收敛:常规轮次不打「解析 N 条」观测日志,仅保留
+    异常信号):连续 3 轮取数成功但零事件打一次锚点漂移 warning(去重标记,
+    后续空轮不重复告警);恢复有事件后计数与标记复位,再次连续 3 轮空才会
+    告警第二次(新漂移段落)。"""
 
     import time as _time
 
@@ -1378,16 +1385,8 @@ def test_notify_scan_source_c_observation_line_and_drift_warn_once(tmp_path):
             if level == "warning" and "锚点可能漂移" in str(a[0])
         )
 
-    def _parse_infos(n: int) -> int:
-        # 桩 logger 记录 printf 原参:模板串+计数逐参比对
-        return sum(
-            1 for level, a in p.logs
-            if level == "info" and str(a[0]) == "源C 赞事件解析 %d 条" and a[1:] == [n]
-        )
-
     for _ in range(4):  # 连续 4 轮空:第 3 轮触发一次,第 4 轮不重复
         asyncio.run(p._qzone_notify_scan())
-    assert _parse_infos(0) == 4  # 观测线每轮都有
     assert _drift_warnings() == 1  # warn-once
 
     client.events = [LikeEvent(
@@ -1395,7 +1394,6 @@ def test_notify_scan_source_c_observation_line_and_drift_warn_once(tmp_path):
         owner_uin=BOT_UIN, target_tid="ownfeed1", create_time=str(int(_time.time())),
     )]
     asyncio.run(p._qzone_notify_scan())
-    assert _parse_infos(1) == 1
     p.qzone_injector.on_turn_complete(_time.monotonic())  # 释放 awaiting,后续轮可继续
     assert _drift_warnings() == 1  # 恢复非空不告警
 

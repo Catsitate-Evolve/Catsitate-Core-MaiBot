@@ -37,7 +37,12 @@ from catsitate_core.memo import MemoService, validate_remind_at
 from catsitate_core.msg_react import MsgReactEngine, parse_choice_resp
 from catsitate_core.poke import PokeEngine
 from catsitate_core.prompt_deploy import sync_prompt_templates
-from catsitate_core.qzone import QZONE_GATEWAY_NAME, QZONE_PLATFORM
+from catsitate_core.qzone import (
+    QZONE_GATEWAY_NAME,
+    QZONE_PLATFORM,
+    QZONE_VIRTUAL_GROUP_ID,
+    QZONE_VIRTUAL_GROUP_NAME,
+)
 from catsitate_core.qzone.protocol import FEED_APPID_SHUOSHUO, FeedItem, parse_friend_list
 from catsitate_core.qzone.client import CookieManager, QzoneAuthError, QzoneClient
 from catsitate_core.qzone.comment_seen import CommentSeenStore
@@ -971,8 +976,8 @@ class CatsitatePlugin(MaiBotPlugin):
                 # 且 [bot].platforms 声明后自身判定命中),标「我」会被当普通用户
                 "user_info": {"user_id": bot_uin, "user_nickname": await self._bot_echo_nickname()},
                 "group_info": {
-                    "group_id": self.config.qzone.virtual_group_id,
-                    "group_name": self.config.qzone.virtual_group_name,
+                    "group_id": QZONE_VIRTUAL_GROUP_ID,
+                    "group_name": QZONE_VIRTUAL_GROUP_NAME,
                 },
                 # 不设 is_mentioned:这是 bot 自己发的,不需要触发 planner 决策轮
             },
@@ -1168,7 +1173,7 @@ class CatsitatePlugin(MaiBotPlugin):
             self.ctx.logger.warning("QQ空间网关就绪上报被拒绝,模块停用")
             self._qzone_available = False
             return
-        self.ctx.logger.info("QQ空间虚拟平台就绪(platform=%s,伪群=%s)", QZONE_PLATFORM, self.config.qzone.virtual_group_id)
+        self.ctx.logger.info("QQ空间虚拟平台就绪(platform=%s,伪群=%s)", QZONE_PLATFORM, QZONE_VIRTUAL_GROUP_ID)
 
     @MessageGateway("receive", name=QZONE_GATEWAY_NAME, description="QQ空间虚拟聊天平台(动态流入;互动经工具发出)", platform=QZONE_PLATFORM)
     async def qzone_gateway(self, *, message: dict, route: dict, metadata: dict) -> dict:
@@ -1467,8 +1472,8 @@ class CatsitatePlugin(MaiBotPlugin):
                         "QQ空间通知原说说无注入记录(origin_tid=%s),reply 段省略", feed.origin_tid
                     )
                 msg = build_notify_message(
-                    feed, group_id=self.config.qzone.virtual_group_id,
-                    group_name=self.config.qzone.virtual_group_name, now_epoch=time.time(),
+                    feed, group_id=QZONE_VIRTUAL_GROUP_ID,
+                    group_name=QZONE_VIRTUAL_GROUP_NAME, now_epoch=time.time(),
                     reply_target_id=reply_target_id, reply_target_sender=feed.origin_sender,
                 )
             else:
@@ -1489,8 +1494,8 @@ class CatsitatePlugin(MaiBotPlugin):
                 )
                 self._qzone_seq += 1
                 msg = build_feed_message(
-                    feed, seq=self._qzone_seq, group_id=self.config.qzone.virtual_group_id,
-                    group_name=self.config.qzone.virtual_group_name, images=images,
+                    feed, seq=self._qzone_seq, group_id=QZONE_VIRTUAL_GROUP_ID,
+                    group_name=QZONE_VIRTUAL_GROUP_NAME, images=images,
                     now_epoch=time.time(),
                 )
             try:
@@ -1666,8 +1671,8 @@ class CatsitatePlugin(MaiBotPlugin):
             "message_info": {
                 "user_info": {"user_id": bot_uin, "user_nickname": await self._bot_echo_nickname()},
                 "group_info": {
-                    "group_id": self.config.qzone.virtual_group_id,
-                    "group_name": self.config.qzone.virtual_group_name,
+                    "group_id": QZONE_VIRTUAL_GROUP_ID,
+                    "group_name": QZONE_VIRTUAL_GROUP_NAME,
                 },
             },
             "raw_message": [{"type": "text", "data": "(打开了QQ空间)"}],
@@ -1909,10 +1914,9 @@ class CatsitatePlugin(MaiBotPlugin):
                     self.ctx.logger.warning("QQ空间登录态失效(通知轮询源C),cookie 已作废,下轮重取")
                 except Exception:
                     self.ctx.logger.exception("QQ空间通知轮询源C失败,本轮跳过源C")
-                # 解析观测线(M3 修正 I-5):每轮记录解析条数,供实机验收核对拉取
-                # 是否正常;连续 3 轮取数成功但零事件 → 锚点漂移告警(warn-once,
-                # 恢复有事件即复位,新漂移段落重新观测)
-                self.ctx.logger.info("源C 赞事件解析 %d 条", len(likes))
+                # 解析观测线(2026-09-02 收敛):常规轮次不打解析条数日志(信息噪音),
+                # 仅保留异常信号——解析失败走上方 except 告警;连续 3 轮取数成功但
+                # 零事件 → 锚点漂移告警(warn-once,恢复有事件即复位)
                 if parsed_ok:
                     if likes:
                         self._qzone_sourcec_empty_rounds = 0
@@ -2568,7 +2572,7 @@ class CatsitatePlugin(MaiBotPlugin):
         parts = [QZONE_PLATFORM]
         if account:
             parts.append(f"account:{account}")
-        parts.append(self.config.qzone.virtual_group_id)
+        parts.append(QZONE_VIRTUAL_GROUP_ID)
         return hashlib.md5("_".join(parts).encode()).hexdigest()
 
     def _environment_block(self, stream_id: str) -> tuple[str, str] | None:
@@ -3083,9 +3087,10 @@ class CatsitatePlugin(MaiBotPlugin):
             self.ctx.logger.warning("QQ空间日记 LLM 失败(%s),跳过", detail)
             return
         diary_text = str(result.get("response") or "").strip()
-        # 模板要求 80~200 字,超 300 字视为模型输出异常(夹带解释/重复),不硬发
-        if not diary_text or len(diary_text) > 300:
-            self.ctx.logger.warning("QQ空间日记内容异常(长度=%d),跳过发布", len(diary_text))
+        # 不设硬上限截断/拦截(2026-09-02 用户裁定,对齐 diary_plugin:长度完全由
+        # 模板里的目标字数软约束;蓝本也无上限)。仅拦空文本——空日记没有发布意义
+        if not diary_text:
+            self.ctx.logger.warning("QQ空间日记内容为空,跳过发布")
             return
         try:
             tid = await self.qzone_client.do_publish(content=diary_text)
@@ -3129,8 +3134,8 @@ class CatsitatePlugin(MaiBotPlugin):
             "message_info": {
                 "user_info": {"user_id": bot_uin, "user_nickname": await self._bot_echo_nickname()},
                 "group_info": {
-                    "group_id": self.config.qzone.virtual_group_id,
-                    "group_name": self.config.qzone.virtual_group_name,
+                    "group_id": QZONE_VIRTUAL_GROUP_ID,
+                    "group_name": QZONE_VIRTUAL_GROUP_NAME,
                 },
             },
             "raw_message": [{"type": "text",

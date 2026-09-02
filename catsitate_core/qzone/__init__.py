@@ -7,3 +7,8 @@
 
 QZONE_PLATFORM = "qzone-qq"
 QZONE_GATEWAY_NAME = "catsitate_qzone"
+# 虚拟流会话身份(2026-09-02 用户裁定:不可配置项,常量固化)——伪群号若可配置,
+# 会被改成与真实群号相同/已存在的值,主程序会话路由与 person 折叠随之漂移;
+# 显示名仅 UI 展示。改值需动代码并过全量测试,不给配置留口子。
+QZONE_VIRTUAL_GROUP_ID = "qzone_feed"
+QZONE_VIRTUAL_GROUP_NAME = "QQ空间"

@@ -44,7 +44,13 @@ from catsitate_core.qzone import (
     QZONE_VIRTUAL_GROUP_NAME,
 )
 from catsitate_core.qzone.protocol import FEED_APPID_SHUOSHUO, FeedItem, parse_friend_list
-from catsitate_core.qzone.client import CookieManager, QzoneAuthError, QzoneClient
+from catsitate_core.qzone.client import (
+    BIZ_CODE_TOO_FREQUENT,
+    CookieManager,
+    QzoneAuthError,
+    QzoneBizError,
+    QzoneClient,
+)
 from catsitate_core.qzone.comment_seen import CommentSeenStore
 from catsitate_core.qzone.discovery import FeedDiscovery
 from catsitate_core.qzone.injector import FeedInjector
@@ -774,6 +780,11 @@ class CatsitatePlugin(MaiBotPlugin):
             self.qzone_cookie.invalidate()
             self.ctx.logger.warning("QQ空间点赞遇登录态失效,cookie 已作废,下轮重取")
             return "点赞失败:登录态失效已重置,稍后再试。"
+        except QzoneBizError as exc:
+            self.ctx.logger.warning("QQ空间点赞业务错误(code=%s)", exc.code)
+            if exc.code == BIZ_CODE_TOO_FREQUENT:
+                return "点赞失败:QQ空间说操作太频繁——今天点赞够多了,先歇一歇别重试。"
+            return f"点赞失败:QQ空间拒绝了这次点赞(code={exc.code}),先不要立刻重试。"
         except Exception:
             self.ctx.logger.exception("QQ空间点赞失败(tid=%s)", fid)
             return "点赞失败:远端接口异常,已记录日志。"
@@ -850,6 +861,11 @@ class CatsitatePlugin(MaiBotPlugin):
             self.qzone_cookie.invalidate()
             self.ctx.logger.warning("QQ空间评论遇登录态失效,cookie 已作废,下轮重取")
             return "评论失败:登录态失效已重置,稍后再试。"
+        except QzoneBizError as exc:
+            self.ctx.logger.warning("QQ空间评论业务错误(code=%s)", exc.code)
+            if exc.code == BIZ_CODE_TOO_FREQUENT:
+                return "评论失败:QQ空间说操作太频繁——短时间内评论得够多了,先歇一歇别重试,等下次浏览时再互动。"
+            return f"评论失败:QQ空间拒绝了这次评论(code={exc.code}),先不要立刻重试。"
         except Exception:
             self.ctx.logger.exception("QQ空间评论失败(feed_id=%s)", fid[:16])
             return "评论失败:远端接口异常,已记录日志。"
@@ -915,6 +931,11 @@ class CatsitatePlugin(MaiBotPlugin):
             self.qzone_cookie.invalidate()
             self.ctx.logger.warning("QQ空间楼中楼回复遇登录态失效,cookie 已作废,下轮重取")
             return "回复失败:登录态失效已重置,稍后再试。"
+        except QzoneBizError as exc:
+            self.ctx.logger.warning("QQ空间楼中楼回复业务错误(code=%s)", exc.code)
+            if exc.code == BIZ_CODE_TOO_FREQUENT:
+                return "回复失败:QQ空间说操作太频繁——这条评论今天回得够多了,别再重试这条,想说话等下次浏览时再说。"
+            return f"回复失败:QQ空间拒绝了这次回复(code={exc.code}),先不要立刻重试。"
         except Exception:
             self.ctx.logger.exception("QQ空间楼中楼回复失败(feed=%s,comment=%s)", fid[:12], comment_id)
             return "回复失败:远端接口异常,已记录日志。"
@@ -953,6 +974,11 @@ class CatsitatePlugin(MaiBotPlugin):
             self.qzone_cookie.invalidate()
             self.ctx.logger.warning("QQ空间说说发布遇登录态失效,cookie 已作废,下轮重取")
             return "发布失败:登录态失效已重置,稍后再试。"
+        except QzoneBizError as exc:
+            self.ctx.logger.warning("QQ空间说说发布业务错误(code=%s)", exc.code)
+            if exc.code == BIZ_CODE_TOO_FREQUENT:
+                return "发布失败:QQ空间说操作太频繁——今天发得够多了,先歇一歇,想发等下次窗口。"
+            return f"发布失败:QQ空间拒绝了这次发布(code={exc.code}),先不要立刻重试。"
         except Exception:
             self.ctx.logger.exception("QQ空间说说发布失败")
             return "发布失败,已记录日志。"
@@ -2946,13 +2972,17 @@ class CatsitatePlugin(MaiBotPlugin):
                 start_time=day_start.timestamp(), end_time=now.timestamp() + 1,
                 limit=0, limit_mode="earliest", filter_mai=False,
             )
-            if isinstance(result, dict) and result.get("success"):
+            # 实机形态(2026-09-02 联调):SDK 已解包 messages 键,直接返回 list
+            # (get_recent 同款);dict+success 形态保留兼容,两种都能吃
+            if isinstance(result, list):
+                msgs = [m for m in result if isinstance(m, dict)]
+            elif isinstance(result, dict) and result.get("success"):
                 loaded = result.get("messages")
                 msgs = [m for m in loaded if isinstance(m, dict)] if isinstance(loaded, list) else []
             else:
                 self.ctx.logger.warning(
                     "日记聊天素材 get_by_time 返回失败形态(%s),回退逐流取数",
-                    "非dict" if not isinstance(result, dict) else "success=False",
+                    "非dict非list" if not isinstance(result, (dict, list)) else "success=False",
                 )
         except Exception:
             self.ctx.logger.exception("日记聊天素材 get_by_time 能力异常,回退逐流取数")

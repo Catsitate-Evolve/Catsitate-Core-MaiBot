@@ -43,11 +43,24 @@ BROWSER_UA = (
 )
 # 登录态/g_tk 失效业务码(联调实证 -3000):命中即抛 QzoneAuthError 触发 cookie 重取
 AUTH_ERROR_CODES = {-3000, -10005}
+# 操作过于频繁业务码(联调实证 2026-09-02,-10049):同评论线程反复回复/短时间
+# 连续写动作触发——不是登录态问题,重试只会更频;调用方据此给出带限制说明的
+# 工具回执,让模型自行收敛(用户裁定:不做硬频控,限制写进工具返回)
+BIZ_CODE_TOO_FREQUENT = -10049
 _MISSING_PSKEY_WARNED = False  # 每进程告警一次
 
 
 class QzoneAuthError(RuntimeError):
     """空间登录态失效(p_skey/g_tk 过期)——调用方应使 cookie 缓存失效并重取。"""
+
+
+class QzoneBizError(RuntimeError):
+    """空间写请求业务错误(非登录态):code 与响应片段随异常携带,
+    调用方按 code 生成带限制说明的工具回执(如 -10049 操作频繁)。"""
+
+    def __init__(self, code, text: str = ""):
+        self.code = code
+        super().__init__(f"空间写请求业务错误: code={code} 响应={text[:120]}")
 
 
 class CookieManager:
@@ -350,7 +363,7 @@ class QzoneClient:
         if code is not None and int(code) in AUTH_ERROR_CODES:
             raise QzoneAuthError(f"空间登录态失效: code={code}")
         if code is None or int(code) != 0:
-            raise RuntimeError(f"空间写请求业务错误: code={payload.get('code')} 响应={text[:120]}")
+            raise QzoneBizError(code, text)
         return payload
 
     async def do_like(self, *, fid: str, target_qq: str) -> bool:

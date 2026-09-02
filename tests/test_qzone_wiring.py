@@ -370,6 +370,54 @@ def test_qzone_comment_auth_error_invalidates_cookie(tmp_path):
     assert p._qzone_comment_counts == {}  # 失败不计入频控
 
 
+def test_qzone_biz_error_too_frequent_receipts(tmp_path):
+    """业务错误回执带限制语义(2026-09-02 联调实证 code=-10049,用户裁定:
+    不做硬频控,把限制写进工具返回让模型自行收敛):四动作工具命中操作频繁
+    时,回执明说「别再重试这条」;其它业务码回执带 code 且劝阻立即重试。"""
+
+    from catsitate_core.qzone.client import BIZ_CODE_TOO_FREQUENT, QzoneBizError
+
+    class _BizFailClient(_StubWriteClient):
+        code = BIZ_CODE_TOO_FREQUENT
+
+        async def do_comment(self, *, fid, target_qq, content):
+            raise QzoneBizError(self.code, "too frequent")
+
+        async def do_reply(self, *, fid, target_qq, comment_tid, comment_uin,
+                           comment_nick, content, at_uin="", at_nick=""):
+            raise QzoneBizError(self.code, "too frequent")
+
+        async def do_publish(self, *, content):
+            raise QzoneBizError(self.code, "too frequent")
+
+        async def do_like(self, *, fid, target_qq):
+            raise QzoneBizError(self.code, "too frequent")
+
+    p = _make_tool_plugin(tmp_path)
+    _register_feed(p, tid="feedF", owner="10001")
+    p.qzone_client = _BizFailClient()
+
+    res = asyncio.run(p.qzone_comment(feed_id="feedF", content="你好", stream_id="s1"))
+    assert "操作太频繁" in res and "别重试" in res
+    _register_feed(p, tid="feedR", owner=BOT_UIN,
+                   commenter_uin="20000", commenter_nickname="小红",
+                   comment_tid="ct1", comment_uin="20000")
+    res = asyncio.run(p.qzone_reply(feed_id="feedR", comment_id="ct1", content="好", stream_id="s1"))
+    assert "操作太频繁" in res and "别再重试这条" in res
+    res = asyncio.run(p.qzone_post(content="发一条", stream_id="s1"))
+    assert "操作太频繁" in res and "先歇一歇" in res
+    res = asyncio.run(p.qzone_like(feed_id="feedF", stream_id="s1"))
+    assert "操作太频繁" in res and "先歇一歇" in res
+
+    # 其它业务码:回执带 code,劝阻立即重试(不误报「太频繁」)
+    class _BizOtherClient(_BizFailClient):
+        code = -9999
+
+    p.qzone_client = _BizOtherClient()
+    res = asyncio.run(p.qzone_comment(feed_id="feedF", content="你好", stream_id="s1"))
+    assert "code=-9999" in res and "先不要立刻重试" in res and "操作太频繁" not in res
+
+
 def test_qzone_reply_real_thread_with_correct_pair(tmp_path):
     """qzone_reply 真实楼中楼(源A 形态):commentId+commentUin 二元组精确匹配
     主评论(通知登记:主评论作者=评论好友),@ 目标=评论者昵称;do_reply 正式接线
@@ -707,7 +755,7 @@ def test_diary_chat_timeline_full_day_global_fetch(tmp_path):
     async def _capability(name, **kw):
         calls.append({"name": name, **kw})
         if name == "message.get_by_time":
-            return {"success": True, "messages": msgs}
+            return list(msgs)  # 实机形态(2026-09-02 联调):SDK 已解包,直接返回 list
         raise AssertionError(f"主路径可用时不应调用其它能力:{name}")
 
     p._ctx.call_capability = _capability
@@ -724,6 +772,30 @@ def test_diary_chat_timeline_full_day_global_fetch(tmp_path):
     assert calls and calls[0]["name"] == "message.get_by_time"
     assert calls[0]["limit"] == 0 and calls[0]["limit_mode"] == "earliest"
     assert calls[0]["start_time"] < t1.timestamp() and calls[0]["end_time"] > t2.timestamp()
+
+
+def test_diary_chat_timeline_accepts_dict_shape(tmp_path):
+    """dict+success 形态兼容(能力未经 SDK 解包的返回):messages 键取列表,
+    素材装配同样可用——两种返回形态都能吃(2026-09-02 联调后加固)。"""
+
+    import time as _time
+
+    now = datetime.now()
+    p = _make_diary_plugin(tmp_path)
+    p._stream_cache = {}
+    p._stream_cache_at = _time.time()
+    t1 = now - timedelta(seconds=40)
+    msgs = [_diary_msg("20000", "小红", "dict 形态的消息", t1.timestamp())]
+
+    async def _capability(name, **kw):
+        if name == "message.get_by_time":
+            return {"success": True, "messages": msgs}
+        raise AssertionError(f"不应走回退路径:{name}")
+
+    p._ctx.call_capability = _capability
+    asyncio.run(p._generate_and_publish_diary())
+    stable = p.llm_calls[0]["messages"][1]["content"]
+    assert "dict 形态的消息" in stable
 
 
 def test_diary_chat_timeline_fallback_to_per_stream(tmp_path):

@@ -987,7 +987,7 @@ class CatsitatePlugin(MaiBotPlugin):
             self.ctx.logger.warning("QQ空间说说发布成功但响应未含新说说 tid,回注缺锚")
         # 回注:发布成功的说说以 self 消息注入虚拟流(不触发 planner 决策轮,仅入历史)。
         # 原因:后续好友评论此说说时通知轮询只带说说ID,bot 需要这段历史才知道自己发过什么;
-        # 正文只带前 60 字预览——全文已真实发布在空间,回注只是上下文锚,超长会挤占虚拟流。
+        # 回注正文带全文(2026-09-02 用户裁定:截断删除)——完整上下文锚。
         # 尾部锚〔说说ID=前12位〕与浏览注入同款:模型照抄锚值即可对该说说评论/点赞
         # (registry 前缀解析口径);tid 缺失时无锚。
         # 回注失败不影响回执:说说已远端发布成功,谎报失败会诱导重复发布。
@@ -1008,7 +1008,7 @@ class CatsitatePlugin(MaiBotPlugin):
                 # 不设 is_mentioned:这是 bot 自己发的,不需要触发 planner 决策轮
             },
             "raw_message": [{"type": "text",
-                             "data": f"我发布了一条说说:{clip_text(content, 60)}" + (f"\n〔说说ID={tid[:12]}〕" if tid else "")}],
+                             "data": f"我发布了一条说说:{content}" + (f"\n〔说说ID={tid[:12]}〕" if tid else "")}],
         }
         try:
             await self.ctx.gateway.route_message(QZONE_GATEWAY_NAME, echo_msg)
@@ -1020,12 +1020,12 @@ class CatsitatePlugin(MaiBotPlugin):
             if tid:
                 try:
                     self.qzone_seen.mark_queued(tid, abstime=str(int(time.time())), author_uin=bot_uin,
-                                                summary=clip_text(content, 50), author_nickname="我")
+                                                summary=content, author_nickname="我")
                     self.qzone_seen.mark_seen(tid, datetime.now().strftime("%Y-%m-%dT%H:%M:%S"),
                                               echo_msg["message_id"])
                     self._qzone_registry.register(FeedContext(
                         tid=tid, owner_uin=bot_uin, owner_nickname="我", kind="self",
-                        content_summary=clip_text(content, 100),
+                        content_summary=content,
                     ))
                 except Exception:
                     self.ctx.logger.exception("QQ空间说说发布后本地锚定失败(远端已成功,仅告警)")
@@ -1084,7 +1084,7 @@ class CatsitatePlugin(MaiBotPlugin):
         for idx, f in enumerate(feeds, start=1):
             self._qzone_registry.register(FeedContext(
                 tid=f.tid, owner_uin=qq, owner_nickname=f.nickname or qq, kind="feed",
-                content_summary=clip_text(f.content or "(纯图)", 100), recent_comments=list(f.comments),
+                content_summary=f.content or "(纯图)", recent_comments=list(f.comments),
             ))
             pairs: list[tuple[str, bytes]] = []
             for url in f.image_urls[:3]:  # 单条说说最多带 3 图(防 media 项爆炸)
@@ -1366,7 +1366,7 @@ class CatsitatePlugin(MaiBotPlugin):
                         continue
                     matched_tids.add(f.tid)
                     if self.qzone_seen.mark_queued(
-                        f.tid, abstime=f.abstime, author_uin=f.uin, summary=clip_text(f.content, 60),
+                        f.tid, abstime=f.abstime, author_uin=f.uin, summary=f.content or "",
                         author_nickname=f.nickname,
                     ):
                         self.qzone_injector.enqueue([f])
@@ -1417,7 +1417,7 @@ class CatsitatePlugin(MaiBotPlugin):
             added = [
                 f for f in feeds
                 if self.qzone_seen.mark_queued(
-                    f.tid, abstime=f.abstime, author_uin=f.uin, summary=clip_text(f.content, 60),
+                    f.tid, abstime=f.abstime, author_uin=f.uin, summary=f.content or "",
                     author_nickname=friend["nickname"],
                 )
             ]
@@ -1561,7 +1561,7 @@ class CatsitatePlugin(MaiBotPlugin):
                 comment_tid=feed.comment_tid,
                 comment_uin=feed.comment_uin,
                 kind=feed.source,
-                content_summary=clip_text((feed.origin_content if feed.source == "notify" else feed.content) or "(无文字)", 100),
+                content_summary=(feed.origin_content if feed.source == "notify" else feed.content) or "(无文字)",
                 recent_comments=list(feed.comments),
             ))
             self.ctx.logger.info("QQ空间动态已注入(tid=%s,作者=%s)", feed.tid, feed.nickname)
@@ -2508,9 +2508,10 @@ class CatsitatePlugin(MaiBotPlugin):
         if not entries:
             return None
         # 叙事格式(与浏览动态的自然文本一致):「昵称发了「摘要」」比键值对
-        # 「昵称:摘要」更像转述见闻;摘要截 20 字(尾加"..."),纯图说说以「图片」占位
+        # 「昵称:摘要」更像转述见闻;摘要截 100 字(2026-09-02 用户裁定,原 20),
+        # 纯图说说以「图片」占位
         lines = [
-            f"{e['author_nickname'] or e['author_uin']}发了「{clip_text(e['summary'] or '图片', 20)}」"
+            f"{e['author_nickname'] or e['author_uin']}发了「{clip_text(e['summary'] or '图片', 100)}」"
             for e in entries
         ]
         text = "[空间] 近期刷到: " + ";".join(lines)
@@ -3143,8 +3144,7 @@ class CatsitatePlugin(MaiBotPlugin):
         """醒来后补注昨晚发布的日记(self 消息,仅入历史)。
 
         回注是上下文锚:好友次日评论日记说说时,bot 需要这段历史才知道自己
-        昨晚写过什么;正文只带前 60 字预览(全文已真实发布在空间,超长挤占
-        虚拟流)。快照带 tid 时尾部加〔说说ID=前12位〕锚并锚定 seen/registry
+        昨晚写过什么;回注正文带全文(2026-09-02 用户裁定:截断删除)。快照带 tid 时尾部加〔说说ID=前12位〕锚并锚定 seen/registry
         (与 qzone_post 同款;旧快照无 tid 则无锚)。不设 is_mentioned——
         bot 自己的旧说说不需要触发决策轮。route_message 失败保留快照,
         醒态 sleep_tick 下轮重试。
@@ -3169,22 +3169,22 @@ class CatsitatePlugin(MaiBotPlugin):
                 },
             },
             "raw_message": [{"type": "text",
-                             "data": f"我昨晚发布的日记:{clip_text(text, 60)}" + (f"\n〔说说ID={tid[:12]}〕" if tid else "")}],
+                             "data": f"我昨晚发布的日记:{text}" + (f"\n〔说说ID={tid[:12]}〕" if tid else "")}],
         }
         try:
             await self.ctx.gateway.route_message(QZONE_GATEWAY_NAME, msg)
-            # 本地锚定三连(seen + registry,与 qzone_post 同款;summary=日记正文
-            # 前 50 字)。内层独立兜底:锚定失败不拦快照清空——远端已成功,
+            # 本地锚定三连(seen + registry,与 qzone_post 同款;summary/摘要存
+            # 全文,2026-09-02 用户裁定)。内层独立兜底:锚定失败不拦快照清空——远端已成功,
             # 补注只做一次,失败仅告警(浏览发现层后续自行补登记)。
             if tid:
                 try:
                     self.qzone_seen.mark_queued(tid, abstime=str(int(time.time())), author_uin=bot_uin,
-                                                summary=clip_text(text, 50), author_nickname="我")
+                                                summary=text, author_nickname="我")
                     self.qzone_seen.mark_seen(tid, datetime.now().strftime("%Y-%m-%dT%H:%M:%S"),
                                               msg["message_id"])
                     self._qzone_registry.register(FeedContext(
                         tid=tid, owner_uin=bot_uin, owner_nickname="我", kind="self",
-                        content_summary=clip_text(text, 100),
+                        content_summary=text,
                     ))
                 except Exception:
                     self.ctx.logger.exception("QQ空间日记补注本地锚定失败(远端已成功,仅告警)")

@@ -57,7 +57,7 @@ class SeenStore:
         self.store.execute(
             "INSERT INTO qzone_feeds (tid, abstime, author_uin, author_nickname, summary, state, created_at) "
             "VALUES (?, ?, ?, ?, ?, 'queued', ?)",
-            (tid, abstime, author_uin, author_nickname, summary[:120], datetime.now().strftime(_ISO)),
+            (tid, abstime, author_uin, author_nickname, summary, datetime.now().strftime(_ISO)),
         )
         return True
 

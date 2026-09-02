@@ -561,17 +561,17 @@ def test_qzone_post_missing_tid_warns_and_skips_anchor(tmp_path):
     assert p._qzone_registry.resolve("") is None
 
 
-def test_qzone_post_echo_content_truncated_to_sixty(tmp_path):
-    """回注正文只带前 60 字预览:说说全文已真实发布在空间,回注只是让 bot 记得
-    自己发过什么,超长正文整段塞进虚拟流会挤占上下文。"""
+def test_qzone_post_echo_carries_full_content(tmp_path):
+    """回注正文带全文(2026-09-02 用户裁定:截断全删):bot 对自己发过什么
+    持有完整上下文锚,不再 60 字预览;锚行独立成行。"""
 
     long_content = "字" * 80
     p = _make_tool_plugin(tmp_path)
     asyncio.run(p.qzone_post(content=long_content, stream_id="s1"))
     assert p.qzone_client.publish_calls == [long_content]  # 全文发布(表达方向即正文的桩形态)
     _, msg = p._ctx.gateway.calls[0]
-    # 回注截 60 字;锚行独立成行,不受预览截断影响
-    assert msg["raw_message"][0]["data"] == f"我发布了一条说说:{'字' * 60}...\n〔说说ID=newtid0001〕"
+    # 回注全文;锚行独立成行
+    assert msg["raw_message"][0]["data"] == f"我发布了一条说说:{long_content}\n〔说说ID=newtid0001〕"
 
 
 def test_qzone_post_validation_empty_content_and_session(tmp_path):
@@ -979,21 +979,21 @@ def test_echo_pending_diary_routes_self_message_and_clears(tmp_path):
     )
 
 
-def test_echo_pending_diary_truncates_to_sixty(tmp_path):
-    """补注正文只带前 60 字预览:全文已真实发布在空间,回注只是上下文锚,
-    超长正文整段塞进虚拟流会挤占上下文(与 qzone_post 回注同纪律)。"""
+def test_echo_pending_diary_carries_full_text(tmp_path):
+    """补注正文带全文(2026-09-02 用户裁定:截断全删,与 qzone_post 回注同纪律):
+    bot 对昨晚日记持有完整上下文锚,不再 60 字预览。"""
 
     p = _make_diary_plugin(tmp_path)
     p._pending_diary_snapshot.save({"text": "字" * 80})
     asyncio.run(p._echo_pending_diary())
     _, msg = p._ctx.gateway.calls[0]
-    assert msg["raw_message"][0]["data"] == f"我昨晚发布的日记:{'字' * 60}..."  # 旧快照无 tid:无锚行(截断尾加"...")
+    assert msg["raw_message"][0]["data"] == f"我昨晚发布的日记:{'字' * 80}"  # 旧快照无 tid:无锚行
 
 
 def test_echo_pending_diary_with_tid_anchors_seen_and_registry(tmp_path):
     """快照带 tid 的补注(本任务起的新形态):回注文本尾部带〔说说ID=前12位〕
     锚;route 成功后 seen(queued→seen,summary=日记正文前 50 字)+
-    registry kind="self" 同款锚定(Task 6/10 own-post 依赖);锚定失败不拦
+    registry kind="self" 同款锚定(2026-09-02 起 summary/摘要存全文);锚定失败不拦
     快照清空(远端已成功,补注一次即清)。"""
 
     p = _make_diary_plugin(tmp_path)
@@ -1011,7 +1011,7 @@ def test_echo_pending_diary_with_tid_anchors_seen_and_registry(tmp_path):
     assert p.qzone_seen.get_message_id("diarytid000456789") == msg["message_id"]
     ctx = p._qzone_registry.resolve("diarytid0004")  # 前缀锚解析
     assert ctx is not None and ctx.kind == "self" and ctx.owner_uin == BOT_UIN
-    assert ctx.content_summary == "昨晚的日记正文"  # 表达生成场景素材(正文前 100 字)
+    assert ctx.content_summary == "昨晚的日记正文"  # 表达生成场景素材(全文)
     assert p._pending_diary_snapshot.load() == {}
 
 
@@ -1493,7 +1493,7 @@ def test_qzone_block_virtual_stream_state_only(tmp_path):
 
 def test_qzone_block_real_chat_summary_narrative_format(tmp_path):
     """M3 表达:真实聊天见闻摘要用「昵称发了「摘要」」叙事格式——与浏览动态的
-    自然文本一致(比「昵称:摘要」键值对更像转述见闻);摘要截 20 字,纯图说说
+    自然文本一致(比「昵称:摘要」键值对更像转述见闻);摘要截 100 字(2026-09-02 用户裁定,原 20),纯图说说
     (无摘要)以「图片」占位;键仍按 tid 集合去重(内容不变即缓存复用)。"""
 
     p = _make_plugin(tmp_path)
@@ -1507,7 +1507,7 @@ def test_qzone_block_real_chat_summary_narrative_format(tmp_path):
     key, text = p._qzone_block("real_stream")
     assert key == "qzone:s:sumtid1|sumtid2"
     # 叙事格式:昵称发了「摘要前20字」(超长截断);缺昵称回退QQ号;空摘要以「图片」占位
-    assert text == "[空间] 近期刷到: 小明发了「今天去公园散步拍了好多照片晚霞很好看心情...」;10002发了「图片」"
+    assert text == "[空间] 近期刷到: 小明发了「今天去公园散步拍了好多照片晚霞很好看心情也很好」;10002发了「图片」"
 
 
 # ---- M3 Task9:见闻系统(窗口结束旁路 LLM 摘要,注入真实聊天) ----

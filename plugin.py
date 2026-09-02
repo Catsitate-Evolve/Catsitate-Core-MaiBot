@@ -969,7 +969,9 @@ class CatsitatePlugin(MaiBotPlugin):
             "platform": QZONE_PLATFORM,
             "timestamp": str(int(time.time())),
             "message_info": {
-                "user_info": {"user_id": bot_uin, "user_nickname": "我"},
+                # 发送者=bot 自己:昵称用 bot 名(主程序对自身消息按 bot 名显示,
+                # 且 [bot].platforms 声明后自身判定命中),标「我」会被当普通用户
+                "user_info": {"user_id": bot_uin, "user_nickname": await self._bot_echo_nickname()},
                 "group_info": {
                     "group_id": self.config.qzone.virtual_group_id,
                     "group_name": self.config.qzone.virtual_group_name,
@@ -1655,7 +1657,7 @@ class CatsitatePlugin(MaiBotPlugin):
             "platform": QZONE_PLATFORM,
             "timestamp": str(int(time.time())),
             "message_info": {
-                "user_info": {"user_id": bot_uin, "user_nickname": "我"},
+                "user_info": {"user_id": bot_uin, "user_nickname": await self._bot_echo_nickname()},
                 "group_info": {
                     "group_id": self.config.qzone.virtual_group_id,
                     "group_name": self.config.qzone.virtual_group_name,
@@ -3078,7 +3080,7 @@ class CatsitatePlugin(MaiBotPlugin):
             "platform": QZONE_PLATFORM,
             "timestamp": str(int(time.time())),
             "message_info": {
-                "user_info": {"user_id": bot_uin, "user_nickname": "我"},
+                "user_info": {"user_id": bot_uin, "user_nickname": await self._bot_echo_nickname()},
                 "group_info": {
                     "group_id": self.config.qzone.virtual_group_id,
                     "group_name": self.config.qzone.virtual_group_name,
@@ -3819,6 +3821,23 @@ class CatsitatePlugin(MaiBotPlugin):
             value = ""
         self._reply_style_cache = str(value or "").strip()
         return self._reply_style_cache
+
+    async def _bot_echo_nickname(self) -> str:
+        """回注/种子消息的发送者昵称:用主程序 bot 昵称(bot.nickname)。
+
+        主程序对 bot 自身消息按 bot 名显示;虚拟流平台(qzone-qq)的 bot 账号
+        经主程序 [bot].platforms 声明后,自身判定与显示替换才能命中——回注
+        发送者若标「我」会被当普通用户(污染回复必要性与间隔统计)。读取
+        失败/为空时回退「我」(历史形态,告警不静默)。
+        """
+
+        try:
+            value = await self.ctx.config.get("bot.nickname", "")
+        except Exception:
+            self.ctx.logger.exception("读取 bot 昵称失败,回注发送者昵称回退「我」")
+            value = ""
+        nickname = str(value or "").strip()
+        return nickname or "我"
 
     async def _recent_context_text(self, stream_id: str, limit: int) -> str:
         raw = await self._fetch_recent(stream_id, limit)

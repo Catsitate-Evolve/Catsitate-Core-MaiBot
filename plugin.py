@@ -786,13 +786,13 @@ class CatsitatePlugin(MaiBotPlugin):
         return partial(self._side_llm_call, model=self.config.qzone.expression_llm_model,
                        module="qzone_expression", timeout_ms=self.config.qzone.expression_llm_timeout_ms)
 
-    async def _qzone_polish(self, draft: str, *, limit: int) -> str:
-        """表达润色:planner 草稿按人设+表达方式顺一遍;失败告警后原样返回(草稿直发)。"""
+    async def _qzone_polish(self, draft: str, *, limit: int, scene: str) -> str:
+        """表达润色:planner 草稿按人设+表达方式+场景语改写;失败告警后原样返回(草稿直发)。"""
 
         persona, _ = await self._persona_context()
         polished = await polish_action_text(
             self._qzone_expression_call(), persona=persona, voice=await self._voice_style(),
-            draft=draft, limit=limit, logger=self.ctx.logger,
+            draft=draft, scene=scene, limit=limit, logger=self.ctx.logger,
         )
         return polished or draft
 
@@ -822,8 +822,8 @@ class CatsitatePlugin(MaiBotPlugin):
             return "评论内容不能为空。"
         if len(content) > 200:
             return f"评论太长了({len(content)} 字,上限 200),请精简。"
-        # 表达润色:planner 草稿按人设+表达方式顺一遍(失败以草稿直发)
-        content = await self._qzone_polish(content, limit=200)
+        # 表达润色:planner 草稿按人设+表达方式+场景语改写(失败以草稿直发)
+        content = await self._qzone_polish(content, limit=200, scene="QQ空间里,想给好友的说说写一条评论")
         # 目标解析:registry → seen_store → awaiting → 显式失败(fid 回填全量 tid)
         fid, owner_uin, ctx = self._qzone_resolve_feed(feed_id)
         if not fid:
@@ -887,8 +887,8 @@ class CatsitatePlugin(MaiBotPlugin):
         content = content.strip()
         if len(content) > 200:
             return f"回复太长了({len(content)} 字,上限 200)。"
-        # 表达润色:planner 草稿按人设+表达方式顺一遍(失败以草稿直发)
-        content = await self._qzone_polish(content, limit=200)
+        # 表达润色:planner 草稿按人设+表达方式+场景语改写(失败以草稿直发)
+        content = await self._qzone_polish(content, limit=200, scene="QQ空间里,想回复好友在你的说说下写的评论")
         fid, target_qq, ctx = self._qzone_resolve_feed(feed_id)
         if not fid:
             return f"未找到说说 {feed_id[:12]},可能已过期。"
@@ -941,8 +941,8 @@ class CatsitatePlugin(MaiBotPlugin):
             return "说说内容不能为空。"
         if len(content) > 500:
             return f"内容太长了({len(content)} 字,上限 500)。"
-        # 表达润色:planner 草稿按人设+表达方式顺一遍(失败以草稿直发)
-        content = await self._qzone_polish(content, limit=500)
+        # 表达润色:planner 草稿按人设+表达方式+场景语改写(失败以草稿直发)
+        content = await self._qzone_polish(content, limit=500, scene="QQ空间里,想发一条自己的说说")
         try:
             tid = await self.qzone_client.do_publish(content=content)
         except QzoneAuthError:

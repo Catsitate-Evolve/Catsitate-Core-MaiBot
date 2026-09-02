@@ -22,12 +22,18 @@ def _llm(responses):
 @pytest.mark.asyncio
 async def test_polish_success():
     call, calls = _llm({"success": True, "response": " ……好看。"})
-    text = await polish_action_text(call, persona="猫耳少女", voice="短句,语气平淡", draft="这个真好看！")
+    text = await polish_action_text(
+        call, persona="猫耳少女", voice="短句,语气平淡", draft="这个真好看！",
+        scene="QQ空间里,想给好友的说说写一条评论",
+    )
     assert text == "……好看。"
-    # 稳定上下文:人设首段 + 表达方式次段;草稿在【待发内容】素材段
+    # 稳定上下文:人设首段+表达方式次段+场景语;草稿在【待发内容】素材段
     assert "猫耳少女" in calls[0][1]["content"]
     assert "短句" in calls[0][2]["content"]
-    assert calls[0][3]["content"].startswith("【待发内容】\n这个真好看！")
+    assert calls[0][3]["content"] == "你正在QQ空间里,想给好友的说说写一条评论。"
+    assert calls[0][4]["content"].startswith("【待发内容】\n这个真好看！")
+    # 改写指令在 system(仿主程序改写器:完全重组许可+输出卫生)
+    assert "完全重组" in calls[0][0]["content"] and "不要输出多余内容" in calls[0][0]["content"]
 
 
 @pytest.mark.asyncio

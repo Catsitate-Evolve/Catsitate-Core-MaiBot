@@ -20,7 +20,8 @@ def _sanitize(text: str) -> str:
 
 async def polish_action_text(
     llm_call: Callable[[list[dict]], Awaitable[dict[str, Any]]],
-    *, persona: str, voice: str, draft: str, limit: int = 200, logger: Any = None,
+    *, persona: str, voice: str, draft: str, scene: str = "",
+    limit: int = 200, logger: Any = None,
 ) -> str:
     """按人设与表达方式润色草稿。返回润色后文本;失败/为空返回空串
     (调用方告警后以草稿直发,不静默、不阻断)。"""
@@ -32,6 +33,8 @@ async def polish_action_text(
         f"bot 人设:{(persona or '').strip() or '(未配置,按轻松自然的口吻)'}",
         f"你平时说话的方式:\n{(voice or '').strip() or '简短自然,像平时说话'}",
     ]
+    if (scene or "").strip():
+        stable_ctx.append(f"你正在{scene.strip()}。")
     variable_tail = [f"【待发内容】\n{draft}"]
     messages, _ = build_side_prompt("qzone_expression", stable_ctx, variable_tail)
     result = await llm_call(messages)

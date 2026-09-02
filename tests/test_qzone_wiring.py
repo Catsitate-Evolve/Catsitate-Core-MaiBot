@@ -593,6 +593,10 @@ def _make_diary_plugin(tmp_path):
     """日记路径装配:发布客户端桩 + 旁路 LLM 记录桩 + 当日素材(日程/备忘/见闻)。"""
 
     p = _make_tool_plugin(tmp_path)  # _StubWriteClient(记录 do_publish)
+    # 聊天时间线素材依赖(on_load 装配,离线手工补):流缓存置空=素材行省略,
+    # 各测试按需注入;_stream_cache_at 置 0(时间线不刷流列表,不受 TTL 影响)
+    p._stream_cache = {}
+    p._stream_cache_at = 0.0
     p._schedule_data = {
         "date": datetime.now().strftime("%Y-%m-%d"),
         "windows": [
@@ -644,6 +648,120 @@ def test_diary_generation_publishes_with_daily_material(tmp_path):
     assert any(
         level == "info" and "QQ空间日记发布成功" in str(a[0]) for level, a in p.logs
     )
+
+
+def _diary_msg(user_id: str, nickname: str, text: str, ts: float) -> dict:
+    """get_recent 桩消息(与实机形态对齐:message_info.user_info + timestamp + raw_message)。"""
+
+    return {
+        "message_info": {"user_info": {"user_id": user_id, "user_nickname": nickname}},
+        "timestamp": str(int(ts)),
+        "raw_message": [{"type": "text", "data": text}],
+    }
+
+
+def test_diary_chat_timeline_material_real_chats_only(tmp_path):
+    """M3 修正(规格 §5.2):日记素材补聊天时间线——真实聊天流当日消息按小时
+    分段(bot 标「我:」,他人标昵称,单条截 50 字,总量截 20 条);虚拟流消息
+    不进素材(日记素材=真实聊天,取数都不发生);昨日消息不进素材;空素材行
+    省略(无「今天的聊天」段)。"""
+
+    import time as _time
+
+    today = datetime.now()
+    virtual_sid = "qzone-virtual-stream"
+    p = _make_diary_plugin(tmp_path)
+    p._qzone_session_ids = {virtual_sid}  # 实例级覆盖:虚拟流进排除名单
+    p._stream_cache = {
+        "g1": {"session_id": "g1", "is_group_session": True, "user_id": ""},
+        virtual_sid: {"session_id": virtual_sid, "is_group_session": True, "user_id": ""},
+    }
+    p._stream_cache_at = _time.time()  # TTL 内:素材装配不刷流列表(桩无 chat 能力)
+
+    ten = today.replace(hour=10, minute=0, second=0, microsecond=0)
+    twenty_one = today.replace(hour=21, minute=0, second=0, microsecond=0)
+    msgs = [
+        # 10 点批:25 条(总量截 20 后最早的 8 条被丢弃,保留最新的 17 条)
+        *[_diary_msg("40000", "群友", f"第{i}句", (ten + timedelta(seconds=i)).timestamp())
+          for i in range(25)],
+        # 21 点:bot 一条(标「我:」)+好友一条(标昵称)+超长单条(截 50 字)
+        _diary_msg(BOT_UIN, "我", "早上好呀", twenty_one.timestamp()),
+        _diary_msg("20000", "小红", "今天去公园了吗", (twenty_one + timedelta(seconds=1)).timestamp()),
+        _diary_msg("30000", "小蓝", "长" * 80, (twenty_one + timedelta(seconds=2)).timestamp()),
+        # 昨日消息(整一天前,日期不同)不进素材
+        _diary_msg("20000", "小红", "昨天的消息", (twenty_one - timedelta(days=1)).timestamp()),
+    ]
+    requested: list[str] = []
+
+    async def _capability(name, **kw):
+        if name == "message.get_recent":
+            requested.append(str(kw.get("chat_id")))
+            return list(msgs)
+        return {"success": True, "response": "{}"}
+
+    p._ctx.call_capability = _capability
+    asyncio.run(p._generate_and_publish_diary())
+    stable = p.llm_calls[0]["messages"][1]["content"]
+    assert "今天的聊天:" in stable
+    timeline = stable.split("今天的聊天:", 1)[1].split("\n", 1)[0]
+    assert "10点" in timeline and "21点" in timeline  # 按小时分段
+    assert "我:早上好呀" in timeline  # bot 消息标「我:」
+    assert "小红:今天去公园了吗" in timeline  # 他人标昵称
+    assert "长" * 50 in timeline and "长" * 51 not in timeline  # 单条截 50 字
+    assert "昨天的消息" not in timeline  # 昨日消息不进素材
+    assert timeline.count("群友:第") == 17  # 总量截 20 条:21 点 3 条 + 10 点最新 17 条
+    assert "第0句" not in timeline and "第7句" not in timeline  # 最早 8 条被截断
+    assert "第8句" in timeline and "第24句" in timeline  # 保留最新
+    assert requested == ["g1"]  # 虚拟流取数不发生(排除名单生效)
+
+    # 反例:流内无当日消息 → 素材行整体省略
+    async def _empty(name, **kw):
+        del name, kw
+        return []
+
+    p._ctx.call_capability = _empty
+    p.llm_calls.clear()
+    asyncio.run(p._generate_and_publish_diary())
+    assert "今天的聊天:" not in p.llm_calls[0]["messages"][1]["content"]
+
+
+def test_diary_weather_line_and_random_target_words(tmp_path, monkeypatch):
+    """M3 修正(规格 §5.2/§5.3):日记素材补真实天气(time_aware 快照,无数据
+    省略该行)+目标字数随机化——stable_ctx 注入「本次目标约 {n} 字」,
+    n=random.randint(80,200)(模板「80~200字」表述保留)。"""
+
+    import re as _re
+
+    p = _make_diary_plugin(tmp_path)
+    # 快照表缺位(离线未建表):素材行省略并告警,不臆造天气
+    asyncio.run(p._generate_and_publish_diary())
+    stable = p.llm_calls[0]["messages"][1]["content"]
+    assert "当前天气" not in stable
+    assert any(
+        level == "exception" and "日记天气素材" in str(a[0]) for level, a in p.logs
+    )
+    m = _re.search(r"本次目标约 (\d+) 字", stable)
+    assert m and 80 <= int(m.group(1)) <= 200  # 随机目标字数注入(区间锁定)
+    assert "80~200字" in p.llm_calls[0]["messages"][0]["content"]  # 模板区间表述保留
+
+    # 有快照:素材行出现(温度/天气码来自快照);随机字数可确定性注入
+    p.store.execute(
+        "CREATE TABLE IF NOT EXISTS weather_snapshot ("
+        "id INTEGER PRIMARY KEY CHECK (id = 1), city TEXT NOT NULL, "
+        "fetched_at TEXT NOT NULL, data TEXT NOT NULL)"
+    )
+    p.store.execute(
+        "INSERT INTO weather_snapshot (id, city, fetched_at, data) VALUES (1, '珠海', "
+        "'2026-09-01T12:00:00', '{\"temperature_2m\": 26.5, \"weather_code\": 1}')"
+    )
+    import plugin as plugin_mod
+
+    monkeypatch.setattr(plugin_mod.random, "randint", lambda a, b: 123)
+    p.llm_calls.clear()
+    asyncio.run(p._generate_and_publish_diary())
+    stable = p.llm_calls[0]["messages"][1]["content"]
+    assert "当前天气:温度 26.5°C(天气码 1)" in stable
+    assert "本次目标约 123 字" in stable
 
 
 def test_diary_generation_disabled_or_unavailable_skips(tmp_path):
@@ -1138,6 +1256,107 @@ def test_notify_scan_source_c_like_auth_error_keeps_source_a_notifications(tmp_p
                for level, a in p.logs)
 
 
+def test_notify_retry_backoff_source_c_like_gives_up_without_misleading_retry(tmp_path):
+    """源C 无重试通道(M3 修正 I-4):赞事件通知注入被拒不走 note_retry/revert
+    空转(去重在 qzone_likes 表,无 pending_retry 通道,revert 作用于
+    qzone_comments 为无效更新),显式 warning 放弃——不误报「待下轮重试」;
+    源A/B 评论通知的回退重试语义不变(对照)。"""
+
+    import time as _time
+
+    p = _make_plugin(tmp_path)
+    like_feed = FeedItem(
+        tid="notify_like_20000_10000_ab12cd34", abstime="", uin="20000",
+        nickname="小红", content="赞了你的说说", source="notify",
+        dedup_key="20000_10000_ab12cd34",
+    )
+    p._qzone_notify_retry_backoff(like_feed)
+    assert any(
+        level == "warning" and "源C 赞事件通知被拒,放弃(源C 无重试通道)" in str(a[0])
+        for level, a in p.logs
+    )
+    # 不误报待重试;源C 键在 qzone_comments 无登记(note_retry/revert 未空转写状态)
+    assert not any("待下轮重试" in str(a[0]) for _, a in p.logs)
+    rows = p.store.query(
+        "SELECT COUNT(*) FROM qzone_comments WHERE comment_key = '20000_10000_ab12cd34'"
+    )
+    assert rows[0][0] == 0
+
+    # 对照:源A 评论通知(键含冒号形态)被拒仍走软回退重试
+    p.logs.clear()
+    key = "feedX:cX:20000"
+    assert p.qzone_comment_seen.is_new(key) is True
+    p._qzone_notify_retry_backoff(_notify_feed(key))
+    assert any(
+        level == "info" and "待下轮重试" in str(a[0]) for level, a in p.logs
+    )
+    assert p.qzone_comment_seen.is_new(key) is True  # 键已回退,下轮重新发现
+
+
+def test_notify_scan_source_c_observation_line_and_drift_warn_once(tmp_path):
+    """源C 解析观测线(M3 修正 I-5):每轮取数成功后 info「源C 赞事件解析 {N}
+    条」;连续 3 轮 N==0 且模块可用(取数成功)打一次锚点漂移 warning(去重
+    标记,后续空轮不重复告警);恢复有事件后计数与标记复位,再次连续 3 轮空
+    才会告警第二次(新漂移段落)。"""
+
+    import time as _time
+
+    class _MutableLikeClient(_StubUnifiedClient):
+        """源C 输入桩:赞事件列表可变(观测线的空/非空轮切换)。"""
+
+        def __init__(self):
+            super().__init__([])
+            self.events: list = []
+
+        async def get_own_feed_comments(self, *, bot_uin, num=10):
+            del bot_uin, num
+            return {}, {}
+
+        async def get_like_events(self, *, count=30):
+            del count
+            return list(self.events)
+
+    p = _make_plugin(tmp_path)
+    p.qzone_injector.window_started()
+    # 观测线状态实例级重置(类属性共享可变态,防其他测试的扫描轮数泄漏)
+    p._qzone_sourcec_empty_rounds = 0
+    p._qzone_sourcec_drift_warned = False
+    client = _MutableLikeClient()
+    p.qzone_client = client
+
+    def _drift_warnings() -> int:
+        return sum(
+            1 for level, a in p.logs
+            if level == "warning" and "锚点可能漂移" in str(a[0])
+        )
+
+    def _parse_infos(n: int) -> int:
+        # 桩 logger 记录 printf 原参:模板串+计数逐参比对
+        return sum(
+            1 for level, a in p.logs
+            if level == "info" and str(a[0]) == "源C 赞事件解析 %d 条" and a[1:] == [n]
+        )
+
+    for _ in range(4):  # 连续 4 轮空:第 3 轮触发一次,第 4 轮不重复
+        asyncio.run(p._qzone_notify_scan())
+    assert _parse_infos(0) == 4  # 观测线每轮都有
+    assert _drift_warnings() == 1  # warn-once
+
+    client.events = [LikeEvent(
+        like_key="20000_10000_aaaa1111", liker_uin="20000", liker_nickname="小红",
+        owner_uin=BOT_UIN, target_tid="ownfeed1", create_time=str(int(_time.time())),
+    )]
+    asyncio.run(p._qzone_notify_scan())
+    assert _parse_infos(1) == 1
+    p.qzone_injector.on_turn_complete(_time.monotonic())  # 释放 awaiting,后续轮可继续
+    assert _drift_warnings() == 1  # 恢复非空不告警
+
+    client.events = []
+    for _ in range(3):
+        asyncio.run(p._qzone_notify_scan())
+    assert _drift_warnings() == 2  # 复位后的新漂移段落:第二次告警
+
+
 def test_qzone_block_virtual_stream_state_only(tmp_path):
     """注入块去重(可读性优化 2026-09-01):场景全文已由 apply_scene_surgery 进
     system 段(场景替换),虚拟流注入块只保留动态状态——不再重复拼场景文案。"""
@@ -1476,6 +1695,33 @@ def test_qzone_data_prune_registered_in_on_load():
 
     src = inspect.getsource(plugin_mod)
     assert 'register("qzone_data_prune", 24 * 3600, self._qzone_data_prune)' in src
+
+
+def test_on_load_whitelist_warning_covers_view_friend_feeds(tmp_path):
+    """v0.8 兼容告警(M3 修正 I-1):旧持久化 tool_whitelist 缺 view_friend_feeds
+    时 on_load 告警提示补入(CHANGELOG/手册承诺);白名单齐全时零告警;
+    已废弃 reply 的告警独立保留。"""
+
+    p = _make_plugin(tmp_path)
+    p.config.qzone.tool_whitelist = ["qzone_like", "qzone_comment", "qzone_reply", "qzone_post"]
+    p._warn_qzone_tool_whitelist()
+    assert any(
+        level == "warning" and "view_friend_feeds" in " ".join(str(x) for x in a)
+        for level, a in p.logs
+    )
+
+    # 齐全白名单:零告警(含废弃 reply 检查)
+    p.logs.clear()
+    p.config.qzone.tool_whitelist = list(CatsitateConfig().qzone.tool_whitelist)
+    p._warn_qzone_tool_whitelist()
+    assert not any(level == "warning" for level, a in p.logs)
+
+    # 已废弃 reply:独立告警保留(v0.7 起语义)
+    p.config.qzone.tool_whitelist.append("reply")
+    p._warn_qzone_tool_whitelist()
+    assert any(
+        level == "warning" and "已废弃的 reply" in str(a[0]) for level, a in p.logs
+    )
 
 
 # ---- 深度审查 A-2:长 IO 移出调度器 tick ----

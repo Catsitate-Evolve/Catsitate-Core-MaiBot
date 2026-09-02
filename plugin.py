@@ -16,6 +16,7 @@ import hashlib
 import json
 import logging
 import os
+import random
 import sys
 import time
 
@@ -158,6 +159,8 @@ class CatsitatePlugin(MaiBotPlugin):
     _qzone_notify_running: bool = False  # 通知轮询后台扫描进行中(同上,通知 tick 独立标记)
     _qzone_send_armed: str = ""        # 发布触发已武装的窗口标记 "{day}|{start}"
     _qzone_send_first_poll_done: bool = False  # 本窗口首轮拉取是否已完成
+    _qzone_sourcec_empty_rounds: int = 0  # 源C 连续空解析轮数(锚点漂移观测线,I-5)
+    _qzone_sourcec_drift_warned: bool = False  # 源C 锚点漂移告警已发标记(warn-once 去重;恢复有事件即复位)
 
     # ---------- 生命周期 ----------
 
@@ -283,21 +286,9 @@ class CatsitatePlugin(MaiBotPlugin):
             )
         # 工具驱动旧配置兼容:持久化的白名单缺空间工具时告警(不静默改配置)——
         # 旧配置含已废弃的 reply(receive 网关下无害但无效);qzone_comment/
-        # qzone_reply 缺席会让 bot 在虚拟流里无法互动,qzone_post 缺席则无法发说说
-        missing_qzone_tools = [
-            t for t in ("qzone_comment", "qzone_reply", "qzone_post")
-            if t not in self.config.qzone.tool_whitelist
-        ]
-        if missing_qzone_tools:
-            self.ctx.logger.warning(
-                "qzone.tool_whitelist 缺少 %s(旧配置残留),"
-                "虚拟流将无法使用对应空间工具——请在配置中补入",
-                "/".join(missing_qzone_tools),
-            )
-        if "reply" in self.config.qzone.tool_whitelist:
-            self.ctx.logger.warning(
-                "qzone.tool_whitelist 含已废弃的 reply(v0.7 工具驱动:receive 网关无出站路径),该项无效可移除"
-            )
+        # qzone_reply 缺席会让 bot 在虚拟流里无法互动,qzone_post 缺席则无法发
+        # 说说,view_friend_feeds 缺席则全域查看工具不可用(v0.8 兼容承诺)
+        self._warn_qzone_tool_whitelist()
         self.qzone_injector = FeedInjector(decision_window_s=self.config.qzone.decision_window_seconds)
         # seq 以当前秒播种:重启归零会让 qzone_{tid}_{seq} 与上一轮运行撞车,
         # 被宿主 driver_id:message_id 去重拒绝(联调缺陷#11,静默丢注入)
@@ -309,6 +300,9 @@ class CatsitatePlugin(MaiBotPlugin):
         # 轮询后台任务防重入标记实例级重置(类属性共享可变态,卸载取消任务后不得残留 True)
         self._qzone_poll_running = False
         self._qzone_notify_running = False
+        # 源C 解析观测线状态实例级重置(同上,类属性共享可变态)
+        self._qzone_sourcec_empty_rounds = 0
+        self._qzone_sourcec_drift_warned = False
         # 说话人映射实例级重置(类属性为共享可变态,按次加载初始化;§3.10)
         self._last_speaker_map = {}
         # 泵并发锁:_qzone_pump 两个入口(调度 tick/轮完成信号)整体互斥,防弹出-置位间隙双弹
@@ -354,6 +348,28 @@ class CatsitatePlugin(MaiBotPlugin):
         except ImportError:
             self.ctx.logger.warning("lunar-python 未安装:农历节日/节气不可用(公历回退链不受影响)")
         self.ctx.logger.info("catsitate_core 已加载:注入/备忘录/好感度/贴表情/戳一戳/reply补传/图片重看")
+
+    def _warn_qzone_tool_whitelist(self) -> None:
+        """工具驱动旧配置兼容告警(on_load 调用;不静默改配置,只提示补入)。
+
+        缺席后果:qzone_comment/qzone_reply→虚拟流内无法互动;qzone_post→无法
+        发说说;view_friend_feeds→全域查看工具不可用(v0.8 新增,旧持久化白名单
+        常缺——CHANGELOG/手册承诺的兼容告警);含已废弃 reply 另独立告警。"""
+
+        missing_qzone_tools = [
+            t for t in ("qzone_comment", "qzone_reply", "qzone_post", "view_friend_feeds")
+            if t not in self.config.qzone.tool_whitelist
+        ]
+        if missing_qzone_tools:
+            self.ctx.logger.warning(
+                "qzone.tool_whitelist 缺少 %s(旧配置残留),"
+                "对应空间工具将不可用——请在配置中补入",
+                "/".join(missing_qzone_tools),
+            )
+        if "reply" in self.config.qzone.tool_whitelist:
+            self.ctx.logger.warning(
+                "qzone.tool_whitelist 含已废弃的 reply(v0.7 工具驱动:receive 网关无出站路径),该项无效可移除"
+            )
 
     async def on_unload(self) -> None:
         self._teardown_debug_logging()  # 卸载清理:debug handler 移除并 close、logger 级别恢复(审查 I5)
@@ -721,9 +737,9 @@ class CatsitatePlugin(MaiBotPlugin):
 
     @Tool(
         "qzone_like",
-        description="给当前正在看的好友说说点赞(QQ空间)。仅在浏览动态时可用;可传 feed_id 精确指定(照抄消息末尾「说说 xxx」括号里的字符),缺省对当前说说点赞。",
+        description="给好友说说点赞(QQ空间)。仅在浏览动态或收到点赞/评论通知时可用;可传 feed_id 精确指定(照抄消息尾部〔〕里的说说ID),缺省对当前说说点赞。",
         brief_description="给当前说说点赞",
-        parameters=[ToolParameterInfo(name="feed_id", param_type="string", description="目标说说ID(照抄消息尾部「说说 xxx」;可选,缺省当前说说)", required=False)],
+        parameters=[ToolParameterInfo(name="feed_id", param_type="string", description="目标说说ID(照抄消息尾部〔〕里的说说ID;可选,缺省当前说说)", required=False)],
         visibility="visible",
     )
     async def qzone_like(self, feed_id: str = "", **kwargs: Any) -> str:
@@ -1526,9 +1542,17 @@ class CatsitatePlugin(MaiBotPlugin):
         A-N1:重试有上限——revert 为软回退(qzone_comments 行保留),note_retry
         的累计跨「回退→重发现」循环存活;满 QZONE_NOTIFY_MAX_RETRIES 次仍失败
         则保留登记放弃(is_new 恒 False 跳过),防宿主持续拒绝时同一通知每
-        轮询周期(120s)无限重注入。浏览动态(source=feed)不走本路径。"""
+        轮询周期(120s)无限重注入。浏览动态(source=feed)不走本路径。
+        源C 赞事件(M3 修正 I-4)例外:去重在 qzone_likes 表(无 pending_retry/
+        revert 通道),note_retry/revert 作用于 qzone_comments 为空转——注入被拒
+        即显式告警放弃,不误报「待下轮重试」(软回退通道属后续批次)。"""
 
         if feed.source != "notify" or not feed.dedup_key:
+            return
+        if feed.tid.startswith("notify_like_"):
+            self.ctx.logger.warning(
+                "源C 赞事件通知被拒,放弃(源C 无重试通道)(dedup_key=%.40s)", feed.dedup_key
+            )
             return
         retries = self.qzone_comment_seen.note_retry(feed.dedup_key)
         if retries >= QZONE_NOTIFY_MAX_RETRIES:
@@ -1868,15 +1892,33 @@ class CatsitatePlugin(MaiBotPlugin):
             # 通知);自愈链同源B 纪律——QzoneAuthError 作废 cookie 但不 return,
             # 源A/B 已得通知不能丢,仅本轮源C 按空处理
             if len(notifications) < 3:
+                likes: list = []
+                parsed_ok = False  # 取数成功(区别于 AuthError/异常按空处理,不参与漂移观测)
                 try:
                     likes = await self.qzone_client.get_like_events(count=30)
+                    parsed_ok = True
                 except QzoneAuthError:
                     self.qzone_cookie.invalidate()
                     self.ctx.logger.warning("QQ空间登录态失效(通知轮询源C),cookie 已作废,下轮重取")
-                    likes = []
                 except Exception:
                     self.ctx.logger.exception("QQ空间通知轮询源C失败,本轮跳过源C")
-                    likes = []
+                # 解析观测线(M3 修正 I-5):每轮记录解析条数,供实机验收核对拉取
+                # 是否正常;连续 3 轮取数成功但零事件 → 锚点漂移告警(warn-once,
+                # 恢复有事件即复位,新漂移段落重新观测)
+                self.ctx.logger.info("源C 赞事件解析 %d 条", len(likes))
+                if parsed_ok:
+                    if likes:
+                        self._qzone_sourcec_empty_rounds = 0
+                        self._qzone_sourcec_drift_warned = False
+                    else:
+                        self._qzone_sourcec_empty_rounds += 1
+                        if self._qzone_sourcec_empty_rounds >= 3 and not self._qzone_sourcec_drift_warned:
+                            self._qzone_sourcec_drift_warned = True
+                            self.ctx.logger.warning(
+                                "源C 连续 %d 轮解析 0 条赞事件(模块可用),解析锚点可能漂移,"
+                                "请实机核对 feeds3_html_more?scope=1 响应与 LIKE_EVENT_RE 锚点",
+                                self._qzone_sourcec_empty_rounds,
+                            )
                 for ev in likes:
                     # 自己的赞跳过;空 target_tid 的畸形事件跳过(防空 tid 畸形键)
                     if str(ev.liker_uin) == bot_uin or not ev.target_tid:
@@ -2305,6 +2347,10 @@ class CatsitatePlugin(MaiBotPlugin):
                 ]
                 if due_today:
                     line += ";" + ";".join(f"备忘:{e['content']}" for e in due_today[:3])
+                # 规格 §6 集成表:read_qzone 窗口=正在浏览空间,行末明文追加状态
+                # (planner 据此知道此刻的「刷手机」具体是在刷QQ空间)
+                if win.get("read_qzone"):
+                    line += "(正在刷QQ空间)"
                 blocks.append(InjectionBlock("schedule", f"sch:{win.get('start')}|{'fired' if fired else ''}", line))
         if cfg.qzone.enabled and self._qzone_available:
             qz = self._qzone_block(stream_id)
@@ -2866,14 +2912,81 @@ class CatsitatePlugin(MaiBotPlugin):
         self._persist_schedule()
         self.ctx.logger.info("次日日程已生成:%s", json.dumps(data, ensure_ascii=False)[:200])
 
+    async def _diary_chat_timeline(self, *, max_messages: int = 20) -> str:
+        """日记聊天时间线素材(规格 §5.2):真实聊天流当日消息按小时分段。
+
+        取主程序 message.get_recent(宿主 24h 窗,再按本地日期过滤为当日);
+        bot 消息标「我:」,他人标昵称(缺昵称回退 QQ 号);单条截 50 字;多流
+        合并按时间序取最近 max_messages 条(总量截断);虚拟流消息不进素材
+        (日记素材=真实聊天)。单流取数失败告警后跳过;无可用消息返回空串
+        (素材行整体省略,不臆造聊天内容)。"""
+
+        bot_uin = str(self.config.favorability.bot_user_id or "").strip()
+        virtual_ids = self._qzone_session_id_set()
+        entries: list[tuple[float, str]] = []  # (epoch 秒, 「说话人:文本」素材行)
+        for stream_id in sorted(self._stream_cache):
+            if not stream_id or stream_id in virtual_ids:
+                continue
+            try:
+                recent = await self._fetch_recent(stream_id, max_messages)
+            except Exception:
+                # 单流失败只跳过该流(同衰减取数纪律),不拖垮日记整体
+                self.ctx.logger.warning("日记聊天素材取数失败(stream=%s),该流跳过", stream_id)
+                continue
+            for m in recent:
+                if not isinstance(m, dict):
+                    continue
+                info = (m.get("message_info") or {}).get("user_info") or {}
+                sender = str(info.get("user_id") or "")
+                if not sender:
+                    continue  # 无发送者的畸形条目跳过
+                text = str(m.get("processed_plain_text") or "") or "".join(
+                    s.get("data", "") for s in (m.get("raw_message") or [])
+                    if isinstance(s, dict) and s.get("type") == "text"
+                )
+                if not text.strip():
+                    continue  # 纯图片/表情等无文本消息不进时间线
+                try:
+                    ts = float(str(m.get("timestamp") or ""))
+                    dt = datetime.fromtimestamp(ts)
+                except (ValueError, TypeError, OSError):
+                    continue  # 无有效时间戳无法分段,跳过
+                if dt.date() != datetime.now().date():
+                    continue  # 当日素材:昨日消息不进时间线
+                who = "我" if sender == bot_uin else (str(info.get("user_nickname") or "") or sender)
+                entries.append((ts, f"{who}:{text[:50]}"))
+        if not entries:
+            return ""
+        entries.sort(key=lambda e: e[0])
+        by_hour: dict[int, list[str]] = {}
+        for ts, line in entries[-max_messages:]:
+            by_hour.setdefault(datetime.fromtimestamp(ts).hour, []).append(line)
+        return " | ".join(f"{hour}点 {';'.join(lines)}" for hour, lines in by_hour.items())
+
+    def _diary_weather_line(self) -> str:
+        """日记天气素材行:当前真实天气(time_aware 快照,日程生成同款来源)。
+
+        无快照数据时省略该行(不臆造天气);读取异常显式告警后同样省略——
+        素材行可缺,日记主链路不被单个素材拖垮。"""
+
+        try:
+            text = self._weather_text()
+        except Exception:
+            self.ctx.logger.exception("日记天气素材读取失败,素材行省略")
+            return ""
+        if text == "无数据":
+            return ""
+        return f"当前天气:{text}"
+
     async def _generate_and_publish_diary(self) -> None:
         """入睡任务的日记侧:睡前用当日素材生成日记并发布为空间说说。
 
         与日程生成同属入睡任务——旁路 LLM 与发布 API 均不经消息链,不受睡眠
-        拦截(深夜直发)。素材只取当日真实数据(日程活动/备忘/空间见闻),模板
-        明令不得编造,防日记虚构没发生的事。发布成功后正文存 pending 快照,
-        回注延迟到醒来(睡眠期 route_message 会被 sleep_gate 拦进回顾缓冲,
-        白注入)。
+        拦截(深夜直发)。素材只取当日真实数据(日程活动/备忘/空间见闻/聊天
+        时间线/真实天气,可省略行见各构建器),模板明令不得编造,防日记虚构
+        没发生的事;目标字数随机化注入(规格 §5.3)。发布成功后正文存 pending
+        快照,回注延迟到醒来(睡眠期 route_message 会被 sleep_gate 拦进回顾
+        缓冲,白注入)。
         """
 
         if not self.config.qzone.enabled or not self.config.qzone.diary_enabled:
@@ -2890,14 +3003,25 @@ class CatsitatePlugin(MaiBotPlugin):
         memos = ";".join(e["content"] for e in self.memo.due_on(today)[:3])
         seen_feeds = self.qzone_seen.recent_seen(limit=3, days=1, now=datetime.now())
         seen_summary = ";".join(e["summary"][:20] for e in seen_feeds)
+        # M3 修正(规格 §5.2):补聊天时间线与真实天气两素材(可省略行,见各构建器)
+        chat_timeline = await self._diary_chat_timeline()
+        weather_line = self._diary_weather_line()
         # 人设前置为 stable_ctx 首段(与 qzone_expression 同形态):模板以用户本人
         # 身份书写日记,人设背景属稳定段(前置),不混入变量素材尾(前缀缓存纪律)
         persona, _ = await self._persona_context()
+        # 目标字数随机化(规格 §5.3):每次生成注入随机目标(80~200),避免模板化
+        # 的定长输出;模板中的「80~200字」区间表述保留
+        target_words = random.randint(80, 200)
         stable_ctx = (
             f"bot 人设:{persona}\n"
             f"今天的日程:{schedule_summary or '自由活动'}\n"
             f"备忘:{memos or '无'}\n看到的好友动态:{seen_summary or '无'}"
         )
+        if chat_timeline:
+            stable_ctx += f"\n今天的聊天:{chat_timeline}"
+        if weather_line:
+            stable_ctx += f"\n{weather_line}"
+        stable_ctx += f"\n(本次目标约 {target_words} 字)"
         messages, _ = build_side_prompt("qzone_diary", [stable_ctx], [])
         try:
             result = await self._side_llm_call(

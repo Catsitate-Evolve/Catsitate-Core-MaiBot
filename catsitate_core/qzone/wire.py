@@ -113,9 +113,10 @@ def build_publish_form(*, content: str, bot_uin: str) -> dict:
 def extract_publish_tid(payload: dict) -> str:
     """从发布响应载荷提取新说说 tid。
 
-    键形态按端点历史版本逐层尝试(顶层 tid / data.tid / content[0].tid);
-    取不到返回空串由调用方告警——发布本身已成功,tid 缺失只影响回注锚,
-    不应误报发布失败。
+    键形态按端点历史版本逐层尝试,共 5 形态(先取先得):
+    顶层 tid / data.tid / data.newtid / 顶层 newtid / content[0].tid
+    (数值 tid 归一为字符串);取不到返回空串由调用方告警——发布本身已
+    成功,tid 缺失只影响回注锚,不应误报发布失败。
     """
     data = payload.get("data") if isinstance(payload.get("data"), dict) else {}
     for candidate in (payload.get("tid"), data.get("tid"), data.get("newtid"), payload.get("newtid")):

@@ -303,6 +303,57 @@ def test_schedule_inject_block_text():
     assert "发呆看雨" in line and "接下来" in line
 
 
+def test_schedule_block_appends_qzone_browsing_suffix(tmp_path):
+    """规格 §6 集成表(M3 修正 I-2):read_qzone 窗口的日程注入块行末追加
+    「(正在刷QQ空间)」(明文状态,告知 planner 当前正在刷空间);普通 daily
+    窗口不追加。"""
+    import asyncio
+    from datetime import timedelta
+
+    import plugin as plugin_mod
+    from catsitate_core.config import CatsitateConfig
+    from catsitate_core.storage import SQLiteStore
+
+    def _make(tmp_path):
+        now = datetime.now()
+        p = plugin_mod.CatsitatePlugin()
+        p._ctx = _StubCtx(tmp_path)
+        p._plugin_config_instance = CatsitateConfig()
+        p.config.plugin.enabled = True
+        p.memo = type("_M", (), {
+            "read": staticmethod(lambda *a, **k: []),
+            "due_on": staticmethod(lambda day: []),
+        })()
+        p._snapshot_cache = {}
+        p._env_cache = {}
+        p._env_fetched_at = None
+        p._stream_cache = {}
+        p._stream_cache_at = 0.0
+        p._schedule_data = {"date": now.strftime("%Y-%m-%d"), "windows": [{
+            "kind": "daily", "start": (now - timedelta(hours=1)).strftime("%Y-%m-%dT%H:%M"),
+            "end": (now + timedelta(hours=1)).strftime("%Y-%m-%dT%H:%M"),
+            "activity": "窝着刷手机", "read_qzone": True,
+        }]}
+        p._schedule_tick_fired = {}
+        p._qzone_available = False
+        p.fav_engine = BatchEngine(SQLiteStore(tmp_path / "fav.db"), p.config.favorability)
+        p.fav_engine.ensure_schema()
+        return p
+
+    p = _make(tmp_path)
+    blocks = asyncio.run(p._build_inject_blocks({"session_id": "p1"}))
+    sch = [b for b in blocks if b.module == "schedule"]
+    assert len(sch) == 1
+    assert sch[0].text.startswith("[日程] 窝着刷手机")
+    assert sch[0].text.endswith("(正在刷QQ空间)")  # read_qzone 窗口:行末追加明文状态
+
+    p._schedule_data["windows"][0]["read_qzone"] = False  # 普通窗口:不追加
+    blocks = asyncio.run(p._build_inject_blocks({"session_id": "p1"}))
+    sch = [b for b in blocks if b.module == "schedule"]
+    assert len(sch) == 1
+    assert "(正在刷QQ空间)" not in sch[0].text
+
+
 def test_generate_tomorrow_schedule_sets_generated_flag(tmp_path):
     """I-2:模板兜底日 _schedule_generated=False(备忘提醒兜底保持开启);LLM 成功日 True。"""
     import asyncio
@@ -1256,6 +1307,8 @@ def test_diary_stable_ctx_includes_persona(tmp_path):
     p._persona_cache = "温柔猫娘"  # 人设缓存预置,绕开 config.get 桩(None 走兜底路径)
     p._style_cache = ""
     p._schedule_data = {}
+    p._stream_cache = {}  # 聊天时间线素材依赖(on_load 装配,离线手工补;空=素材行省略)
+    p._stream_cache_at = 0.0
     p.memo = type("_M", (), {"due_on": staticmethod(lambda day: [])})()
     p.qzone_seen = type("_S", (), {"recent_seen": staticmethod(lambda limit, days, now=None: [])})()
     p._pending_diary_snapshot = JsonSnapshot(tmp_path / "qzone_pending_diary.json")

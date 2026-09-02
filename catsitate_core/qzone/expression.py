@@ -3,7 +3,7 @@
 分工与主程序同构:planner 决定「说什么」(草稿,带全量上下文与意图),
 本层只管「怎么说」——按 bot 人设(personality.personality)与表达方式
 (personality.reply_style)把草稿顺成 bot 平时的样子。润色失败不阻断
-动作:告警后以草稿直发(草稿本身即 planner 的完整表达,显式回退)。
+动作:告警后以草稿直发(草稿本身即 planner 的完整表达,显式回退不静默)。
 """
 
 from __future__ import annotations
@@ -15,7 +15,10 @@ from catsitate_core.qzone.messages import clip_text
 
 
 def _sanitize(text: str) -> str:
-    """输出卫生:剥首尾引号与空白(模型偶尔给正文套引号)。"""
+    """输出卫生:剥首尾引号与空白(模型偶尔给正文套引号)。
+
+    不做规则剥离 emoji(用户裁定 2026-09-02):字符级过滤会误伤表达,
+    emoji 与否交给润色模板的措辞约束。"""
     return text.strip().strip('"“”').strip()
 
 

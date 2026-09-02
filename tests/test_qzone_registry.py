@@ -66,7 +66,8 @@ def test_ttl_expiry_removes_entry(monkeypatch):
 
 
 def test_reregister_refreshes_entry_and_ttl(monkeypatch):
-    """同 tid 重复登记(同说说再次注入通知场景):覆盖旧值并刷新 TTL+LRU 位。"""
+    """同 tid 重复登记(同说说再次注入通知场景):非空新值覆盖旧值并刷新
+    TTL+LRU 位(空字段保留旧值,见合并语义测试)。"""
 
     clock = {"now": 100.0}
     monkeypatch.setattr(time, "monotonic", lambda: clock["now"])
@@ -77,6 +78,32 @@ def test_reregister_refreshes_entry_and_ttl(monkeypatch):
     clock["now"] = 250.0  # 距刷新 90s(<100)存活;距首次 150s(若无刷新已过期)
     ctx = reg.resolve("t1")
     assert ctx is not None and ctx.owner_uin == "new"
+
+
+def test_register_field_merge_preserves_comment_context():
+    """字段级合并(2026-09-02 联调缺陷修复):通知登记的 commenter/comment
+    二元组,不被后来的浏览/view_friend_feeds 登记(kind=feed,无评论者信息)
+    冲掉——实机缺陷:好友回复后 bot 查看了其说说,qzone_reply 解析时评论者
+    回退成 bot 自己(@错人);新通知仍可更新评论者信息。"""
+
+    reg = FeedContextRegistry()
+    reg.register(_ctx("tidX", commenter_uin="3298178030", commenter_nickname="可回收飞舞",
+                      comment_tid="8", comment_uin="3545773341", kind="notify_reply"))
+    # 浏览/查看再登记:owner 同、无评论者字段、正文与近评有新值
+    reg.register(_ctx("tidX", kind="feed", content_summary="测试二",
+                      recent_comments=["可回收飞舞:再发一条"]))
+    ctx = reg.resolve("tidX")
+    assert ctx is not None
+    assert ctx.commenter_uin == "3298178030"  # 评论者保留(不被浏览条目清空)
+    assert ctx.commenter_nickname == "可回收飞舞" and ctx.comment_tid == "8"
+    assert ctx.content_summary == "测试二" and ctx.recent_comments  # 新素材并入
+    assert ctx.kind == "notify_reply"  # 浏览条目不清掉通知语义
+    # 新通知(另一位评论者)仍更新评论者信息
+    reg.register(_ctx("tidX", commenter_uin="40000", commenter_nickname="新评论者",
+                      comment_tid="9", kind="notify_comment"))
+    ctx = reg.resolve("tidX")
+    assert ctx.commenter_uin == "40000" and ctx.comment_tid == "9"
+    assert ctx.content_summary == "测试二"  # 通知条目未带的字段保留旧值
 
 
 def test_clear_drops_all_entries():

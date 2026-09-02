@@ -39,6 +39,32 @@ class FeedContextRegistry:
         self._ttl = ttl_seconds
 
     def register(self, ctx: FeedContext) -> None:
+        """登记/更新条目——**字段级合并**(2026-09-02 联调缺陷修复):新值非空
+        覆盖旧值,新值为空的字段保留旧值。
+
+        动机:同一说说会先后被多种来源登记(浏览注入/view_friend_feeds 的
+        kind=feed 条目不带评论者信息,通知条目带)——last-wins 整体覆盖会让
+        后来的浏览/查看把通知里的 commenter/comment 二元组冲掉,qzone_reply
+        解析时评论者回退成 bot 自己(@错人,联调实证 2026-09-02)。合并语义下:
+        通知登记更新评论者信息,浏览/查看只补充正文与近评,互不清空。"""
+        old = None
+        entry = self._entries.get(ctx.tid)
+        if entry is not None:
+            old = entry[0]
+        if old is not None:
+            merged = FeedContext(
+                tid=ctx.tid,
+                owner_uin=ctx.owner_uin or old.owner_uin,
+                owner_nickname=ctx.owner_nickname or old.owner_nickname,
+                commenter_uin=ctx.commenter_uin or old.commenter_uin,
+                commenter_nickname=ctx.commenter_nickname or old.commenter_nickname,
+                comment_tid=ctx.comment_tid or old.comment_tid,
+                comment_uin=ctx.comment_uin or old.comment_uin,
+                kind=ctx.kind if ctx.kind != "feed" else old.kind,  # 浏览条目不清掉通知语义
+                content_summary=ctx.content_summary or old.content_summary,
+                recent_comments=ctx.recent_comments or old.recent_comments,
+            )
+            ctx = merged
         self._entries[ctx.tid] = (ctx, time.monotonic())
         self._entries.move_to_end(ctx.tid)
         while len(self._entries) > self._max:

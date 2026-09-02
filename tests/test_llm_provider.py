@@ -60,11 +60,11 @@ def test_qzone_scene_template_declared():
 
 
 def test_qzone_diary_template_declared():
-    """M3 表达:日记生成模板入 SIDE_TEMPLATES(version=2,M3-r2 人设前置升版)——
-    睡前以本人身份写当日日记发布为说说;自包含指令(80~200 字/不编造/基于
+    """M3 表达:日记生成模板入 SIDE_TEMPLATES(version=3,口吻自然化)——
+    睡前写当日日记发布为说说;自包含指令(80~200 字/不编造/基于
     素材/直接输出正文)。"""
     t = SIDE_TEMPLATES["qzone_diary"]
-    assert t["version"] == 2
+    assert t["version"] == 3
     s = t["system"]
     assert "睡前" in s and "日记" in s and "说说" in s
     assert "80~200字" in s and "第一人称" in s
@@ -74,11 +74,13 @@ def test_qzone_diary_template_declared():
     messages, key = build_side_prompt("qzone_diary", ["今天的日程:发呆"], [])
     assert messages[0]["role"] == "system"
     assert messages[1]["content"] == "今天的日程:发呆"
-    assert key.startswith("qzone_diary:v2+")
+    assert key.startswith("qzone_diary:v3+")
 
 
-def test_qzone_diary_template_mentions_persona():
-    """M3-r2 人设前置:日记模板以用户本人身份书写——system 指明「人设见素材
-    首段」,以人设身份/口吻/习惯用词书写(与 qzone_expression 同款形态)。"""
+def test_qzone_diary_template_natural_tone():
+    """日记模板口吻自然化:不用「你就是这位用户本人(人设见素材首段)」式
+    机械指涉,直接以任务语开写,用自己的口吻书写。"""
     system, _ = load_side_system("qzone_diary")  # 无部署文件时取内置默认
-    assert "人设" in system and "本人" in system
+    assert "你就是这位用户本人" not in system
+    assert "人设见素材" not in system
+    assert "口吻" in system and "睡前" in system

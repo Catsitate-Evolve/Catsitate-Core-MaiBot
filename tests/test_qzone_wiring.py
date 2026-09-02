@@ -223,7 +223,7 @@ def test_poll_tick_resets_comment_counts_on_window_start(tmp_path):
 
 def _make_tool_plugin(tmp_path):
     """工具直调装配:写路径客户端桩 + 真实 seen/comment_seen 存储 + 表达生成
-    LLM 桩(两段式:回显「表达方向」素材段为生成正文,等价于旁路人设生成)。"""
+    LLM 桩(两段式:回显【表达参考】素材段为生成正文,等价于旁路人设生成)。"""
 
     p = _make_plugin(tmp_path)
     p.qzone_client = _StubWriteClient()
@@ -234,7 +234,7 @@ def _make_tool_plugin(tmp_path):
         expr_llm_calls.append({"messages": messages, "model": model, "module": module})
         for m in messages:
             c = str(m.get("content") or "")
-            if c.startswith("表达方向"):
+            if c.startswith("【表达参考】"):
                 return {"success": True, "response": c.split("\n", 1)[-1]}
         return {"success": True, "response": "ok"}
 

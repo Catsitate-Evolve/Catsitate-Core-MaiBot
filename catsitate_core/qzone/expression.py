@@ -35,11 +35,13 @@ async def generate_action_text(
         return "", "缺少 reply_reference(表达方向)"
     style = style if style in VALID_STYLES else "正常回复"
     context_lines = [str(x) for x in (context_lines or []) if str(x).strip()]
+    # prompt 构造仿主程序回复器:人设→自然任务语→参考信息(视情况而定)→输出要求;
+    # 动作与篇幅以自然语句给出,不做机械化字段罗列
     stable_ctx = [
         f"bot 人设:{(persona or '').strip() or '(未配置,按轻松自然的口吻)'}",
-        f"动作:{MODE_LABELS[mode]};篇幅:{style};正文上限 {limit} 字",
+        f"这次要做的事:{MODE_LABELS[mode]}。篇幅偏好:{style}。",
     ]
-    variable_tail = ["表达方向(planner 的意图说明,不是正文,不要照抄):\n" + reference] + context_lines
+    variable_tail = context_lines + [f"【表达参考】\n{reference}"]
     messages, _ = build_side_prompt("qzone_expression", stable_ctx, variable_tail)
     result = await llm_call(messages)
     if not isinstance(result, dict) or not result.get("success"):
@@ -49,10 +51,10 @@ async def generate_action_text(
         return "", "表达生成返回空文本"
     if len(text) > limit:
         if logger:
-            logger.warning("QQ空间表达生成超长(%d 字>上限 %d),带字数硬约束重新生成一次", len(text), limit)
+            logger.warning("QQ空间表达生成超长(%d 字>上限 %d),带字数要求重新生成一次", len(text), limit)
         retry_messages, _ = build_side_prompt(
             "qzone_expression", stable_ctx,
-            variable_tail + [f"硬约束:正文不超过 {limit} 字,超出将被截断。"],
+            variable_tail + [f"这次写短一些,不超过 {limit} 字。"],
         )
         result2 = await llm_call(retry_messages)
         if isinstance(result2, dict) and result2.get("success"):

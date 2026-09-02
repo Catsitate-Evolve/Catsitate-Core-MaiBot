@@ -523,7 +523,7 @@ def test_qzone_post_echo_content_truncated_to_sixty(tmp_path):
     assert p.qzone_client.publish_calls == [long_content]  # 全文发布(表达方向即正文的桩形态)
     _, msg = p._ctx.gateway.calls[0]
     # 回注截 60 字;锚行独立成行,不受预览截断影响
-    assert msg["raw_message"][0]["data"] == f"我发布了一条说说:{'字' * 60}\n〔说说ID=newtid0001〕"
+    assert msg["raw_message"][0]["data"] == f"我发布了一条说说:{'字' * 60}...\n〔说说ID=newtid0001〕"
 
 
 def test_qzone_post_validation_empty_content_and_session(tmp_path):
@@ -638,12 +638,17 @@ def test_diary_generation_publishes_with_daily_material(tmp_path):
     # 旁路调用:模块名与模型走 qzone 节日记配置
     assert p.llm_calls[0]["module"] == "qzone_diary"
     assert p.llm_calls[0]["model"] == p.config.qzone.diary_llm_model
-    # 素材:当日日程活动(睡眠窗口不进摘要)+备忘+当日见闻
+    # 素材蓝本形态(v6,diary_plugin prompts.py):「我的名字是」头 + 聊天记录
+    # 回顾引入语 + 当日素材 +「日记内容:」收尾引导
     stable = p.llm_calls[0]["messages"][1]["content"]
+    assert stable.startswith("我的名字是")
+    assert "回顾一下到现在为止的聊天记录:" in stable
+    assert "(今天没和人聊天)" in stable  # 无聊天素材的诚实占位(不臆造)
     assert "今天的日程:" in stable and "窝着刷手机" in stable
     assert "23:00" not in stable  # 睡眠窗口不进素材
     assert "周四交作业" in stable
     assert "今天去公园散步" in stable
+    assert stable.endswith("日记内容:")  # 生成引导紧跟素材(蓝本单串布局等价位)
     # 快照已存(醒来回注素材):正文 + 发布时刻 + 新说说 tid(醒后锚定用)
     data = p._pending_diary_snapshot.load()
     assert data.get("text") == "今天窝着刷手机,看到小明去公园散步,有点懒洋洋的。"
@@ -655,7 +660,7 @@ def test_diary_generation_publishes_with_daily_material(tmp_path):
 
 
 def _diary_msg(user_id: str, nickname: str, text: str, ts: float) -> dict:
-    """get_recent 桩消息(与实机形态对齐:message_info.user_info + timestamp + raw_message)。"""
+    """get_recent/get_by_time 桩消息(与实机形态对齐:message_info.user_info + timestamp + raw_message)。"""
 
     return {
         "message_info": {"user_info": {"user_id": user_id, "user_nickname": nickname}},
@@ -664,40 +669,86 @@ def _diary_msg(user_id: str, nickname: str, text: str, ts: float) -> dict:
     }
 
 
-def test_diary_chat_timeline_material_real_chats_only(tmp_path):
-    """M3 修正(规格 §5.2):日记素材补聊天时间线——真实聊天流当日消息按小时
-    分段(bot 标「我:」,他人标昵称,单条截 50 字,总量截 20 条);虚拟流消息
-    不进素材(日记素材=真实聊天,取数都不发生);昨日消息不进素材;空素材行
-    省略(无「今天的聊天」段)。"""
+def test_diary_chat_timeline_full_day_global_fetch(tmp_path):
+    """日记聊天时间线(2026-09-02 对齐 diary_plugin message_fetcher 蓝本):
+    message.get_by_time **全局**拉当日全部消息(跨流,limit=0 不限条数,流缓存
+    不再是覆盖面瓶颈);逐条「[HH:MM] 谁说了什么」时间序铺开;单条截 100 字尾
+    加"...";bot 标「我:」,他人标昵称;空间虚拟流消息(平台 qzone-qq)剔除;
+    昨日消息不进素材。"""
+
+    import time as _time
+
+    now = datetime.now()
+    p = _make_diary_plugin(tmp_path)
+    p._stream_cache = {}  # 主路径不依赖流缓存(全局取数)
+    p._stream_cache_at = _time.time()
+
+    # 当日内取两个时刻(不早于今天 00:00——测试跑在凌晨时也不落到昨日被日过滤剔除)
+    day_start = now.replace(hour=0, minute=0, second=0, microsecond=0)
+    t1 = max(day_start + timedelta(minutes=5), now - timedelta(minutes=30))
+    t2 = now - timedelta(seconds=30)
+    label1, label2 = f"[{t1:%H:%M}]", f"[{t2:%H:%M}]"
+    msgs = [
+        _diary_msg("40000", "群友", "早上冒个泡", t1.timestamp()),
+        # bot 一条(标「我:」)+好友一条(标昵称)+超长单条(截 100 字加"...")
+        _diary_msg(BOT_UIN, "我", "早上好呀", t2.timestamp()),
+        _diary_msg("20000", "小红", "今天去公园了吗", t2.timestamp()),
+        _diary_msg("30000", "小蓝", "长" * 120, t2.timestamp()),
+        # 昨日消息(整一天前,日期不同)不进素材
+        _diary_msg("20000", "小红", "昨天的消息", (t2 - timedelta(days=1)).timestamp()),
+    ]
+    # 空间虚拟流消息剔除:全局取数跨未知流,按平台判定(qzone-qq)
+    virtual_msg = _diary_msg("50000", "空间好友", "这条是虚拟流的消息", t2.timestamp())
+    virtual_msg["platform"] = "qzone-qq"
+    msgs.append(virtual_msg)
+
+    calls: list[dict] = []
+
+    async def _capability(name, **kw):
+        calls.append({"name": name, **kw})
+        if name == "message.get_by_time":
+            return {"success": True, "messages": msgs}
+        raise AssertionError(f"主路径可用时不应调用其它能力:{name}")
+
+    p._ctx.call_capability = _capability
+    asyncio.run(p._generate_and_publish_diary())
+    stable = p.llm_calls[0]["messages"][1]["content"]
+    timeline = stable.split("回顾一下到现在为止的聊天记录:\n", 1)[1].split("\n\n今天的日程:", 1)[0]
+    assert f"{label1} 群友:早上冒个泡" in timeline  # 带时间戳逐条铺开
+    assert f"{label2} 我:早上好呀" in timeline  # bot 消息标「我:」
+    assert f"{label2} 小红:今天去公园了吗" in timeline  # 他人标昵称
+    assert "长" * 100 + "..." in timeline and "长" * 101 not in timeline  # 单条截 100 加"..."
+    assert "昨天的消息" not in timeline  # 昨日剔除
+    assert "虚拟流的消息" not in timeline  # 虚拟流剔除(平台判定)
+    # 主路径参数(蓝本 message_fetcher 同款):当日时间窗 + 不限条数 + 最早优先
+    assert calls and calls[0]["name"] == "message.get_by_time"
+    assert calls[0]["limit"] == 0 and calls[0]["limit_mode"] == "earliest"
+    assert calls[0]["start_time"] < t1.timestamp() and calls[0]["end_time"] > t2.timestamp()
+
+
+def test_diary_chat_timeline_fallback_to_per_stream(tmp_path):
+    """get_by_time 失败(能力异常)→ 显式告警后回退旧逐流 get_recent 路径,
+    时间线仍可用(显式回退不静默);虚拟流会话仍被排除(名单判定)。"""
 
     import time as _time
 
     today = datetime.now()
-    virtual_sid = "qzone-virtual-stream"
     p = _make_diary_plugin(tmp_path)
-    p._qzone_session_ids = {virtual_sid}  # 实例级覆盖:虚拟流进排除名单
+    virtual_sid = "qzone-virtual-stream"
+    p._qzone_session_ids = {virtual_sid}
     p._stream_cache = {
         "g1": {"session_id": "g1", "is_group_session": True, "user_id": ""},
         virtual_sid: {"session_id": virtual_sid, "is_group_session": True, "user_id": ""},
     }
-    p._stream_cache_at = _time.time()  # TTL 内:素材装配不刷流列表(桩无 chat 能力)
+    p._stream_cache_at = _time.time()
 
-    ten = today.replace(hour=10, minute=0, second=0, microsecond=0)
-    twenty_one = today.replace(hour=21, minute=0, second=0, microsecond=0)
-    msgs = [
-        # 10 点批:25 条(总量截 20 后最早的 8 条被丢弃,保留最新的 17 条)
-        *[_diary_msg("40000", "群友", f"第{i}句", (ten + timedelta(seconds=i)).timestamp())
-          for i in range(25)],
-        # 21 点:bot 一条(标「我:」)+好友一条(标昵称)+超长单条(截 50 字)
-        _diary_msg(BOT_UIN, "我", "早上好呀", twenty_one.timestamp()),
-        _diary_msg("20000", "小红", "今天去公园了吗", (twenty_one + timedelta(seconds=1)).timestamp()),
-        _diary_msg("30000", "小蓝", "长" * 80, (twenty_one + timedelta(seconds=2)).timestamp()),
-        # 昨日消息(整一天前,日期不同)不进素材
-        _diary_msg("20000", "小红", "昨天的消息", (twenty_one - timedelta(days=1)).timestamp()),
-    ]
+    ten_five = today.replace(hour=10, minute=5, second=0, microsecond=0)
+    msgs = [_diary_msg("40000", "群友", "回退路径消息", ten_five.timestamp())]
     requested: list[str] = []
 
     async def _capability(name, **kw):
+        if name == "message.get_by_time":
+            raise RuntimeError("能力不可用")
         if name == "message.get_recent":
             requested.append(str(kw.get("chat_id")))
             return list(msgs)
@@ -706,17 +757,10 @@ def test_diary_chat_timeline_material_real_chats_only(tmp_path):
     p._ctx.call_capability = _capability
     asyncio.run(p._generate_and_publish_diary())
     stable = p.llm_calls[0]["messages"][1]["content"]
-    assert "今天的聊天:" in stable
-    timeline = stable.split("今天的聊天:", 1)[1].split("\n", 1)[0]
-    assert "10点" in timeline and "21点" in timeline  # 按小时分段
-    assert "我:早上好呀" in timeline  # bot 消息标「我:」
-    assert "小红:今天去公园了吗" in timeline  # 他人标昵称
-    assert "长" * 50 in timeline and "长" * 51 not in timeline  # 单条截 50 字
-    assert "昨天的消息" not in timeline  # 昨日消息不进素材
-    assert timeline.count("群友:第") == 17  # 总量截 20 条:21 点 3 条 + 10 点最新 17 条
-    assert "第0句" not in timeline and "第7句" not in timeline  # 最早 8 条被截断
-    assert "第8句" in timeline and "第24句" in timeline  # 保留最新
+    assert "[10:05] 群友:回退路径消息" in stable
     assert requested == ["g1"]  # 虚拟流取数不发生(排除名单生效)
+    # 显式回退告警(不静默)
+    assert any(level == "exception" and "get_by_time" in str(a[0]) for level, a in p.logs)
 
     # 反例:流内无当日消息 → 素材行整体省略
     async def _empty(name, **kw):
@@ -744,9 +788,9 @@ def test_diary_weather_line_and_random_target_words(tmp_path, monkeypatch):
     assert any(
         level == "exception" and "日记天气素材" in str(a[0]) for level, a in p.logs
     )
-    m = _re.search(r"本次目标约 (\d+) 字", stable)
+    m = _re.search(r"\(目标 (\d+) 字左右\)", stable)
     assert m and 80 <= int(m.group(1)) <= 200  # 随机目标字数注入(区间锁定)
-    assert "80~200字" in p.llm_calls[0]["messages"][0]["content"]  # 模板区间表述保留
+    assert "80~200字左右" in p.llm_calls[0]["messages"][0]["content"]  # 模板区间表述保留
 
     # 有快照:素材行出现(温度/天气码来自快照);随机字数可确定性注入
     p.store.execute(
@@ -765,7 +809,7 @@ def test_diary_weather_line_and_random_target_words(tmp_path, monkeypatch):
     asyncio.run(p._generate_and_publish_diary())
     stable = p.llm_calls[0]["messages"][1]["content"]
     assert "当前天气:温度 26.5°C(天气码 1)" in stable
-    assert "本次目标约 123 字" in stable
+    assert "(目标 123 字左右)" in stable
 
 
 def test_diary_generation_disabled_or_unavailable_skips(tmp_path):
@@ -864,7 +908,7 @@ def test_echo_pending_diary_truncates_to_sixty(tmp_path):
     p._pending_diary_snapshot.save({"text": "字" * 80})
     asyncio.run(p._echo_pending_diary())
     _, msg = p._ctx.gateway.calls[0]
-    assert msg["raw_message"][0]["data"] == f"我昨晚发布的日记:{'字' * 60}"  # 旧快照无 tid:无锚行
+    assert msg["raw_message"][0]["data"] == f"我昨晚发布的日记:{'字' * 60}..."  # 旧快照无 tid:无锚行(截断尾加"...")
 
 
 def test_echo_pending_diary_with_tid_anchors_seen_and_registry(tmp_path):
@@ -1093,7 +1137,7 @@ def test_notify_poll_source_b_reply_registers_friend_thread_context(tmp_path, mo
     assert reply["type"] == "reply"
     assert reply["data"]["target_message_id"] == "qzone_ffeed1_2"
     assert reply["data"]["target_message_sender_id"] == "30000"
-    assert reply["data"]["target_message_content"] == ("好友的说说正文" * 10)[:60]
+    assert reply["data"]["target_message_content"] == ("好友的说说正文" * 10)[:60] + "..."
     text = msg["raw_message"][1]["data"]
     # 工具驱动+可读性优化:楼中楼上下文(bot 原评论前 20 字)+参数独立尾行;
     # 评论ID=主评论 tid(bc1,bot 的评论),评论者QQ=回复者;尾段动作时间
@@ -1393,7 +1437,7 @@ def test_qzone_block_real_chat_summary_narrative_format(tmp_path):
     key, text = p._qzone_block("real_stream")
     assert key == "qzone:s:sumtid1|sumtid2"
     # 叙事格式:昵称发了「摘要前20字」(超长截断);缺昵称回退QQ号;空摘要以「图片」占位
-    assert text == "[空间] 近期刷到: 小明发了「今天去公园散步拍了好多照片晚霞很好看心情」;10002发了「图片」"
+    assert text == "[空间] 近期刷到: 小明发了「今天去公园散步拍了好多照片晚霞很好看心情...」;10002发了「图片」"
 
 
 # ---- M3 Task9:见闻系统(窗口结束旁路 LLM 摘要,注入真实聊天) ----

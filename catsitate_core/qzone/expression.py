@@ -11,6 +11,7 @@ from __future__ import annotations
 from typing import Any, Awaitable, Callable
 
 from catsitate_core.llm_provider import build_side_prompt
+from catsitate_core.qzone.messages import clip_text
 
 
 def _sanitize(text: str) -> str:
@@ -62,5 +63,5 @@ async def polish_action_text(
     if len(text) > limit:
         if logger:
             logger.warning("QQ空间表达润色仍超长(%d 字),截断至 %d 字", len(text), limit)
-        text = text[:limit]
+        text = clip_text(text, limit)  # 截断尾加"..."(2026-09-02):读的人知道被截了
     return text

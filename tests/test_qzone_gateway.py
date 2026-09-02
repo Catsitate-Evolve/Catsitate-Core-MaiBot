@@ -122,8 +122,9 @@ def test_build_notify_message_with_reply_segment():
     reply = msg["raw_message"][0]
     assert reply["type"] == "reply"
     assert reply["data"]["target_message_id"] == "qzone_f1_3"
-    # 引用内容=原说说正文前 60 字(feed.origin_content,不是通知文本)
-    assert reply["data"]["target_message_content"] == ("原说说正文" * 20)[:60]
+    # 引用内容=原说说正文前 60 字(feed.origin_content,不是通知文本);
+    # 截断尾加"..."(2026-09-02)——读者知道原文还有下文
+    assert reply["data"]["target_message_content"] == ("原说说正文" * 20)[:60] + "..."
     assert reply["data"]["target_message_sender_id"] == "10000"
     assert msg["raw_message"][1] == {"type": "text", "data": feed.content}
 
@@ -218,7 +219,16 @@ def test_selfcheck_blocks_talk_value_zero():
 
 # ---- RPC 帧预算压缩(用户裁定 2026-08-31:体积治理=压缩到帧限内,非拒收) ----
 
-from catsitate_core.qzone.messages import RPC_IMAGE_BUDGET_BYTES, fit_images_to_rpc_budget
+from catsitate_core.qzone.messages import RPC_IMAGE_BUDGET_BYTES, clip_text, fit_images_to_rpc_budget
+
+
+def test_clip_text_marks_truncation():
+    """可见内容截断(2026-09-02 用户裁定):超长截断尾加"..."让读者知道还有
+    下文;未超长原样返回;空值安全。"""
+    assert clip_text("短文本", 10) == "短文本"
+    assert clip_text("长" * 15, 10) == "长" * 10 + "..."
+    assert clip_text("", 5) == ""
+    assert clip_text(None, 5) == ""
 
 
 def test_fit_images_under_budget_unchanged():

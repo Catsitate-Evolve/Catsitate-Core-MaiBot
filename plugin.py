@@ -47,6 +47,7 @@ from catsitate_core.qzone.like_seen import LikeSeenStore
 from catsitate_core.qzone.messages import (
     build_feed_message,
     build_notify_message,
+    clip_text,
     comment_time_prefix,
     fit_images_to_rpc_budget,
     format_comment_param_line,
@@ -976,7 +977,7 @@ class CatsitatePlugin(MaiBotPlugin):
                 # 不设 is_mentioned:这是 bot 自己发的,不需要触发 planner 决策轮
             },
             "raw_message": [{"type": "text",
-                             "data": f"我发布了一条说说:{content[:60]}" + (f"\n〔说说ID={tid[:12]}〕" if tid else "")}],
+                             "data": f"我发布了一条说说:{clip_text(content, 60)}" + (f"\n〔说说ID={tid[:12]}〕" if tid else "")}],
         }
         try:
             await self.ctx.gateway.route_message(QZONE_GATEWAY_NAME, echo_msg)
@@ -988,12 +989,12 @@ class CatsitatePlugin(MaiBotPlugin):
             if tid:
                 try:
                     self.qzone_seen.mark_queued(tid, abstime=str(int(time.time())), author_uin=bot_uin,
-                                                summary=content[:50], author_nickname="我")
+                                                summary=clip_text(content, 50), author_nickname="我")
                     self.qzone_seen.mark_seen(tid, datetime.now().strftime("%Y-%m-%dT%H:%M:%S"),
                                               echo_msg["message_id"])
                     self._qzone_registry.register(FeedContext(
                         tid=tid, owner_uin=bot_uin, owner_nickname="我", kind="self",
-                        content_summary=content[:100],
+                        content_summary=clip_text(content, 100),
                     ))
                 except Exception:
                     self.ctx.logger.exception("QQ空间说说发布后本地锚定失败(远端已成功,仅告警)")
@@ -1052,7 +1053,7 @@ class CatsitatePlugin(MaiBotPlugin):
         for idx, f in enumerate(feeds, start=1):
             self._qzone_registry.register(FeedContext(
                 tid=f.tid, owner_uin=qq, owner_nickname=f.nickname or qq, kind="feed",
-                content_summary=(f.content or "(纯图)")[:100], recent_comments=list(f.comments),
+                content_summary=clip_text(f.content or "(纯图)", 100), recent_comments=list(f.comments),
             ))
             pairs: list[tuple[str, bytes]] = []
             for url in f.image_urls[:3]:  # 单条说说最多带 3 图(防 media 项爆炸)
@@ -1077,7 +1078,7 @@ class CatsitatePlugin(MaiBotPlugin):
                 })
             body = f.content or "(纯图)"
             if len(body) > 300:
-                body = body[:300] + "…"
+                body = clip_text(body, 300)  # 截断尾加"...",读的人知道还有下文
             line = f"〔{idx}〕{comment_time_prefix(f.abstime, now_epoch)}{body}"
             if img_tags:
                 line += "\n" + " ".join(img_tags)
@@ -1334,7 +1335,7 @@ class CatsitatePlugin(MaiBotPlugin):
                         continue
                     matched_tids.add(f.tid)
                     if self.qzone_seen.mark_queued(
-                        f.tid, abstime=f.abstime, author_uin=f.uin, summary=f.content[:60],
+                        f.tid, abstime=f.abstime, author_uin=f.uin, summary=clip_text(f.content, 60),
                         author_nickname=f.nickname,
                     ):
                         self.qzone_injector.enqueue([f])
@@ -1385,7 +1386,7 @@ class CatsitatePlugin(MaiBotPlugin):
             added = [
                 f for f in feeds
                 if self.qzone_seen.mark_queued(
-                    f.tid, abstime=f.abstime, author_uin=f.uin, summary=f.content[:60],
+                    f.tid, abstime=f.abstime, author_uin=f.uin, summary=clip_text(f.content, 60),
                     author_nickname=friend["nickname"],
                 )
             ]
@@ -1529,7 +1530,7 @@ class CatsitatePlugin(MaiBotPlugin):
                 comment_tid=feed.comment_tid,
                 comment_uin=feed.comment_uin,
                 kind=feed.source,
-                content_summary=((feed.origin_content if feed.source == "notify" else feed.content) or "(无文字)")[:100],
+                content_summary=clip_text((feed.origin_content if feed.source == "notify" else feed.content) or "(无文字)", 100),
                 recent_comments=list(feed.comments),
             ))
             self.ctx.logger.info("QQ空间动态已注入(tid=%s,作者=%s)", feed.tid, feed.nickname)
@@ -1760,7 +1761,7 @@ class CatsitatePlugin(MaiBotPlugin):
                             "QQ空间评论过旧跳过(create_time=%s,昵称=%s)", c.create_time, c.nickname
                         )
                         continue
-                    feed_summary = (ctx.get(feed_tid) or "(无文字)")[:30]
+                    feed_summary = clip_text(ctx.get(feed_tid) or "(无文字)", 30)
                     notifications.append(FeedItem(
                         tid=f"notify_comment_{feed_tid}_{c.comment_tid}",
                         abstime=c.create_time, uin=str(c.uin), nickname=c.nickname,
@@ -1866,7 +1867,7 @@ class CatsitatePlugin(MaiBotPlugin):
                         # 供模型照抄调用 qzone_reply(说说ID/主评论ID/回复者QQ/
                         # 回复于时间,create_time 缺失省略不编造);
                         # 楼中楼二元组的 commentUin=bot 自己(主评论作者是 bot)
-                        bot_ctx = r.parent_comment_content[:20] if r.parent_comment_content else "你之前的评论"
+                        bot_ctx = clip_text(r.parent_comment_content, 20) if r.parent_comment_content else "你之前的评论"
                         notifications.append(FeedItem(
                             tid=f"notify_reply_{r.feed_tid}_{r.reply_tid}",
                             abstime=r.create_time, uin=str(r.uin), nickname=r.nickname,
@@ -1952,7 +1953,7 @@ class CatsitatePlugin(MaiBotPlugin):
                     if time_tag:
                         param += f" 点赞于{time_tag}"
                     param += "〕"
-                    title = f"「{origin_summary[:20]}」" if origin_summary else ""
+                    title = f"「{clip_text(origin_summary, 20)}」" if origin_summary else ""
                     notifications.append(FeedItem(
                         tid=f"notify_like_{ev.like_key}",
                         abstime=ev.create_time, uin=str(ev.liker_uin),
@@ -2477,9 +2478,9 @@ class CatsitatePlugin(MaiBotPlugin):
         if not entries:
             return None
         # 叙事格式(与浏览动态的自然文本一致):「昵称发了「摘要」」比键值对
-        # 「昵称:摘要」更像转述见闻;摘要截 20 字,纯图说说以「图片」占位
+        # 「昵称:摘要」更像转述见闻;摘要截 20 字(尾加"..."),纯图说说以「图片」占位
         lines = [
-            f"{e['author_nickname'] or e['author_uin']}发了「{(e['summary'] or '图片')[:20]}」"
+            f"{e['author_nickname'] or e['author_uin']}发了「{clip_text(e['summary'] or '图片', 20)}」"
             for e in entries
         ]
         text = "[空间] 近期刷到: " + ";".join(lines)
@@ -2503,7 +2504,7 @@ class CatsitatePlugin(MaiBotPlugin):
         day = now.strftime("%Y-%m-%d")
         seen = self.qzone_seen.recent_seen(limit=15, days=1, now=now)
         lines = [
-            f"{e['author_nickname'] or e['author_uin']}发了「{(e['summary'] or '图片')[:20]}」"
+            f"{e['author_nickname'] or e['author_uin']}发了「{clip_text(e['summary'] or '图片', 20)}」"
             for e in seen
         ]
         try:
@@ -2511,7 +2512,7 @@ class CatsitatePlugin(MaiBotPlugin):
         except Exception:
             self.ctx.logger.exception("QQ空间见闻素材(互动事件)读取失败,本轮按空处理")
             events = []
-        lines += [e["text"][:40] for e in events[:10]]
+        lines += [clip_text(e["text"], 40) for e in events[:10]]
         if not lines:
             return  # 当日无素材:不生成,保留旧见闻
         persona, _ = await self._persona_context()
@@ -2870,13 +2871,13 @@ class CatsitatePlugin(MaiBotPlugin):
             by_stream.setdefault(item["stream_id"], []).append(item)
         sections: list[str] = []
         for stream_id, msgs in by_stream.items():
-            preview = " | ".join(f"{m['nickname'] or m['user_id']}:{m['text'][:50]}" for m in msgs[:20])
+            preview = " | ".join(f"{m['nickname'] or m['user_id']}:{clip_text(m['text'], 50)}" for m in msgs[:20])
             messages, _ = build_side_prompt(
                 "sleep_review", [], [f"睡眠期间 {stream_id} 的消息(共 {len(msgs)} 条):\n{preview}"]
             )
             try:
                 result = await self._side_llm_call(messages, self.config.sleep.review_llm_model, "sleep_review", self.config.sleep.review_llm_timeout_ms)
-                summary = str(result.get("response") or "")[:200] if isinstance(result, dict) else ""
+                summary = clip_text(str(result.get("response") or ""), 200) if isinstance(result, dict) else ""
 
             except Exception:
                 self.ctx.logger.exception("回顾摘要失败(流 %s)", stream_id)
@@ -2918,56 +2919,90 @@ class CatsitatePlugin(MaiBotPlugin):
         self._persist_schedule()
         self.ctx.logger.info("次日日程已生成:%s", json.dumps(data, ensure_ascii=False)[:200])
 
-    async def _diary_chat_timeline(self, *, max_messages: int = 20) -> str:
-        """日记聊天时间线素材(规格 §5.2):真实聊天流当日消息按小时分段。
+    async def _diary_chat_timeline(self, *, max_messages: int = 300, per_message_chars: int = 100) -> str:
+        """日记聊天时间线素材(2026-09-02 对齐 diary_plugin message_fetcher 蓝本)。
 
-        取主程序 message.get_recent(宿主 24h 窗,再按本地日期过滤为当日);
-        bot 消息标「我:」,他人标昵称(缺昵称回退 QQ 号);单条截 50 字;多流
-        合并按时间序取最近 max_messages 条(总量截断);虚拟流消息不进素材
-        (日记素材=真实聊天)。单流取数失败告警后跳过;无可用消息返回空串
+        经 message.get_by_time **全局**拉当日 00:00 起的全部消息(跨全部聊天流,
+        不限条数——旧逐流 get_recent 只覆盖插件缓存的流且每流限量,一天的聊天记录
+        拿不全);空间虚拟流消息剔除(日记素材=真实聊天)。逐条「[HH:MM] 谁说了
+        什么」按时间序铺开(像翻一天的聊天记录),单条截 per_message_chars 字加
+        "...";总量超限保留最近 max_messages 条并标注更早的略过;bot 标「我」,
+        他人标昵称(缺省回退 QQ 号);纯图片/表情等无文本消息不进时间线。
+        能力失败显式告警后回退旧逐流路径(显式回退不静默);无可用消息返回空串
         (素材行整体省略,不臆造聊天内容)。"""
 
         bot_uin = str(self.config.favorability.bot_user_id or "").strip()
+        now = datetime.now()
+        day_start = now.replace(hour=0, minute=0, second=0, microsecond=0)
+        msgs: list[dict] | None = None
+        try:
+            # 蓝本同款:limit=0 不限条数,时间窗=当天(上界取 now 防时钟毛刺)
+            result = await self.ctx.call_capability(
+                "message.get_by_time",
+                start_time=day_start.timestamp(), end_time=now.timestamp() + 1,
+                limit=0, limit_mode="earliest", filter_mai=False,
+            )
+            if isinstance(result, dict) and result.get("success"):
+                loaded = result.get("messages")
+                msgs = [m for m in loaded if isinstance(m, dict)] if isinstance(loaded, list) else []
+            else:
+                self.ctx.logger.warning(
+                    "日记聊天素材 get_by_time 返回失败形态(%s),回退逐流取数",
+                    "非dict" if not isinstance(result, dict) else "success=False",
+                )
+        except Exception:
+            self.ctx.logger.exception("日记聊天素材 get_by_time 能力异常,回退逐流取数")
+        if msgs is None:
+            msgs = await self._diary_timeline_legacy_msgs(bot_uin, max_messages)
+        entries: list[tuple[float, str]] = []
+        for m in msgs:
+            # 空间虚拟流剔除(平台判定,全局取数跨未知流,不能靠会话名单)
+            if is_qzone_message(m):
+                continue
+            info = (m.get("message_info") or {}).get("user_info") or {}
+            sender = str(info.get("user_id") or "")
+            if not sender:
+                continue  # 无发送者的畸形条目跳过
+            text = str(m.get("processed_plain_text") or "") or "".join(
+                s.get("data", "") for s in (m.get("raw_message") or [])
+                if isinstance(s, dict) and s.get("type") == "text"
+            )
+            if not text.strip():
+                continue  # 纯图片/表情等无文本消息不进时间线
+            try:
+                ts = float(str(m.get("timestamp") or ""))
+                dt = datetime.fromtimestamp(ts)
+            except (ValueError, TypeError, OSError):
+                continue  # 无有效时间戳无法定位,跳过
+            if dt.date() != now.date():
+                continue  # 当日素材:昨日消息不进时间线
+            who = "我" if sender == bot_uin else (str(info.get("user_nickname") or "") or sender)
+            entries.append((ts, f"[{dt:%H:%M}] {who}:{clip_text(text, per_message_chars)}"))
+        if not entries:
+            return ""
+        entries.sort(key=lambda e: e[0])
+        lines = [line for _ts, line in entries]
+        if len(lines) > max_messages:
+            # 保留最近的:一天的聊天太长时,丢最早的并显式标注(不静默截断)
+            lines = ["(更早的聊天已略)"] + lines[-max_messages:]
+        return "\n".join(lines)
+
+    async def _diary_timeline_legacy_msgs(self, bot_uin: str, max_messages: int) -> list[dict]:
+        """旧逐流取数回退(get_by_time 不可用时):流缓存内逐流 get_recent,
+        当日过滤在主装配做。bot_uin 参数保留对位(过滤在公共装配层)。"""
+
+        del bot_uin
         virtual_ids = self._qzone_session_id_set()
-        entries: list[tuple[float, str]] = []  # (epoch 秒, 「说话人:文本」素材行)
+        out: list[dict] = []
         for stream_id in sorted(self._stream_cache):
             if not stream_id or stream_id in virtual_ids:
                 continue
             try:
-                recent = await self._fetch_recent(stream_id, max_messages)
+                out.extend(await self._fetch_recent(stream_id, max_messages))
             except Exception:
                 # 单流失败只跳过该流(同衰减取数纪律),不拖垮日记整体
                 self.ctx.logger.warning("日记聊天素材取数失败(stream=%s),该流跳过", stream_id)
-                continue
-            for m in recent:
-                if not isinstance(m, dict):
-                    continue
-                info = (m.get("message_info") or {}).get("user_info") or {}
-                sender = str(info.get("user_id") or "")
-                if not sender:
-                    continue  # 无发送者的畸形条目跳过
-                text = str(m.get("processed_plain_text") or "") or "".join(
-                    s.get("data", "") for s in (m.get("raw_message") or [])
-                    if isinstance(s, dict) and s.get("type") == "text"
-                )
-                if not text.strip():
-                    continue  # 纯图片/表情等无文本消息不进时间线
-                try:
-                    ts = float(str(m.get("timestamp") or ""))
-                    dt = datetime.fromtimestamp(ts)
-                except (ValueError, TypeError, OSError):
-                    continue  # 无有效时间戳无法分段,跳过
-                if dt.date() != datetime.now().date():
-                    continue  # 当日素材:昨日消息不进时间线
-                who = "我" if sender == bot_uin else (str(info.get("user_nickname") or "") or sender)
-                entries.append((ts, f"{who}:{text[:50]}"))
-        if not entries:
-            return ""
-        entries.sort(key=lambda e: e[0])
-        by_hour: dict[int, list[str]] = {}
-        for ts, line in entries[-max_messages:]:
-            by_hour.setdefault(datetime.fromtimestamp(ts).hour, []).append(line)
-        return " | ".join(f"{hour}点 {';'.join(lines)}" for hour, lines in by_hour.items())
+        return out
 
     def _diary_weather_line(self) -> str:
         """日记天气素材行:当前真实天气(time_aware 快照,日程生成同款来源)。
@@ -3008,28 +3043,33 @@ class CatsitatePlugin(MaiBotPlugin):
         )
         memos = ";".join(e["content"] for e in self.memo.due_on(today)[:3])
         seen_feeds = self.qzone_seen.recent_seen(limit=3, days=1, now=datetime.now())
-        seen_summary = ";".join(e["summary"][:20] for e in seen_feeds)
+        seen_summary = ";".join(clip_text(e["summary"], 20) for e in seen_feeds)
         # M3 修正(规格 §5.2):补聊天时间线与真实天气两素材(可省略行,见各构建器)
         chat_timeline = await self._diary_chat_timeline()
         weather_line = self._diary_weather_line()
-        # 人设前置为 stable_ctx 首段(与 qzone_expression 同形态):模板以用户本人
-        # 身份书写日记,人设背景属稳定段(前置),不混入变量素材尾(前缀缓存纪律)
+        # 素材蓝本形态(diary_plugin prompts.py,2026-09-02):「我的名字是…/人设/
+        # 今天是{日期},回顾一下到现在为止的聊天记录:{时间线}」在前,当日其余
+        # 素材随后;「日记内容:」收尾作生成引导——单串蓝本里它紧跟指令,两段式
+        # 布局下放素材尾等价(生成恰从引导语后开始)。人设为第二人称散文体
+        # (「你是…」),不套蓝本的「我{personality_desc}」前缀以免读破
+        nickname = await self._bot_echo_nickname()
         persona, _ = await self._persona_context()
         # 目标字数随机化(规格 §5.3):每次生成注入随机目标(80~200),避免模板化
-        # 的定长输出;模板中的「80~200字」区间表述保留
+        # 的定长输出;模板指令句的长度口径引用素材里这一行
         target_words = random.randint(80, 200)
-        stable_ctx = (
-            f"bot 人设:{persona}\n"
-            f"今天是{today}\n"
+        now = datetime.now()
+        material = (
+            f"我的名字是{nickname}\n"
+            f"{persona}\n\n"
+            f"今天是{now.year}年{now.month}月{now.day}日,回顾一下到现在为止的聊天记录:\n"
+            f"{chat_timeline or '(今天没和人聊天)'}\n\n"
             f"今天的日程:{schedule_summary or '自由活动'}\n"
-            f"备忘:{memos or '无'}\n看到的好友动态:{seen_summary or '无'}"
+            f"备忘:{memos or '无'}\n看到的好友动态:{seen_summary or '无'}\n"
         )
-        if chat_timeline:
-            stable_ctx += f"\n今天的聊天:{chat_timeline}"
         if weather_line:
-            stable_ctx += f"\n{weather_line}"
-        stable_ctx += f"\n(本次目标约 {target_words} 字)"
-        messages, _ = build_side_prompt("qzone_diary", [stable_ctx], [])
+            material += f"{weather_line}\n"
+        material += f"(目标 {target_words} 字左右)\n\n日记内容:"
+        messages, _ = build_side_prompt("qzone_diary", [material], [])
         try:
             result = await self._side_llm_call(
                 messages, self.config.qzone.diary_llm_model, "qzone_diary", self.config.qzone.diary_llm_timeout_ms
@@ -3094,7 +3134,7 @@ class CatsitatePlugin(MaiBotPlugin):
                 },
             },
             "raw_message": [{"type": "text",
-                             "data": f"我昨晚发布的日记:{text[:60]}" + (f"\n〔说说ID={tid[:12]}〕" if tid else "")}],
+                             "data": f"我昨晚发布的日记:{clip_text(text, 60)}" + (f"\n〔说说ID={tid[:12]}〕" if tid else "")}],
         }
         try:
             await self.ctx.gateway.route_message(QZONE_GATEWAY_NAME, msg)
@@ -3104,12 +3144,12 @@ class CatsitatePlugin(MaiBotPlugin):
             if tid:
                 try:
                     self.qzone_seen.mark_queued(tid, abstime=str(int(time.time())), author_uin=bot_uin,
-                                                summary=text[:50], author_nickname="我")
+                                                summary=clip_text(text, 50), author_nickname="我")
                     self.qzone_seen.mark_seen(tid, datetime.now().strftime("%Y-%m-%dT%H:%M:%S"),
                                               msg["message_id"])
                     self._qzone_registry.register(FeedContext(
                         tid=tid, owner_uin=bot_uin, owner_nickname="我", kind="self",
-                        content_summary=text[:100],
+                        content_summary=clip_text(text, 100),
                     ))
                 except Exception:
                     self.ctx.logger.exception("QQ空间日记补注本地锚定失败(远端已成功,仅告警)")
@@ -3461,7 +3501,7 @@ class CatsitatePlugin(MaiBotPlugin):
                     "role": "user",
                     "user_id": user_id,
                     "stream_id": "qzone-events",  # 合成流:不与真实流撞 id,事件互为邻居
-                    "text": f"[空间互动] {label}: {e['text'][:60]}",
+                    "text": f"[空间互动] {label}: {clip_text(e['text'], 60)}",
                     "seq": 10 ** 9 + i,  # 排序键取大且逐条唯一,保证全量保留
                     "ts": e["created_at"] or datetime.now().strftime("%Y-%m-%dT%H:%M:%S"),
                     "is_group": False,

@@ -60,30 +60,49 @@ def test_qzone_scene_template_declared():
 
 
 def test_qzone_diary_template_declared():
-    """M3 表达:日记生成模板入 SIDE_TEMPLATES(v5,仿 diary_plugin 蓝本重排)——
-    睡前写当日日记发布为说说;编号要求+书写风格+输出卫生,自包含指令
-    (80~200 字/不编造/基于素材/直接输出正文)。"""
+    """M3 表达:日记生成模板入 SIDE_TEMPLATES(v6,照搬 diary_plugin prompts.py
+    原文,仅占位符适配两段式布局)——指令块=蓝本编号要求+书写风格+输出卫生;
+    素材侧承载 我的名字是/今天是/回顾聊天记录/目标字数/日记内容: 引导。"""
     t = SIDE_TEMPLATES["qzone_diary"]
-    assert t["version"] == 5
+    assert t["version"] == 6
     s = t["system"]
-    assert "睡前" in s and "日记" in s and "说说" in s
-    assert "80~200字" in s and "第一人称" in s
-    assert "不要编造" in s  # 内容必须基于当日素材
-    assert "开头必须是日期和天气" in s  # 蓝本核心:日记形态开头
-    assert "不要写成流水账" in s and "要有重点和感情色彩" in s  # 蓝本核心:反流水账
-    assert "书写风格" in s and "可以有个性" in s  # 蓝本核心:风格段+个性许可
-    assert "只输出一段日记内容" in s  # 无 JSON 包裹,纯文本产出
-    assert "简体中文" in s
-    messages, key = build_side_prompt("qzone_diary", ["今天的日程:发呆"], [])
+    # 蓝本核心逐句锁定(照搬验证:句式漂移会被抓)
+    assert "现在我要写一篇日记,记录到现在为止的感受" in s
+    assert "1. 开头必须是日期和天气" in s
+    assert "2. 像睡前随手写的感觉,轻松自然" in s
+    assert "3. 回忆到现在为止的对话,加入我的真实感受" in s
+    assert "4. 如果有有趣的事就重点写,平淡的一天就简单记录" in s
+    assert "5. 偶尔加一两句小总结或感想" in s
+    assert "6. 不要写成流水账,要有重点和感情色彩" in s
+    assert '7. 用第一人称"我"来写' in s
+    assert "书写风格" in s and "日常且口语化的文段,平淡一些" in s
+    assert "不要书写的太有条理,可以有个性" in s  # 个性许可(反机械化核心)
+    assert "日记风格(私人记录,带反思感想)。" in s  # {style_desc} 内联蓝本默认值
+    assert "只输出一段日记内容就好" in s  # 输出卫生
+    messages, key = build_side_prompt("qzone_diary", ["我的名字是测试"], [])
     assert messages[0]["role"] == "system"
-    assert messages[1]["content"] == "今天的日程:发呆"
-    assert key.startswith("qzone_diary:v5+")
+    assert messages[1]["content"] == "我的名字是测试"
+    assert key.startswith("qzone_diary:v6+")
 
 
 def test_qzone_diary_template_natural_tone():
     """日记模板口吻自然化:不用「你就是这位用户本人(人设见素材首段)」式
-    机械指涉,直接以任务语开写,用自己的口吻书写。"""
+    机械指涉;v6 照搬蓝本原文——以第一人称内心独白式任务语开写。"""
     system, _ = load_side_system("qzone_diary")  # 无部署文件时取内置默认
     assert "你就是这位用户本人" not in system
     assert "人设见素材" not in system
-    assert "睡前" in system and "随手写" in system
+    assert "现在我要写一篇日记" in system and "随手写" in system
+
+
+def test_visible_output_templates_natural_tone():
+    """可见输出 prompt 去机械化(2026-09-02 用户裁定):直接产出可见文本的
+    模板(空间见闻/睡眠回顾——产出注入上下文并被 bot 引用)不用「你是XX助手」
+    式开头;工具向生成(image_relook 等给 planner 消费)与 JSON 判定类
+    (favorability 等)不受此约束。"""
+    for tid in ("sleep_review", "qzone_digest"):
+        system, _ = load_side_system(tid)
+        assert not system.startswith("你是"), f"{tid} 仍以助手人设开头"
+    assert "你睡了一觉" in SIDE_TEMPLATES["sleep_review"]["system"]
+    assert "回想一下今天在QQ空间的事" in SIDE_TEMPLATES["qzone_digest"]["system"]
+    # 工具向模板保持原样(image_relook 是给 bot 用的工具,输出不直接可见)
+    assert SIDE_TEMPLATES["image_relook"]["version"] == 1

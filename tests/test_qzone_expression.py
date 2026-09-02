@@ -60,4 +60,5 @@ async def test_polish_overlong_regenerates_then_truncates():
         {"success": True, "response": "还是长" * 100},
     ])
     text2 = await polish_action_text(call2, persona="p", voice="v", draft="d", limit=200)
-    assert len(text2) == 200  # 重试仍超长→截断
+    assert len(text2) == 203  # 重试仍超长→截断至 200 并尾加"..."(2026-09-02)
+    assert text2.endswith("...")

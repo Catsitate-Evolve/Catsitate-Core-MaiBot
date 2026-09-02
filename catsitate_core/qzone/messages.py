@@ -98,6 +98,14 @@ def fit_images_to_rpc_budget(
     return current
 
 
+def clip_text(text: str, limit: int) -> str:
+    """可见内容截断(2026-09-02 用户裁定):超长截断时尾部加 "...",
+    让模型/用户知道内容被截断了;未超长原样返回。"""
+
+    text = str(text or "")
+    return text if len(text) <= limit else text[:limit] + "..."
+
+
 def _time_prefix(post_dt: datetime, now_dt: datetime) -> str:
     """相对时间前缀:同日=今天HH:MM,不同日=M月d日HH:MM,跨年补年份。"""
 
@@ -170,7 +178,7 @@ def build_notify_message(
             "type": "reply",
             "data": {
                 "target_message_id": reply_target_id,
-                "target_message_content": feed.origin_content[:60],
+                "target_message_content": clip_text(feed.origin_content, 60),
                 "target_message_sender_id": reply_target_sender,
             },
         })

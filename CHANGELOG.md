@@ -38,7 +38,7 @@
 - 工具白名单默认值并入 `qzone_post` 与 `view_friend_feeds`(旧持久化配置缺新工具时 on_load 告警提示补入)。
 - 旁路模板清单 9→12(新增 `catsitate_qzone_diary`/`catsitate_qzone_expression`/`catsitate_qzone_digest`,on_load 自动部署);旁路用量记账新增 `qzone_diary`/`qzone_expression`/`qzone_digest` 模块。
 - 数据表新增 `qzone_likes`(赞事件去重,30 天清理);`qzone_fav_events` 新增 kind=LIKE(好友赞 bot 说说)。
-- docs:手册/CONTEXT/设计稿全量同步;测试基线 450(含场景文案三方一致、模板逐字一致、日期无关性守护)。
+- docs:手册/CONTEXT/设计稿全量同步;测试基线 452(含场景文案三方一致、模板逐字一致、日期无关性守护)。
 
 ## v0.7.1(2026-09-01) QQ空间提示词可读性五项优化
 

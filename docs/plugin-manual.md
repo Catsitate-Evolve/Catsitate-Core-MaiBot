@@ -428,7 +428,7 @@ QQ空间虚拟流(qzone-qq)── 网关注入(route_message;receive 只进不�
 ## 3.14 LLM 用量记账与旁路调用(`plugin.py`)
 
 - `_side_llm_call` 是全部旁路 LLM 统一出口:经 `llm.generate` 能力直调,`model` = 主程序 task 名,超时由各能力节 `*_timeout_ms` 传入(填 0=主程序默认 30s;联调实测 utils 模型 31-53s 会触发默认超时,慢模型建议 120000)。
-- 每次调用按模块记账 `llm_usage(day, module, calls, tokens)`;模块分列:`favorability` / `decay` / `msg_react` / `image_relook` / `sentinel` / `schedule_generate` / `sleep_confirm` / `sleep_review` / `qzone_diary`。
+- 每次调用按模块记账 `llm_usage(day, module, calls, tokens)`;模块分列:`favorability` / `decay` / `msg_react` / `image_relook` / `sentinel` / `schedule_generate` / `sleep_confirm` / `sleep_review` / `qzone_diary` / `qzone_expression` / `qzone_digest`。
 - 当日旁路调用合计达到或超过 `plugin.llm_daily_call_warning_threshold`(默认 50)时告警:「旁路 LLM 当日调用次数已达或超过阈值 50,请注意用量」。
 
 ---
@@ -705,7 +705,7 @@ replyer 出站
 | remind_fallback | 5 分钟 | 备忘提醒兜底注入(仅无生成日程日;睡眠期跳过) | 「备忘提醒兜底注入(stream={id}):{content}」 |
 | qzone_poll | max(poll_interval_minutes,1)×60 s(默认 15 分钟;统一时间线架构下即**发现层间隔**——发现层按页拉取(单页 `discovery_count`,上限 `discovery_max_pages` 页,稳态恒 1 次调用),仅对发现的新动态按好友充实,量与好友总数无关) | 空间窗口(kind=daily 且 read_qzone 或 send_qzone)内:read 窗口走发现层统一时间线→新动态按作者分组充实→去重入队→串行注入 `qzone-qq` 虚拟流(发现层失败告警回退旧逐好友路径);send_qzone 窗口派发发布主动触发(仅 send 即派,同窗形态首轮浏览收尾后派,含零新动态轮);read 窗口结束收泵回退未读+评论频控计数重置(v0.7)+见闻生成;睡眠期/模块停用跳过;长 IO(发现/充实 HTTP)在后台任务执行,不阻塞调度器 tick(深度审查 A-2,防重入标记跳过重叠轮) | 「QQ空间窗口开始,注入泵激活」「QQ空间新动态入队 {n} 条」「QQ空间动态已注入(tid=…,作者=…)」「QQ空间统一时间线拉取失败,回退逐好友旧路径」「QQ空间浏览窗口结束,浏览队列回退未读({n} 条);通知队列保留等待注入」「QQ空间发布触发已发出(browsed=…)」 |
 | qzone_notify_poll | max(notification_interval_seconds,30) s(默认 120 秒) | 统一通知通道(M2.1,替代 M2 评论轮询):三源高频检测(源A=自己说说新评论/源B=近 30 天评论过的好友的楼中楼新回复/源C=有人赞了自己的说说)→P1 优先级队列插队注入→bot 回复路由为楼中楼(源C 可点赞/评论回应);始终运行(醒着即可,与浏览窗口无关),单轮≤3 条,过旧通知/赞事件截断;睡眠期/开关关闭/模块停用/awaiting 占用时跳过(debug 日志);长 IO 后台执行不阻塞调度器 tick(深度审查 A-2) | 「QQ空间通知入队 N 条(源A+B+C,P1 插队)」「QQ空间通知轮询源A失败,本轮跳过」「QQ空间通知轮询源B失败(好友 …),该好友跳过」「QQ空间通知轮询源C失败,本轮跳过源C」「QQ空间赞事件过旧跳过(…)」「QQ空间评论过旧跳过(…)」「QQ空间登录态失效(通知轮询源A/源B/源C…),cookie 已作废,下轮重取」 |
-| qzone_data_prune | 24 h | qzone 数据保留期清理(深度审查 D-1):`qzone_comments` 30 天+`qzone_feeds` seen 行 7 天(queued 行不动) | 「QQ空间数据清理:评论去重 {n} 行,seen 保留 7 天」;失败:「qzone_feeds 清理失败」 |
+| qzone_data_prune | 24 h | qzone 数据保留期清理(深度审查 D-1):`qzone_comments`/`qzone_likes` 30 天+`qzone_feeds` seen 行 7 天(queued 行不动;仅当评论/赞去重行数非零才打日志) | 「QQ空间数据清理:评论去重 {n} 行,赞去重 {m} 行,seen 保留 7 天」;失败:「qzone_feeds 清理失败」 |
 
 ### 6.3 睡眠全链路
 

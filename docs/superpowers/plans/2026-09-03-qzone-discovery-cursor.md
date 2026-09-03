@@ -54,25 +54,25 @@
 
 **Files:** `docs/plugin-manual.md`（浏览轮询节：scope=2 语义/游标翻页/删除 begin 表述/已知限制更新）、`CHANGELOG.md`、`_manifest.json`（v0.9.1）
 
-- [ ] Step 1: 手册浏览轮询节重写协议描述（scope=2、begintime 游标、四重终止、页大小不受控），配置表 `discovery_count`/`discovery_max_pages` 描述同步（页大小语义改为「请求上限，服务端按窗口决定实际条数」）。
-- [ ] Step 2: CHANGELOG v0.9.1 条目（发现层 scope 修正+游标翻页+解析回退）。
-- [ ] Step 3: manifest 版本号 0.9.0 → 0.9.1。
+- [x] Step 1: 手册浏览轮询节重写协议描述（scope=2、begintime 游标、四重终止、页大小不受控），配置表 `discovery_count`/`discovery_max_pages` 描述同步（页大小语义改为「请求上限，服务端按窗口决定实际条数」）。
+- [x] Step 2: CHANGELOG v0.9.1 条目（发现层 scope 修正+游标翻页+解析回退）。
+- [x] Step 3: manifest 版本号 0.9.0 → 0.9.1。
 
 ### Task 5: 提交与部署
 
-- [ ] Step 1: 插件仓库 commit（含计划文档）。
-- [ ] Step 2: tar 同步到运行时目录 → `docker restart maim-bot-core` → 启动日志无告警。
+- [x] Step 1: 插件仓库 commit（含计划文档）。
+- [x] Step 2: tar 同步到运行时目录 → `docker restart maim-bot-core` → 启动日志无告警。
 
 ### Task 6: 实机验收
 
 前置：测试日程已铺 10:53-11:10 read_qzone 窗口（已过期则重铺短窗）；seen 表中两条好友说说（`ee3396c49d38…`/`ee3396c4d238…`）保持回退未读态。
 
-- [ ] Step 1: 浏览轮触发后，日志出现「QQ空间新动态入队 N 条(统一时间线发现 …)」且注入消息含好友说说（此前 scope=0 下恒零产出）。
-- [ ] Step 2: `mai_messages` 检查注入消息正文含「评论区(…条):」块、评论行带〔评论ID=…〕锚、楼中楼 `↳` 缩进、无 `@{uin:…}` 机器格式泄漏（评论内容 @ 解析为可读形态）。
-- [ ] Step 3: registry 校验 comment_map 已按浏览注入填充（评论级锚）。
-- [ ] Step 4: 若 planner 对注入动态调 qzone_reply：@ 目标=评论作者（comment_map 三级解析第二级）。
+- [x] Step 1: 浏览轮触发后，日志出现「QQ空间新动态入队 N 条(统一时间线发现 …)」且注入消息含好友说说（此前 scope=0 下恒零产出）。
+- [x] Step 2: `mai_messages` 检查注入消息正文含「评论区(…条):」块、评论行带〔评论ID=…〕锚、楼中楼 `↳` 缩进、无 `@{uin:…}` 机器格式泄漏（评论内容 @ 解析为可读形态）。
+- [x] Step 3: registry 校验 comment_map 已按浏览注入填充（评论级锚）。
+- [x] Step 4: 若 planner 对注入动态调 qzone_reply：@ 目标=评论作者（comment_map 三级解析第二级）。
 
 ### Task 7: 测试环境清理
 
-- [ ] Step 1: `poll_interval_minutes` 确认已回 15（生产值）；测试日程（10:53 短窗）替换为当日正常日程或等次日 LLM 生成。
-- [ ] Step 2: 清理宿主 /tmp 探针残留（若余）。
+- [x] Step 1: `poll_interval_minutes` 确认已回 15（生产值）；测试日程（10:53 短窗）替换为当日正常日程或等次日 LLM 生成。
+- [x] Step 2: 清理宿主 /tmp 探针残留（若余）。

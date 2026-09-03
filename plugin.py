@@ -295,15 +295,9 @@ class CatsitatePlugin(MaiBotPlugin):
             cookie_provider=self.qzone_cookie.get,
             fetch=self._qzone_http_fetch,
             timeout_ms=self.config.qzone.request_timeout_ms,
-            max_retries=self.config.qzone.max_retries,
             # 写路径身份参数(opuin/qzreferrer/topicId.uin);为空时自检已停用模块,不会走到写路径
             bot_uin=str(self.config.favorability.bot_user_id or "").strip(),
         )
-        if self.config.qzone.max_retries != 0:
-            self.ctx.logger.warning(
-                "qzone.max_retries=%s 当前版本不消费(动作 API 固定不重试,读路径固定单次),配置仅预留",
-                self.config.qzone.max_retries,
-            )
         # 工具驱动旧配置兼容:qzone_* 工具全域默认可用(不受白名单管理,2026-09-02
         # 用户裁定),白名单只管其余虚拟流工具;view_friend_feeds 缺席则虚拟流无法
         # 查看好友说说(仍检查);白名单里残留 qzone_*/reply 项提示可移除(不再消费)
@@ -3958,7 +3952,7 @@ class CatsitatePlugin(MaiBotPlugin):
             except Exception as exc:  # noqa: BLE001
                 events = []
                 self.ctx.logger.warning("空间互动事件读取失败,本次结算不含事件素材(user=%s):%s", user_id, rpc_error_brief(exc))
-            for i, e in enumerate(events[:5]):
+            for i, e in enumerate(events[-5:]):  # 取最近 5 条(首次结算无窗口会命中全量,旧互动无当前状态代表性)
                 label = QZONE_FAV_EVENT_LABELS.get(e["kind"], "空间互动")
                 history.append({
                     "role": "user",

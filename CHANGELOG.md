@@ -1,5 +1,19 @@
 # Changelog
 
+## v0.9.3(2026-09-03) 第三次全量复审修复波+图片链拼接化(SDD 六任务+终审+修复批)
+
+**High**
+- `_bot_echo_nickname` 三处调用点挪入安全区:qzone_post 在发布前读昵称(昵称异常不再「发布成功却报失败诱导重复发布」,且前移至润色前省一次 LLM);日记补注/种子构造纳入既有 try(异常不再瘫痪入睡链)。
+
+**Medium**
+- `_normalize_ts`:staticmethod 内引用 self 的笔误修复+OverflowError;`_daily_decay` 实例级防重入(醒后 spawn 与调度 tick 并发双计衰减);日记发布接同轮自愈 `_qzone_auth_retry`(登录态失效当晚日记不再静默丢失);`mark_seen` 三态(None 经 COALESCE 保留既有 message_id——detail 查看不再抹通知 reply 段锚);`_relative_time_to_epoch` 非法时间(2月29/99:99)防护返回 0+源C 调用点独立隔离(异常不再回退整轮已登记通知键);通知登记 owner_nickname 语义修正(评论者/点赞者昵称不再错位为说说主人,qzone_like 回执不再张冠李戴)。
+- **图片链拼接化(用户裁定 C 方案,替代 ≤3 截断)**:新模块 `imaging.py` 公共管线统一三出口(浏览注入/view_friend_feeds/view_friend_feed_detail)——多图(≥2)拼接为一张 3 列网格合成图(原始序号角标,失败图跳格示缺),单图直发;VLM/上下文成本 O(N)→O(1)(实机实证 9 图→1 合成→1 次 VLM);锚 hash=拟合后实际送出字节(超预算重编码同步重算,丢弃清空);全失败占位 `[图片×N]`;旧版 Pillow 字体回退一次性告警。
+
+**Low**
+- 发布触发 intent 文案残留右括号;cookie 快照 saved_at 改 epoch 秒。
+
+**联调事故记录(非缺陷)**:一次重复注入经取证定性为联调外部直写生产库与插件写事务的竞态(开发期操作事故),未加防御补丁——裁定:补丁前先查证根因。
+
 ## v0.9.2(2026-09-03) 终审修复波(reply 错靶/评论区标签/诚实空块)
 
 - **H-1 qzone_reply 通知上下文仅锚匹配时采用**:registry 字段级合并会让被通知登记过的说说保留旧 comment_uin/commenter——此前无条件优先会把 comment_map 命中的「另一条评论」错挂到通知的主评论线程并 @ 错人。现在通知二元组仅在 `ctx.comment_tid == comment_id` 时采用;@ 目标同步锚定。

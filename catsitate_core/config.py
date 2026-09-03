@@ -229,7 +229,7 @@ class QzoneSection(PluginConfigBase):
     decision_window_seconds: int = _f(150, "注入后等待 planner 轮完成的超时兜底(秒;须大于最坏轮延迟,慢模型实测 53s,150 留余量)", label="决策窗口超时(秒)")
     tool_whitelist: list[str] = _f(
         ["wait", "query_memory", "query_person_profile", "memo_write", "memo_read", "inspect_image",
-         "view_friend_feeds"],
+         "view_friend_feeds", "view_friend_feed_detail"],
         "虚拟流 planner 工具白名单(按名过滤;只管非 qzone_* 工具——qzone_like/qzone_comment/"
         "qzone_reply/qzone_post 全域默认可用,不受此列表管理也不可剔除(2026-09-02):view_friend_feeds"
         " 提供说说ID/图片hash后,任何聊天里都能互动;空间流里直接打字发不出去,动作一律走 qzone_* 工具,"

@@ -11,6 +11,10 @@ from __future__ import annotations
 import json
 import logging
 from dataclasses import dataclass, field
+from typing import TYPE_CHECKING
+
+if TYPE_CHECKING:  # 仅类型标注用,避免 protocol↔wire 循环导入
+    from catsitate_core.qzone.wire import FeedComment
 
 logger = logging.getLogger(__name__)
 
@@ -49,8 +53,12 @@ class FeedItem:
     comment_tid: str = ""      # 通知场景:主评论 tid(qzone_reply 用,工具驱动 2026-09-01)
     comment_uin: str = ""      # 通知场景:主评论作者 uin(楼中楼二元组;源A=评论好友,源B=bot 自己)
     # 该说说近期评论摘要(「昵称:内容」前 3 条,注入历史与上下文素材;
-    # get_user_feeds 用 parse_feed_comments 合并,通知项无此数据保持空)
-    comments: list[str] = field(default_factory=list)
+    # 结构化评论区块(get_user_feeds 经 parse_feed_comments_full 填充:
+    # 顶层评论+楼中楼;通知项无此数据保持空)
+    comments: list["FeedComment"] = field(default_factory=list)
+    # 评论总数(响应 cmtnum;QQ 截断 commentlist 时 len(comments)<total,
+    # 展示层据此标「前N/共M」;响应未标注时等于列表长度)
+    comment_total: int = 0
 
 
 def generate_gtk(p_skey: str) -> int:

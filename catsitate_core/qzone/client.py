@@ -20,6 +20,7 @@ from catsitate_core.qzone.protocol import (
     parse_msglist,
 )
 from catsitate_core.qzone.wire import (
+    parse_feed_comments_full,
     CommentItem,
     LikeEvent,
     build_comment_form,
@@ -216,11 +217,12 @@ class QzoneClient:
         status, body = await self.fetch(method, url, params=params, headers=headers, timeout_ms=self.timeout_ms)
         return status, body
 
-    async def _fetch_msglist(self, *, target_uin: str, num: int) -> dict:
-        """拉取指定用户说说列表的原始 msglist 载荷(get_user_feeds 与自评拉取共用请求+校验)。"""
+    async def _fetch_msglist(self, *, target_uin: str, num: int, pos: int = 0) -> dict:
+        """拉取指定用户说说列表的原始 msglist 载荷(get_user_feeds 与自评拉取共用请求+校验)。
+        pos 为分页偏移(0=首页,翻页=(页码-1)*每页条数)。"""
 
         params = {
-            "uin": str(target_uin), "ftype": "0", "sort": "0", "pos": "0", "num": str(num),
+            "uin": str(target_uin), "ftype": "0", "sort": "0", "pos": str(max(int(pos), 0)), "num": str(num),
             "replynum": "100", "callback": "_preloadCallback", "code_version": "1",
             "format": "jsonp", "need_comment": "1", "need_private_comment": "1",
         }
@@ -240,19 +242,24 @@ class QzoneClient:
             raise RuntimeError(f"空间说说列表返回业务错误(uin={target_uin}): code={payload.get('code')}")
         return payload
 
-    async def get_user_feeds(self, *, target_uin: str, nickname: str, num: int = 5) -> list:
+    async def get_user_feeds(self, *, target_uin: str, nickname: str, num: int = 5,
+                             page: int = 1) -> list:
         """拉取指定好友最近说说(联调实证参数集:jsonp+need_comment,Referer 指向目标空间)。
 
-        parse_msglist 之上用 parse_feed_comments 合并评论摘要(「昵称:内容」
-        前 3 条,内容截 40 字)到 FeedItem.comments——同一原始载荷两用,
-        不发第二次请求。
-        """
+        page 为页码(1 起,透传 msglist pos 偏移)。同一原始载荷两用不发第二次
+        请求:parse_msglist 出说说实体,parse_feed_comments_full 出结构化评论
+        区块(顶层+楼中楼+总数)填 FeedItem.comments/comment_total——浏览注入、
+        详情工具与评论级锚(comment_map)共用。"""
 
-        payload = await self._fetch_msglist(target_uin=target_uin, num=num)
+        payload = await self._fetch_msglist(
+            target_uin=target_uin, num=num, pos=(max(int(page), 1) - 1) * num)
         feeds = parse_msglist(payload, target_uin=str(target_uin), nickname=nickname)
-        comments = parse_feed_comments(payload)
+        blocks = parse_feed_comments_full(payload)
         for f in feeds:
-            f.comments = [f"{c.nickname}:{c.content[:40]}" for c in comments.get(f.tid, [])[:3]]
+            block = blocks.get(f.tid)
+            if block is not None:
+                f.comments = block.comments
+                f.comment_total = block.total
         return feeds
 
     async def get_user_feeds_raw(self, *, target_uin: str, num: int = 5) -> dict:

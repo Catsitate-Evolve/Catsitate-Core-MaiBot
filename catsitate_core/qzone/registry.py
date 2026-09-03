@@ -26,10 +26,13 @@ class FeedContext:
     comment_tid: str = ""     # 通知场景:主评论 tid(楼中楼回复用)
     comment_uin: str = ""     # 通知场景:主评论作者 uin(楼中楼二元组)
     kind: str = "feed"        # "feed"=浏览动态 / "notify_comment"=说说被评论 / "notify_reply"=评论被回复 / "self"=自己发布
-    # 说说正文(全文,2026-09-02 用户裁定:登记不截断)与近期评论(「昵称:内容"):
-    # 注入历史与工具上下文素材(view_friend_feeds 亦复用);旧登记点不传保持默认空。
+    # 说说正文全文(2026-09-02 用户裁定:登记不截断)。旧「近评摘要」字符串列表
+    # 已删(Q7 裁定:润色架构后无消费方的死字段)。
     content_summary: str = ""
-    recent_comments: list[str] = field(default_factory=list)
+    # 评论级锚上下文(Q6 设计共识,2026-09-02):comment_tid → (主评论作者 uin, 昵称)。
+    # 浏览注入/查看工具从结构化评论填充;通知注入填通知二元组。qzone_reply 解析
+    # comment_id 时据此确定主评论作者与 @ 目标(无通知上下文时的唯一来源)。
+    comment_map: dict[str, tuple[str, str]] = field(default_factory=dict)
 
 
 class FeedContextRegistry:
@@ -62,7 +65,7 @@ class FeedContextRegistry:
                 comment_uin=ctx.comment_uin or old.comment_uin,
                 kind=ctx.kind if ctx.kind != "feed" else old.kind,  # 浏览条目不清掉通知语义
                 content_summary=ctx.content_summary or old.content_summary,
-                recent_comments=ctx.recent_comments or old.recent_comments,
+                comment_map={**old.comment_map, **ctx.comment_map},  # 键级合并:新评论并入,旧评论锚保留
             )
             ctx = merged
         self._entries[ctx.tid] = (ctx, time.monotonic())

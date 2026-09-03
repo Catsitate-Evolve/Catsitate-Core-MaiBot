@@ -9,7 +9,7 @@ from __future__ import annotations
 
 import logging
 import re
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 
 logger = logging.getLogger(__name__)
 
@@ -192,6 +192,98 @@ class LikeEvent:
     owner_uin: str
     target_tid: str
     create_time: str = ""  # epoch 秒字符串,缺失为空(不编造时间)
+
+
+@dataclass
+class FeedReplyEntry:
+    """一条楼中楼回复(commentlist[].list_3 条目)——注入与详情展示用。"""
+
+    reply_tid: str
+    uin: str
+    nickname: str
+    content: str
+    create_time: str
+
+
+@dataclass
+class FeedComment:
+    """一条顶层评论(commentlist 条目,含楼中楼)——注入与详情展示用;
+    comment_tid 是 qzone_reply 的锚,replies 是楼中楼(可能被 QQ 截断,
+    reply_total 为响应标注的总数,超展开时用于「共N条」标注)。"""
+
+    comment_tid: str
+    uin: str
+    nickname: str
+    content: str
+    create_time: str
+    replies: list[FeedReplyEntry] = field(default_factory=list)
+    reply_total: int = 0
+
+
+@dataclass
+class CommentBlock:
+    """一条说说的评论区块(结构化):comments 为响应给出的顶层评论列表
+    (QQ 可能截断),total 为响应标注的评论总数(cmtnum;0=响应未标注)。"""
+
+    comments: list[FeedComment] = field(default_factory=list)
+    total: int = 0
+
+
+def parse_feed_comments_full(payload: dict) -> dict[str, CommentBlock]:
+    """解析 msglist 载荷的完整评论区块(顶层评论+楼中楼)→ {feed_tid: CommentBlock}。
+
+    与 parse_feed_comments(通知源A 用,只取顶层四字段)的分工:本函数服务
+    浏览注入与详情工具——楼中楼取 commentlist[].list_3,评论总数取 feed 的
+    cmtnum(未标注时回退为列表长度,不臆造);畸形条目/缺 uin 容错跳过,
+    数值 tid 归一为字符串。"""
+
+    out: dict[str, CommentBlock] = {}
+    for feed in (payload or {}).get("msglist") or []:
+        if not isinstance(feed, dict):
+            continue
+        tid = str(feed.get("tid") or "")
+        raw_list = feed.get("commentlist") or []
+        if not tid or not isinstance(raw_list, list):
+            continue
+        comments: list[FeedComment] = []
+        for c in raw_list:
+            if not isinstance(c, dict):
+                continue
+            uin = str(c.get("uin") or "")
+            comment_tid = str(c.get("tid") or "")
+            if not uin or not comment_tid:
+                continue
+            replies: list[FeedReplyEntry] = []
+            for r in c.get("list_3") or []:
+                if not isinstance(r, dict):
+                    continue
+                r_uin = str(r.get("uin") or "")
+                r_tid = str(r.get("tid") or "")
+                if not r_uin or not r_tid:
+                    continue
+                replies.append(FeedReplyEntry(
+                    reply_tid=r_tid, uin=r_uin,
+                    nickname=str(r.get("name") or "") or r_uin,
+                    content=str(r.get("content") or "").strip(),
+                    create_time=str(r.get("create_time") or ""),
+                ))
+            try:
+                reply_total = int(str(c.get("total") or len(replies)))
+            except (TypeError, ValueError):
+                reply_total = len(replies)
+            comments.append(FeedComment(
+                comment_tid=comment_tid, uin=uin,
+                nickname=str(c.get("name") or "") or uin,
+                content=str(c.get("content") or "").strip(),
+                create_time=str(c.get("create_time") or ""),
+                replies=replies, reply_total=reply_total,
+            ))
+        try:
+            total = int(str(feed.get("cmtnum") or len(comments)))
+        except (TypeError, ValueError):
+            total = len(comments)
+        out[tid] = CommentBlock(comments=comments, total=total)
+    return out
 
 
 @dataclass

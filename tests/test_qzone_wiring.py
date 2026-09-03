@@ -269,7 +269,7 @@ def test_qzone_comment_success_via_registry(tmp_path):
 
     p = _make_tool_plugin(tmp_path)
     _register_feed(p, tid="fulltid0001abc", owner="10001",
-                   content_summary="今天去了海边", recent_comments=["小红:羡慕"])
+                   content_summary="今天去了海边", comment_map={"ct0": ("20000", "小红")})
     # seen 预登记(mark_interacted 的落库对象;registry-only 通知说说无行则 UPDATE 空转,无害)
     p.qzone_seen.mark_queued("fulltid0001abc", abstime="1", author_uin="10001", summary="动态")
     res = asyncio.run(p.qzone_comment(feed_id="fulltid0001", content="好看!", stream_id="s1"))
@@ -470,14 +470,17 @@ def test_qzone_reply_source_b_pair_bot_head_commenter_target(tmp_path):
 
 
 def test_qzone_reply_requires_all_params_and_session(tmp_path):
-    """入参校验:缺说说ID/评论ID/内容 → 显式提示;非虚拟流会话 → 拒绝(零写调用)。"""
+    """入参校验:缺说说ID/评论ID/内容 → 显式提示;全域化(2026-09-02 Q3)后任意
+    流可用,但无评论级上下文(未通知过/未浏览/未查详情)→ 显式拒绝+指引(Q11),
+    零写调用。"""
 
     p = _make_tool_plugin(tmp_path)
     _register_feed(p, tid="feedR3", owner="10001")
     res = asyncio.run(p.qzone_reply(feed_id="", comment_id="c1", content="x", stream_id="s1"))
     assert "都不能为空" in res
+    # 真实流调用不再被流门控拒绝,而是评论级解析失败显式指引
     res2 = asyncio.run(p.qzone_reply(feed_id="feedR3", comment_id="c1", content="x", stream_id="other"))
-    assert res2 == "这个工具只能在QQ空间动态流里使用。"
+    assert "未找到这条评论" in res2 and "view_friend_feed_detail" in res2
     assert p.qzone_client.reply_calls == []
 
 
@@ -1603,6 +1606,98 @@ def test_notify_scan_source_c_drift_warn_once(tmp_path):
     assert _drift_warnings() == 2  # 复位后的新漂移段落:第二次告警
 
 
+def test_view_friend_feeds_pagination_empty_page_hint(tmp_path):
+    """翻页(Q8=A 设计共识 2026-09-02):page 透传 client(pos=(page-1)*num);
+    第 2 页为空 → 「没有更多了」诚实提示,不编造。"""
+
+    p = _make_plugin(tmp_path)
+    pages: list[int] = []
+
+    async def get_user_feeds(*, target_uin, nickname, num=3, page=1):
+        pages.append(page)
+        return []  # 模拟翻到底
+
+    p.qzone_client.get_user_feeds = get_user_feeds
+    res = asyncio.run(p.view_friend_feeds(qq="100", count=3, page=2))
+    assert pages == [2]  # 页码透传
+    assert "没有更多了" in res and "第 2 页为空" in res
+    res1 = asyncio.run(p.view_friend_feeds(qq="100", count=3))  # 默认第 1 页
+    assert pages == [2, 1] and "最近没有可见的说说" in res1  # 首页空=没有说说(措辞分言)
+
+
+def test_view_friend_feed_detail_returns_comments_and_marks_seen(tmp_path):
+    """详情工具(设计共识 Q1A/Q2B/Q4/Q10B/Q12A):feed_id 锚解析主人(qq 可省)、
+    返回正文+评论区(含评论ID 锚)+图片 content_items;查看即 mark_seen;
+    registry 登记 comment_map 供 qzone_reply 评论级解析。"""
+
+    from catsitate_core.qzone.wire import FeedComment
+
+    detail_feed = FeedItem(
+        tid="detailfeed0001", abstime="1750000000", uin="100", nickname="小明",
+        content="这条说说的正文", image_urls=["http://img.qpic.cn/d.jpg"],
+        comments=[FeedComment(comment_tid="dc1", uin="20000", nickname="小红",
+                              content="第一条评论", create_time="1750000500")],
+        comment_total=1,
+    )
+
+    async def get_user_feeds(*, target_uin, nickname, num=20, page=1):
+        assert target_uin == "100"  # qq 省略时经 registry 锚解析出主人
+        return [detail_feed]
+
+    async def download(url):
+        return b"fakejpeg"
+
+    p = _make_plugin(tmp_path)
+    p.qzone_client.get_user_feeds = get_user_feeds
+    p.qzone_client.download_image = download
+    _register_feed(p, tid="detailfeed0001", owner="100")  # 预置锚:主人可解析
+
+    result = asyncio.run(p.view_friend_feed_detail(feed_id="detailfeed0001"))
+    assert isinstance(result, dict)
+    content = result["content"]
+    assert "小明(QQ:100)的说说详情" in content
+    assert "这条说说的正文" in content
+    assert "评论区(1条):" in content and "小红(20000):第一条评论" in content
+    assert "〔评论ID=dc1〕" in content  # reply 锚
+    assert content.endswith("〔说说ID=detailfeed00〕")  # tid 前 12 位锚
+    assert result["content_items"] and result["content_items"][0]["mime_type"] == "image/jpeg"
+    # Q10=B:查看即已见(浏览轮询 is_new_candidate 转 False)
+    assert p.qzone_seen.is_new_candidate("detailfeed0001") is False
+    # Q6:评论级锚登记
+    ctx = p._qzone_registry.resolve("detailfeed0001")
+    assert ctx.comment_map == {"dc1": ("20000", "小红")}
+
+
+def test_view_friend_feed_detail_requires_owner_when_unresolved(tmp_path):
+    """Q12=A 锚过期形态:registry/seen 都解析不到主人且未传 qq → 显式索要,
+    不猜测。"""
+
+    p = _make_plugin(tmp_path)
+    res = asyncio.run(p.view_friend_feed_detail(feed_id="unknownfeed99"))
+    assert "请带上好友的QQ号" in res
+
+
+def test_qzone_reply_via_comment_map_targets_comment_author(tmp_path):
+    """Q6/Q11:真实流(无通知上下文)经 comment_map 命中——主评论作者=二元组
+    comment_uin、@ 目标=该评论作者;map 无命中则显式拒绝+指引(零写调用)。"""
+
+    from catsitate_core.qzone.wire import FeedComment
+
+    p = _make_tool_plugin(tmp_path)
+    _register_feed(p, tid="feedM", owner="10001",
+                   comment_map={"cm1": ("20000", "小红")})
+    res = asyncio.run(p.qzone_reply(feed_id="feedM", comment_id="cm1",
+                                    content="回你!", stream_id="real-chat"))
+    assert res.startswith("回复成功,已回复 小红")  # @ 目标=评论作者(昵称)
+    assert p.qzone_client.reply_calls[0][3] == "20000"  # comment_uin=主评论作者
+    assert p.qzone_client.reply_calls[0][6] == "20000"  # at_uin
+
+    _register_feed(p, tid="feedN", owner="10001")  # 无评论锚
+    res2 = asyncio.run(p.qzone_reply(feed_id="feedN", comment_id="gone1",
+                                     content="x", stream_id="real-chat"))
+    assert "未找到这条评论" in res2 and "view_friend_feed_detail" in res2
+
+
 def test_qzone_block_virtual_stream_state_only(tmp_path):
     """注入块去重(可读性优化 2026-09-01):场景全文已由 apply_scene_surgery 进
     system 段(场景替换),虚拟流注入块只保留动态状态——不再重复拼场景文案。"""
@@ -2148,9 +2243,9 @@ def test_pump_keeps_feed_semantics_when_rejected(tmp_path):
     assert p.qzone_injector.awaiting_tid == ""
 
 
-def test_pump_registers_content_summary_and_recent_comments(tmp_path):
+def test_pump_registers_content_summary_and_comment_map(tmp_path):
     """M3-r2 Task 6 表达生成层素材:泵登记 FeedContext 带 content_summary(说说
-    正文前 100 字)与 recent_comments(get_user_feeds 合并的「昵称:内容」摘要)
+    全文)与 comment_map(结构化评论的评论级锚,Q6)
     ——qzone_comment 生成正文时的场景素材;纯图说说以「(无文字)」占位。"""
 
     import time as _time
@@ -2158,9 +2253,12 @@ def test_pump_registers_content_summary_and_recent_comments(tmp_path):
     p = _make_plugin(tmp_path)
     p.qzone_injector.window_started()
     p.qzone_seen.mark_queued("t_cs", abstime="1750000000", author_uin="10001", summary="正文")
+    from catsitate_core.qzone.wire import FeedComment
+
     p.qzone_injector.enqueue([FeedItem(
         tid="t_cs", abstime="1750000000", uin="10001", nickname="小明", content="今天去了海边玩,晒黑了",
-        comments=["小红:羡慕", "小刚:哈哈"],
+        comments=[FeedComment(comment_tid="ct1", uin="20000", nickname="小红", content="羡慕", create_time=""),
+                  FeedComment(comment_tid="ct2", uin="30000", nickname="小刚", content="哈哈", create_time="")],
     )])
     p.qzone_seen.mark_queued("t_pic", abstime="1750000100", author_uin="10002", summary="图片")
     p.qzone_injector.enqueue([FeedItem(
@@ -2173,7 +2271,7 @@ def test_pump_registers_content_summary_and_recent_comments(tmp_path):
     ctx = p._qzone_registry.resolve("t_cs")
     assert ctx is not None
     assert ctx.content_summary == "今天去了海边玩,晒黑了"
-    assert ctx.recent_comments == ["小红:羡慕", "小刚:哈哈"]
+    assert ctx.comment_map == {"ct1": ("20000", "小红"), "ct2": ("30000", "小刚")}  # 评论级锚
     ctx_pic = p._qzone_registry.resolve("t_pic")
     assert ctx_pic is not None and ctx_pic.content_summary == "(无文字)"  # 空正文占位
 
@@ -2695,15 +2793,15 @@ def test_view_friend_feeds_returns_media_dict(tmp_path):
     dict 回执(content 文本摘要+content_items 图片媒体项,宿主按 tool result
     media 入 Images 表供 inspect_image hash 路径反查);图标注为 sha256 前 8 位
     (inspect_image 的 image_hash 前缀即来源于此);成功即 registry 登记
-    (content_summary/recent_comments=表达生成层场景素材)。"""
+    (content_summary=正文;comment_map=评论级锚)。"""
 
     p = _make_plugin(tmp_path)
     feed = FeedItem(tid="tid1", abstime="1750000000", uin="100", nickname="小明",
                     content="今天天气好", image_urls=["http://img.qpic.cn/a.jpg"],
-                    comments=["小红:不错"])
+                    comments=[])  # 结构化评论空:列表工具不消费评论(Q7 后仅 comment_map 用)
     feed_calls: list = []
 
-    async def get_user_feeds(*, target_uin, nickname, num=3):
+    async def get_user_feeds(*, target_uin, nickname, num=3, page=1):
         feed_calls.append((target_uin, nickname, num))
         return [feed]
 
@@ -2739,7 +2837,7 @@ def test_view_friend_feeds_returns_media_dict(tmp_path):
     # registry 登记:owner=好友,素材字段=正文前 100 字+近期评论(qzone_comment 素材)
     resolved = p._qzone_registry.resolve("tid1")
     assert resolved is not None and resolved.owner_uin == "100" and resolved.owner_nickname == "小明"
-    assert resolved.content_summary == "今天天气好" and resolved.recent_comments == ["小红:不错"]
+    assert resolved.content_summary == "今天天气好"
     # count 上限 10(防单次拉爆);非法 QQ 号显式拒绝(零拉取)
     asyncio.run(p.view_friend_feeds(qq="100", count=99))
     assert feed_calls[-1][2] == 10

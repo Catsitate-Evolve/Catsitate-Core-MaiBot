@@ -59,6 +59,7 @@ from catsitate_core.qzone.messages import (
     build_feed_message,
     build_notify_message,
     clip_text,
+    format_comment_block,
     comment_time_prefix,
     fit_images_to_rpc_budget,
     format_comment_param_line,
@@ -914,7 +915,7 @@ class CatsitatePlugin(MaiBotPlugin):
 
     @Tool(
         "qzone_reply",
-        description="回复好友在你说说下的评论或对你评论的回复(QQ空间楼中楼)。feed_id 和 comment_id 都照抄消息尾部括号里的标注。",
+        description="回复好友在你说说下的评论或对你评论的回复(QQ空间楼中楼),任何聊天里都可用。feed_id/comment_id 照抄消息尾部〔〕、浏览动态评论区,或 view_friend_feed_detail 结果里的标注。",
         brief_description="回复评论(楼中楼)",
         parameters=[
             ToolParameterInfo(name="feed_id", param_type="string", description="目标说说ID(照抄消息尾部「说说ID=」)", required=True),
@@ -925,16 +926,15 @@ class CatsitatePlugin(MaiBotPlugin):
     )
     async def qzone_reply(self, feed_id: str = "", comment_id: str = "", content: str = "",
                           **kwargs: Any) -> str:
-        """楼中楼回复——commentId+commentUin 二元组精确匹配主评论(联调实证)。"""
+        """楼中楼回复——commentId+commentUin 二元组精确匹配主评论(联调实证)。
+
+        全域工具(2026-09-02 设计共识 Q3):comment_id 锚来源=空间流通知参数行、
+        浏览注入评论区,或 view_friend_feed_detail 的结果。"""
+        del kwargs  # 全域工具:任何聊天流都可用
         if not self._qzone_available:
             return "QQ空间模块未启用。"
-        # 保留流门控(与 like/comment/post 全域化不同):comment_id 锚只存在于
-        # 空间流的通知参数行,真实流无来源,放开只会诱导无效调用
-        stream_id = str(kwargs.get("stream_id") or "")
-        if stream_id not in self._qzone_session_id_set():
-            return "这个工具只能在QQ空间动态流里使用。"
         if not (feed_id.strip() and comment_id.strip() and content.strip()):
-            return "说说ID、评论ID和回复内容都不能为空,请照抄消息尾部的标注。"
+            return "说说ID、评论ID和回复内容都不能为空——评论ID 照抄消息尾部〔〕或 view_friend_feed_detail 结果里的标注。"
         content = content.strip()
         if len(content) > 200:
             return f"回复太长了({len(content)} 字,上限 200)。"
@@ -943,15 +943,29 @@ class CatsitatePlugin(MaiBotPlugin):
         fid, target_qq, ctx = self._qzone_resolve_feed(feed_id)
         if not fid:
             return f"未找到说说 {feed_id[:12]},可能已过期。"
-        # 楼中楼二元组:commentId=主评论 tid(消息锚「评论 xxx」),commentUin=主评论
-        # 作者(通知场景经 FeedItem.comment_uin 传递:源A=评论好友/源B=bot 自己;
-        # 无上下文回退 bot——bot 只在自己的评论线程里收到回复通知)
+        # 楼中楼二元组与 @ 目标解析(2026-09-02 设计共识 Q6/Q11,三级):
+        # ① 通知上下文(源A/B:主评论作者=comment_uin,@ 目标=评论者 commenter)
+        # ② comment_map(浏览注入/详情查看登记:comment_id → 主评论作者)
+        # ③ 全 miss=锚过期/未查过详情,显式拒绝+指引(Q11:不猜测回退,防 @ 错人)
         bot_uin = str(self.config.favorability.bot_user_id or "").strip()
-        comment_uin = ctx.comment_uin if ctx and ctx.comment_uin else bot_uin
+        map_entry = ctx.comment_map.get(comment_id.strip()) if ctx else None
+        if ctx and ctx.comment_uin:
+            comment_uin = ctx.comment_uin
+        elif map_entry:
+            comment_uin = map_entry[0]
+        else:
+            comment_uin = bot_uin  # 仅通知源B形态(主评论=bot 自己)时才会走到
+        if not (ctx and (ctx.comment_uin or ctx.commenter_uin)) and not map_entry:
+            return (f"未找到这条评论(评论ID={comment_id[:12]} 锚可能已过期)——"
+                    "先用 view_friend_feed_detail 查看该说说,照抄最新评论ID再回复。")
         # @ 目标=正在对话的评论者/回复者(与二元组解耦:源B 回复线程头=bot 自己
-        # 的评论,但 @ 的是回复者;前缀由 wire.build_reply_form 统一拼装)
-        at_uin = ctx.commenter_uin if ctx and ctx.commenter_uin else comment_uin
-        at_nick = (ctx.commenter_nickname if ctx else "") or at_uin or "好友"
+        # 的评论,但 @ 的是回复者;无评论者上下文时 @ 主评论作者;前缀由
+        # wire.build_reply_form 统一拼装)
+        at_uin = (ctx.commenter_uin if ctx and ctx.commenter_uin
+                  else (map_entry[0] if map_entry else comment_uin))
+        at_nick = ((ctx.commenter_nickname if ctx else "")
+                   or (map_entry[1] if map_entry else "")
+                   or at_uin or "好友")
         try:
             # 同轮自愈(用户裁定 #7):AuthError 作废并重取 cookie 后原地重试一次
             _, auth_err = await self._qzone_auth_retry(
@@ -1067,22 +1081,23 @@ class CatsitatePlugin(MaiBotPlugin):
 
     @Tool(
         "view_friend_feeds",
-        description="查看指定QQ好友最近的QQ空间说说(正文+图片)。想了解某位好友近况时使用,任何聊天里都可用。",
+        description="查看指定QQ好友最近的QQ空间说说(正文+图片,不含评论区——看某条说说的完整评论用 view_friend_feed_detail)。想了解某位好友近况时使用,任何聊天里都可用;想看更早的翻页即可。",
         brief_description="看好友说说",
         parameters=[
             ToolParameterInfo(name="qq", param_type="string", description="好友QQ号", required=True),
-            ToolParameterInfo(name="count", param_type="integer", description="看最近几条(默认3,上限10)", required=False),
+            ToolParameterInfo(name="count", param_type="integer", description="每页几条(默认3,上限10)", required=False),
+            ToolParameterInfo(name="page", param_type="integer", description="页码(默认第1页=最近几条;想看更早的传2、3…;末页会提示没有更多)", required=False),
         ],
         visibility="visible",
     )
-    async def view_friend_feeds(self, qq: str = "", count: int = 3, **kwargs: Any) -> dict | str:
+    async def view_friend_feeds(self, qq: str = "", count: int = 3, page: int = 1, **kwargs: Any) -> dict | str:
         """全域查看工具:任何聊天里都可看,也是 qzone_like/qzone_comment 等空间
         动作工具在真实聊天流里的参数来源(view_friend_feeds 结果带说说ID)。
 
         回 dict 而非 str:图片以 content_items(content_type=image+base64)经 tool
         result media 返回,宿主入库 Images 表后可被 inspect_image 的 image_hash
         前缀反查;文本摘要逐图列 sha256 前 8 位即该前缀的来源。成功即 registry
-        登记(content_summary/recent_comments=后续评论/回复的表达生成素材)。
+        登记(content_summary=正文全文;comment_map=评论级锚,qzone_reply 目标解析用)。
         """
         del kwargs  # 全域工具:不限会话(真实流/虚拟流都只读不写)
         import base64
@@ -1097,13 +1112,17 @@ class CatsitatePlugin(MaiBotPlugin):
             # 同轮自愈(用户裁定 #7):AuthError 作废并重取 cookie 后原地重试一次;
             # nickname 无上下文可用,传 QQ 号占位(仅请求参数,不影响拉取)
             feeds, auth_err = await self._qzone_auth_retry(
-                lambda: self.qzone_client.get_user_feeds(target_uin=qq, nickname=qq, num=count), "好友说说查看")
+                lambda: self.qzone_client.get_user_feeds(target_uin=qq, nickname=qq, num=count, page=page),
+                "好友说说查看")
             if auth_err:
                 return f"查看失败:{auth_err}。"
         except Exception:
             self.ctx.logger.exception("QQ空间好友说说拉取失败(qq=%s)", qq)
             return "拉取失败,已记录日志。"
         if not feeds:
+            # 空页形态分言:第 1 页空=该好友没有可见说说;翻页空=到底了(诚实,不编造)
+            if int(page) > 1:
+                return f"{qq} 的说说没有更多了(第 {int(page)} 页为空)。"
             return f"{qq} 最近没有可见的说说。"
         # 可读性格式(2026-09-02):同主免重复——所有条目同作者,头部点名一次;
         # 条目编号+发布时间前缀(浏览注入同款相对时间)分清新旧;正文超长截断;
@@ -1115,7 +1134,8 @@ class CatsitatePlugin(MaiBotPlugin):
         for idx, f in enumerate(feeds, start=1):
             self._qzone_registry.register(FeedContext(
                 tid=f.tid, owner_uin=qq, owner_nickname=f.nickname or qq, kind="feed",
-                content_summary=f.content or "(纯图)", recent_comments=list(f.comments),
+                content_summary=f.content or "(纯图)",
+                comment_map={c.comment_tid: (c.uin, c.nickname) for c in f.comments},
             ))
             pairs: list[tuple[str, bytes]] = []
             for url in f.image_urls[:3]:  # 单条说说最多带 3 图(防 media 项爆炸)
@@ -1157,6 +1177,104 @@ class CatsitatePlugin(MaiBotPlugin):
             text_parts.append(line)
         self.ctx.logger.info("QQ空间好友说说查看(qq=%s,%d 条,%d 图)", qq, len(feeds), len(content_items))
         return {"content": "\n\n".join(text_parts), "content_items": content_items}
+
+    @Tool(
+        "view_friend_feed_detail",
+        description="查看某一条QQ空间说说的完整信息:正文+图片+全部评论和楼中楼。想看清一条说说的完整讨论、或要回复某条评论需要评论ID时使用;任何聊天里都可用。",
+        brief_description="看说说详情和评论",
+        parameters=[
+            ToolParameterInfo(name="feed_id", param_type="string", description="目标说说ID(照抄消息尾部〔〕或 view_friend_feeds 结果里的说说ID)", required=True),
+            ToolParameterInfo(name="qq", param_type="string", description="说说主人的QQ号(可省——省略时按说说ID自动定位主人,定位不到会提示补)", required=False),
+        ],
+        visibility="visible",
+    )
+    async def view_friend_feed_detail(self, feed_id: str = "", qq: str = "", **kwargs: Any) -> dict | str:
+        """单条说说详情(2026-09-02 设计共识 Q1A/Q2B/Q4/Q5B/Q10B/Q12A)。
+
+        返回正文+图片(content_items)+全部评论与楼中楼(楼中楼每条评论最多展开
+        10 条+总数标注,整块超 6000 字截断标注——Q9 上限)。feed_id 必填、qq 选填
+        (缺省经 registry/seen 前缀解析主人)。查看即 mark_seen(Q10=B:浏览轮询
+        不再把该说说当新动态注入);registry 登记 comment_map 供 qzone_reply 的
+        评论级目标解析(Q6)。"""
+        del kwargs  # 全域工具:任何聊天流都可用(虚拟流需白名单含本工具)
+        import base64
+
+        if not self._qzone_available:
+            return "QQ空间模块未启用。"
+        anchor_tid = str(feed_id or "").strip()
+        if not anchor_tid:
+            return "缺少说说ID——照抄消息尾部〔〕或 view_friend_feeds 结果里的说说ID。"
+        # 主人定位(Q12=A):显式 qq 优先,缺省经三级解析拿 owner;两者皆空显式索要
+        fid, owner_uin, ctx = self._qzone_resolve_feed(anchor_tid)
+        owner = str(qq or "").strip() or owner_uin
+        if not owner.isdigit():
+            return f"未能定位这条说说的主人(说说ID={anchor_tid[:12]}),请带上好友的QQ号再查。"
+        try:
+            feeds, auth_err = await self._qzone_auth_retry(
+                lambda: self.qzone_client.get_user_feeds(target_uin=owner, nickname=owner, num=20, page=1),
+                "说说详情查看")
+            if auth_err:
+                return f"查看失败:{auth_err}。"
+        except Exception:
+            self.ctx.logger.exception("QQ空间说说详情拉取失败(owner=%s)", owner)
+            return "拉取失败,已记录日志。"
+        # 目标匹配:解析出的全量 tid 精确命中,否则按锚前缀(≥12 位)匹配
+        target = next((f for f in feeds if f.tid == fid), None) if fid else None
+        if target is None:
+            target = next((f for f in feeds if f.tid.startswith(anchor_tid)), None)
+        if target is None:
+            return (f"说说 {anchor_tid[:12]} 不在 {owner} 最近 20 条内——"
+                    "可能已删除,或比这更早(更早的没有查看通路,属当前已知限制)。")
+        # registry 登记:正文全文+评论级锚(与浏览注入同款合并语义)
+        self._qzone_registry.register(FeedContext(
+            tid=target.tid, owner_uin=owner, owner_nickname=target.nickname or owner, kind="feed",
+            content_summary=target.content or "(纯图)",
+            comment_map={c.comment_tid: (c.uin, c.nickname) for c in target.comments},
+        ))
+        # 查看即已见(Q10=B):落 seen 表(浏览轮询据此跳过;源A 评论扫描另一张表不受影响)
+        now_iso = datetime.now().strftime("%Y-%m-%dT%H:%M:%S")
+        try:
+            self.qzone_seen.mark_queued(
+                target.tid, abstime=target.abstime or "", author_uin=owner,
+                summary=target.content or "", author_nickname=target.nickname or "")
+            self.qzone_seen.mark_seen(target.tid, now_iso, "")
+        except Exception:
+            self.ctx.logger.exception("QQ空间说说详情 seen 登记失败(仅告警)")
+        # 图片(与 view_friend_feeds 同款:≤3 图防 media 项爆炸、压缩出事件循环、
+        # 单图失败只丢该图、mime 魔数探测)
+        content_items: list[dict] = []
+        img_tags: list[str] = []
+        for url in target.image_urls[:3]:
+            try:
+                data = await self.qzone_client.download_image(url)
+            except Exception:
+                self.ctx.logger.exception("QQ空间说说详情图片下载异常(%s),该图跳过", url)
+                data = None
+            if not data:
+                continue
+            img_tags.append(f"图{len(img_tags) + 1}({hashlib.sha256(data).hexdigest()[:8]})")
+            content_items.append({
+                "content_type": "image",
+                "data": base64.b64encode(data).decode("ascii"),
+                "mime_type": _sniff_image_mime(data),
+            })
+        # 文本:头部点名+时间前缀+全文正文(详情即「看完整」,正文不截断)+评论区+锚
+        time_tag = comment_time_prefix(target.abstime, time.time())
+        lines = [f"{target.nickname or owner}(QQ:{owner})的说说详情:"]
+        body_line = f"{time_tag}{target.content or '(纯图)'}"
+        if img_tags:
+            body_line += "\n" + " ".join(img_tags)
+        lines.append(body_line)
+        comment_block = format_comment_block(
+            target.comments, comment_total=target.comment_total, now_epoch=time.time())
+        if comment_block:
+            lines.append(comment_block)
+        elif not target.comments:
+            lines.append("评论区:还没有评论。")
+        lines.append(f"〔说说ID={target.tid[:12]}〕")
+        self.ctx.logger.info("QQ空间说说详情查看(owner=%s,评论%d条,图%d张)",
+                             owner, len(target.comments), len(content_items))
+        return {"content": "\n\n".join(lines), "content_items": content_items}
 
     # ---------- QQ空间(M1 感知 / M2 互动) ----------
 
@@ -1619,8 +1737,8 @@ class CatsitatePlugin(MaiBotPlugin):
         # 键=真实说说 tid(通知项用 origin_tid——消息尾部锚展示真实 tid,合成 tid
         # 模型不可见);owner=说说主人(浏览=作者;通知源B=好友;源A=bot 自己);
         # commenter/comment_tid/comment_uin=通知场景的评论者与主评论二元组素材;
-        # content_summary/recent_comments=说说正文与近评摘要(上下文素材,通知项
-        # 取 origin_content,正文空以「(无文字)」占位)
+        # content_summary=说说正文全文;comment_map=评论级锚(浏览=结构化评论,
+        # 通知=主评论二元组),qzone_reply 的 comment_id 目标解析来源
         bot_uin = str(self.config.favorability.bot_user_id or "").strip()
         self._qzone_registry.register(FeedContext(
             tid=feed.origin_tid or feed.tid,
@@ -1632,7 +1750,13 @@ class CatsitatePlugin(MaiBotPlugin):
             comment_uin=feed.comment_uin,
             kind=feed.source,
             content_summary=(feed.origin_content if feed.source == "notify" else feed.content) or "(无文字)",
-            recent_comments=list(feed.comments),
+            # 评论级锚:浏览=结构化评论全量;通知=主评论二元组(作者 uin,
+            # 昵称未知留空,@ 目标优先走 commenter 上下文)
+            comment_map=(
+                {feed.comment_tid: (feed.comment_uin, "")}
+                if feed.source == "notify" and feed.comment_tid
+                else {c.comment_tid: (c.uin, c.nickname) for c in feed.comments}
+            ),
         ))
         self.ctx.logger.info("QQ空间动态已注入(tid=%s,作者=%s)", feed.tid, feed.nickname)
 

@@ -557,9 +557,12 @@ def _msglist_payload_with_comments():
 
 
 def test_get_user_feeds_merges_comments():
-    """M3-r2 Task 6:FeedItem.comments 取该说说 commentlist 前 3 条「昵称:内容(40字)」
-    ——get_user_feeds 在 parse_msglist 之上用 parse_feed_comments 合并评论摘要,
-    泵登记 recent_comments 由此承载(表达生成的防复读素材)。"""
+    """get_user_feeds 在 parse_msglist 之上用 parse_feed_comments_full 合并结构化
+    评论区块(顶层+楼中楼+总数,2026-09-02 设计共识):comment_map/注入评论区/
+    详情工具共用此数据;旧「昵称:内容」字符串摘要已随 recent_comments 删除。"""
     client, _ = _make_client([(200, _msglist_payload_with_comments().encode("utf-8"))])
     feeds = asyncio.run(client.get_user_feeds(target_uin="100", nickname="小明", num=3))
-    assert feeds and feeds[0].comments and feeds[0].comments[0].startswith("小红:")
+    assert feeds and feeds[0].comments
+    c0 = feeds[0].comments[0]
+    assert c0.nickname == "小红" and c0.uin and c0.comment_tid
+    assert isinstance(c0.replies, list)  # 楼中楼列表(载荷有则已解析)

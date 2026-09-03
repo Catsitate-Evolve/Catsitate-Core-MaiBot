@@ -204,6 +204,61 @@ def build_notify_message(
     }
 
 
+# 评论块展示上限(设计共识 Q9,2026-09-02):顶层评论全量;每条评论楼中楼最多
+# 展开 REPLY_EXPAND_LIMIT 条(超出标注总回复数);整块超 COMMENT_BLOCK_CHAR_LIMIT
+# 截断并标注——工具结果/注入消息要装进模型上下文,无上限会撑爆
+REPLY_EXPAND_LIMIT = 10
+COMMENT_BLOCK_CHAR_LIMIT = 6000
+
+
+def format_comment_block(comments: list, *, comment_total: int = 0,
+                         per_reply_limit: int = REPLY_EXPAND_LIMIT,
+                         char_limit: int = COMMENT_BLOCK_CHAR_LIMIT,
+                         now_epoch: float = 0.0) -> str:
+    """把结构化评论区块渲染为注入/详情可读文本(2026-09-02 设计共识)。
+
+    形态:首行「评论区(N条):」(QQ 截断时「评论区(前N条/共M条):」);每条顶层
+    评论一行「昵称(QQ):内容 (相对时间)〔评论ID=…〕」;楼中楼缩进一行一条,
+    超过 per_reply_limit 只展开前 N 条并尾标「共M条回复」;整块超 char_limit
+    截断并标注「评论过多,只显示前面部分」。评论ID 锚与〔说说ID=〕同款照抄
+    契约(qzone_reply 全域化后的 comment_id 来源之一)。空区块返回空串。"""
+
+    if not comments:
+        return ""
+    total_label = (
+        f"前{len(comments)}条/共{comment_total}条"
+        if comment_total > len(comments) else f"{len(comments)}条"
+    )
+    lines = [f"评论区({total_label}):"]
+    used = len(lines[0])
+    truncated = False
+    for c in comments:
+        entry = f"{c.nickname}({c.uin}):{c.content}"
+        time_tag = comment_time_prefix(c.create_time, now_epoch)
+        if time_tag:
+            entry += f" {time_tag}"
+        entry += f"〔评论ID={c.comment_tid}〕"
+        pending = [entry]
+        shown_replies = c.replies[:per_reply_limit]
+        for r in shown_replies:
+            r_line = f"  ↳ {r.nickname}({r.uin}):{r.content}"
+            r_tag = comment_time_prefix(r.create_time, now_epoch)
+            if r_tag:
+                r_line += f" {r_tag}"
+            pending.append(r_line)
+        if c.reply_total > len(shown_replies):
+            pending.append(f"  ↳ …共{c.reply_total}条回复")
+        block = "\n".join(pending)
+        if used + len(block) > char_limit:
+            truncated = True
+            break
+        lines.append(block)
+        used += len(block)
+    if truncated:
+        lines.append("评论过多,只显示前面部分")
+    return "\n".join(lines)
+
+
 def build_feed_message(
     feed: FeedItem,
     *,
@@ -259,6 +314,13 @@ def build_feed_message(
         body = prefix
     else:
         body = f"{prefix}(无文字内容)".strip()
+    # 评论区块(2026-09-02 设计共识:浏览注入带完整讨论,避免信息不全)——
+    # 正文与评论区空行分隔;QQ 截断 commentlist 时按 comment_total 标「前N/共M」
+    if feed.comments:
+        comment_block = format_comment_block(
+            feed.comments, comment_total=feed.comment_total, now_epoch=now_epoch)
+        if comment_block:
+            body = f"{body}\n\n{comment_block}"
     # 工具参数独立尾行(可读性优化 2026-09-01,Q1=a+Q4=a):换行+〔说说ID=…〕
     # 独立成行——消除与正文/时间前缀的行内语义混淆(旧「(说说 xxx)」行内尾注
     # 易被模型当正文一部分);tid 取前 12 位短码,模型照抄给

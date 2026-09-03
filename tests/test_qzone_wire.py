@@ -306,3 +306,27 @@ def test_parse_like_events_no_nick_fallback_and_empty():
     assert parse_like_events("") == []
     assert parse_like_events("普通文本无锚点") == []
     assert parse_like_events('<li data-fkey="畸形" data-tid="x"></li>') == []
+
+
+def test_parse_feed_comments_full_structured():
+    """结构化评论区块:顶层评论+楼中楼(list_3)+总数(cmtnum)解析;畸形条目跳过;
+    cmtnum 未标注时回退列表长度(不臆造)。"""
+    from catsitate_core.qzone.wire import parse_feed_comments_full
+
+    payload = {"msglist": [{"tid": "t1", "cmtnum": 5, "commentlist": [
+        {"tid": "c1", "uin": "20000", "name": "小红", "content": "好文", "create_time": "1750000000",
+         "list_3": [{"tid": "r1", "uin": "30000", "name": "小刚", "content": "同感", "create_time": "1750000100"}]},
+        {"tid": "c2", "uin": "40000", "name": "小蓝", "content": "顶", "create_time": "1750000200", "list_3": []},
+        {"uin": "50000", "name": "畸形无tid", "content": "x"},  # 缺 tid 跳过
+    ]}]}
+    blocks = parse_feed_comments_full(payload)
+    assert set(blocks) == {"t1"}
+    b = blocks["t1"]
+    assert b.total == 5  # cmtnum
+    assert [c.comment_tid for c in b.comments] == ["c1", "c2"]
+    c1 = b.comments[0]
+    assert c1.nickname == "小红" and c1.replies and c1.replies[0].nickname == "小刚"
+    assert c1.reply_total == 1 and b.comments[1].reply_total == 0
+    # cmtnum 缺失:回退列表长度
+    payload2 = {"msglist": [{"tid": "t2", "commentlist": [{"tid": "c9", "uin": "1", "name": "n", "content": "c"}]}]}
+    assert parse_feed_comments_full(payload2)["t2"].total == 1

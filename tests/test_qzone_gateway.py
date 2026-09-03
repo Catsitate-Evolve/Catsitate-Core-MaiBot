@@ -497,3 +497,32 @@ def test_format_comment_param_line_without_time():
         action="回复", create_time="", now_epoch=0.0,
     )
     assert line == "〔说说ID=ee3396c49d38 评论ID=2 评论者QQ=10001〕"
+
+
+def test_format_comment_block_caps_and_labels():
+    """评论区渲染上限(Q9 设计共识 2026-09-02):楼中楼每条评论最多展开 10 条+
+    「共N条回复」标注;总块超 6000 字截断+「评论过多」标注;QQ 截断时头部
+    「前N条/共M条」;评论ID 锚随行;空区块空串。"""
+    from catsitate_core.qzone.messages import format_comment_block
+    from catsitate_core.qzone.wire import FeedComment, FeedReplyEntry
+
+    def reply(i):
+        return FeedReplyEntry(reply_tid=f"r{i}", uin="30000", nickname="小刚",
+                              content=f"回复{i}", create_time="")
+
+    # 楼中楼上限:12 条回复只展开 10+共12条回复
+    c = FeedComment(comment_tid="c1", uin="20000", nickname="小红", content="主评",
+                    create_time="", replies=[reply(i) for i in range(12)], reply_total=12)
+    text = format_comment_block([c], comment_total=1, now_epoch=0)
+    assert "共12条回复" in text and "回复9" in text and "回复10" not in text
+    assert "〔评论ID=c1〕" in text
+    # 截断标注:超长评论块(61 条长评论×110字 ≈ 6700+ 字)
+    long_comments = [FeedComment(comment_tid=f"cc{i}", uin="20000", nickname="小蓝",
+                                 content="长" * 105, create_time="") for i in range(61)]
+    text2 = format_comment_block(long_comments, comment_total=61, now_epoch=0, char_limit=6000)
+    assert "评论过多,只显示前面部分" in text2 and len(text2) < 6200
+    # 前/共 标注
+    text3 = format_comment_block(long_comments[:3], comment_total=61, now_epoch=0)
+    assert "评论区(前3条/共61条):" in text3
+    # 空区块
+    assert format_comment_block([], comment_total=0) == ""

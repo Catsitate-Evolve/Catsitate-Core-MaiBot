@@ -1,5 +1,14 @@
 # Changelog
 
+## v0.9.0(2026-09-02) 说说详情工具+reply 全域化+浏览注入带评论(设计共识 Q1-Q12)
+
+- **`view_friend_feed_detail(feed_id, qq?)`**:单条说说完整信息——正文全文+图片+全部顶层评论与楼中楼(每评论楼中楼≤10 条+总数标注,整块 6000 字截断标注;QQ 截断时「前N/共M」)。qq 可省(锚三级解析主人);查看即 mark_seen(浏览不重复注入);登记 comment_map。
+- **qzone_reply 全域化**:移除流门控;目标解析三级=通知上下文→comment_map→显式拒绝+指引(不猜测,防 @ 错人)。
+- **comment_map(评论级锚)**:comment_tid→(作者uin,昵称);浏览注入/详情全量、通知二元组三路填充,键级合并。
+- **view_friend_feeds 翻页**:`page` 页码(透传 msglist pos),空页诚实提示;返回不含评论(现状明示)。
+- **浏览注入带评论区**:正文后拼评论区(顶层一行一条带评论ID锚/楼中楼缩进,上限同 Q9);数据取自充实层现有载荷的 list_3,**零新增 API 调用**;FeedItem.comments 升级为结构化(FeedComment/FeedReplyEntry/CommentBlock)。
+- **死代码清理(开发须知 #3)**:删 registry.recent_comments(无消费方)、qzone/routing.py(v0.7 已废弃)。
+
 ## v0.8.6(2026-09-02) 终审修复波+裁定执行(#7 同轮自愈/#33 昵称抛错/删评论硬上限)
 
 **用户裁定执行**

@@ -91,12 +91,12 @@ def test_register_field_merge_preserves_comment_context():
                       comment_tid="8", comment_uin="3545773341", kind="notify_reply"))
     # 浏览/查看再登记:owner 同、无评论者字段、正文与近评有新值
     reg.register(_ctx("tidX", kind="feed", content_summary="测试二",
-                      recent_comments=["可回收飞舞:再发一条"]))
+                      comment_map={"8": ("3545773341", "")}))
     ctx = reg.resolve("tidX")
     assert ctx is not None
     assert ctx.commenter_uin == "3298178030"  # 评论者保留(不被浏览条目清空)
     assert ctx.commenter_nickname == "可回收飞舞" and ctx.comment_tid == "8"
-    assert ctx.content_summary == "测试二" and ctx.recent_comments  # 新素材并入
+    assert ctx.content_summary == "测试二" and ctx.comment_map["8"] == ("3545773341", "")  # 通知评论锚保留
     assert ctx.kind == "notify_reply"  # 浏览条目不清掉通知语义
     # 新通知(另一位评论者)仍更新评论者信息
     reg.register(_ctx("tidX", commenter_uin="40000", commenter_nickname="新评论者",
@@ -114,7 +114,8 @@ def test_clear_drops_all_entries():
 
 
 def test_feed_context_new_fields_default():
-    """M3-r2 Task 6 表达生成层:content_summary/recent_comments 带默认值——
-    旧构造点(通知/回退路径)不传也不炸,新登记点传入供 prompt 场景素材。"""
+    """content_summary/comment_map 带默认值——旧构造点(通知/回退路径)不传
+    也不炸;recent_comments 死字段已删(Q7 裁定 2026-09-02)。"""
     ctx = FeedContext(tid="t", owner_uin="1")
-    assert ctx.content_summary == "" and ctx.recent_comments == []
+    assert ctx.content_summary == "" and ctx.comment_map == {}
+    assert not hasattr(ctx, "recent_comments")  # 死字段已删

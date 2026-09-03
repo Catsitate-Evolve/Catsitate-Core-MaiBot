@@ -441,6 +441,7 @@ class CatsitatePlugin(MaiBotPlugin):
                     self._scheduler.register(
                         "qzone_notify_poll", max(self.config.qzone.notification_interval_seconds, 30), self._qzone_notify_poll_tick
                     )
+            self._assemble_guard()  # 护栏随配置热生效(终审 H-1):enabled/patterns 变更即重编译
             self._setup_debug_logging()  # debug 开关随配置热生效
             self.ctx.logger.info("catsitate_core 配置已刷新,派生缓存已重置")
         elif scope == "bot":

@@ -3690,3 +3690,28 @@ async def test_send_trigger_rearms_on_next_window(tmp_path):
     await p._qzone_poll_feeds()  # 切到另一个 send 窗口(标识变化→重新武装)
     await asyncio.sleep(0)
     assert n["i"] == 2
+
+
+def test_guard_assembly_rebuilds_on_config_update(tmp_path):
+    """终审 H-1 回归:on_config_update(scope=self) 须重建 _guard_compiled——
+    开→编译生效/关→置空/改 patterns→新规则替换旧规则,热重载不静默失效。"""
+    from catsitate_core.guard import match_guard
+
+    p = _make_plugin(tmp_path)
+
+    # 关→开:装配后列表非空
+    p.config.guard.enabled = True
+    p.config.guard.patterns = ["敏感"]
+    p._assemble_guard()
+    assert len(p._guard_compiled) == 1 and match_guard(p._guard_compiled, "有敏感词") == 1
+
+    # 改 patterns→新规则替换
+    p.config.guard.patterns = ["别的"]
+    p._assemble_guard()
+    assert len(p._guard_compiled) == 1 and match_guard(p._guard_compiled, "有敏感词") == 0
+    assert match_guard(p._guard_compiled, "有别的词") == 1
+
+    # 开→关:置空
+    p.config.guard.enabled = False
+    p._assemble_guard()
+    assert p._guard_compiled == []

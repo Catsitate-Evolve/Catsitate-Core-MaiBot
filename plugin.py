@@ -173,6 +173,9 @@ class CatsitatePlugin(MaiBotPlugin):
     _qzone_poll_running: bool = False  # 浏览轮询后台拉取进行中(深度审查 A-2:tick 防重入标记)
     _qzone_notify_running: bool = False  # 通知轮询后台扫描进行中(同上,通知 tick 独立标记)
     _decaying: bool = False  # 自然衰减进行中(2026-09-03 复审:醒后 spawn 与调度 tick 并发防重入,防 delta 双计)
+    _daily_settle_running: bool = False  # 日终结算后台任务进行中(L-1,v1 清理:tick 防重入标记)
+    _daily_decay_running: bool = False  # 自然衰减后台任务进行中(L-1,同上;与 _decaying 分层——本标记防重复派发,_decaying 防并发执行)
+    _env_refresh_running: bool = False  # 环境刷新后台任务进行中(L-1,同上:weather/holiday 共用)
     _guard_compiled: list = []  # 内容护栏已编译正则(v1.0.0;on_load 按 guard.enabled 编译,编译失败整组置空并告警)
     _qzone_send_armed: str = ""        # 发布触发已武装的窗口标记 "{day}|{start}"
     _qzone_send_first_poll_done: bool = False  # 本窗口首轮拉取是否已完成
@@ -317,6 +320,10 @@ class CatsitatePlugin(MaiBotPlugin):
         self._qzone_notify_running = False
         # 衰减防重入标记实例级重置(同上;残留 True 会令醒后补跑衰减被永久跳过)
         self._decaying = False
+        # 日终结算/衰减/环境刷新后台派发防重入标记实例级重置(L-1,同上;残留 True 永久跳过派发)
+        self._daily_settle_running = False
+        self._daily_decay_running = False
+        self._env_refresh_running = False
         # 源C 解析观测线状态实例级重置(同上,类属性共享可变态)
         self._qzone_sourcec_empty_rounds = 0
         self._qzone_sourcec_drift_warned = False
@@ -343,13 +350,16 @@ class CatsitatePlugin(MaiBotPlugin):
             "qzone_notify_poll", max(self.config.qzone.notification_interval_seconds, 30), self._qzone_notify_poll_tick
         )
         self._qzone_notify_task_armed = True
-        self._scheduler.register("weather", max(self.config.time_aware.weather_refresh_minutes, 1) * 60, self._refresh_environment)
-        self._scheduler.register("holiday", 24 * 3600, self._refresh_environment)
+        # L-1(v1 清理,2026-09-03):长 IO 任务(结算/衰减/环境刷新)注册 tick 派发入口,
+        # tick 内只做防重入标记+_spawn_background_task 派发(比照 qzone_poll 模式),
+        # 分钟级 LLM/HTTP 不再拖住同 tick 串行的 sleep_tick/schedule_tick 等任务
+        self._scheduler.register("weather", max(self.config.time_aware.weather_refresh_minutes, 1) * 60, self._refresh_environment_tick)
+        self._scheduler.register("holiday", 24 * 3600, self._refresh_environment_tick)
         # qzone 数据保留期清理(深度审查 D-1):评论去重 30 天+seen 表 7 天,每日一次
         self._scheduler.register("qzone_data_prune", 24 * 3600, self._qzone_data_prune)
         self._scheduler.register("memo_cleanup", 3600, self._cleanup_memos)
-        self._scheduler.register("daily_settle", max(self.config.favorability.window_hours, 1) * 3600, self._daily_settle)
-        self._scheduler.register("daily_decay", 24 * 3600, self._daily_decay)  # 每日一次(与日终结算同 tick)
+        self._scheduler.register("daily_settle", max(self.config.favorability.window_hours, 1) * 3600, self._daily_settle_tick)
+        self._scheduler.register("daily_decay", 24 * 3600, self._daily_decay_tick)  # 每日一次(与日终结算同 tick)
         self._scheduler.register("sleep_tick", 60, self._sleep_tick)
         self._schedule_generated: bool = False  # 当天日程是否为 LLM 生成(模板撑场为 False)
         self._schedule_tick_fired: dict[str, str] = {}  # day -> 已触发窗口 mark(day|start)
@@ -361,8 +371,9 @@ class CatsitatePlugin(MaiBotPlugin):
         self._restore_schedule()  # 重启恢复当日日程与编辑历史(审查 I-4)
         self._setup_debug_logging()
         self._scheduler.start()
-        # 首次环境数据立即刷新一次,避免环境块空缺到首个定时点(45 分钟)
-        self._spawn_background_task(self._refresh_environment())
+        # 首次环境数据立即刷新一次,避免环境块空缺到首个定时点(45 分钟);
+        # 经 tick 派发入口走防重入守卫(L-1),与 weather 调度共用同一标记
+        await self._refresh_environment_tick()
         try:
             from lunar_python import Solar as _solar_probe  # noqa: F401
         except ImportError:
@@ -424,10 +435,11 @@ class CatsitatePlugin(MaiBotPlugin):
             self._env_fetched_at = None
             self._snapshot_cache.clear()
             # 调度周期随配置热重载(审查 Minor#5):weather/daily_settle 间隔取新值重注册
+            # (L-1:注册的是 tick 派发入口,长 IO 后台执行)
             self._scheduler.unregister("weather")
-            self._scheduler.register("weather", max(self.config.time_aware.weather_refresh_minutes, 1) * 60, self._refresh_environment)
+            self._scheduler.register("weather", max(self.config.time_aware.weather_refresh_minutes, 1) * 60, self._refresh_environment_tick)
             self._scheduler.unregister("daily_settle")
-            self._scheduler.register("daily_settle", max(self.config.favorability.window_hours, 1) * 3600, self._daily_settle)
+            self._scheduler.register("daily_settle", max(self.config.favorability.window_hours, 1) * 3600, self._daily_settle_tick)
             # qzone 热重载比照 weather 模式:自检通过还需网关就绪上报,否则每次注入都会被宿主拒绝;
             # 拉取间隔取新值重注册(FeedInjector 的 decision_window 热刷新留 M2)
             self._qzone_available = await self._qzone_selfcheck() if self.config.qzone.enabled else False
@@ -442,6 +454,10 @@ class CatsitatePlugin(MaiBotPlugin):
                         "qzone_notify_poll", max(self.config.qzone.notification_interval_seconds, 30), self._qzone_notify_poll_tick
                     )
             self._assemble_guard()  # 护栏随配置热生效(终审 H-1):enabled/patterns 变更即重编译
+            # 阈值校验随配置热重载(M-1,v1 清理 2026-09-03):speak_threshold_level
+            # 经热改注入非法值时同样显式告警+回退——旧实现只在 on_load 校验一次,
+            # 热改坏值会静默停用日程主动发言直到下次重启
+            self._validate_schedule_threshold()
             self._setup_debug_logging()  # debug 开关随配置热生效
             self.ctx.logger.info("catsitate_core 配置已刷新,派生缓存已重置")
         elif scope == "bot":
@@ -2523,7 +2539,16 @@ class CatsitatePlugin(MaiBotPlugin):
             logger.debug("reply 补传跳过:三条件不齐(reasoning 非空=%s)", bool(reasoning.strip()))
             return {"action": "continue", "modified_kwargs": kwargs}
         new_kwargs = {**kwargs, self._OUTPUT_ITEMS_KEY: new_items}
-        self.ctx.logger.info("reply 补传:%s", [t.get("tool_name") for t in new_items if t.get("tool_name") == "reply"])
+        # 日志侧同样按宿主快照形态取工具名(H-1:func_name 在 tool_call 内)
+        self.ctx.logger.info(
+            "reply 补传:%s",
+            [
+                (t.get("tool_call") or {}).get("func_name")
+                for t in new_items
+                if t.get("item_type") == "FunctionCallItem"
+                and (t.get("tool_call") or {}).get("func_name") == "reply"
+            ],
+        )
         return {"action": "continue", "modified_kwargs": new_kwargs}
 
     @HookHandler("maisaka.replyer.after_response", name="catsitate_sentinel", mode=HookMode.BLOCKING, order=HookOrder.LATE)
@@ -2913,6 +2938,26 @@ class CatsitatePlugin(MaiBotPlugin):
             return ("env", cached) if cached else None
         return None  # 数据未就绪时跳过(首次由后台任务填充后自动出现)
 
+    async def _refresh_environment_tick(self) -> None:
+        """环境刷新调度入口(L-1,v1 清理 2026-09-03):tick 内防重入标记+后台派发。
+
+        节日(双源各 15s 超时)与天气拉取是外网 HTTP 长 IO,tick 内直接 await 会
+        拖住同 tick 串行的全部任务(比照 qzone_poll 模式,深度审查 A-2 同源)。"""
+
+        if self._env_refresh_running:
+            self.ctx.logger.info("环境刷新后台仍在进行,跳过本 tick 派发(L-1 防重入)")
+            return
+        self._env_refresh_running = True
+        self._spawn_background_task(self._refresh_environment_bg())
+
+    async def _refresh_environment_bg(self) -> None:
+        """环境刷新后台壳(L-1):防重入标记在 finally 复位(异常/取消一致,防永久卡死)。"""
+
+        try:
+            await self._refresh_environment()
+        finally:
+            self._env_refresh_running = False
+
     async def _refresh_environment(self) -> None:
         """后台任务:拉取节日(在线→库→内置)与天气(Open-Meteo),刷新环境块缓存。"""
 
@@ -2990,6 +3035,32 @@ class CatsitatePlugin(MaiBotPlugin):
         if removed:
             self.ctx.logger.info("备忘清理:%s 条过期", removed)
 
+    def _dispatch_daily_settle(self) -> None:
+        """日终结算统一后台派发(L-1,v1 清理 2026-09-03):醒后补跑与调度 tick
+        共享防重入守卫——在飞则跳过本轮(间隔小时级,跳过后下个周期自然重试)。"""
+
+        if self._daily_settle_running:
+            self.ctx.logger.info("日终结算后台仍在进行,跳过本轮派发(L-1 防重入)")
+            return
+        self._daily_settle_running = True
+        self._spawn_background_task(self._daily_settle_bg())
+
+    async def _daily_settle_tick(self) -> None:
+        """日终结算调度入口(L-1):tick 内只做防重入派发,长 IO 全在后台任务。
+
+        结算含逐流取消息(RPC)与逐人 LLM 判定的分钟级 IO,tick 内直接 await
+        会拖住同 tick 串行的 sleep_tick/schedule_tick 等全部任务。"""
+
+        self._dispatch_daily_settle()
+
+    async def _daily_settle_bg(self) -> None:
+        """日终结算后台壳(L-1):防重入标记在 finally 复位(异常/取消一致,防永久卡死)。"""
+
+        try:
+            await self._daily_settle()
+        finally:
+            self._daily_settle_running = False
+
     async def _daily_settle(self) -> None:
         """日终兜底:对当日有消息且未日终结算的用户结算当前批次(不计提前上限,规格 §4.3)。"""
 
@@ -3002,19 +3073,22 @@ class CatsitatePlugin(MaiBotPlugin):
         candidates = set(self.fav_engine.iter_today_active())
         # 深度审查 C-N1:纯空间互动好友并集——只有空间事件(评论/点赞/出站)而无
         # 当日聊天的人没有 batch 行,iter_today_active 只扫 batch_counter 扫不到,
-        # 原实现下纯空间互动者永不结算;并集当日 qzone_fav_events 的 user_id 令其
-        # 进入日终兜底(空间事件本身即结算素材,§3.9)。bot 自身排除:源A自评回复
+        # 原实现下纯空间互动者永不结算;并集回看窗内 qzone_fav_events 的 user_id
+        # 令其进入日终兜底(空间事件本身即结算素材,§3.9)。bot 自身排除:源A自评回复
         # 的 OUT_COMMENT 以 bot 为 target 落事件,但 bot 不是好感度结算对象。
-        today = datetime.now().strftime("%Y-%m-%d")
+        # H-2(2026-09-03):并集改 window_hours 回看窗(fav_events_window,与结算
+        # 窗口同口径)——旧自然日(day=今天)在跨零点结算时漏掉昨晚互动的纯空间
+        # 好友(其事件 day=昨日),同样不进日终兜底。
+        since = (
+            datetime.now() - timedelta(hours=max(self.config.favorability.window_hours, 1))
+        ).strftime("%Y-%m-%dT%H:%M:%S")
         bot_uin = str(self.config.favorability.bot_user_id or "").strip()
         try:
             event_users = {
-                str(r[0]) for r in self.store.query(
-                    "SELECT DISTINCT user_id FROM qzone_fav_events WHERE day = ?", (today,)
-                )
+                str(e["user_id"]) for e in self.qzone_comment_seen.fav_events_window(since)
             }
         except Exception:
-            self.ctx.logger.exception("当日空间事件反查失败,日终候选仅用 batch 活跃(深度审查 C-N1)")
+            self.ctx.logger.exception("回看窗空间事件反查失败,日终候选仅用 batch 活跃(深度审查 C-N1/H-2)")
             event_users = set()
         candidates |= {u for u in event_users if u and u != bot_uin}
         for user_id in sorted(candidates):
@@ -3093,8 +3167,30 @@ class CatsitatePlugin(MaiBotPlugin):
         self.sleep.wake()
         if self.config.sleep.review_enabled:
             self._spawn_background_task(self._write_sleep_review())
-        # 醒来补跑当日结算(内部已先衰减后结算;勿再单独 spawn 衰减,防并发双计,审查 Important #2)
-        self._spawn_background_task(self._daily_settle())
+        # 醒来补跑当日结算(内部已先衰减后结算;勿再单独 spawn 衰减,防并发双计,审查 Important #2);
+        # 经 _dispatch_daily_settle 与调度 tick 共享 L-1 防重入守卫(在飞则跳过)
+        self._dispatch_daily_settle()
+
+    async def _daily_decay_tick(self) -> None:
+        """衰减调度入口(L-1,v1 清理 2026-09-03):tick 内防重入标记+后台派发。
+
+        衰减含逐流取消息与逐人 LLM 判定的分钟级 IO,tick 内直接 await 会拖住
+        同 tick 串行的全部任务。与日终结算内部的先衰减后结算为顺序调用,
+        两路并发由 _daily_decay 内的 _decaying 标记拦截(防 delta 双计)。"""
+
+        if self._daily_decay_running:
+            self.ctx.logger.info("衰减后台仍在进行,跳过本 tick 派发(L-1 防重入)")
+            return
+        self._daily_decay_running = True
+        self._spawn_background_task(self._daily_decay_bg())
+
+    async def _daily_decay_bg(self) -> None:
+        """衰减后台壳(L-1):防重入标记在 finally 复位(异常/取消一致,防永久卡死)。"""
+
+        try:
+            await self._daily_decay()
+        finally:
+            self._daily_decay_running = False
 
     async def _daily_decay(self) -> None:
         """自然衰减(按人跨流):先衰减后结算(与 _daily_settle 同 tick 调用顺序)。
@@ -3852,9 +3948,13 @@ class CatsitatePlugin(MaiBotPlugin):
             # (stream,seq) 去重)。ts 用事件原始时刻——同日多次结算(early→daily)时
             # 首次结算已把 window_start 前移,已判事件被窗口过滤排除(真实消息同机制),
             # 防同一事件反复并入素材重判(审查必修)
-            today = datetime.now().strftime("%Y-%m-%d")
+            # H-2(2026-09-03):取数改 window_start 滚动窗(fav_events_since),与
+            # 聊天消息同窗口口径——旧自然日 fav_events_on 在跨零点结算(如 00:30
+            # 日终)时昨夜事件 day=昨日恒取空,空间互动素材整窗漏判。窗口起点空串
+            # (该人尚无结算记录)= 全量事件,与 build_material 空窗口语义一致。
+            window_start = (self.fav_engine.get_level(user_id) or {}).get("window_start") or ""
             try:
-                events = self.qzone_comment_seen.fav_events_on(today, user_id)
+                events = self.qzone_comment_seen.fav_events_since(user_id, window_start)
             except Exception as exc:  # noqa: BLE001
                 events = []
                 self.ctx.logger.warning("空间互动事件读取失败,本次结算不含事件素材(user=%s):%s", user_id, rpc_error_brief(exc))

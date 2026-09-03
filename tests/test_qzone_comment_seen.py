@@ -181,3 +181,85 @@ def test_fav_event_same_day_dedup(tmp_path):
     s.fav_event("20000", "OUT_LIKE", "你点赞了 20000 的说说")  # 不同 kind 正常记
     rows = s.fav_events_on(today, "20000")
     assert len(rows) == 3
+
+
+# ---------- H-2 滚动窗查询(2026-09-03 v1 清理:结算取数与自然日解耦) ----------
+
+
+def test_fav_events_since_daytime_event_reachable_from_yesterday_bound(tmp_path):
+    """H-2 ①:白天记录的空间事件,以「昨日 window_start」为下界能取到——
+    结算素材与聊天消息同窗口口径(favorability.window_start),不受自然日切换影响。"""
+    from datetime import timedelta
+
+    s = CommentSeenStore(SQLiteStore(tmp_path / "t.db"))
+    s.ensure_schema()
+    s.fav_event("10001", "COMMENT", "小明评论了你的说说:好看")
+    yesterday_ws = (datetime.now() - timedelta(days=1)).strftime("%Y-%m-%dT%H:%M:%S")
+    rows = s.fav_events_since("10001", yesterday_ws)
+    assert any(e["kind"] == "COMMENT" and e["user_id"] == "10001" for e in rows)
+    # 他人事件不串人;下界晚于事件时刻取不到
+    assert s.fav_events_since("10002", yesterday_ws) == []
+    future = (datetime.now() + timedelta(minutes=1)).strftime("%Y-%m-%dT%H:%M:%S")
+    assert s.fav_events_since("10001", future) == []
+
+
+def test_fav_events_since_orders_by_created_at(tmp_path):
+    """H-2:fav_events_since 按 created_at 升序(滚动窗语义,与 fav_events_on
+    按写入序 id 不同)——结算素材按事件真实时间排序。"""
+    from datetime import timedelta
+
+    s = CommentSeenStore(SQLiteStore(tmp_path / "t.db"))
+    s.ensure_schema()
+    s.fav_event("10001", "COMMENT", "白天的事件")
+    s.fav_event("10001", "LIKE", "更早的赞")
+    s.store.execute(
+        "UPDATE qzone_fav_events SET created_at = ? WHERE user_id = '10001' AND kind = 'LIKE'",
+        ((datetime.now() - timedelta(hours=2)).strftime("%Y-%m-%dT%H:%M:%S"),),
+    )
+    rows = s.fav_events_since("10001", (datetime.now() - timedelta(days=1)).strftime("%Y-%m-%dT%H:%M:%S"))
+    assert [r["kind"] for r in rows] == ["LIKE", "COMMENT"]
+
+
+def test_fav_events_on_today_misses_last_night_but_since_yesterday_gets(tmp_path):
+    """H-2 ②(语义差异锁定):fav_events_on 按登记时写入的 day 自然日匹配(见闻
+    fav_events_day 同口径,保留不改);fav_events_since 按 created_at 滚动窗——
+    昨晚 23:00 记录的事件,今天自然日取不到,昨日下界滚动窗能取到。"""
+    from datetime import timedelta
+
+    s = CommentSeenStore(SQLiteStore(tmp_path / "t.db"))
+    s.ensure_schema()
+    now = datetime.now()
+    yday_day = (now - timedelta(days=1)).strftime("%Y-%m-%d")
+    s.fav_event("10001", "COMMENT", "小红 评论了你的说说「心情」: 好看")
+    # 回拨为昨晚 23:00 记录(day=登记日;fav_event 写入时 day=今天,须同步改 day 保持行内自洽)
+    s.store.execute(
+        "UPDATE qzone_fav_events SET day = ?, created_at = ? WHERE user_id = '10001'",
+        (yday_day, f"{yday_day}T23:00:00"),
+    )
+    assert s.fav_events_on(now.strftime("%Y-%m-%d"), "10001") == []
+    assert s.fav_events_since("10001", f"{yday_day}T22:00:00") != []
+
+
+def test_fav_events_window_all_users_within_lookback(tmp_path):
+    """C-N1:fav_events_window 不限 user 的回看窗查询(日终候选并集数据源)——
+    窗口内(含恰好落在下界上的事件,>= 语义)全部用户返回,窗口外不返回。"""
+    from datetime import timedelta
+
+    s = CommentSeenStore(SQLiteStore(tmp_path / "t.db"))
+    s.ensure_schema()
+    now = datetime.now()
+    fmt = "%Y-%m-%dT%H:%M:%S"
+    since = (now - timedelta(hours=24)).strftime(fmt)
+    s.fav_event("10001", "LIKE", "窗口内A")
+    s.fav_event("10002", "COMMENT", "窗口内B")
+    s.fav_event("30000", "LIKE", "恰在下界")
+    s.fav_event("40000", "LIKE", "窗口外C")
+    s.store.execute(
+        "UPDATE qzone_fav_events SET created_at = ? WHERE user_id = '30000'", (since,)
+    )
+    s.store.execute(
+        "UPDATE qzone_fav_events SET created_at = ? WHERE user_id = '40000'",
+        ((now - timedelta(hours=30)).strftime(fmt),),
+    )
+    rows = s.fav_events_window(since)
+    assert {r["user_id"] for r in rows} == {"10001", "10002", "30000"}  # 下界含等于,窗口外排除

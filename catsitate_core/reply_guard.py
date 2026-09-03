@@ -52,7 +52,13 @@ def backfill_reply_items(
     reasoning: str,
     max_chars: int = 400,
 ) -> list[dict]:
-    """为满足触发条件的 reply 调用补 reply_reference,不改动其它工具调用。"""
+    """为满足触发条件的 reply 调用补 reply_reference,不改动其它工具调用。
+
+    匹配宿主真实快照形态(H-1 修复,2026-09-03):reply 调用是 FunctionCallItem,
+    工具名在 item["tool_call"]["func_name"],参数在 item["tool_call"]["args"]——
+    一期误判顶层 tool_name/arguments 键(宿主快照无此二键),匹配恒不中,
+    补传自上线以来从未生效。命中项浅拷贝 item 与 tool_call 后写入
+    reply_reference,不原地改宿主列表中的条目。"""
 
     if not should_backfill(called_tools, "", reasoning):
         return output_items
@@ -61,10 +67,11 @@ def backfill_reply_items(
         return output_items
     out: list[dict] = []
     for item in output_items:
-        if item.get("tool_name") == "reply":
-            args = item.get("arguments") or {}
+        tool_call = item.get("tool_call") if item.get("item_type") == "FunctionCallItem" else None
+        if isinstance(tool_call, dict) and tool_call.get("func_name") == "reply":
+            args = tool_call.get("args")
             if isinstance(args, dict) and not str(args.get("reply_reference") or "").strip():
-                item = {**item, "arguments": {**args, "reply_reference": merged}}
+                item = {**item, "tool_call": {**tool_call, "args": {**args, "reply_reference": merged}}}
         out.append(item)
     return out
 

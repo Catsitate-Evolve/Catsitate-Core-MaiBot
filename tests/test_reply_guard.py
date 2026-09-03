@@ -42,22 +42,34 @@ def test_merge_tool_results_sorted_and_truncated():
     assert len(merge_tool_results(long_results, max_chars=400)) <= 400
 
 
+def _call_item(func_name: str, args: dict, call_id: str = "call-1") -> dict:
+    """构造宿主真实快照形态的 FunctionCallItem(实机快照格式,H-1 修复依据):
+    工具名在 tool_call.func_name,参数在 tool_call.args——无顶层 tool_name/arguments 键。"""
+
+    return {"item_type": "FunctionCallItem", "tool_call": {"call_id": call_id, "func_name": func_name, "args": args}}
+
+
 def test_backfill_reply_items_only_targets_reply():
+    """H-1 回归:按宿主快照形态(FunctionCallItem+tool_call)匹配 reply——
+    一期误判顶层 tool_name/arguments 键,匹配恒不中,补传从未生效。"""
     items = [
-        {"tool_name": "reply", "arguments": {"reply_reference": ""}},
-        {"tool_name": "web_search", "arguments": {"query": "天气"}},
-        {"tool_name": "reply", "arguments": {"reply_reference": "已有引用"}},
+        _call_item("reply", {"reply_reference": ""}, "call-r1"),
+        _call_item("web_search", {"query": "天气"}, "call-w1"),
+        _call_item("reply", {"reply_reference": "已有引用"}, "call-r2"),
     ]
     out = backfill_reply_items(items, {"memo_read": "备忘内容"}, ["memo_read"], "")
-    assert out[0]["arguments"]["reply_reference"] == "[memo_read] 备忘内容"  # 合并摘要含工具名前缀
-    assert "reply_reference" not in out[1]["arguments"]  # 其它工具不动
-    assert out[2]["arguments"]["reply_reference"] == "已有引用"  # 已有引用不动
+    assert out[0]["tool_call"]["args"]["reply_reference"] == "[memo_read] 备忘内容"  # 合并摘要含工具名前缀
+    assert "reply_reference" not in out[1]["tool_call"]["args"]  # 其它工具不动
+    assert out[2]["tool_call"]["args"]["reply_reference"] == "已有引用"  # 已有引用不动
+    # 浅拷贝纪律:宿主列表条目不被原地改写(入参 items 保持原值)
+    assert items[0]["tool_call"]["args"]["reply_reference"] == ""
+    assert out[0] is not items[0] and out[0]["tool_call"] is not items[0]["tool_call"]
 
 
 def test_backfill_reply_items_reasoning_nonempty_skips():
-    items = [{"tool_name": "reply", "arguments": {"reply_reference": ""}}]
+    items = [_call_item("reply", {"reply_reference": ""})]
     out = backfill_reply_items(items, {"memo_read": "备忘内容"}, ["memo_read"], "有推理")
-    assert out[0]["arguments"]["reply_reference"] == ""
+    assert out[0]["tool_call"]["args"]["reply_reference"] == ""
 
 
 def test_build_sentinel_prompt_stable_prefix():

@@ -144,10 +144,10 @@ def test_full_assembly_smoke(tmp_path):
     ok, reason = poke.can_poke("u1", now=lambda: NOW)
     assert ok is True and reason == ""
 
-    # reply 补传
-    items = [{"tool_name": "reply", "arguments": {"reply_reference": ""}}]
+    # reply 补传(H-1:宿主快照形态——工具名/参数在 tool_call 内)
+    items = [{"item_type": "FunctionCallItem", "tool_call": {"call_id": "c1", "func_name": "reply", "args": {"reply_reference": ""}}}]
     out = backfill_reply_items(items, {"memo_read": "备忘内容"}, ["memo_read"], "")
-    assert out[0]["arguments"]["reply_reference"] == "[memo_read] 备忘内容"
+    assert out[0]["tool_call"]["args"]["reply_reference"] == "[memo_read] 备忘内容"
 
 
 def test_phase2_engines_assemble(tmp_path):

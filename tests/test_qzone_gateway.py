@@ -213,8 +213,9 @@ def test_tool_driven_wiring_source_assertions():
     assert "filter_qzone_tools_for_stream(" in src
     # 同说说评论硬上限已删(2026-09-02 用户裁定:防护交 QQ 侧频控+-10049 回执)
     assert "_qzone_comment_counts" not in src
-    # T7 接线:好感度显式事件消费(结算素材并入 + 衰减计时基准)
-    assert "fav_events_on(" in src and "last_fav_interaction(" in src
+    # T7 接线:好感度显式事件消费(结算素材并入 + 衰减计时基准);
+    # H-2(2026-09-03):结算取数改 window_start 滚动窗(fav_events_since)
+    assert "fav_events_since(" in src and "last_fav_interaction(" in src
     # T7 审查必修:事件合成消息 ts 用原始时刻(created_at)防同日 early→daily 重判
     assert '"ts": e["created_at"] or' in src
     assert "你评论了TA" in src and "你点赞了TA" in src

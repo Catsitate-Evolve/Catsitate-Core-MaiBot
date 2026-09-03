@@ -1906,6 +1906,31 @@ def test_validate_schedule_threshold_falls_back_with_warning(tmp_path):
     assert not any(level == "warning" for level, a in p.logs)
 
 
+def test_config_update_validates_schedule_threshold(tmp_path):
+    """M-1(v1 清理,2026-09-03):on_config_update(scope=self) 热重载须补跑
+    _validate_schedule_threshold——热改注入非法等级同样显式告警+回退;旧实现
+    只在 on_load 校验一次,热改坏值会静默停用日程主动发言直到下次重启。"""
+    from types import SimpleNamespace
+
+    from catsitate_core.services.scheduler import Scheduler
+
+    p = _make_plugin(tmp_path)
+    p.assembler = SimpleNamespace(reset=lambda: None)
+    p._env_cache = {}
+    p._snapshot_cache = {}
+    p._scheduler = Scheduler(tick_seconds=60)
+
+    async def _no_selfcheck():
+        return False
+
+    p._qzone_selfcheck = _no_selfcheck  # 隔离:自检不在本测试范围
+    p.config.schedule.speak_threshold_level = "好友"  # 非法值经热重载注入
+    asyncio.run(p.on_config_update("self", {}, ""))
+    assert p.config.schedule.speak_threshold_level == "熟悉"
+    assert any(level == "warning" and "speak_threshold_level" in " ".join(str(x) for x in a)
+               for level, a in p.logs)
+
+
 def test_notify_scan_drives_pump_on_stale_awaiting(tmp_path):
     """awaiting 死锁解锁(2026-09-02 联调缺陷):窗口结束后 planner 长期不跑轮
     (自然概率「等待更多消息」),awaiting 超时兜底本只在泵里做而泵的常规入口

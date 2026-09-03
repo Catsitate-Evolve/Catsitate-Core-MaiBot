@@ -362,3 +362,116 @@ def test_daily_settle_includes_pure_qzone_users(tmp_path):
     rows = p.store.query("SELECT DISTINCT user_id FROM favorability_log WHERE judge_id LIKE 'daily-%'")
     settled = {r[0] for r in rows}
     assert settled == {"u1", "30000"}  # 纯空间好友被结算;bot 与无活动者不进候选
+
+
+def _make_settle_plugin(tmp_path):
+    """离线装配结算路径所需的最小插件实例(比照 C-N1 测试形态)。"""
+
+    from types import SimpleNamespace
+
+    import plugin as plugin_mod
+    from catsitate_core.config import CatsitateConfig
+    from catsitate_core.qzone.comment_seen import CommentSeenStore
+
+    class _Log:
+        def info(self, *a, **k):
+            pass
+
+        def warning(self, *a, **k):
+            pass
+
+        def exception(self, *a, **k):
+            pass
+
+        def debug(self, *a, **k):
+            pass
+
+        def error(self, *a, **k):
+            pass
+
+    p = plugin_mod.CatsitatePlugin()
+    p._ctx = SimpleNamespace(logger=_Log())
+    p._plugin_config_instance = CatsitateConfig()
+    p.config.plugin.enabled = True
+    p.config.favorability.bot_user_id = "10000"
+    p.sleep = SimpleNamespace(is_sleeping=lambda: False)
+    p._settling = set()
+    p.store = SQLiteStore(tmp_path / "settle2.db")
+    p.fav_engine = BatchEngine(p.store, p.config.favorability)
+    p.fav_engine.ensure_schema()
+    p.qzone_comment_seen = CommentSeenStore(p.store)
+    p.qzone_comment_seen.ensure_schema()
+
+    async def _no_history(stream_id, limit, target_user_id=""):
+        del stream_id, limit
+        return []
+
+    async def _persona_ctx():
+        return "猫耳少女", "话少"
+
+    p._fetch_recent_for_history = _no_history
+    p._persona_context = _persona_ctx
+    return p
+
+
+def test_settle_events_use_rolling_window_not_natural_day(tmp_path):
+    """H-2 回归:结算事件取数按 favorability.window_start 滚动窗(fav_events_since),
+    不按自然日(fav_events_on)——跨零点结算(如 00:30 日终)时,昨晚 23:00 记录的
+    事件 day=昨日,自然日查询取不到,滚动窗(窗口起点 22:00)能取到并进结算素材。"""
+    import asyncio
+    from datetime import timedelta
+    from types import SimpleNamespace
+
+    p = _make_settle_plugin(tmp_path)
+    now = datetime.now()
+    yday = (now - timedelta(days=1)).strftime("%Y-%m-%d")
+    # 窗口起点:昨日 22:00(首次结算后 window_start 前移至判定时刻)
+    p.fav_engine.apply_delta("30000", 1, "昨日互动", judged_at=f"{yday}T22:00:00")
+    # 昨晚 23:00 记录的空间事件(day=昨日;fav_event 写入时 day=今天,回拨保持行内自洽)
+    p.qzone_comment_seen.fav_event("30000", "COMMENT", "小红 评论了你的说说「心情」: 好看")
+    p.store.execute(
+        "UPDATE qzone_fav_events SET day = ?, created_at = ? WHERE user_id = '30000'",
+        (yday, f"{yday}T23:00:00"),
+    )
+    captured: dict = {}
+
+    async def _capture_settle(user_id, history, kind, **kw):
+        captured["history"] = history
+        return {"status": "ok", "delta": 1, "exclusive_clamped": False}
+
+    p.fav_executor = SimpleNamespace(settle=_capture_settle)
+    asyncio.run(p._settle_and_log("30000", kind="daily"))
+    assert any("[空间互动]" in h["text"] and "小红" in h["text"] for h in captured["history"])
+
+
+def test_daily_settle_candidates_use_rolling_window(tmp_path):
+    """H-2/C-N1 回归:纯空间互动好友的日终候选并集按 window_hours 回看窗
+    (fav_events_window)——昨晚记录的事件在自然日「今天」查询下取不到,
+    旧实现该好友不进候选、永不结算;滚动窗下进入日终兜底。"""
+    import asyncio
+    from datetime import timedelta
+
+    async def _fake_llm(messages, model=""):
+        return {"success": True, "response": '{"delta": 1, "note": "空间互动"}', "model": model}
+
+    p = _make_settle_plugin(tmp_path)
+
+    async def _no_decay():
+        return
+
+    p._daily_decay = _no_decay  # 隔离:衰减不在本测试范围
+    p.fav_executor = SettleExecutor(p.fav_engine, _fake_llm)
+    # 回看窗放宽到 48h:保证「昨日 23:00」恒在窗内(默认 24h 下该时刻是否入窗
+    # 取决于运行时刻,测试须与真实钟表解耦;窗口宽度本身是配置项,不影响语义)
+    p.config.favorability.window_hours = 48
+    # 昨晚 23:00 记录的三条事件(满足 daily_settle_min=3;day=昨日)
+    yday = (datetime.now() - timedelta(days=1)).strftime("%Y-%m-%d")
+    for i in range(3):
+        p.qzone_comment_seen.fav_event("30000", "COMMENT", f"小红 评论了你的说说「心情」: 第{i}条")
+    p.store.execute(
+        "UPDATE qzone_fav_events SET day = ?, created_at = ? WHERE user_id = '30000'",
+        (yday, f"{yday}T23:00:00"),
+    )
+    asyncio.run(p._daily_settle())
+    rows = p.store.query("SELECT DISTINCT user_id FROM favorability_log WHERE judge_id LIKE 'daily-%'")
+    assert "30000" in {r[0] for r in rows}

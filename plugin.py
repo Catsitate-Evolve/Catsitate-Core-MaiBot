@@ -12,6 +12,7 @@ from pathlib import Path
 from typing import Any
 
 import asyncio
+import base64
 import hashlib
 import json
 import logging
@@ -53,6 +54,7 @@ from catsitate_core.qzone.client import (
 )
 from catsitate_core.qzone.comment_seen import CommentSeenStore
 from catsitate_core.qzone.discovery import FeedDiscovery
+from catsitate_core.qzone.imaging import FeedImagePack, run_feed_image_pipeline
 from catsitate_core.qzone.injector import FeedInjector
 from catsitate_core.qzone.like_seen import LikeSeenStore
 from catsitate_core.qzone.messages import (
@@ -61,7 +63,6 @@ from catsitate_core.qzone.messages import (
     clip_text,
     format_comment_block,
     comment_time_prefix,
-    fit_images_to_rpc_budget,
     format_comment_param_line,
 )
 from catsitate_core.qzone.expression import polish_action_text
@@ -1116,8 +1117,6 @@ class CatsitatePlugin(MaiBotPlugin):
         登记(content_summary=正文全文;comment_map=评论级锚,qzone_reply 目标解析用)。
         """
         del kwargs  # 全域工具:不限会话(真实流/虚拟流都只读不写)
-        import base64
-
         if not self._qzone_available:
             return "QQ空间模块未启用。"
         qq = str(qq).strip()
@@ -1153,42 +1152,23 @@ class CatsitatePlugin(MaiBotPlugin):
                 content_summary=f.content or "(纯图)",
                 comment_map={c.comment_tid: (c.uin, c.nickname) for c in f.comments},
             ))
-            pairs: list[tuple[str, bytes]] = []
-            for url in f.image_urls[:3]:  # 单条说说最多带 3 图(防 media 项爆炸)
-                try:
-                    data = await self.qzone_client.download_image(url)
-                except Exception:
-                    # 单图失败不炸整个工具调用(终审 L-2 修复,2026-09-02):
-                    # 说说已取到且已登记,瞬态网络失败只丢该图
-                    self.ctx.logger.exception("QQ空间好友说说图片下载异常(%s),该图跳过", url)
-                    data = None
-                pairs.append((url, data))
-            # RPC 帧预算同浏览注入链:压缩优先,极端丢弃置 None(摘要行只列实际
-            # 进入 content_items 的图,丢弃不占图号不误导 hash 反查);压缩移出
-            # 事件循环(终审 M-3:PIL 同步编码多图会阻塞主程序秒级)
-            fitted = await asyncio.to_thread(
-                fit_images_to_rpc_budget, pairs,
-                on_drop=lambda u: self.ctx.logger.warning(
-                    "QQ空间好友说说图片压缩后仍超 RPC 帧预算,丢弃保帧: %s", u),
+            # 图片公共管线(Task 4 C 方案,2026-09-03 用户裁定):下载(失败跳过+
+            # 告警)→多图角标合成→压缩预算,恒单图 content_item;[:3] 截断已删除
+            # (合成后无 media 爆炸面,QQ 上限 9 图自然封顶)
+            pack = await run_feed_image_pipeline(
+                f.image_urls,
+                downloader=self.qzone_client.download_image,
+                log=self.ctx.logger, scene="好友说说",
             )
-            img_tags: list[str] = []
-            for _url, data in fitted:
-                if not data:
-                    continue
-                img_tags.append(f"图{len(img_tags) + 1}({hashlib.sha256(data).hexdigest()[:8]})")
-                content_items.append({
-                    "content_type": "image",
-                    "data": base64.b64encode(data).decode("ascii"),
-                    # mime 按魔数探测(终审 L-3 修复:未压缩的 PNG/GIF/WebP 原样
-                    # 字节此前被硬标 jpeg,误导宿主入库与 VLM 管线)
-                    "mime_type": _sniff_image_mime(data),
-                })
+            content_items.extend(_pack_image_content_items(pack))
             body = f.content or "(纯图)"
             if len(body) > 300:
                 body = clip_text(body, 300)  # 截断尾加"...",读的人知道还有下文
             line = f"〔{idx}〕{comment_time_prefix(f.abstime, now_epoch)}{body}"
-            if img_tags:
-                line += "\n" + " ".join(img_tags)
+            if pack.anchor:
+                # 图标注(Task 4):单图「图1(hash)」/多图「图1-图N(拼接,hash=…)」
+                # 单条(不再逐图列 hash,hash=合成图 sha256 前 8)
+                line += "\n" + pack.anchor
             line += f"\n〔说说ID={f.tid[:12]}〕"
             text_parts.append(line)
         self.ctx.logger.info("QQ空间好友说说查看(qq=%s,%d 条,%d 图)", qq, len(feeds), len(content_items))
@@ -1213,8 +1193,6 @@ class CatsitatePlugin(MaiBotPlugin):
         不再把该说说当新动态注入);registry 登记 comment_map 供 qzone_reply 的
         评论级目标解析(Q6)。"""
         del kwargs  # 全域工具:任何聊天流都可用(虚拟流需白名单含本工具)
-        import base64
-
         if not self._qzone_available:
             return "QQ空间模块未启用。"
         anchor_tid = str(feed_id or "").strip()
@@ -1258,30 +1236,20 @@ class CatsitatePlugin(MaiBotPlugin):
             self.qzone_seen.mark_seen(target.tid, now_iso, None)
         except Exception:
             self.ctx.logger.exception("QQ空间说说详情 seen 登记失败(仅告警)")
-        # 图片(与 view_friend_feeds 同款:≤3 图防 media 项爆炸、压缩出事件循环、
-        # 单图失败只丢该图、mime 魔数探测)
-        content_items: list[dict] = []
-        img_tags: list[str] = []
-        for url in target.image_urls[:3]:
-            try:
-                data = await self.qzone_client.download_image(url)
-            except Exception:
-                self.ctx.logger.exception("QQ空间说说详情图片下载异常(%s),该图跳过", url)
-                data = None
-            if not data:
-                continue
-            img_tags.append(f"图{len(img_tags) + 1}({hashlib.sha256(data).hexdigest()[:8]})")
-            content_items.append({
-                "content_type": "image",
-                "data": base64.b64encode(data).decode("ascii"),
-                "mime_type": _sniff_image_mime(data),
-            })
+        # 图片公共管线(Task 4 C 方案,2026-09-03,与 view_friend_feeds 同款):
+        # 下载→多图角标合成→压缩预算,恒单图 content_item;[:3] 截断已删除
+        pack = await run_feed_image_pipeline(
+            target.image_urls,
+            downloader=self.qzone_client.download_image,
+            log=self.ctx.logger, scene="说说详情",
+        )
+        content_items = _pack_image_content_items(pack)
         # 文本:头部点名+时间前缀+全文正文(详情即「看完整」,正文不截断)+评论区+锚
         time_tag = comment_time_prefix(target.abstime, time.time())
         lines = [f"{target.nickname or owner}(QQ:{owner})的说说详情:"]
         body_line = f"{time_tag}{target.content or '(纯图)'}"
-        if img_tags:
-            body_line += "\n" + " ".join(img_tags)
+        if pack.anchor:
+            body_line += "\n" + pack.anchor
         lines.append(body_line)
         comment_block = format_comment_block(
             target.comments, comment_total=target.comment_total, now_epoch=time.time())
@@ -1697,37 +1665,26 @@ class CatsitatePlugin(MaiBotPlugin):
                 reply_target_id=reply_target_id, reply_target_sender=feed.origin_sender,
             )
         else:
-            images: list[tuple[str, bytes]] = []
-            # 单条说说最多带 3 图(防 media 项爆炸,与 view_friend_feeds/view_friend_feed_detail 同款裁定)
-            for url in feed.image_urls[:3]:
-                try:
-                    data = await self.qzone_client.download_image(url)
-                except Exception:
-                    # 单图异常降级为占位,不中止该条动态的注入(网络抖动等瞬态)
-                    self.ctx.logger.exception("QQ空间图片下载异常(%s),以占位注入", url)
-                    data = None
-                # 失败图保留 (url, None):build_feed_message 按图给 [图片] 占位
-                # (终审 M-2 修复,2026-09-02:此前失败图被静默丢弃,模型对缺图无感知)
-                images.append((url, data))
+            # 图片公共管线(Task 4 C 方案,2026-09-03 用户裁定):下载(失败跳过+
+            # 告警)→多图角标合成→压缩预算,统一走 imaging.run_feed_image_pipeline;
+            # 多图恒单图注入(省 VLM token 与上下文,角标空位天然示诚实),全失败
+            # 交 build_feed_message 既有 [图片] 占位;[:3] 截断已删除(QQ 上限 9 图封顶)
             try:
-                # RPC 帧预算(用户裁定 2026-08-31):体积治理=压缩而非拒收,压到
-                # 帧限内;压缩移出事件循环(终审 M-3:PIL 同步编码多图会阻塞主
-                # 程序秒级),损坏字节在压缩层兜底返回原样,极端异常降级全占位
-                images = await asyncio.to_thread(
-                    fit_images_to_rpc_budget, images,
-                    on_drop=lambda u: self.ctx.logger.warning(
-                        "QQ空间图片压缩后仍超 RPC 帧预算,丢弃保帧: %s", u),
+                pack = await run_feed_image_pipeline(
+                    feed.image_urls,
+                    downloader=self.qzone_client.download_image,
+                    log=self.ctx.logger, scene="浏览注入",
                 )
                 self._qzone_seq += 1
                 msg = build_feed_message(
                     feed, seq=self._qzone_seq, group_id=QZONE_VIRTUAL_GROUP_ID,
-                    group_name=QZONE_VIRTUAL_GROUP_NAME, images=images,
+                    group_name=QZONE_VIRTUAL_GROUP_NAME, images=pack.segments,
                     now_epoch=time.time(),
                 )
             except Exception:
-                self.ctx.logger.exception("QQ空间图片压缩/消息构造异常(tid=%s),降级全占位注入", feed.tid)
-                # 单条说说最多带 3 图(防 media 项爆炸,与 view_friend_feeds/view_friend_feed_detail 同款裁定)
-                images = [(url, None) for url in feed.image_urls[:3]]
+                self.ctx.logger.exception("QQ空间图片管线/消息构造异常(tid=%s),降级全占位注入", feed.tid)
+                # 极端兜底:逐图占位(不送任何图片字节,正文按图给 [图片])
+                images = [(url, None) for url in feed.image_urls]
                 self._qzone_seq += 1
                 msg = build_feed_message(
                     feed, seq=self._qzone_seq, group_id=QZONE_VIRTUAL_GROUP_ID,
@@ -4211,6 +4168,23 @@ class CatsitatePlugin(MaiBotPlugin):
                 text = "".join(s.get("data", "") for s in (m.get("raw_message") or []) if isinstance(s, dict) and s.get("type") == "text")
             lines.append(f"[{m.get('message_id')}] {text}")
         return "\n".join(lines)
+
+
+def _pack_image_content_items(pack: FeedImagePack) -> list[dict]:
+    """工具出口打包差异(Task 4 C 方案,2026-09-03):管线 segments →
+    content_items(宿主 tool result media 入库形态)。合成图恒 JPEG
+    (mime 不再探测);单图原图直发保留魔数探测(终审 L-3 语义)。"""
+
+    items: list[dict] = []
+    for _url, data in pack.segments:
+        if not data:
+            continue  # 极端超预算丢弃:不进 content_items(锚也已置空,不误导反查)
+        items.append({
+            "content_type": "image",
+            "data": base64.b64encode(data).decode("ascii"),
+            "mime_type": "image/jpeg" if pack.composed else _sniff_image_mime(data),
+        })
+    return items
 
 
 def _sniff_image_mime(data: bytes) -> str:

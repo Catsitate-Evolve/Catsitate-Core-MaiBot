@@ -202,17 +202,15 @@ class _StubUnifiedClient:
         return []  # 源C 空:各测试按需子类覆盖(通知扫描三源都要经本接口取数)
 
 
-class _StubDownloadClient(_StubUnifiedClient):
-    """图片下载桩:记录 download_image 的调用次序,返回固定小字节
-    (总量远低于压缩预算,压缩链原样通过,聚焦下载次数裁定)。"""
+def _png_bytes(color, size=(48, 32)) -> bytes:
+    """纯色小 PNG(真实可解码字节,多图合成链需要合法图片输入)。"""
+    import io
 
-    def __init__(self):
-        super().__init__([])
-        self.downloads: list[str] = []
+    from PIL import Image
 
-    async def download_image(self, url):
-        self.downloads.append(url)
-        return b"imgdata"
+    buf = io.BytesIO()
+    Image.new("RGB", size, color).save(buf, format="PNG")
+    return buf.getvalue()
 
 
 def _patch_sleep(monkeypatch, record: list) -> None:
@@ -241,24 +239,46 @@ def test_poll_tick_window_start_opens_injector(tmp_path):
     assert p.qzone_injector.window_active is True  # 窗口正常开启(不跳过注入)
 
 
-def test_qzone_inject_image_cap_three_per_feed(tmp_path):
-    """注入链图片上限(Task 4,与 view_friend_feeds/view_friend_feed_detail 同款
-    裁定):单条说说最多下载 3 图防 media 项爆炸——5 图说说只下载前 3 张。"""
+def test_qzone_inject_multi_image_composes_numbered_grid(tmp_path):
+    """注入链多图合成(Task 4 C 方案,2026-09-03 用户裁定):[:3] 截断删除,
+    5 图说说全量下载后拼成一张带序号角标的合成图——注入消息恒单图片段
+    (hash=合成图 sha256),省 VLM token 与注入上下文。"""
+
+    from catsitate_core.qzone.imaging import compose_numbered_grid
 
     p = _make_plugin(tmp_path)
-    client = _StubDownloadClient()
+    pngs = {f"u{i}": _png_bytes((40 * i % 250, 30, 220)) for i in range(1, 6)}
+
+    class _GridClient(_StubUnifiedClient):
+        """按 url 返回不同 PNG 的下载桩(合成需要合法且互异的图字节)。"""
+
+        def __init__(self):
+            super().__init__([])
+            self.downloads: list[str] = []
+
+        async def download_image(self, url):
+            self.downloads.append(url)
+            return pngs[url]
+
+    client = _GridClient()
     p.qzone_client = client
     p.qzone_injector.window_started()  # P2 浏览动态仅窗口内可弹
     p.qzone_injector.enqueue([FeedItem(
-        tid="cap0000000001", abstime="1750000000", uin="10001", nickname="小明",
-        content="多图说说", image_urls=["u1", "u2", "u3", "u4", "u5"],
+        tid="grid00000001", abstime="1750000000", uin="10001", nickname="小明",
+        content="多图说说", image_urls=list(pngs),
     )])
     asyncio.run(p._qzone_pump())
-    # 恰 3 次下载(次序=前 3 张),第 4/5 张不进入下载与注入链
-    assert client.downloads == ["u1", "u2", "u3"]
+    # 截断删除:5 张全量下载(合成后恒单图,无 media 爆炸面)
+    assert client.downloads == ["u1", "u2", "u3", "u4", "u5"]
     # 副作用链完整走通:注入成功进入 awaiting,网关收到该条消息
-    assert p.qzone_injector.awaiting_tid == "cap0000000001"
+    assert p.qzone_injector.awaiting_tid == "grid00000001"
     assert len(p._ctx.gateway.calls) == 1
+    msg = p._ctx.gateway.calls[0][1]
+    image_segs = [s for s in msg["raw_message"] if s.get("type") == "image"]
+    assert len(image_segs) == 1  # 多图恒单图(合成)
+    composite = compose_numbered_grid([(i, pngs[f"u{i}"]) for i in range(1, 6)])
+    assert image_segs[0]["hash"] == hashlib.sha256(composite).hexdigest()
+    assert base64.b64decode(image_segs[0]["binary_data_base64"]) == composite
 
 
 # ---- 工具驱动 v0.7:qzone_comment/qzone_reply/qzone_like 工具行为测试 ----
@@ -1809,6 +1829,44 @@ def test_view_friend_feed_detail_returns_comments_and_marks_seen(tmp_path):
     assert ctx.comment_map == {"dc1": ("20000", "小红")}
 
 
+def test_view_friend_feed_detail_multi_image_composes_single_item(tmp_path):
+    """详情工具多图接入(Task 4 C 方案,2026-09-03):与列表工具同款——双图拼成
+    一张角标合成图,恒单 content_item(mime 恒 jpeg);锚单条「图1-图2(拼接,…)」。"""
+
+    from catsitate_core.qzone.imaging import compose_numbered_grid
+
+    p = _make_plugin(tmp_path)
+    p1, p2 = _png_bytes((200, 30, 30)), _png_bytes((30, 30, 200))
+    detail_feed = FeedItem(
+        tid="mdetail00001", abstime="1750000000", uin="100", nickname="小明",
+        content="详情双图", image_urls=["u1", "u2"],
+    )
+
+    async def get_user_feeds(*, target_uin, nickname, num=20, page=1):
+        return [detail_feed]
+
+    async def download(url):
+        return {"u1": p1, "u2": p2}[url]
+
+    p.qzone_client.get_user_feeds = get_user_feeds
+    p.qzone_client.download_image = download
+
+    result = asyncio.run(p.view_friend_feed_detail(feed_id="mdetail00001", qq="100"))
+    assert isinstance(result, dict)
+    composite = compose_numbered_grid([(1, p1), (2, p2)])
+    assert result["content_items"] == [{
+        "content_type": "image",
+        "data": base64.b64encode(composite).decode("ascii"),
+        "mime_type": "image/jpeg",
+    }]
+    tag = f"图1-图2(拼接,hash={hashlib.sha256(composite).hexdigest()[:8]})"
+    assert tag in result["content"]
+    assert "图1(" not in result["content"]
+    # 评论区/锚行结构不回退:既有锚与评论提示原样
+    assert "评论区:还没有评论。" in result["content"]
+    assert result["content"].endswith("〔说说ID=mdetail00001〕")
+
+
 def test_view_friend_feed_detail_requires_owner_when_unresolved(tmp_path):
     """Q12=A 锚过期形态:registry/seen 都解析不到主人且未传 qq → 显式索要,
     不猜测。"""
@@ -2986,6 +3044,40 @@ def test_view_friend_feeds_returns_media_dict(tmp_path):
     assert feed_calls[-1][2] == 10
     assert asyncio.run(p.view_friend_feeds(qq="notnum")) == "请提供好友的QQ号(纯数字)。"
     assert len(feed_calls) == 2
+
+
+def test_view_friend_feeds_multi_image_composes_single_item(tmp_path):
+    """列表工具多图接入(Task 4 C 方案,2026-09-03):≥2 图拼成一张角标合成图
+    → 恒单 content_item(mime 恒 image/jpeg,合成图不再需要魔数探测);锚文案
+    单条「图1-图N(拼接,hash=合成图sha256前8)」,不再逐图列 hash。"""
+
+    from catsitate_core.qzone.imaging import compose_numbered_grid
+
+    p = _make_plugin(tmp_path)
+    p1, p2 = _png_bytes((200, 30, 30)), _png_bytes((30, 30, 200))
+
+    async def get_user_feeds(*, target_uin, nickname, num=3, page=1):
+        return [FeedItem(tid="mtid1", abstime="1750000000", uin="100", nickname="小明",
+                         content="双图说说", image_urls=["u1", "u2"])]
+
+    async def download(url):
+        return {"u1": p1, "u2": p2}[url]
+
+    p.qzone_client.get_user_feeds = get_user_feeds
+    p.qzone_client.download_image = download
+
+    result = asyncio.run(p.view_friend_feeds(qq="100"))
+    assert isinstance(result, dict)
+    composite = compose_numbered_grid([(1, p1), (2, p2)])
+    # 恒单 content_item:合成 JPEG + mime 恒 jpeg(宿主 media 入库形态)
+    assert result["content_items"] == [{
+        "content_type": "image",
+        "data": base64.b64encode(composite).decode("ascii"),
+        "mime_type": "image/jpeg",
+    }]
+    tag = f"图1-图2(拼接,hash={hashlib.sha256(composite).hexdigest()[:8]})"
+    assert tag in result["content"]
+    assert "图1(" not in result["content"]  # 不再逐图列 hash
 
 
 def test_inspect_image_by_hash_prefix_skips_message_search(tmp_path, monkeypatch):

@@ -71,11 +71,17 @@ class SeenStore:
         rows = self.store.query("SELECT 1 FROM qzone_feeds WHERE tid = ?", (tid,))
         return not rows
 
-    def mark_seen(self, tid: str, injected_at_iso: str, message_id: str = "") -> None:
-        """标记已见;message_id 记录注入时的消息 id(通知 reply 段关联原说说用,缺省空串)。"""
+    def mark_seen(self, tid: str, injected_at_iso: str, message_id: str | None = None) -> None:
+        """标记已见;message_id 记录注入时的消息 id(通知 reply 段关联原说说用)。
+
+        三态(2026-09-03 复审修复):真实 id=覆写注入锚;None(缺省)=只置 seen,
+        经 COALESCE 保留旧锚(detail 查看路径——不该抹掉浏览注入落的引用锚);
+        空串=显式清除覆写。
+        """
 
         self.store.execute(
-            "UPDATE qzone_feeds SET state = 'seen', injected_at = ?, message_id = ? WHERE tid = ?",
+            "UPDATE qzone_feeds SET state = 'seen', injected_at = ?, "
+            "message_id = COALESCE(?, message_id) WHERE tid = ?",
             (injected_at_iso, message_id, tid),
         )
 

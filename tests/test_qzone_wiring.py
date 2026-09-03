@@ -1754,6 +1754,9 @@ def test_view_friend_feed_detail_returns_comments_and_marks_seen(tmp_path):
     p.qzone_client.get_user_feeds = get_user_feeds
     p.qzone_client.download_image = download
     _register_feed(p, tid="detailfeed0001", owner="100")  # 预置锚:主人可解析
+    # 2026-09-03 复审修复:预置浏览注入落的 reply 段锚(detail 查看只置 seen 不得抹掉)
+    p.qzone_seen.mark_queued("detailfeed0001", abstime="1750000000", author_uin="100", summary="这条说说的正文")
+    p.qzone_seen.mark_seen("detailfeed0001", "2026-09-01T10:00:00", "qzone_detailfeed_9")
 
     result = asyncio.run(p.view_friend_feed_detail(feed_id="detailfeed0001"))
     assert isinstance(result, dict)
@@ -1766,6 +1769,8 @@ def test_view_friend_feed_detail_returns_comments_and_marks_seen(tmp_path):
     assert result["content_items"] and result["content_items"][0]["mime_type"] == "image/jpeg"
     # Q10=B:查看即已见(浏览轮询 is_new_candidate 转 False)
     assert p.qzone_seen.is_new_candidate("detailfeed0001") is False
+    # 复审修复:detail 查看传 None 只置 seen,reply 段锚(注入消息 id)保留
+    assert p.qzone_seen.get_message_id("detailfeed0001") == "qzone_detailfeed_9"
     # Q6:评论级锚登记
     ctx = p._qzone_registry.resolve("detailfeed0001")
     assert ctx.comment_map == {"dc1": ("20000", "小红")}

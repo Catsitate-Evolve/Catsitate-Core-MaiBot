@@ -1253,7 +1253,9 @@ class CatsitatePlugin(MaiBotPlugin):
             self.qzone_seen.mark_queued(
                 target.tid, abstime=target.abstime or "", author_uin=owner,
                 summary=target.content or "", author_nickname=target.nickname or "")
-            self.qzone_seen.mark_seen(target.tid, now_iso, "")
+            # message_id=None:只置 seen 不抹 reply 段锚(浏览注入落的注入消息 id
+            # 保留,后续该说说新评论通知仍可引用;2026-09-03 复审修复)
+            self.qzone_seen.mark_seen(target.tid, now_iso, None)
         except Exception:
             self.ctx.logger.exception("QQ空间说说详情 seen 登记失败(仅告警)")
         # 图片(与 view_friend_feeds 同款:≤3 图防 media 项爆炸、压缩出事件循环、

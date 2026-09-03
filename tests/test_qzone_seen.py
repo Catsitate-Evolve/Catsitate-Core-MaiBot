@@ -79,7 +79,7 @@ def test_mark_seen_message_id_and_get_message_id(tmp_path):
     s = SeenStore(_store(tmp_path))
     s.ensure_schema()
     s.mark_queued("t1", abstime="", author_uin="u", summary="a")
-    s.mark_seen("t1", "2026-09-01T10:00:00")  # 旧签名:不传 message_id → 空串
+    s.mark_seen("t1", "2026-09-01T10:00:00")  # 不传=保留旧值;新登记行旧值即空串
     assert s.get_message_id("t1") == ""
     s.mark_queued("t2", abstime="", author_uin="u", summary="b")
     s.mark_seen("t2", "2026-09-01T10:00:01", "qzone_t2_7")
@@ -100,6 +100,26 @@ def test_mark_seen_message_id_and_get_message_id(tmp_path):
     s2.mark_queued("x", abstime="", author_uin="u", summary="")
     s2.mark_seen("x", "2026-09-01T12:00:00", "qzone_x_1")
     assert s2.get_message_id("x") == "qzone_x_1"
+
+
+def test_mark_seen_none_preserves_message_id_empty_string_clears(tmp_path):
+    """2026-09-03 复审修复(Q10=B):mark_seen 第三参 None = 只置 seen 不动 reply 段锚
+    (注入落的注入消息 id 不被 detail 查看静默抹掉);空串语义保留(显式清除);
+    缺省(不传)同 None——保留旧值。"""
+
+    s = SeenStore(_store(tmp_path))
+    s.ensure_schema()
+    s.mark_queued("t1", abstime="", author_uin="u", summary="a")
+    s.mark_seen("t1", "2026-09-01T10:00:00", "qzone_t1_1")  # 注入路径落真实 id
+    # detail 查看路径:传 None → 只置 seen,注入锚保留
+    s.mark_seen("t1", "2026-09-02T11:00:00", None)
+    assert s.get_message_id("t1") == "qzone_t1_1"
+    # 缺省(不传第三参)同 None:保留旧值
+    s.mark_seen("t1", "2026-09-03T12:00:00")
+    assert s.get_message_id("t1") == "qzone_t1_1"
+    # 空串语义保留:显式清除覆写
+    s.mark_seen("t1", "2026-09-04T13:00:00", "")
+    assert s.get_message_id("t1") == ""
 
 
 def test_author_nickname_column_and_summary(tmp_path):

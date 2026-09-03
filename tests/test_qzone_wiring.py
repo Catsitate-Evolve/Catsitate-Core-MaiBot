@@ -655,6 +655,20 @@ def test_qzone_post_echo_failure_still_reports_success(tmp_path):
     )
 
 
+def test_qzone_post_nickname_read_failure_zero_publish(tmp_path):
+    """昵称读取抛错前置(2026-09-03 复审修复):bot.nickname 为空触发
+    _bot_echo_nickname 直接抛错(#33 裁定不兜底)——读取须发生在发布之前:
+    零发布调用、零回注,异常原样上抛工具层;杜绝「发布成功却报失败」
+    诱导模型重复发布的事故面。"""
+
+    p = _make_tool_plugin(tmp_path)
+    p._ctx.config.nickname = ""  # 主程序 bot.nickname 读取失败/为空形态
+    with pytest.raises(RuntimeError):
+        asyncio.run(p.qzone_post(content="这条不该发出去", stream_id="s1"))
+    assert p.qzone_client.publish_calls == []  # 发布前失败:零发布调用
+    assert p._ctx.gateway.calls == []  # 零回注
+
+
 # ---- M3 表达:日记(入睡旁路生成 + API 直发 + 延迟回注) ----
 
 
@@ -1049,6 +1063,22 @@ def test_echo_pending_diary_failure_keeps_pending(tmp_path):
     p._ctx.gateway = _ExplodingGateway()
     asyncio.run(p._echo_pending_diary())
     assert p._pending_diary_snapshot.load().get("text") == "待补注日记"
+    assert any(
+        level == "exception" and "补注失败" in str(a[0]) for level, a in p.logs
+    )
+
+
+def test_echo_pending_diary_nickname_failure_keeps_pending(tmp_path):
+    """昵称读取抛错纳入 route try(2026-09-03 复审修复):补注构造取昵称失败时
+    异常被既有 try 捕获告警、不外泄——快照保留,醒态 sleep_tick 下轮重试,
+    入睡链不被瘫痪(取昵称在 try 外时每 60s 刷异常且快照永不清空)。"""
+
+    p = _make_diary_plugin(tmp_path)
+    p._pending_diary_snapshot.save({"text": "待补注日记"})
+    p._ctx.config.nickname = ""  # bot.nickname 读取失败/为空形态
+    asyncio.run(p._echo_pending_diary())  # 不外泄:被内层 try 捕获告警
+    assert p._pending_diary_snapshot.load().get("text") == "待补注日记"
+    assert p._ctx.gateway.calls == []  # 未走到注入
     assert any(
         level == "exception" and "补注失败" in str(a[0]) for level, a in p.logs
     )
@@ -3042,6 +3072,21 @@ async def test_send_trigger_cold_start_seed_retry(tmp_path):
     ctx.gateway.route_message = route
     await p._qzone_send_trigger({"kind": "daily", "activity": "忙"}, browsed=False)
     assert calls["n"] == 2 and calls["seed"] == 1
+
+
+@pytest.mark.asyncio
+async def test_seed_virtual_session_nickname_failure_returns_false(tmp_path):
+    """种子自举同款(2026-09-03 复审修复):构造取昵称抛错纳入注入 try——
+    异常被捕获告警并返回 False(日程窗口按「自举失败」跳过重试等下个窗口),
+    不沿触发链上抛。"""
+
+    p = _make_tool_plugin(tmp_path)
+    p._ctx.config.nickname = ""  # bot.nickname 读取失败/为空形态
+    assert await p._qzone_seed_virtual_session() is False
+    assert p._ctx.gateway.calls == []  # 未走到注入
+    assert any(
+        level == "exception" and "种子消息注入失败" in str(a[0]) for level, a in p.logs
+    )
 
 
 @pytest.mark.asyncio

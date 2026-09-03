@@ -1020,6 +1020,11 @@ class CatsitatePlugin(MaiBotPlugin):
             return f"内容太长了({len(content)} 字,上限 500)。"
         # 表达润色:planner 草稿按人设+表达方式+场景语改写(失败以草稿直发)
         content = await self._qzone_polish(content, limit=500, scene="QQ空间里,想发一条自己的说说")
+        # 回注昵称前置读取(2026-09-03 复审修复):_bot_echo_nickname 读失败直接
+        # 抛错(#33 裁定不兜底),若留在发布成功后的回注构造段,异常会让工具以
+        # 失败收尾——远端已发布却谎报失败,诱导模型重复发布。前置到发布前:
+        # 失败时零发布调用,异常原样上抛工具层。
+        bot_echo_nickname = await self._bot_echo_nickname()
         try:
             # 同轮自愈(用户裁定 #7):AuthError 作废并重取 cookie 后原地重试一次
             tid, auth_err = await self._qzone_auth_retry(
@@ -1052,7 +1057,8 @@ class CatsitatePlugin(MaiBotPlugin):
             "message_info": {
                 # 发送者=bot 自己:昵称用 bot 名(主程序对自身消息按 bot 名显示,
                 # 且 [bot].platforms 声明后自身判定命中),标「我」会被当普通用户
-                "user_info": {"user_id": bot_uin, "user_nickname": await self._bot_echo_nickname()},
+                # (昵称已发布前读取,此处不再有可抛错的 await)
+                "user_info": {"user_id": bot_uin, "user_nickname": bot_echo_nickname},
                 "group_info": {
                     "group_id": QZONE_VIRTUAL_GROUP_ID,
                     "group_name": QZONE_VIRTUAL_GROUP_NAME,
@@ -1891,22 +1897,25 @@ class CatsitatePlugin(MaiBotPlugin):
         """冷启动种子:注入一条无 is_mentioned 的 self 消息,仅让主程序创建
         虚拟流会话(不触发 planner 决策轮),供 proactive.trigger 使用。"""
 
-        self._qzone_seq += 1
-        bot_uin = str(self.config.favorability.bot_user_id or "").strip()
-        msg = {
-            "message_id": f"qzone_seed_{int(time.time())}_{self._qzone_seq}",
-            "platform": QZONE_PLATFORM,
-            "timestamp": str(int(time.time())),
-            "message_info": {
-                "user_info": {"user_id": bot_uin, "user_nickname": await self._bot_echo_nickname()},
-                "group_info": {
-                    "group_id": QZONE_VIRTUAL_GROUP_ID,
-                    "group_name": QZONE_VIRTUAL_GROUP_NAME,
-                },
-            },
-            "raw_message": [{"type": "text", "data": "(打开了QQ空间)"}],
-        }
+        # 构造纳入 try(2026-09-03 复审修复):取昵称失败直接抛错(#33 裁定不
+        # 兜底),若留在 try 外会沿日程窗口触发链上抛——纳入后按注入失败处理
+        # (告警+返回 False),本窗口跳过自举重试,异常不外泄。
         try:
+            self._qzone_seq += 1
+            bot_uin = str(self.config.favorability.bot_user_id or "").strip()
+            msg = {
+                "message_id": f"qzone_seed_{int(time.time())}_{self._qzone_seq}",
+                "platform": QZONE_PLATFORM,
+                "timestamp": str(int(time.time())),
+                "message_info": {
+                    "user_info": {"user_id": bot_uin, "user_nickname": await self._bot_echo_nickname()},
+                    "group_info": {
+                        "group_id": QZONE_VIRTUAL_GROUP_ID,
+                        "group_name": QZONE_VIRTUAL_GROUP_NAME,
+                    },
+                },
+                "raw_message": [{"type": "text", "data": "(打开了QQ空间)"}],
+            }
             await self.ctx.gateway.route_message(QZONE_GATEWAY_NAME, msg)
             return True
         except Exception:
@@ -3396,22 +3405,26 @@ class CatsitatePlugin(MaiBotPlugin):
             return
         tid = str(data.get("tid") or "")
         bot_uin = str(self.config.favorability.bot_user_id or "").strip()
-        self._qzone_seq += 1
-        msg = {
-            "message_id": f"qzone_self_diary_{int(time.time())}_{self._qzone_seq}",
-            "platform": QZONE_PLATFORM,
-            "timestamp": str(int(time.time())),
-            "message_info": {
-                "user_info": {"user_id": bot_uin, "user_nickname": await self._bot_echo_nickname()},
-                "group_info": {
-                    "group_id": QZONE_VIRTUAL_GROUP_ID,
-                    "group_name": QZONE_VIRTUAL_GROUP_NAME,
-                },
-            },
-            "raw_message": [{"type": "text",
-                             "data": f"我昨晚发布的日记:{text}" + (f"\n〔说说ID={tid[:12]}〕" if tid else "")}],
-        }
+        # 构造纳入 route try(2026-09-03 复审修复):取昵称失败直接抛错(#33 裁定
+        # 不兜底),若留在 try 外,sleep_tick 每 60s 的补注会持续抛错——入睡判定
+        # 链被瘫痪且快照永不清空;纳入后按补注失败处理(告警+保留快照),
+        # 下个 tick 重试。
         try:
+            self._qzone_seq += 1
+            msg = {
+                "message_id": f"qzone_self_diary_{int(time.time())}_{self._qzone_seq}",
+                "platform": QZONE_PLATFORM,
+                "timestamp": str(int(time.time())),
+                "message_info": {
+                    "user_info": {"user_id": bot_uin, "user_nickname": await self._bot_echo_nickname()},
+                    "group_info": {
+                        "group_id": QZONE_VIRTUAL_GROUP_ID,
+                        "group_name": QZONE_VIRTUAL_GROUP_NAME,
+                    },
+                },
+                "raw_message": [{"type": "text",
+                                 "data": f"我昨晚发布的日记:{text}" + (f"\n〔说说ID={tid[:12]}〕" if tid else "")}],
+            }
             await self.ctx.gateway.route_message(QZONE_GATEWAY_NAME, msg)
             # 本地锚定三连(seen + registry,与 qzone_post 同款;summary/摘要存
             # 全文,2026-09-02 用户裁定)。内层独立兜底:锚定失败不拦快照清空——远端已成功,
@@ -4149,13 +4162,14 @@ class CatsitatePlugin(MaiBotPlugin):
 
         主程序对 bot 自身消息按 bot 名显示;虚拟流平台(qzone-qq)的 bot 账号
         经主程序 [bot].platforms 声明后,自身判定与显示替换才能命中——回注
-        发送者若标「我」会被当普通用户(污染回复必要性与间隔统计)。读取
-        失败/为空时回退「我」(历史形态,告警不静默)。
+        发送者若标「我」会被当普通用户(污染回复必要性与间隔统计)。
         """
 
         # 直接抛错不兜底(用户裁定 2026-09-02 #33:除非主程序有 bug 才会空,
-        # 静默回退「我」反而掩盖——曾把 bot 当普通用户污染统计);调用方外层
-        # 回注 try 会以异常栈浮出
+        # 静默回退「我」反而掩盖——曾把 bot 当普通用户污染统计)。调用方纪律
+        # (2026-09-03 复审修复):qzone_post 在发布 try 前读取(异常原样上抛,
+        # 零发布调用);日记补注/种子自举在各自 try 内构造(异常被捕获告警,
+        # 不沿 tick 链外泄)
         value = await self.ctx.config.get("bot.nickname", "")
         nickname = str(value or "").strip()
         if not nickname:

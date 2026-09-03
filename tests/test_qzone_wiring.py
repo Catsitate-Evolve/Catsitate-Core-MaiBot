@@ -1532,6 +1532,48 @@ def test_notify_scan_source_c_like_auth_error_keeps_source_a_notifications(tmp_p
                for level, a in p.logs)
 
 
+def test_notify_scan_source_c_runtime_error_keeps_source_a_notifications(tmp_path):
+    """审查修复(2026-09-03):源C 取数抛非 Auth 异常(如相对时间折算遇非闰年
+    2月29日的 ValueError)——调用点独立隔离(源B 同款纪律):告警后按空处理
+    继续不上抛;上抛会触发扫描级原子性兜底,回退本轮源A/B 已登记的全部去重键,
+    通知未入队即中止且每 120 秒重复崩溃。源A 通知照常入队注入、键不回退。"""
+
+    import time as _time
+
+    from catsitate_core.qzone.wire import CommentItem
+
+    comments = {"feeda": [CommentItem(
+        comment_tid="ca1", uin="20000", nickname="小红", content="好友评论",
+        create_time=str(int(_time.time())),
+    )]}
+
+    class _BoomLikeClient(_StubUnifiedClient):
+        def __init__(self):
+            super().__init__([])
+
+        async def get_own_feed_comments(self, *, bot_uin, num=10):
+            del bot_uin, num
+            return comments, {"feeda": "说说正文"}
+
+        async def get_like_events(self, *, count=30):
+            del count
+            raise RuntimeError("源C 解析崩溃(相对时间折算 2月29日)")
+
+    p = _make_plugin(tmp_path)
+    p.qzone_injector.window_started()
+    p.qzone_client = _BoomLikeClient()
+    asyncio.run(p._qzone_notify_scan())  # 不抛:异常被源C 调用点隔离
+    # 源A 通知未丢:正常注入 1 条
+    assert len(p._ctx.gateway.calls) == 1
+    assert p._ctx.gateway.calls[0][1]["message_info"]["user_info"]["user_id"] == "20000"
+    # 隔离显式告警(exception 级,含源C 上下文),非 Auth 不作废 cookie
+    assert any(level == "exception" and "源C拉取失败" in " ".join(str(x) for x in a)
+               for level, a in p.logs)
+    assert p.qzone_cookie.invalidate_calls == 0
+    # 源A 去重键不回退(已消费,注入完成——与上抛回退路径的区别)
+    assert p.qzone_comment_seen.is_new("feeda:ca1:20000") is False
+
+
 def test_notify_retry_backoff_source_c_like_gives_up_without_misleading_retry(tmp_path):
     """源C 无重试通道(M3 修正 I-4):赞事件通知注入被拒不走 note_retry/revert
     空转(去重在 qzone_likes 表,无 pending_retry 通道,revert 作用于
@@ -1570,9 +1612,11 @@ def test_notify_retry_backoff_source_c_like_gives_up_without_misleading_retry(tm
 
 
 def test_notify_scan_reverts_registered_keys_on_failure(tmp_path):
-    """原子性兜底(终审 H-1 修复,2026-09-02):源A 登记后发现侧异常(源C 取数
-    抛非 Auth 异常)——已登记未入队的去重键回退(pending_retry=1),下轮重新
-    发现,通知不永久静默丢失。"""
+    """原子性兜底(终审 H-1 修复,2026-09-02):源A 登记后入队侧异常
+    (enqueue_priority 抛非 Auth 异常)——已登记未入队的去重键回退
+    (pending_retry=1),下轮重新发现,通知不永久静默丢失。
+    (审查修复 2026-09-03:源C 取数异常已改为调用点独立隔离不再上抛,本用例
+    失败注入点从源C 移至入队侧,外层原子性回退语义保持覆盖。)"""
 
     import time as _time
 
@@ -1583,7 +1627,7 @@ def test_notify_scan_reverts_registered_keys_on_failure(tmp_path):
         create_time=str(int(_time.time())),
     )]}
 
-    class _BoomLikeClient(_StubUnifiedClient):
+    class _EnqueueBoomClient(_StubUnifiedClient):
         def __init__(self):
             super().__init__([])
 
@@ -1593,11 +1637,17 @@ def test_notify_scan_reverts_registered_keys_on_failure(tmp_path):
 
         async def get_like_events(self, *, count=30):
             del count
-            raise RuntimeError("源C 炸了")
+            return []
 
     p = _make_plugin(tmp_path)
     p.qzone_injector.window_started()
-    p.qzone_client = _BoomLikeClient()
+    p.qzone_client = _EnqueueBoomClient()
+
+    def _boom_enqueue(items):
+        del items
+        raise RuntimeError("入队炸了")
+
+    p.qzone_injector.enqueue_priority = _boom_enqueue
     with pytest.raises(RuntimeError):
         asyncio.run(p._qzone_notify_scan())
     rows = p.qzone_comment_seen.store.query(

@@ -2127,10 +2127,18 @@ class CatsitatePlugin(MaiBotPlugin):
             # 源A/B 已得通知不能丢,仅本轮源C 按空处理
             if len(notifications) < 3:
                 # 同轮自愈(用户裁定 #7):AuthError 作废并重取 cookie 后原地重试一次;
-                # 自愈失败按空处理(源A/B 已得通知不丢);非 Auth 异常上抛至扫描级
-                # 原子性兜底(登记键回退,终审 H-1)
-                scanned_c, auth_err = await self._qzone_auth_retry(
-                    lambda: self.qzone_client.get_like_events(count=30), "通知源C")
+                # 自愈失败按空处理(源A/B 已得通知不丢);非 Auth 异常同样在调用点
+                # 独立隔离(审查修复 2026-09-03,源B 同款纪律):告警后按空继续不上抛
+                # ——上抛会触发扫描级原子性兜底,回退本轮源A/B 已登记的全部去重键,
+                # 通知未入队即中止且每 120 秒重复崩溃(实机:源C 相对时间折算遇
+                # 非闰年 2月29日 ValueError 无捕获沿 get_like_events 上抛)
+                try:
+                    scanned_c, auth_err = await self._qzone_auth_retry(
+                        lambda: self.qzone_client.get_like_events(count=30), "通知源C")
+                except Exception:
+                    # 源C 仅是增量来源:likes 按空、parsed_ok=False(不参与漂移观测)
+                    self.ctx.logger.exception("QQ空间通知轮询源C拉取失败,本轮跳过源C")
+                    scanned_c = None
                 likes = scanned_c or []
                 parsed_ok = scanned_c is not None  # 取数成功(自愈失败不参与漂移观测)
                 # 解析观测线(2026-09-02 收敛):常规轮次不打解析条数日志(信息噪音),

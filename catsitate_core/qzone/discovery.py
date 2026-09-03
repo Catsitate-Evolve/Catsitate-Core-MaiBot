@@ -153,6 +153,11 @@ def _relative_time_to_epoch(day: str, hm: str, now: datetime) -> int:
     """相对时间(今天/昨天/前天/N月N日 + HH:MM)折算 epoch 秒,天级精度。
 
     跨年边界按「折算结果晚于当前则回退一年」处理;HH:MM 缺失按 00:00。
+    审查修复(2026-09-03):非闰年「2月29日」使 N月N日 折算构造出历史上不
+    存在的日期,replace 抛 ValueError 且无捕获——异常沿 get_like_events
+    上抛会中止通知扫描整轮。两处 replace(含跨年回退年份-1)防护:告警后
+    返回 0(与「create_time 缺失不编造时间」口径一致;调用侧 like_epoch=0
+    与 comment_time_prefix 的 <=0 分支均容忍,时间前缀省略、新鲜度不误截断)。
     """
     hour, minute = (int(x) for x in hm.split(":")) if hm else (0, 0)
     base = now.replace(hour=hour, minute=minute, second=0, microsecond=0)
@@ -162,9 +167,14 @@ def _relative_time_to_epoch(day: str, hm: str, now: datetime) -> int:
         base -= timedelta(days=2)
     elif day != "今天":
         month, mday = (int(x) for x in re.match(r"(\d{1,2})月(\d{1,2})日", day).groups())
-        base = base.replace(month=month, day=mday)
-        if base > now:
-            base = base.replace(year=base.year - 1)
+        try:
+            base = base.replace(month=month, day=mday)
+            if base > now:
+                base = base.replace(year=base.year - 1)
+        except ValueError:
+            # 历史上不存在的日期(如非闰年 2月29日):不编造时间,告警后置 0
+            logger.warning("赞事件相对时间折算遇不存在的日期(day=%s, hm=%s),create_time 置 0", day, hm)
+            return 0
     return int(base.timestamp())
 
 

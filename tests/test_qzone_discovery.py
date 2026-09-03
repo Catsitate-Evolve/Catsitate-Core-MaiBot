@@ -5,7 +5,13 @@
 每个动态条目按序出现 key:'{十六进制tid}' / appid:{int} / abstime:{int}
 / opuin:'{uin}' / nickname:'{name}'。测试样本为该结构的简化复刻。
 """
-from catsitate_core.qzone.discovery import FeedDiscovery, parse_unified_timeline
+from datetime import datetime
+
+from catsitate_core.qzone.discovery import (
+    FeedDiscovery,
+    _relative_time_to_epoch,
+    parse_unified_timeline,
+)
 
 # 实证样本(简化):多作者混合 + 非 hex key 条目(应跳过)
 # 字段序按生产实证规范:key → appid → abstime → opuin → nickname(审查修复#2:
@@ -159,3 +165,32 @@ def test_parse_unified_timeline_appid_fallback_to_appiconid():
             " opuin:'3298178030', nickname:'Hesitate_P'}]}})")
     items = parse_unified_timeline(text)
     assert len(items) == 1 and items[0].appid == 311 and items[0].tid == "abc123def456789"
+
+
+# ---- 相对时间折算(Task 5 审查修复:非闰年 2月29日防护) ----
+
+
+def test_relative_time_to_epoch_feb29_non_leap_year_returns_zero():
+    """非闰年「2月29日」:首处 replace(month=2, day=29) 即抛 ValueError(2026
+    非闰)——防护后不抛,返回 0(与「create_time 缺失不编造时间」口径一致)。"""
+    assert _relative_time_to_epoch("2月29日", "08:30", datetime(2026, 9, 3, 12, 0)) == 0
+
+
+def test_relative_time_to_epoch_feb29_cross_year_rollback_returns_zero():
+    """跨年回退分支的同款防护:当前为闰年且 2月29日在未来(2024-01-15)——
+    首处 replace 成功(2024 闰),回退 year-1=2023(非闰)在第二处抛
+    ValueError——同样返回 0 不抛。"""
+    assert _relative_time_to_epoch("2月29日", "", datetime(2024, 1, 15, 10, 0)) == 0
+
+
+def test_relative_time_to_epoch_normal_paths_unaffected():
+    """常规折算回归保护:今天/昨天/前天/N月N日(当年过去 + 未来跨年回退一年)
+    不受防护影响。"""
+    now = datetime(2026, 9, 3, 12, 0)
+    assert _relative_time_to_epoch("今天", "08:30", now) == int(datetime(2026, 9, 3, 8, 30).timestamp())
+    assert _relative_time_to_epoch("昨天", "20:00", now) == int(datetime(2026, 9, 2, 20, 0).timestamp())
+    assert _relative_time_to_epoch("前天", "", now) == int(datetime(2026, 9, 1, 0, 0).timestamp())
+    # 当年过去日期:直接落在当年
+    assert _relative_time_to_epoch("3月1日", "09:05", now) == int(datetime(2026, 3, 1, 9, 5).timestamp())
+    # 当年未来日期:跨年回退一年
+    assert _relative_time_to_epoch("12月1日", "10:00", now) == int(datetime(2025, 12, 1, 10, 0).timestamp())

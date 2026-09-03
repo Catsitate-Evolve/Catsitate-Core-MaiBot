@@ -327,8 +327,9 @@ def build_feed_message(
     else:
         body = f"{prefix}(无文字内容)".strip()
     # 评论区块(2026-09-02 设计共识:浏览注入带完整讨论,避免信息不全)——
-    # 正文与评论区空行分隔;QQ 截断 commentlist 时按 comment_total 标「前N/共M」
-    if feed.comments:
+    # 正文与评论区空行分隔;QQ 截断 commentlist 时按 comment_total 标「前N/共M」;
+    # commentlist 缺失但 cmtnum>0 时同样放行,空块交 format_comment_block 出诚实提示
+    if feed.comments or feed.comment_total:
         comment_block = format_comment_block(
             feed.comments, comment_total=feed.comment_total, now_epoch=now_epoch)
         if comment_block:

@@ -101,6 +101,20 @@ def test_build_message_pure_image_text_policy():
     assert msg2["raw_message"][0] == {"type": "text", "data": "〔说说ID=t1〕"}
 
 
+def test_build_message_comment_total_without_list_is_honest():
+    """评论区门控(Task 4):commentlist 缺失但 cmtnum>0 时按 comment_total
+    放行,空块交 format_comment_block 出诚实提示(与详情工具两路一致)——
+    旧行为 `if feed.comments:` 会静默跳过,模型对存在评论毫无感知。"""
+    msg = build_feed_message(_feed(comments=[], comment_total=7), seq=1, group_id="g",
+                             group_name="n", images=[], now_epoch=1750000100.0)
+    text = msg["raw_message"][0]["data"]
+    assert "共7条,本次响应未包含" in text  # 空块诚实提示进入注入消息
+    # 对照:无评论且总数为 0 时不输出评论区(空串语义,调用方不附加)
+    msg2 = build_feed_message(_feed(comments=[], comment_total=0), seq=2, group_id="g",
+                              group_name="n", images=[], now_epoch=1750000100.0)
+    assert "本次响应未包含" not in msg2["raw_message"][0]["data"]
+
+
 def test_build_notify_message_with_reply_segment():
     """通知专用构造(联调修正+可读性优化):reply 段置首引用原说说的注入消息
     (napcat quote 式上下文关联);target_message_content 直接取 feed.origin_content

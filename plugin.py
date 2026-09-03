@@ -1698,7 +1698,8 @@ class CatsitatePlugin(MaiBotPlugin):
             )
         else:
             images: list[tuple[str, bytes]] = []
-            for url in feed.image_urls:
+            # 单条说说最多带 3 图(防 media 项爆炸,与 view_friend_feeds/view_friend_feed_detail 同款裁定)
+            for url in feed.image_urls[:3]:
                 try:
                     data = await self.qzone_client.download_image(url)
                 except Exception:
@@ -1725,7 +1726,8 @@ class CatsitatePlugin(MaiBotPlugin):
                 )
             except Exception:
                 self.ctx.logger.exception("QQ空间图片压缩/消息构造异常(tid=%s),降级全占位注入", feed.tid)
-                images = [(url, None) for url in feed.image_urls]
+                # 单条说说最多带 3 图(防 media 项爆炸,与 view_friend_feeds/view_friend_feed_detail 同款裁定)
+                images = [(url, None) for url in feed.image_urls[:3]]
                 self._qzone_seq += 1
                 msg = build_feed_message(
                     feed, seq=self._qzone_seq, group_id=QZONE_VIRTUAL_GROUP_ID,

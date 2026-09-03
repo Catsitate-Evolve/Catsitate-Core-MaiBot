@@ -202,6 +202,19 @@ class _StubUnifiedClient:
         return []  # 源C 空:各测试按需子类覆盖(通知扫描三源都要经本接口取数)
 
 
+class _StubDownloadClient(_StubUnifiedClient):
+    """图片下载桩:记录 download_image 的调用次序,返回固定小字节
+    (总量远低于压缩预算,压缩链原样通过,聚焦下载次数裁定)。"""
+
+    def __init__(self):
+        super().__init__([])
+        self.downloads: list[str] = []
+
+    async def download_image(self, url):
+        self.downloads.append(url)
+        return b"imgdata"
+
+
 def _patch_sleep(monkeypatch, record: list) -> None:
     """把 asyncio.sleep 换成记录桩(源B请求间隔断言用;不让测试真等 2 秒)。"""
 
@@ -226,6 +239,26 @@ def test_poll_tick_window_start_opens_injector(tmp_path):
     # 发现层空时间线(默认桩):窗口开始分支后本轮提前返回,足以断言窗口状态
     asyncio.run(p._qzone_poll_feeds())
     assert p.qzone_injector.window_active is True  # 窗口正常开启(不跳过注入)
+
+
+def test_qzone_inject_image_cap_three_per_feed(tmp_path):
+    """注入链图片上限(Task 4,与 view_friend_feeds/view_friend_feed_detail 同款
+    裁定):单条说说最多下载 3 图防 media 项爆炸——5 图说说只下载前 3 张。"""
+
+    p = _make_plugin(tmp_path)
+    client = _StubDownloadClient()
+    p.qzone_client = client
+    p.qzone_injector.window_started()  # P2 浏览动态仅窗口内可弹
+    p.qzone_injector.enqueue([FeedItem(
+        tid="cap0000000001", abstime="1750000000", uin="10001", nickname="小明",
+        content="多图说说", image_urls=["u1", "u2", "u3", "u4", "u5"],
+    )])
+    asyncio.run(p._qzone_pump())
+    # 恰 3 次下载(次序=前 3 张),第 4/5 张不进入下载与注入链
+    assert client.downloads == ["u1", "u2", "u3"]
+    # 副作用链完整走通:注入成功进入 awaiting,网关收到该条消息
+    assert p.qzone_injector.awaiting_tid == "cap0000000001"
+    assert len(p._ctx.gateway.calls) == 1
 
 
 # ---- 工具驱动 v0.7:qzone_comment/qzone_reply/qzone_like 工具行为测试 ----

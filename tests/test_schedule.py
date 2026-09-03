@@ -571,9 +571,11 @@ def test_fix_schedule_strips_attributes_on_nondaily():
     assert fixed["windows"][1].get("read_qzone") is True
 
 
-def test_schedule_generate_template_v4_splits_qzone_attributes():
+def test_schedule_generate_template_splits_qzone_attributes():
+    """日程模板含 read_qzone/send_qzone 独立属性说明(v4 引入拆分;v1.0.0 清理
+    Task 4 升 v5——同步 prompt_templates/ 权威源,补防注入语与分钟精度要求)。"""
     from catsitate_core.llm_provider import SIDE_TEMPLATES
 
-    assert SIDE_TEMPLATES["schedule_generate"]["version"] == 4
+    assert SIDE_TEMPLATES["schedule_generate"]["version"] == 5
     assert "read_qzone" in SIDE_TEMPLATES["schedule_generate"]["system"]
     assert "send_qzone" in SIDE_TEMPLATES["schedule_generate"]["system"]

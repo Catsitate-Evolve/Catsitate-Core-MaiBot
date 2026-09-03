@@ -68,8 +68,9 @@ def test_guard_section_defaults():
 
 
 def test_plugin_on_load_assembles_guard_compiled():
-    """on_load 装配断言:类属性 _guard_compiled 声明 + on_load 按 enabled 编译
-    (编译失败整组置空;纯函数消费方为后续任务的三个拦截点)。"""
+    """装配断言:类属性 _guard_compiled 声明 + on_load 经 _assemble_guard 按
+    enabled 编译(装配块抽为独立方法;编译失败整组置空)。装配路径的实例级
+    行为测试见 test_qzone_wiring.py::test_guard_assembly_compiles_on_load_path。"""
 
     import inspect
 
@@ -77,7 +78,9 @@ def test_plugin_on_load_assembles_guard_compiled():
 
     full_src = inspect.getsource(plugin_mod)
     assert "_guard_compiled: list = []" in full_src  # 类属性声明(共享可变态,实例级重置)
+    guard_src = inspect.getsource(plugin_mod.CatsitatePlugin._assemble_guard)
+    assert "compile_guard" in guard_src  # 装配方法内按配置编译
+    assert "_guard_compiled" in guard_src
+    assert "self.config.guard.enabled" in guard_src  # 未 enabled 零编译
     on_load_src = inspect.getsource(plugin_mod.CatsitatePlugin.on_load)
-    assert "compile_guard" in on_load_src  # on_load 编译装配
-    assert "_guard_compiled" in on_load_src
-    assert "self.config.guard.enabled" in on_load_src  # 未 enabled 零编译
+    assert "self._assemble_guard()" in on_load_src  # on_load 接线装配方法

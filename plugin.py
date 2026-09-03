@@ -31,7 +31,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parent))
 
 from catsitate_core.config import CatsitateConfig
 from catsitate_core.favorability import LEVELS, LEVEL_INDEX, EXCLUSIVE_LEVEL, BatchEngine, SettleExecutor, build_favorability_block
-from catsitate_core.guard import compile_guard
+from catsitate_core.guard import compile_guard, match_guard
 from catsitate_core.image_relook import build_relook_prompt, find_image_segment
 from catsitate_core.inject import InjectAssembler, InjectionBlock
 from catsitate_core.llm_provider import build_side_prompt, rpc_error_brief
@@ -324,15 +324,7 @@ class CatsitatePlugin(MaiBotPlugin):
         self._last_speaker_map = {}
         # v1.0.0 内容护栏:on_load 装配编译正则(实例级重置后按 enabled 编译;
         # 未启用零编译;编译失败 warning 后整组置空——护栏失效但不阻断插件加载)
-        self._guard_compiled = []
-        if self.config.guard.enabled:
-            _guard_list, _guard_err = compile_guard(self.config.guard.patterns)
-            if _guard_err:
-                self.ctx.logger.warning(
-                    "内容护栏正则编译失败,整组护栏失效(不拦截任何内容,请修正配置):%s", _guard_err
-                )
-            else:
-                self._guard_compiled = _guard_list
+        self._assemble_guard()
         # 泵并发锁:_qzone_pump 两个入口(调度 tick/轮完成信号)整体互斥,防弹出-置位间隙双弹
         self._qzone_pump_lock = asyncio.Lock()
         # 模块日志转发(联调缺陷#10):catsitate_core.* 的告警路由到插件 ctx logger,否则不可见
@@ -832,6 +824,23 @@ class CatsitatePlugin(MaiBotPlugin):
         return partial(self._side_llm_call, model=self.config.qzone.expression_llm_model,
                        module="qzone_expression", timeout_ms=self.config.qzone.expression_llm_timeout_ms)
 
+    def _assemble_guard(self) -> None:
+        """v1.0.0 内容护栏装配(on_load 调用,抽为独立方法供实例级行为测试):
+        按 guard.enabled 编译正则到实例级 _guard_compiled;未启用零编译保持
+        空列表(匹配恒 0,三工具与日记天然短路零行为变化);编译失败 warning
+        后整组置空——护栏失效但不阻断插件加载(错误显式暴露)。"""
+
+        self._guard_compiled = []
+        if not self.config.guard.enabled:
+            return
+        _guard_list, _guard_err = compile_guard(self.config.guard.patterns)
+        if _guard_err:
+            self.ctx.logger.warning(
+                "内容护栏正则编译失败,整组护栏失效(不拦截任何内容,请修正配置):%s", _guard_err
+            )
+            return
+        self._guard_compiled = _guard_list
+
     async def _qzone_polish(self, draft: str, *, limit: int, scene: str) -> str:
         """表达润色:planner 草稿按人设+表达方式+场景语改写;失败告警后原样返回(草稿直发)。"""
 
@@ -891,6 +900,14 @@ class CatsitatePlugin(MaiBotPlugin):
             return f"评论太长了({len(content)} 字,上限 200),请精简。"
         # 表达润色:planner 草稿按人设+表达方式+场景语改写(失败以草稿直发)
         content = await self._qzone_polish(content, limit=200, scene="QQ空间里,想给好友的说说写一条评论")
+        # v1.0.0 内容护栏:润色后的最终文本匹配(草稿直发形态同样覆盖),命中即
+        # 拦截——零 API 调用零记账零 seen,回执明示规则编号
+        hit = match_guard(self._guard_compiled, content)
+        if hit:
+            self.ctx.logger.warning(
+                "内容护栏拦截:qzone_comment 命中规则%d,未发布(文本:%s...)", hit, content[:60]
+            )
+            return f"内容被拦截(命中规则{hit}),未发布。"
         # 目标解析:registry → seen_store → awaiting → 显式失败(fid 回填全量 tid)
         fid, owner_uin, ctx = self._qzone_resolve_feed(feed_id)
         if not fid:
@@ -959,6 +976,14 @@ class CatsitatePlugin(MaiBotPlugin):
             return f"回复太长了({len(content)} 字,上限 200)。"
         # 表达润色:planner 草稿按人设+表达方式+场景语改写(失败以草稿直发)
         content = await self._qzone_polish(content, limit=200, scene="QQ空间里,想回复好友在你的说说下写的评论")
+        # v1.0.0 内容护栏:润色后的最终文本匹配(草稿直发形态同样覆盖),命中即
+        # 拦截——零 API 调用零记账,回执明示规则编号
+        hit = match_guard(self._guard_compiled, content)
+        if hit:
+            self.ctx.logger.warning(
+                "内容护栏拦截:qzone_reply 命中规则%d,未发布(文本:%s...)", hit, content[:60]
+            )
+            return f"内容被拦截(命中规则{hit}),未发布。"
         fid, target_qq, ctx = self._qzone_resolve_feed(feed_id)
         if not fid:
             return f"未找到说说 {feed_id[:12]},可能已过期。"
@@ -1045,6 +1070,14 @@ class CatsitatePlugin(MaiBotPlugin):
         bot_echo_nickname = await self._bot_echo_nickname()
         # 表达润色:planner 草稿按人设+表达方式+场景语改写(失败以草稿直发)
         content = await self._qzone_polish(content, limit=500, scene="QQ空间里,想发一条自己的说说")
+        # v1.0.0 内容护栏:润色后的最终文本匹配(草稿直发形态同样覆盖),命中即
+        # 拦截——零 API 调用零记账零回注,回执明示规则编号
+        hit = match_guard(self._guard_compiled, content)
+        if hit:
+            self.ctx.logger.warning(
+                "内容护栏拦截:qzone_post 命中规则%d,未发布(文本:%s...)", hit, content[:60]
+            )
+            return f"内容被拦截(命中规则{hit}),未发布。"
         try:
             # 同轮自愈(用户裁定 #7):AuthError 作废并重取 cookie 后原地重试一次
             tid, auth_err = await self._qzone_auth_retry(
@@ -3374,6 +3407,13 @@ class CatsitatePlugin(MaiBotPlugin):
         # 模板里的目标字数软约束;蓝本也无上限)。仅拦空文本——空日记没有发布意义
         if not diary_text:
             self.ctx.logger.warning("QQ空间日记内容为空,跳过发布")
+            return
+        # v1.0.0 内容护栏:LLM 产出文本发布前匹配,命中即拦截——不发布不落快照
+        hit = match_guard(self._guard_compiled, diary_text)
+        if hit:
+            self.ctx.logger.warning(
+                "内容护栏拦截:日记 命中规则%d,未发布(文本:%s...)", hit, diary_text[:60]
+            )
             return
         try:
             # 同轮自愈(2026-09-03 复审修复,用户裁定 #7 语义,与 qzone_post 同款):

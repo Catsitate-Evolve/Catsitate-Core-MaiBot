@@ -10,6 +10,7 @@ from __future__ import annotations
 import asyncio
 import base64
 import hashlib
+import re
 from datetime import datetime, timedelta
 
 import pytest
@@ -1211,6 +1212,195 @@ def test_diary_wired_into_sleep_flow():
         plugin_mod.CatsitatePlugin._maybe_settle_passed_sleep_window
     )
     assert "_echo_pending_diary" in inspect.getsource(plugin_mod.CatsitatePlugin._sleep_tick)
+
+
+# ---- v1.0.0 内容护栏:三动作工具 + 日记拦截(Task 2)----
+
+
+def _enable_guard(p, patterns):
+    """护栏启用态模拟(绕过 on_load):enabled=True + 手工编译正则入实例属性,
+    等价 on_load 装配产物(装配路径本身见下方实例级行为测试)。"""
+
+    p.config.guard.enabled = True
+    p._guard_compiled = [re.compile(pat) for pat in patterns]
+
+
+def test_qzone_comment_guard_hit_blocks_api_and_accounting(tmp_path):
+    """护栏命中(评论):润色后最终文本命中 → 零 API 调用零记账零 seen,回执
+    明示规则编号;告警含工具名/规则号/文本前 60 字。"""
+
+    p = _make_tool_plugin(tmp_path)
+    _enable_guard(p, ["敏感词"])
+    _register_feed(p, tid="guardhit01", owner="10001")
+    # seen 预登记(mark_interacted 的落库对象,拦截时不得被置位)
+    p.qzone_seen.mark_queued("guardhit01", abstime="1", author_uin="10001", summary="动态")
+    res = asyncio.run(p.qzone_comment(feed_id="guardhit01", content="这条评论带敏感词", stream_id="s1"))
+    assert res == "内容被拦截(命中规则1),未发布。"
+    assert p.qzone_client.comment_calls == []  # 零 API 调用
+    rows = p.qzone_seen.store.query("SELECT interacted FROM qzone_feeds WHERE tid = 'guardhit01'")
+    assert rows and rows[0][0] == 0  # 零 seen 写(mark_interacted 未执行)
+    assert p.qzone_comment_seen.store.query("SELECT 1 FROM qzone_fav_events") == []  # 零记账
+    assert any(
+        level == "warning"
+        and a[0] == "内容护栏拦截:qzone_comment 命中规则%d,未发布(文本:%s...)"
+        and a[1] == 1 and a[2] == "这条评论带敏感词"
+        for level, a in p.logs
+    )
+
+
+def test_qzone_reply_guard_hit_blocks_api(tmp_path):
+    """护栏命中(楼中楼回复):润色后最终文本命中 → 零 API 调用零记账,
+    回执明示规则编号;告警含工具名/规则号/文本前 60 字。"""
+
+    p = _make_tool_plugin(tmp_path)
+    _enable_guard(p, ["敏感词"])
+    _register_feed(p, tid="guardhit02", owner=BOT_UIN,
+                   commenter_uin="20000", commenter_nickname="小红",
+                   comment_tid="gc1", comment_uin="20000")
+    res = asyncio.run(p.qzone_reply(feed_id="guardhit02", comment_id="gc1",
+                                    content="回复里也有敏感词", stream_id="s1"))
+    assert res == "内容被拦截(命中规则1),未发布。"
+    assert p.qzone_client.reply_calls == []  # 零 API 调用
+    assert p.qzone_comment_seen.store.query("SELECT 1 FROM qzone_fav_events") == []  # 零记账
+    assert any(
+        level == "warning"
+        and a[0] == "内容护栏拦截:qzone_reply 命中规则%d,未发布(文本:%s...)"
+        and a[1] == 1 and a[2] == "回复里也有敏感词"
+        for level, a in p.logs
+    )
+
+
+def test_qzone_post_guard_hit_blocks_api(tmp_path):
+    """护栏命中(发说说):润色后最终文本命中 → 零 API 调用零回注,回执明示
+    规则编号(非首条规则=编号如实回显);告警含工具名/规则号/文本前 60 字。"""
+
+    p = _make_tool_plugin(tmp_path)
+    _enable_guard(p, ["绝不会命中的词", "敏感词"])
+    res = asyncio.run(p.qzone_post(content="想发的说说里带敏感词", stream_id="s1"))
+    assert res == "内容被拦截(命中规则2),未发布。"
+    assert p.qzone_client.publish_calls == []  # 零 API 调用
+    assert p._ctx.gateway.calls == []  # 零回注(拦截即未发布)
+    assert any(
+        level == "warning"
+        and a[0] == "内容护栏拦截:qzone_post 命中规则%d,未发布(文本:%s...)"
+        and a[1] == 2 and a[2] == "想发的说说里带敏感词"
+        for level, a in p.logs
+    )
+
+
+def test_guard_enabled_miss_publishes_normally(tmp_path):
+    """护栏启用未命中:三工具照常发布(拦截只对命中生效),零拦截告警。"""
+
+    p = _make_tool_plugin(tmp_path)
+    _enable_guard(p, ["敏感词"])
+    _register_feed(p, tid="cleanfeed01", owner="10001",
+                   commenter_uin="20000", commenter_nickname="小红",
+                   comment_tid="cc1", comment_uin="20000")
+    res_c = asyncio.run(p.qzone_comment(feed_id="cleanfeed01", content="很不错的照片", stream_id="s1"))
+    assert res_c.startswith("评论成功,已发出:")
+    res_r = asyncio.run(p.qzone_reply(feed_id="cleanfeed01", comment_id="cc1",
+                                      content="谢谢你", stream_id="s1"))
+    assert res_r.startswith("回复成功")
+    res_p = asyncio.run(p.qzone_post(content="今天心情很好", stream_id="s1"))
+    assert res_p.startswith("发布成功,已发出说说:")
+    assert p.qzone_client.comment_calls == [("cleanfeed01", "10001", "很不错的照片")]
+    assert len(p.qzone_client.reply_calls) == 1 and p.qzone_client.reply_calls[0][5] == "谢谢你"
+    assert p.qzone_client.publish_calls == ["今天心情很好"]
+    assert not any(level == "warning" and "内容护栏拦截" in str(a[0]) for level, a in p.logs)
+
+
+def test_guard_disabled_matching_text_publishes(tmp_path):
+    """护栏未启用零行为变化:_guard_compiled 空列表匹配恒 0(天然短路),
+    含命中模式的文本三工具照常发布。"""
+
+    p = _make_tool_plugin(tmp_path)
+    assert p.config.guard.enabled is False and p._guard_compiled == []
+    _register_feed(p, tid="offfeed001", owner="10001",
+                   commenter_uin="20000", commenter_nickname="小红",
+                   comment_tid="oc1", comment_uin="20000")
+    res_c = asyncio.run(p.qzone_comment(feed_id="offfeed001", content="评论带敏感词也照发", stream_id="s1"))
+    assert res_c.startswith("评论成功,已发出:")
+    res_r = asyncio.run(p.qzone_reply(feed_id="offfeed001", comment_id="oc1",
+                                      content="回复带敏感词", stream_id="s1"))
+    assert res_r.startswith("回复成功")
+    res_p = asyncio.run(p.qzone_post(content="说说带敏感词", stream_id="s1"))
+    assert res_p.startswith("发布成功,已发出说说:")
+    assert p.qzone_client.comment_calls == [("offfeed001", "10001", "评论带敏感词也照发")]
+    assert len(p.qzone_client.reply_calls) == 1 and p.qzone_client.reply_calls[0][5] == "回复带敏感词"
+    assert p.qzone_client.publish_calls == ["说说带敏感词"]
+
+
+def test_diary_guard_hit_skips_publish_and_snapshot(tmp_path):
+    """护栏命中(日记):LLM 产出文本命中 → 不发布不落快照(醒来无可回注),
+    告警含「日记」/规则号/文本前 60 字。"""
+
+    p = _make_diary_plugin(tmp_path)
+    _enable_guard(p, ["敏感词"])
+
+    async def _llm(messages, model, module, timeout_ms=None):
+        return {"success": True, "response": "今天过得平静,日记里出现了敏感词,就到这里。"}
+
+    p._side_llm_call = _llm
+    asyncio.run(p._generate_and_publish_diary())
+    assert p.qzone_client.publish_calls == []  # 零发布
+    assert p._pending_diary_snapshot.load() == {}  # 零快照(不发布不落待回注素材)
+    assert any(
+        level == "warning"
+        and a[0] == "内容护栏拦截:日记 命中规则%d,未发布(文本:%s...)"
+        and a[1] == 1 and a[2] == "今天过得平静,日记里出现了敏感词,就到这里。"
+        for level, a in p.logs
+    )
+
+
+def test_diary_guard_enabled_miss_publishes(tmp_path):
+    """护栏启用未命中(日记):发布与快照照常(拦截只对命中生效)。"""
+
+    p = _make_diary_plugin(tmp_path)
+    _enable_guard(p, ["敏感词"])
+    asyncio.run(p._generate_and_publish_diary())
+    assert p.qzone_client.publish_calls == ["今天窝着刷手机,看到小明去公园散步,有点懒洋洋的。"]
+    assert p._pending_diary_snapshot.load().get("text")
+
+
+def test_guard_assembly_compiles_on_load_path(tmp_path, monkeypatch):
+    """on_load 装配路径实例级行为(T1 审查遗留补测,装配块抽为 _assemble_guard
+    供离线直调):enabled=False 零编译保持空列表;enabled=True 按 guard.patterns
+    编译入 _guard_compiled(可命中);非法正则整组置空+告警(错误显式暴露)。"""
+
+    import plugin as plugin_mod
+    from catsitate_core.guard import match_guard
+
+    compile_calls: list = []
+    real_compile = plugin_mod.compile_guard
+
+    def _record_compile(patterns):
+        compile_calls.append(list(patterns))
+        return real_compile(patterns)
+
+    monkeypatch.setattr(plugin_mod, "compile_guard", _record_compile)
+
+    p = _make_tool_plugin(tmp_path)
+    # 未启用(默认):零编译调用,实例属性保持空列表
+    assert p.config.guard.enabled is False
+    p._assemble_guard()
+    assert compile_calls == []
+    assert p._guard_compiled == []
+
+    # 启用:编译入参=guard.patterns,产出可命中的编译列表
+    p.config.guard.enabled = True
+    p.config.guard.patterns = ["敏感词", "风控\\d+"]
+    p._assemble_guard()
+    assert compile_calls == [["敏感词", "风控\\d+"]]
+    assert len(p._guard_compiled) == 2
+    assert match_guard(p._guard_compiled, "正文含敏感词") == 1
+    assert match_guard(p._guard_compiled, "触发风控100") == 2
+    assert not any(level == "warning" for level, a in p.logs)
+
+    # 非法正则:整组置空+告警(护栏失效不阻断插件加载,错误显式暴露)
+    p.config.guard.patterns = ["ok", "[unclosed"]
+    p._assemble_guard()
+    assert p._guard_compiled == []
+    assert any(level == "warning" and "整组护栏失效" in str(a[0]) for level, a in p.logs)
 
 
 def test_qzone_like_via_feed_id_and_notify_origin(tmp_path):

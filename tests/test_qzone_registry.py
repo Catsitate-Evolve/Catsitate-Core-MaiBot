@@ -106,13 +106,6 @@ def test_register_field_merge_preserves_comment_context():
     assert ctx.content_summary == "测试二"  # 通知条目未带的字段保留旧值
 
 
-def test_clear_drops_all_entries():
-    reg = FeedContextRegistry()
-    reg.register(_ctx("t1"))
-    reg.clear()
-    assert reg.resolve("t1") is None
-
-
 def test_feed_context_new_fields_default():
     """content_summary/comment_map 带默认值——旧构造点(通知/回退路径)不传
     也不炸;recent_comments 死字段已删(Q7 裁定 2026-09-02)。"""

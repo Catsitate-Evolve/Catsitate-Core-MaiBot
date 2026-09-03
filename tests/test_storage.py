@@ -11,10 +11,8 @@ def test_sqlite_store_execute_and_query(tmp_path):
     store.execute(
         "CREATE TABLE IF NOT EXISTS t (id INTEGER PRIMARY KEY, name TEXT, n INTEGER)"
     )
-    store.executemany(
-        "INSERT INTO t (name, n) VALUES (?, ?)",
-        [("a", 1), ("b", 2)],
-    )
+    store.execute("INSERT INTO t (name, n) VALUES (?, ?)", ("a", 1))
+    store.execute("INSERT INTO t (name, n) VALUES (?, ?)", ("b", 2))
     rows = store.query("SELECT name, n FROM t ORDER BY id")
     assert rows == [("a", 1), ("b", 2)]
     store.close()

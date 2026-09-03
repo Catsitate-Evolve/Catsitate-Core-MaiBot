@@ -33,10 +33,6 @@ class SQLiteStore:
         with self._connect() as conn:
             conn.execute(sql, tuple(params))
 
-    def executemany(self, sql: str, seq: Sequence[Sequence[Any]]) -> None:
-        with self._connect() as conn:
-            conn.executemany(sql, [tuple(item) for item in seq])
-
     def query(self, sql: str, params: Sequence[Any] = ()) -> list[tuple[Any, ...]]:
         """查询并返回元组列表。"""
 

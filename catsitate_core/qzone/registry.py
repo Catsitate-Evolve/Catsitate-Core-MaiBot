@@ -103,6 +103,3 @@ class FeedContextRegistry:
             return None
         self._entries.move_to_end(ctx.tid)
         return ctx
-
-    def clear(self) -> None:
-        self._entries.clear()

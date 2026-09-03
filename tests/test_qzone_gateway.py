@@ -194,8 +194,8 @@ def test_tool_driven_wiring_source_assertions():
     import plugin as _plugin
 
     src = inspect.getsource(_plugin)
-    # 意图系统已删:无路由函数调用、无意图属性
-    assert "route_outbound(" not in src and "extract_outbound_text(" not in src
+    # 意图系统已删:无路由函数调用、无意图属性(outbound 模块 v1.0.0 清理已删)
+    assert "route_outbound(" not in src
     assert "_qzone_outbound_intent" not in src and "OutboundIntent" not in src
     # 三工具接线:评论/楼中楼回复/点赞(真实楼中楼,do_reply 正式接线)
     assert '"qzone_comment"' in src and '"qzone_reply"' in src and '"qzone_like"' in src

@@ -130,26 +130,6 @@ class CommentSeenStore:
             (f"{feed_tid}:bot:{bot_text}", friend_uin, at_iso),
         )
 
-    def get_bot_comment_text(self, feed_tid: str) -> str:
-        """取 bot 在该说说下最近一条自评的文本(源B通知正文引用,T12);无留痕返回空串。
-
-        bot 评论无服务端 tid(发出时不可知),键为 "{feed_tid}:bot:{text}",
-        文本从键后缀剥出(note_bot_comment 同款结构);同说说多条自评取
-        created_at 最近(INSERT OR REPLACE 刷新时间戳,重见即最新)。LIKE
-        通配符转义防 feed_tid 含 %/_ 时误匹配其它说说的键。
-        """
-
-        prefix = f"{feed_tid}:bot:"
-        escaped = prefix.replace("\\", "\\\\").replace("%", "\\%").replace("_", "\\_") + "%"
-        rows = self.store.query(
-            "SELECT comment_key FROM qzone_comments "
-            "WHERE comment_key LIKE ? ESCAPE '\\' ORDER BY created_at DESC LIMIT 1",
-            (escaped,),
-        )
-        if not rows:
-            return ""
-        return str(rows[0][0])[len(prefix):]
-
     def bot_commented_friends(self, *, days: int = 30) -> list[str]:
         """bot 近 N 天评论过的说说主人去重列表(楼中楼轮询的目标圈定,T9)。
 

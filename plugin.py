@@ -36,6 +36,7 @@ from catsitate_core.image_relook import build_relook_prompt, find_image_segment
 from catsitate_core.inject import InjectAssembler, InjectionBlock
 from catsitate_core.llm_provider import build_side_prompt, rpc_error_brief
 from catsitate_core.memo import MemoService, validate_remind_at
+from catsitate_core.migrations import read_db_version, run_migrations
 from catsitate_core.msg_react import MsgReactEngine, parse_choice_resp
 from catsitate_core.poke import PokeEngine
 from catsitate_core.prompt_deploy import sync_prompt_templates
@@ -277,6 +278,14 @@ class CatsitatePlugin(MaiBotPlugin):
         self.qzone_comment_seen.ensure_schema()
         # M3 源C:赞事件去重(「与我相关」流,同一人同一条说说只通知一次;Task 10)
         self.qzone_like_seen = LikeSeenStore(self.store)
+        # 数据迁移基线:ensure_schema 自愈(补缺表/列)完成后,按注册表推进
+        # PRAGMA user_version;单步失败告警停止不阻断加载(版本停留,下次重试)
+        _mig_from = read_db_version(self.store)
+        _mig_steps = run_migrations(self.store, self.ctx.logger)
+        if _mig_steps > 0:
+            self.ctx.logger.info(
+                "数据迁移完成: v%d→v%d, %d 步", _mig_from, read_db_version(self.store), _mig_steps
+            )
         self.qzone_cookie = CookieManager(
             JsonSnapshot(data_dir / "qzone_cookies.json"),
             api_call=self.ctx.api.call,

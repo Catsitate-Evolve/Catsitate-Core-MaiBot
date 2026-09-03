@@ -1,5 +1,14 @@
 # Changelog
 
+## v0.9.1(2026-09-03) 发现层协议校准:scope=2 好友动态流+begintime 游标翻页
+
+实机探针(容器内经插件同款请求构造逐项验证)+开源调研(Gu-Heping/onebot-qzone 等 7 仓库)双路交叉实证:
+
+- **scope 修正 0→2**:scope=0 实为「小窗口流」(实测 2 天窗口,本账号窗口内仅 bot 自己的动态——好友动态发现形同虚设);scope=2 才是全好友动态流(7 天窗口,首页即含好友条目)。
+- **翻页改 begintime 游标**:旧 begin 条目偏移与 count 均被服务端无视(实测 0/5/10/50 同响应、count=20~200 同条数);续页唯一必需参数=顶层 `begintime`(上页响应 `main.begintime`,与 externparam 的 basetime 恒等),refresh/pagenum/externparam/g_tk 非必需。游标链实测 4 页 22 条、深至约两个月;四重终止(空页/无新 tid/游标耗尽/页数上限),hasMoreFeeds 不可靠不采用。
+- **解析回退**:窗口边界条目缺 `appid` 但带同值 `appiconid`(实测一条真实说说被整条丢弃)——未命中 appid 时回退解析。
+- `get_unified_timeline` 返回值改为 `(条目列表, 下一页游标)`;`_fetch_unified` 删除 begin 参数;源B 单页调用适配。
+
 ## v0.9.0(2026-09-02) 说说详情工具+reply 全域化+浏览注入带评论(设计共识 Q1-Q12)
 
 - **`view_friend_feed_detail(feed_id, qq?)`**:单条说说完整信息——正文全文+图片+全部顶层评论与楼中楼(每评论楼中楼≤10 条+总数标注,整块 6000 字截断标注;QQ 截断时「前N/共M」)。qq 可省(锚三级解析主人);查看即 mark_seen(浏览不重复注入);登记 comment_map。

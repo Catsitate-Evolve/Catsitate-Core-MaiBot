@@ -34,6 +34,9 @@ _KEY_RE = re.compile(r"key:'([0-9a-fA-F]+)'")  # 非空十六进制 tid(实证�
 # 联调实证:JS 对象的数值字段(abstime/appid)带单引号——所有数值正则统一容忍 '?..'? 形态
 _ABSTIME_RE = re.compile(r"abstime:'?(\d+)'?")
 _APPID_RE = re.compile(r"appid:'?(\d+)'?")
+# 窗口边界条目(实机实证 2026-09-03)缺 appid 但带同值 appiconid——回退解析,
+# 否则该条目被整条丢弃(系统性丢窗口最旧一条)
+_APPICONID_RE = re.compile(r"appiconid:'?(\d+)'?")
 # opuin 生产实证为单引号字符串,简化样本为裸数字——两种形态都收,统一转 str
 _OPUIN_RE = re.compile(r"opuin:'?(\d+)'?")
 # 昵称内可含 JS 转义(\' \"):先按「转义对或非引号非反斜杠」原始捕获,解码在使用处
@@ -95,7 +98,7 @@ def parse_unified_timeline(text: str) -> list[FeedDiscovery]:
         abstime = _ABSTIME_RE.search(window)
         opuin = _OPUIN_RE.search(window)
         nickname = _NICKNAME_RE.search(window)
-        appid = _APPID_RE.search(window)
+        appid = _APPID_RE.search(window) or _APPICONID_RE.search(window)
         if not (abstime and opuin and nickname and appid):
             logger.debug("统一时间线条目缺必需字段,跳过(tid=%s)", match.group(1))
             continue

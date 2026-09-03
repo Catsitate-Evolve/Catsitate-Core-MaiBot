@@ -101,9 +101,9 @@ class _StubCommentClient:
         self.fetches += 1
         return self._comments, self._ctx_map
 
-    async def get_unified_timeline(self, *, count=20, begin=0):
-        del count
-        return []  # 发现层空:源B零拉取,聚焦源A行为
+    async def get_unified_timeline(self, *, count=20, begintime=None):
+        del count, begintime
+        return [], ""  # 发现层空:源B零拉取,聚焦源A行为
 
     async def get_like_events(self, *, count=30):
         del count
@@ -184,7 +184,7 @@ def _make_plugin(tmp_path):
 class _StubUnifiedClient:
     """发现层输入桩:get_unified_timeline 首页返回固定列表(默认空),记录调用参数。
 
-    Task5 翻页语义:固定列表只在 begin=0 首页生效,第 2 页起返回空(模拟
+    翻页语义:固定列表只在首页(begintime=None)生效,第 2 页起返回空(模拟
     「更早页无积压」的稳态,翻页止步)——否则同一列表被每页重复消费。
     """
 
@@ -192,10 +192,10 @@ class _StubUnifiedClient:
         self._discoveries = discoveries
         self.discovery_calls = 0
 
-    async def get_unified_timeline(self, *, count=20, begin=0):
+    async def get_unified_timeline(self, *, count=20, begintime=None):
         del count
         self.discovery_calls += 1
-        return list(self._discoveries) if begin == 0 else []
+        return (list(self._discoveries), "cur1") if begintime is None else ([], "")
 
     async def get_like_events(self, *, count=30):
         del count
@@ -1523,7 +1523,7 @@ def test_notify_scan_drives_pump_on_stale_awaiting(tmp_path):
                 {"feedown1": "自己说说的正文"},
             )
 
-        async def get_unified_timeline(self, *, count=20, begin=0):
+        async def get_unified_timeline(self, *, count=20, begintime=None):
             return []
 
         async def get_like_events(self, *, count=30):
@@ -2099,7 +2099,7 @@ def test_poll_tick_returns_before_long_io_completes(tmp_path):
     started, release = asyncio.Event(), asyncio.Event()
 
     class _SlowDiscoveryClient:
-        async def get_unified_timeline(self, *, count=20, begin=0):
+        async def get_unified_timeline(self, *, count=20, begintime=None):
             del count
             started.set()
             await release.wait()  # 模拟发现层 HTTP 的长 IO
@@ -2129,7 +2129,7 @@ def test_poll_tick_reentrancy_guard(tmp_path):
     calls: list = []
 
     class _CountingDiscoveryClient:
-        async def get_unified_timeline(self, *, count=20, begin=0):
+        async def get_unified_timeline(self, *, count=20, begintime=None):
             del count
             calls.append(1)
             return []
@@ -2448,7 +2448,7 @@ def test_poll_feeds_falls_back_to_legacy_on_discovery_failure(tmp_path, monkeypa
     legacy_pulls: list = []
 
     class _ExplodingDiscoveryClient:
-        async def get_unified_timeline(self, *, count=20, begin=0):
+        async def get_unified_timeline(self, *, count=20, begintime=None):
             del count
             raise RuntimeError("空间统一时间线请求失败: HTTP 502")
 
@@ -2540,7 +2540,7 @@ def test_poll_feeds_auth_error_invalidates_cookie_and_skips_legacy(tmp_path, mon
     p.qzone_cookie = cookie
 
     class _AuthFailClient:
-        async def get_unified_timeline(self, *, count=20, begin=0):
+        async def get_unified_timeline(self, *, count=20, begintime=None):
             del count
             raise QzoneAuthError("登录态失效(code=-3000)")
 
@@ -2591,7 +2591,7 @@ def test_notify_scan_source_b_discovery_failure_does_not_block_source_a(tmp_path
                             content="好友评论", create_time=str(int(_time.time()))),
             ]}, {"feed1": "今天的心情"}
 
-        async def get_unified_timeline(self, *, count=20, begin=0):
+        async def get_unified_timeline(self, *, count=20, begintime=None):
             del count
             raise RuntimeError("空间统一时间线请求失败: HTTP 502")
 
@@ -2636,7 +2636,7 @@ def test_notify_scan_source_b_auth_error_invalidates_cookie_and_keeps_source_a(t
                             content="好友评论", create_time=str(int(_time.time()))),
             ]}, {"feed1": "今天的心情"}
 
-        async def get_unified_timeline(self, *, count=20, begin=0):
+        async def get_unified_timeline(self, *, count=20, begintime=None):
             del count
             raise QzoneAuthError("登录态失效(code=-3000)")
 
@@ -2693,18 +2693,18 @@ def test_discovery_pagination_stops_on_all_seen(tmp_path):
     p.qzone_injector.window_started()  # 预置窗口:mark_queued 登记不被窗口开始回收
     calls = []
 
-    async def page(*, count, begin=0):
-        calls.append((count, begin))
-        if begin == 0:
-            return [_disc("t1", "100", "300"), _disc("t2", "101", "200")]  # t1/t2 已登记
-        return [_disc("t3", "102", "100")]
+    async def page(*, count, begintime=None):
+        calls.append((count, begintime))
+        if begintime is None:
+            return [_disc("t1", "100", "300"), _disc("t2", "101", "200")], "cur1"  # t1/t2 已登记
+        return [_disc("t3", "102", "100")], "cur2"
 
     p.qzone_client.get_unified_timeline = page
     p.qzone_seen.mark_queued("t1", abstime="300", author_uin="100", summary="a")
     p.qzone_seen.mark_queued("t2", abstime="200", author_uin="101", summary="b")
     asyncio.run(p._qzone_poll_feeds())
     # 第 1 页全部已见(更早页只会更旧),翻页止步:恰 1 次调用,页大小=配置值
-    assert calls == [(50, 0)]
+    assert calls == [(50, None)]
 
 
 def test_discovery_pagination_stops_when_second_page_all_seen(tmp_path, monkeypatch):
@@ -2720,18 +2720,18 @@ def test_discovery_pagination_stops_when_second_page_all_seen(tmp_path, monkeypa
     calls = []
 
     class _PagedClient(_StubUnifiedClient):
-        async def get_unified_timeline(self, *, count=20, begin=0):
-            calls.append(begin)
-            if begin == 0:
-                return [_disc("t1", "100", "300"), _disc("t2", "101", "200")]
-            return [_disc("t3", "102", "100")]  # 第 2 页全旧
+        async def get_unified_timeline(self, *, count=20, begintime=None):
+            calls.append(begintime)
+            if begintime is None:
+                return [_disc("t1", "100", "300"), _disc("t2", "101", "200")], "cur1"
+            return [_disc("t3", "102", "100")], "cur2"  # 第 2 页全旧
 
         async def get_user_feeds(self, *, target_uin, nickname, num=5):
             return []  # 充实页空:聚焦翻页调用序列
 
     p.qzone_client = _PagedClient([])
     asyncio.run(p._qzone_poll_feeds())
-    assert calls == [0, 50]  # 第 2 页无新说说即止步
+    assert calls == [None, "cur1"]  # 第 2 页无新说说即止步
 
 
 def test_discovery_pagination_fetches_backlog_until_max_pages(tmp_path, monkeypatch):
@@ -2746,10 +2746,11 @@ def test_discovery_pagination_fetches_backlog_until_max_pages(tmp_path, monkeypa
     calls = []
 
     class _BacklogClient(_StubUnifiedClient):
-        async def get_unified_timeline(self, *, count=20, begin=0):
-            calls.append((count, begin))
+        async def get_unified_timeline(self, *, count=20, begintime=None):
+            calls.append((count, begintime))
             # 每页一条不同作者的新动态:has_new 恒真,翻页直到配置上限
-            return [_disc(f"t{begin}", f"1{begin:03d}", str(300 - begin))]
+            page_no = len(calls) - 1
+            return [_disc(f"t{page_no}", f"1{page_no:03d}", str(300 - page_no))], f"cur{page_no + 1}"
 
         async def get_user_feeds(self, *, target_uin, nickname, num=5):
             return []  # 充实页空:不引入注入链
@@ -2757,7 +2758,7 @@ def test_discovery_pagination_fetches_backlog_until_max_pages(tmp_path, monkeypa
     p.qzone_client = _BacklogClient([])
     asyncio.run(p._qzone_poll_feeds())
     # 默认上限 3 页止步(即便第 3 页仍有新动态);两页积压场景由上一用例覆盖
-    assert calls == [(50, 0), (50, 50), (50, 100)]
+    assert calls == [(50, None), (50, "cur1"), (50, "cur2")]
 
 
 def test_discovery_pagination_respects_configured_page_size(tmp_path, monkeypatch):
@@ -2773,16 +2774,17 @@ def test_discovery_pagination_respects_configured_page_size(tmp_path, monkeypatc
     calls = []
 
     class _PagedClient(_StubUnifiedClient):
-        async def get_unified_timeline(self, *, count=20, begin=0):
-            calls.append((count, begin))
-            return [_disc(f"t{begin}", f"1{begin:03d}", "300")]  # 恒有新动态
+        async def get_unified_timeline(self, *, count=20, begintime=None):
+            calls.append((count, begintime))
+            page_no = len(calls) - 1
+            return [_disc(f"t{page_no}", f"1{page_no:03d}", "300")], f"cur{page_no + 1}"  # 恒有新动态
 
         async def get_user_feeds(self, *, target_uin, nickname, num=5):
             return []
 
     p.qzone_client = _PagedClient([])
     asyncio.run(p._qzone_poll_feeds())
-    assert calls == [(7, 0), (7, 7)]  # 页大小 7、上限 2 页
+    assert calls == [(7, None), (7, "cur1")]  # 页大小 7、上限 2 页
 
 
 # ---- M3-r2 Task 7:view_friend_feeds 全域查看工具 + inspect_image hash 路径 ----

@@ -1453,25 +1453,27 @@ class CatsitatePlugin(MaiBotPlugin):
                     self.ctx.logger.info("QQ空间窗口开始,注入泵激活;回收跨启动 queued 残留 %d 条(重新拉取)", stale)
                 else:
                     self.ctx.logger.info("QQ空间窗口开始,注入泵激活")
-            # ① 发现层:统一时间线(feeds3_html_more,全好友聚合端点)翻页拉取
-            # (M3-r2 Task5):稳态第 1 页全旧即止步恒 1 次调用;长时间离线后积压
-            # 逐页补全(每页 begin=页序×页大小),上限 discovery_max_pages 防
-            # 深翻——更早页只会更旧,本页无新说说 tid 即无翻页价值
+            # ① 发现层:统一时间线好友动态流(scope=2,7 天窗口)游标翻页
+            # (2026-09-03 双路逆向+实机改造):续页游标=上页响应 main.begintime,
+            # 仅此一参(refresh/pagenum/g_tk 均非必需);稳态第 1 页全旧即止步恒
+            # 1 次调用,长时间离线后积压逐页回溯(空页/无新 tid/游标耗尽/页数上限
+            # 四重终止)。旧 begin 偏移已被实证无视,删除
             page_size = max(self.config.qzone.discovery_count, 1)
             max_pages = max(self.config.qzone.discovery_max_pages, 1)
             discoveries: list[FeedDiscovery] = []
             try:
-                for page_idx in range(max_pages):
-                    batch = await self.qzone_client.get_unified_timeline(
-                        count=page_size, begin=page_idx * page_size
+                cursor: str | None = None
+                for _page_idx in range(max_pages):
+                    batch, cursor = await self.qzone_client.get_unified_timeline(
+                        count=page_size, begintime=cursor
                     )
                     discoveries.extend(batch)
                     has_new = any(
                         d.appid == FEED_APPID_SHUOSHUO and self.qzone_seen.is_new_candidate(d.tid)
                         for d in batch
                     )
-                    if not batch or not has_new:
-                        break  # 本页无新说说:更早页只会更旧,翻页止步
+                    if not batch or not has_new or not cursor:
+                        break  # 空页/本页无新/游标耗尽:翻页止步
             except QzoneAuthError:
                 # 登录态失效自愈链(联调缺陷#7):作废 cookie 下轮重取;不回退
                 # legacy——cookie 失效对两路径同源,回退只会重复失败多打一轮 API
@@ -2051,7 +2053,7 @@ class CatsitatePlugin(MaiBotPlugin):
                     try:
                         # 单页不翻页(源B 只需找「有新活动且评论过」的交集,
                         # 页大小取 discovery_count 与浏览流同口径)
-                        discoveries_b = await self.qzone_client.get_unified_timeline(
+                        discoveries_b, _cursor_b = await self.qzone_client.get_unified_timeline(
                             count=max(self.config.qzone.discovery_count, 1)
                         )
                     except QzoneAuthError:

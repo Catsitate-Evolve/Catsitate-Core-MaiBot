@@ -278,21 +278,26 @@ class QzoneClient:
         """
         return await self._fetch_msglist(target_uin=target_uin, num=num)
 
-    async def _fetch_unified(self, *, count: int, begin: int = 0, scope: int = 0) -> str:
+    async def _fetch_unified(self, *, count: int, scope: int = 0,
+                             begintime: str | int | None = None) -> str:
         """拉取统一时间线原始响应文本(feeds3_html_more,发现层基础通道)。
 
-        begin 为翻页偏移(第 N 页 begin=N×页大小,M3-r2 Task5);scope=0 全好友
-        时间线、scope=1「与我相关」流(源C 赞事件输入,Task 10 的 get_like_events
-        经 _fetch_likes_raw 复用本通道)。响应外层 JSON、内层为 JS 对象字面量
-        (见 discovery 模块)——不走 callback 截取/JSON 解码,原文直返交
-        parse_unified_timeline 消费。外层 code 校验与读/写路径同一纪律:登录态
-        失效抛 QzoneAuthError(触发 cookie 失效重取),非 0 业务码/畸形 200
+        翻页为 **begintime 游标**(2026-09-03 双路逆向+开源交叉实证):顶层参数
+        begintime=上页响应 main.begintime(epoch 秒),续页仅此一参即可;旧 begin
+        偏移被服务端无视(实测 0/5/10/50 同响应),已删除。scope:0=小窗口流
+        (实测 2 天窗口且本账号仅自己动态)、1=「与我相关」(源C 赞事件,经
+        _fetch_likes_raw)、**2=全好友动态流(默认,7 天窗口+游标可回溯)**。
+        响应外层 JSON、内层为 JS 对象字面量(见 discovery 模块)——不走 callback
+        截取/JSON 解码,原文直返交 parse_unified_timeline 消费。外层 code 校验
+        与读/写路径同一纪律:登录态失效抛 QzoneAuthError,非 0 业务码/畸形 200
         显式 RuntimeError,不静默当空时间线。
         """
         params = {
-            "uin": self.bot_uin, "format": "json", "begin": str(begin), "count": str(count),
+            "uin": self.bot_uin, "format": "json", "count": str(count),
             "update": "1", "scope": str(scope), "filter": "all",
         }
+        if begintime is not None and str(begintime).strip():
+            params["begintime"] = str(begintime).strip()
         status, raw = await self._request(
             "GET", UNIFIED_TIMELINE_URL, params=params,
             referer=f"https://user.qzone.qq.com/{self.bot_uin}/home",
@@ -312,17 +317,29 @@ class QzoneClient:
             raise RuntimeError(f"空间统一时间线返回业务错误: code={code} 响应={text[:120]}")
         return text
 
-    async def get_unified_timeline(self, *, count: int = 20, begin: int = 0) -> list[FeedDiscovery]:
-        """发现层 API:统一时间线(1 次调用覆盖全好友动态,与好友数无关)。
+    @staticmethod
+    def extract_timeline_cursor(text: str) -> str:
+        """从响应文本提取下一页游标(main.begintime,externparam 的 basetime
+        交叉校验,2026-09-03 实证两者恒等)。无游标返回空串(调用方终止)。"""
+        m = re.search(r"begintime[\"']?\s*[:=]\s*[\"']?(\d{10})", str(text or ""))
+        if m:
+            return m.group(1)
+        e = re.search(r"basetime=(\d{10})", str(text or ""))
+        return e.group(1) if e else ""
 
-        begin 为翻页偏移(调用方按「本页无新说说即止步」语义逐页拉取,
-        M3-r2 Task5);scope 恒 0(全好友时间线)。返回轻量索引
-        FeedDiscovery 列表,appid 不过滤——说说(311)筛选与新 tid 判重由
-        调用方决定;完整正文/图片由充实层 get_user_feeds 按作者 uin 分组
-        拉取(1+N 次调用,N=有新动态的作者数)。
+    async def get_unified_timeline(self, *, count: int = 20,
+                                   begintime: str | int | None = None,
+                                   scope: int = 2) -> tuple[list[FeedDiscovery], str]:
+        """发现层 API:统一时间线好友动态流(与好友数无关)。
+
+        scope 默认 2(全好友动态流,7 天窗口;2026-09-03 实证——旧 scope=0 实为
+        2 天小窗口且本账号只见自己动态,好友发现形同虚设)。begintime 为续页
+        游标(取上页返回的第二元素)。返回 (FeedDiscovery 列表, 下一页游标);
+        游标为空串=到底。appid 不过滤——说说(311)筛选与新 tid 判重由调用方
+        决定;完整正文/图片由充实层 get_user_feeds 按作者分组拉取。
         """
-        text = await self._fetch_unified(count=count, begin=begin)
-        return parse_unified_timeline(text)
+        text = await self._fetch_unified(count=count, scope=scope, begintime=begintime)
+        return parse_unified_timeline(text), self.extract_timeline_cursor(text)
 
     async def _fetch_likes_raw(self, *, count: int) -> str:
         """拉取「与我相关」流原始文本(feeds3_html_more?scope=1,源C 赞事件输入)。"""

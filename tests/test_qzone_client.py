@@ -431,6 +431,7 @@ from catsitate_core.qzone.discovery import FeedDiscovery
 
 # 实证结构简化样本:外层 JSON + 内层 JS 对象(opuin 为生产实证的单引号形态)
 UNIFIED_SAMPLE = '''{"code":0,"data":{main:{
+  begintime:'1788164300',
   html:'<div>template</div>',
   key:'ee3396c4d238956ac2f90b00',
   appid:311,
@@ -460,8 +461,9 @@ def test_client_get_unified_timeline_request_and_parse():
     """发现层 API:feeds3_html_more 端点/实证参数集/bot 空间首页 Referer,
     响应经 parse_unified_timeline 返回 FeedDiscovery 列表。"""
     client, seen = _unified_client([(200, UNIFIED_SAMPLE.encode("utf-8"))])
-    items = asyncio.run(client.get_unified_timeline(count=20))
+    items, cursor = asyncio.run(client.get_unified_timeline(count=20))
     assert len(items) == 1 and isinstance(items[0], FeedDiscovery)
+    assert cursor == "1788164300"  # 下一页游标取自 main.begintime
     assert (items[0].tid, items[0].uin, items[0].nickname, items[0].abstime, items[0].appid) == (
         "ee3396c4d238956ac2f90b00", "3298178030", "Hesitate_P", "1788164306", 311)
     req = seen[0]
@@ -469,8 +471,8 @@ def test_client_get_unified_timeline_request_and_parse():
     p = req["params"]
     assert p["uin"] == "3545773341"  # uin=bot 自己(以自己视角看全好友时间线)
     assert p["format"] == "json"  # 非 jsonp:响应无 callback 包裹
-    assert p["begin"] == "0" and p["count"] == "20"
-    assert p["update"] == "1" and p["scope"] == "0" and p["filter"] == "all"
+    assert "begin" not in p and p["count"] == "20"  # 旧 begin 偏移已删(实证被无视)
+    assert p["update"] == "1" and p["scope"] == "2" and p["filter"] == "all"  # scope=2=好友动态流
     assert p["g_tk"] == generate_gtk("SK")  # cgi 读路径自动携带
     assert req["headers"]["Referer"] == "https://user.qzone.qq.com/3545773341/home"
     assert req["headers"]["User-Agent"].startswith("Mozilla/")  # 无 UA 空间接口 500(联调实证)
@@ -517,31 +519,33 @@ def test_client_unified_http_failure_raises_no_retry():
     assert raised and len(seen) == 1  # 读路径失败不重试,由调用方告警/回退
 
 
-def test_client_fetch_unified_begin_scope_passthrough():
-    """M3-r2 Task5:begin/scope 透传到请求参数——begin 供发现层翻页(第 N 页
-    偏移 N×页大小),scope=1 为「与我相关」流(源C 赞事件,Task 10 复用同通道)。"""
-    client, seen = _unified_client([(200, b'{"code":0,"data":{}}')])
-    asyncio.run(client._fetch_unified(count=50, begin=50, scope=1))
+def test_client_fetch_unified_begintime_scope_passthrough():
+    """游标透传(2026-09-03 实证改造):begintime=上页 main.begintime 为唯一
+    续页参数;scope=1 为「与我相关」流(源C 赞事件复用同通道);缺省不携带。"""
+    client, seen = _unified_client([(200, b'{"code":0,"data":{}}'), (200, b'{"code":0,"data":{}}')])
+    asyncio.run(client._fetch_unified(count=50, scope=1, begintime=1788164300))
     p = seen[0]["params"]
-    assert p["begin"] == "50" and p["count"] == "50" and p["scope"] == "1"
+    assert p["begintime"] == "1788164300" and p["count"] == "50" and p["scope"] == "1"
+    asyncio.run(client._fetch_unified(count=50, scope=1))
+    assert "begintime" not in seen[1]["params"]  # 首页不携带
 
 
-def test_client_fetch_unified_begin_passthrough_via_get_unified_timeline():
-    """get_unified_timeline 透传 begin(发现层翻页入口),scope 恒 0(全好友时间线)。"""
+def test_client_fetch_unified_cursor_passthrough_via_get_unified_timeline():
+    """get_unified_timeline 透传游标(发现层翻页入口),scope 默认 2(好友动态流)。"""
     client, seen = _unified_client([(200, UNIFIED_SAMPLE.encode("utf-8"))])
-    items = asyncio.run(client.get_unified_timeline(count=30, begin=30))
+    items, cursor = asyncio.run(client.get_unified_timeline(count=30, begintime="1788164300"))
     assert len(items) == 1  # 样本时间线照常解析(翻页不改变解析路径)
     p = seen[0]["params"]
-    assert p["begin"] == "30" and p["count"] == "30" and p["scope"] == "0"
+    assert p["begintime"] == "1788164300" and p["count"] == "30" and p["scope"] == "2"
 
 
 def test_client_fetch_likes_raw_scope1():
     """源C 赞事件输入通道:feeds3_html_more?scope=1(与我相关),Task 10 的
-    get_like_events 消费此原始文本;begin 恒 0(赞事件只取最新一页)。"""
+    get_like_events 消费此原始文本;赞事件只取最新一页(不携带翻页游标)。"""
     client, seen = _unified_client([(200, b'{"code":0,"data":{}}')])
     asyncio.run(client._fetch_likes_raw(count=10))
     p = seen[0]["params"]
-    assert p["scope"] == "1" and p["count"] == "10" and p["begin"] == "0"
+    assert p["scope"] == "1" and p["count"] == "10" and "begintime" not in p
 
 
 def _msglist_payload_with_comments():

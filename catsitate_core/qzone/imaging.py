@@ -120,7 +120,9 @@ class FeedImagePack:
     segments:压缩预算后的图片段(注入消息形态 (url, bytes|None));多图合成后
     恒单项 [(原图任一 url, 合成 JPEG)],极端超预算丢弃置 None 交占位逻辑。
     anchor:工具侧图标注文案——单图「图1(hash)」/多图「图1-图N(拼接,hash=…)」
-    单条(hash=合成图 sha256 前 8);全失败或丢弃=空串(摘要行只列实际可反查的图)。
+    单条;hash=**拟合后实际送出字节**的 sha256 前 8(与 content_items/注入段
+    一致,修复环 I1:压缩阶梯重编码后不得用压缩前 hash,inspect_image 前缀
+    反查口径);全失败或丢弃=空串(摘要行只列实际可反查的图)。
     composed:合成图标记(工具侧 mime 恒 image/jpeg;单图原图直发才需魔数探测)。
     """
 
@@ -161,7 +163,7 @@ async def run_feed_image_pipeline(
     if len(downloaded) == 1:
         _ordinal, url, data = downloaded[0]
         segments: list[tuple[str, bytes]] = [(url, data)]
-        anchor = f"图1({hashlib.sha256(data).hexdigest()[:8]})"
+        span = 1  # 锚文案的 N:单图恒 1
         composed = False
     else:
         try:
@@ -172,12 +174,20 @@ async def run_feed_image_pipeline(
             return FeedImagePack([])
         # 合成后恒单图:url 取原图任一(段内仅作来源标注,hash/b64 才是载荷)
         segments = [(downloaded[0][1], composite)]
-        anchor = f"图1-图{downloaded[-1][0]}(拼接,hash={hashlib.sha256(composite).hexdigest()[:8]})"
+        span = downloaded[-1][0]  # 锚文案的 N=实际入图的最大原始序号(角标空位示缺)
         composed = True
     fitted = await asyncio.to_thread(
         fit_images_to_rpc_budget, segments,
         on_drop=lambda u: log.warning("%s图片压缩后仍超 RPC 帧预算,丢弃保帧: %s", prefix, u),
     )
-    if fitted[0][1] is None:
+    # 锚 hash 取**拟合后实际送出**的字节(修复环 I1,2026-09-03):压缩阶梯会
+    # 重编码(字节已变),取压缩前 hash 会让 inspect_image 的 hash 前缀反查对
+    # 不上 content_items/注入段送出的字节(反查契约回归)。丢弃(None)则清空锚。
+    sent = fitted[0][1]
+    if sent is None:
         anchor = ""  # 极端丢弃:摘要不列不可反查的图(误导 inspect_image hash 反查)
+    elif composed:
+        anchor = f"图1-图{span}(拼接,hash={hashlib.sha256(sent).hexdigest()[:8]})"
+    else:
+        anchor = f"图1({hashlib.sha256(sent).hexdigest()[:8]})"
     return FeedImagePack(segments=list(fitted), anchor=anchor, composed=composed)

@@ -1167,7 +1167,8 @@ class CatsitatePlugin(MaiBotPlugin):
             line = f"〔{idx}〕{comment_time_prefix(f.abstime, now_epoch)}{body}"
             if pack.anchor:
                 # 图标注(Task 4):单图「图1(hash)」/多图「图1-图N(拼接,hash=…)」
-                # 单条(不再逐图列 hash,hash=合成图 sha256 前 8)
+                # 单条(不再逐图列 hash;hash=拟合后实际送出字节的 sha256 前 8,
+                # 修复环 I1——与 content_items 一致,保 inspect_image 前缀反查)
                 line += "\n" + pack.anchor
             line += f"\n〔说说ID={f.tid[:12]}〕"
             text_parts.append(line)

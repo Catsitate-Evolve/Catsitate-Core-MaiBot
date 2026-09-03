@@ -232,3 +232,77 @@ def test_pipeline_no_urls_is_noop():
     pack = asyncio.run(run_feed_image_pipeline([], downloader=dl, log=rec))
     assert pack.segments == [] and pack.anchor == ""
     assert not rec.warnings and not rec.exceptions
+
+
+# ---- I1 修复回归(2026-09-03 修复环第 1 轮):锚 hash 取拟合后送出字节 ----
+
+
+def _patch_fit(monkeypatch, *, budget_bytes: int, compress=None) -> None:
+    """把管线内的 fit_images_to_rpc_budget 换成小预算包装(测试注入点:
+    不必构造 12MB 大图即可确定性地触发压缩阶梯/丢弃路径)。"""
+
+    from catsitate_core.qzone import imaging as imaging_mod
+    from catsitate_core.qzone.messages import fit_images_to_rpc_budget as real_fit
+
+    def wrapped(images, *, on_drop=None):
+        return real_fit(images, budget_bytes=budget_bytes, compress=compress, on_drop=on_drop)
+
+    monkeypatch.setattr(imaging_mod, "fit_images_to_rpc_budget", wrapped)
+
+
+def test_pipeline_anchor_hash_recomputed_after_budget_refit_single(monkeypatch):
+    """I1 修复回归(单图):压缩阶梯重编码后,锚 hash 取**实际送出**字节——
+    与 content_items/注入段一致(inspect_image hash 前缀反查契约;
+    旧缺陷=取压缩前 hash,重编码后反查对不上)。"""
+
+    def shrink(data, max_dim, quality):
+        return data[: max(1, len(data) // 2)]  # 模拟重编码:字节确定性地变
+
+    _patch_fit(monkeypatch, budget_bytes=40, compress=shrink)
+
+    async def dl(url):
+        return b"X" * 100
+
+    pack = asyncio.run(run_feed_image_pipeline(["u1"], downloader=dl, log=_Recorder()))
+    sent = pack.segments[0][1]
+    # 100B(b64=136>40)→50B(b64=68>40)→25B(b64=36≤40):阶梯两档后达标
+    assert sent == b"X" * 25
+    assert pack.anchor == f"图1({hashlib.sha256(sent).hexdigest()[:8]})"
+    # 旧缺陷形态(压缩前 hash)必须不再出现
+    assert pack.anchor != f"图1({hashlib.sha256(b'X' * 100).hexdigest()[:8]})"
+
+
+def test_pipeline_anchor_hash_recomputed_after_budget_refit_multi(monkeypatch):
+    """I1 修复回归(多图):合成图经阶梯重编码后,「图1-图N(拼接,hash=…)」
+    的 hash 同样取拟合后送出字节。"""
+
+    def shrink(data, max_dim, quality):
+        return data[: max(1, len(data) // 2)]
+
+    _patch_fit(monkeypatch, budget_bytes=4000, compress=shrink)
+
+    async def dl(url):
+        return _png(RED) if url == "u1" else _png(BLUE)
+
+    pack = asyncio.run(run_feed_image_pipeline(["u1", "u2"], downloader=dl, log=_Recorder()))
+    sent = pack.segments[0][1]
+    original = compose_numbered_grid([(1, _png(RED)), (2, _png(BLUE))])
+    assert len(sent) < len(original)  # 前置:阶梯确实重编码了(送出≠合成原图)
+    expected = f"图1-图2(拼接,hash={hashlib.sha256(sent).hexdigest()[:8]})"
+    assert pack.anchor == expected
+    assert pack.anchor != f"图1-图2(拼接,hash={hashlib.sha256(original).hexdigest()[:8]})"
+
+
+def test_pipeline_budget_drop_clears_anchor(monkeypatch):
+    """极端丢弃路径(既有语义保持,随 I1 一并钉死):唯一图压不动被置 None
+    时锚清空,不留指向已丢弃字节的 hash。"""
+    rec = _Recorder()
+    _patch_fit(monkeypatch, budget_bytes=10, compress=lambda data, md, q: data)  # 压不动→阶梯耗尽→丢弃
+
+    async def dl(url):
+        return b"Y" * 100
+
+    pack = asyncio.run(run_feed_image_pipeline(["u1"], downloader=dl, log=rec))
+    assert pack.segments == [("u1", None)]
+    assert pack.anchor == ""
+    assert any("丢弃" in w for w in rec.warnings)

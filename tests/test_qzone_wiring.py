@@ -3046,6 +3046,51 @@ def test_view_friend_feeds_returns_media_dict(tmp_path):
     assert len(feed_calls) == 2
 
 
+def test_view_friend_feeds_anchor_hash_matches_sent_bytes_after_refit(tmp_path, monkeypatch):
+    """I1 修复回归(工具出口端到端,真实压缩阶梯):大图超预算被阶梯重编码后,
+    锚 hash == sha256(实际送出的 content_items 字节)——inspect_image 的
+    image_hash 前缀反查契约;压缩前 hash 形态必须不再出现。"""
+
+    import io
+    import os
+
+    from PIL import Image
+
+    from catsitate_core.qzone import imaging as imaging_mod
+    from catsitate_core.qzone.messages import fit_images_to_rpc_budget as real_fit
+
+    def small_budget_fit(images, *, on_drop=None):
+        # 小预算注入:512² 噪声 PNG(~770KB)必超,首档(4096,85)即重编码达标
+        return real_fit(images, budget_bytes=300 * 1024, on_drop=on_drop)
+
+    monkeypatch.setattr(imaging_mod, "fit_images_to_rpc_budget", small_budget_fit)
+
+    buf = io.BytesIO()
+    Image.frombytes("RGB", (512, 512), os.urandom(512 * 512 * 3)).save(buf, format="PNG")
+    noise = buf.getvalue()
+    assert len(noise) > 300 * 1024  # 前置:确超预算,阶梯必然介入
+
+    p = _make_plugin(tmp_path)
+
+    async def get_user_feeds(*, target_uin, nickname, num=3, page=1):
+        return [FeedItem(tid="bigtid00001", abstime="1750000000", uin="100", nickname="小明",
+                         content="大图说说", image_urls=["big"])]
+
+    async def download(url):
+        return noise
+
+    p.qzone_client.get_user_feeds = get_user_feeds
+    p.qzone_client.download_image = download
+
+    result = asyncio.run(p.view_friend_feeds(qq="100"))
+    assert isinstance(result, dict)
+    sent = base64.b64decode(result["content_items"][0]["data"])
+    assert sent != noise  # 阶梯真实重编码(PNG→JPEG),送出字节已变
+    assert f"图1({hashlib.sha256(sent).hexdigest()[:8]})" in result["content"]
+    # 旧缺陷形态(压缩前字节的 hash)不再出现
+    assert f"图1({hashlib.sha256(noise).hexdigest()[:8]})" not in result["content"]
+
+
 def test_view_friend_feeds_multi_image_composes_single_item(tmp_path):
     """列表工具多图接入(Task 4 C 方案,2026-09-03):≥2 图拼成一张角标合成图
     → 恒单 content_item(mime 恒 image/jpeg,合成图不再需要魔数探测);锚文案

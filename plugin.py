@@ -31,6 +31,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parent))
 
 from catsitate_core.config import CatsitateConfig
 from catsitate_core.favorability import LEVELS, LEVEL_INDEX, EXCLUSIVE_LEVEL, BatchEngine, SettleExecutor, build_favorability_block
+from catsitate_core.guard import compile_guard
 from catsitate_core.image_relook import build_relook_prompt, find_image_segment
 from catsitate_core.inject import InjectAssembler, InjectionBlock
 from catsitate_core.llm_provider import build_side_prompt, rpc_error_brief
@@ -172,6 +173,7 @@ class CatsitatePlugin(MaiBotPlugin):
     _qzone_poll_running: bool = False  # 浏览轮询后台拉取进行中(深度审查 A-2:tick 防重入标记)
     _qzone_notify_running: bool = False  # 通知轮询后台扫描进行中(同上,通知 tick 独立标记)
     _decaying: bool = False  # 自然衰减进行中(2026-09-03 复审:醒后 spawn 与调度 tick 并发防重入,防 delta 双计)
+    _guard_compiled: list = []  # 内容护栏已编译正则(v1.0.0;on_load 按 guard.enabled 编译,编译失败整组置空并告警)
     _qzone_send_armed: str = ""        # 发布触发已武装的窗口标记 "{day}|{start}"
     _qzone_send_first_poll_done: bool = False  # 本窗口首轮拉取是否已完成
     _qzone_sourcec_empty_rounds: int = 0  # 源C 连续空解析轮数(锚点漂移观测线,I-5)
@@ -320,6 +322,17 @@ class CatsitatePlugin(MaiBotPlugin):
         self._qzone_sourcec_drift_warned = False
         # 说话人映射实例级重置(类属性为共享可变态,按次加载初始化;§3.10)
         self._last_speaker_map = {}
+        # v1.0.0 内容护栏:on_load 装配编译正则(实例级重置后按 enabled 编译;
+        # 未启用零编译;编译失败 warning 后整组置空——护栏失效但不阻断插件加载)
+        self._guard_compiled = []
+        if self.config.guard.enabled:
+            _guard_list, _guard_err = compile_guard(self.config.guard.patterns)
+            if _guard_err:
+                self.ctx.logger.warning(
+                    "内容护栏正则编译失败,整组护栏失效(不拦截任何内容,请修正配置):%s", _guard_err
+                )
+            else:
+                self._guard_compiled = _guard_list
         # 泵并发锁:_qzone_pump 两个入口(调度 tick/轮完成信号)整体互斥,防弹出-置位间隙双弹
         self._qzone_pump_lock = asyncio.Lock()
         # 模块日志转发(联调缺陷#10):catsitate_core.* 的告警路由到插件 ctx logger,否则不可见

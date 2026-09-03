@@ -264,6 +264,18 @@ class QzoneSection(PluginConfigBase):
     cookie_refresh_minutes: int = _f(60, "cookie 刷新节流(分钟,间隔内跳过重取)", label="cookie 刷新节流(分钟)")
 
 
+class GuardSection(PluginConfigBase):
+    __ui_label__ = "内容护栏"
+    __ui_order__ = 12
+
+    enabled: bool = _f(False, "内容护栏总开关")
+    patterns: list[str] = _f(
+        [],
+        "正则列表(re.search,大小写敏感;命中即拦截取消发布;非法正则将使整组护栏拒绝加载)",
+        label="拦截正则",
+    )
+
+
 class DebugSection(PluginConfigBase):
     __ui_label__ = "调试"
     __ui_order__ = 99
@@ -290,4 +302,5 @@ class CatsitateConfig(PluginConfigBase):
     sleep: SleepSection = Field(default_factory=SleepSection)
     schedule: ScheduleSection = Field(default_factory=ScheduleSection)
     qzone: QzoneSection = Field(default_factory=QzoneSection)
+    guard: GuardSection = Field(default_factory=GuardSection)
     debug: DebugSection = Field(default_factory=DebugSection)

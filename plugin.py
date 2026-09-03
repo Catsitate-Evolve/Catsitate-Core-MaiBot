@@ -2475,6 +2475,30 @@ class CatsitatePlugin(MaiBotPlugin):
         # 日记与日程同属入睡任务:旁路 LLM 与发布 API 均不经消息链,睡眠期可执行
         self._spawn_background_task(self._generate_and_publish_diary())
 
+    # ---------- Hook:内容护栏(replyer 拦截,v1.0.0) ----------
+
+    @HookHandler("maisaka.replyer.after_response", name="catsitate_content_guard", mode=HookMode.BLOCKING, order=HookOrder.EARLY)
+    async def content_guard_replyer(self, **kwargs: Any) -> dict[str, Any]:
+        """v1.0.0 内容护栏 replyer 拦截(EARLY,先于哨兵 LATE):response 投影命中
+        护栏正则 → 改写为空串——主程序 reply 工具拿空文本走 build_failure_result,
+        planner 看到 [失败] 即 bot 真沉默(Q8 调查实证:不自纠不重试;模型自主重调
+        reply 时每次生成再过本钩子,拦截可重复生效,不漏发)。全部会话生效
+        (内容级护栏,不区分流)。"""
+
+        if not self.config.plugin.enabled:
+            return {"action": "continue", "modified_kwargs": kwargs}
+        # 护栏关→_guard_compiled 空列表,match_guard 恒 0,原样 continue(零行为变化)
+        response_text = str(kwargs.get("response") or "")
+        hit = match_guard(self._guard_compiled, response_text)
+        if not hit:
+            return {"action": "continue", "modified_kwargs": kwargs}
+        self.ctx.logger.warning(
+            "内容护栏拦截:回复 命中规则%d,置空未发送(文本:%s...)", hit, response_text[:60]
+        )
+        # response 改空;output_items 原样——主程序 replace_output_projection 自行
+        # 处理正文投影,勿手工改 items 以免形态错误
+        return {"action": "continue", "modified_kwargs": {**kwargs, "response": "", "output_items": kwargs.get("output_items")}}
+
     # ---------- Hook:reply 补传与哨兵 ----------
 
     @HookHandler("maisaka.planner.after_response", name="catsitate_reply_backfill", mode=HookMode.BLOCKING, order=HookOrder.LATE)

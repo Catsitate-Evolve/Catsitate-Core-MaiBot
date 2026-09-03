@@ -193,7 +193,7 @@ def test_client_download_image_retries_once_on_transient_failure():
     async def fake_cookie():
         return {"p_skey": "SK"}
 
-    client = QzoneClient(cookie_provider=fake_cookie, fetch=fake_fetch, timeout_ms=1000, max_retries=0)
+    client = QzoneClient(cookie_provider=fake_cookie, fetch=fake_fetch, timeout_ms=1000)
     assert asyncio.run(client.download_image("https://simg.qpic.cn/x.jpg")) == b"img"
     assert len(attempts) == 2
 
@@ -211,7 +211,7 @@ def test_client_download_image_domain_whitelist():
     async def fake_cookie():
         return {"p_skey": "SK"}
 
-    client = QzoneClient(cookie_provider=fake_cookie, fetch=fake_fetch, timeout_ms=1000, max_retries=0)
+    client = QzoneClient(cookie_provider=fake_cookie, fetch=fake_fetch, timeout_ms=1000)
     # 白名单外:外站域名/裸域/内网地址/无 host 形态全拒,零请求
     assert asyncio.run(client.download_image("https://evil.example.com/a.jpg")) is None
     assert asyncio.run(client.download_image("https://qpic.cn/a.jpg")) is None  # 裸域(须为子域形态)
@@ -258,7 +258,7 @@ def _make_client(fetch_responses, cookies=None):
         assert params.get("g_tk") == generate_gtk("SK")  # cgi 请求自动携带 g_tk
         return fetch_responses.pop(0)
 
-    client = QzoneClient(cookie_provider=fake_cookie, fetch=fake_fetch, timeout_ms=1000, max_retries=0)
+    client = QzoneClient(cookie_provider=fake_cookie, fetch=fake_fetch, timeout_ms=1000)
     return client, seen_params
 
 
@@ -286,7 +286,7 @@ def test_client_failure_raises_no_retry_loop():
         raised = False
     except Exception:
         raised = True
-    assert raised  # max_retries=0:失败直接抛,由调用方告警跳过
+    assert raised  # 失败直接抛,由调用方告警跳过(动作 API 固定不重试)
 
 
 def test_client_download_image_no_size_cap_and_no_extra_params():
@@ -302,7 +302,7 @@ def test_client_download_image_no_size_cap_and_no_extra_params():
     async def fake_cookie():
         return {"p_skey": "SK"}
 
-    client = QzoneClient(cookie_provider=fake_cookie, fetch=fake_fetch, timeout_ms=1000, max_retries=0)
+    client = QzoneClient(cookie_provider=fake_cookie, fetch=fake_fetch, timeout_ms=1000)
     assert asyncio.run(client.download_image("https://simg.qpic.cn/x.jpg")) == big  # 不设上限,原样返回
     assert all(p == {} for _, p in seen)  # 无 g_tk 等附加参数
 
@@ -321,7 +321,7 @@ def _post_client(responses, bot_uin=""):
         seen.append({"method": method, "url": url, "params": dict(params), "data": dict(data or {}), "headers": dict(headers)})
         return responses.pop(0)
 
-    client = QzoneClient(cookie_provider=fake_cookie, fetch=fake_fetch, timeout_ms=1000, max_retries=0,
+    client = QzoneClient(cookie_provider=fake_cookie, fetch=fake_fetch, timeout_ms=1000,
                          bot_uin=bot_uin)
     return client, seen
 
@@ -389,7 +389,7 @@ def test_write_auth_error_invalidates_cookie():
                 invalidated.append(1)
                 raise
 
-    client = _Client(cookie_provider=fake_cookie, fetch=fake_fetch, timeout_ms=1000, max_retries=0)
+    client = _Client(cookie_provider=fake_cookie, fetch=fake_fetch, timeout_ms=1000)
     try:
         asyncio.run(client.do_comment(fid="t", target_qq="8", content="x"))
     except QzoneAuthError:
@@ -473,7 +473,7 @@ def _unified_client(responses):
         return responses.pop(0)
 
     client = QzoneClient(cookie_provider=fake_cookie, fetch=fake_fetch,
-                         timeout_ms=1000, max_retries=0, bot_uin="3545773341")
+                         timeout_ms=1000, bot_uin="3545773341")
     return client, seen
 
 

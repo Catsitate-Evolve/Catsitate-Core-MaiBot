@@ -190,13 +190,11 @@ class QzoneClient:
         cookie_provider: Callable[[], Awaitable[dict[str, str] | None]],
         fetch: Callable[..., Awaitable[tuple[int, Any]]],
         timeout_ms: int,
-        max_retries: int,
         bot_uin: str = "",
     ) -> None:
         self.cookie_provider = cookie_provider
         self.fetch = fetch
         self.timeout_ms = timeout_ms
-        self.max_retries = max(0, int(max_retries))
         # 写路径身份参数(opuin/qzreferrer/topicId.uin)——装配时传 favorability.bot_user_id
         self.bot_uin = str(bot_uin or "")
 
@@ -358,7 +356,7 @@ class QzoneClient:
         写路径为 params=g_tk + form 表单,且需 Origin/Content-Type 头)。
         extra_params 为 g_tk 之外的查询参数(发布端点需带 uin,上游实现同款)。
 
-        失败直接抛出由调用方告警跳过,不重试(max_retries 语义=动作 API 失败即告警)。
+        失败直接抛出由调用方告警跳过,不重试(动作 API 失败即告警的固定纪律)。
         """
         cookies = await self.cookie_provider()
         if not cookies:
@@ -462,8 +460,7 @@ class QzoneClient:
         非白名单域拒绝下载(防 Cookie 外带与内网探测)。体积不加插件侧上限
         (用户裁定 2026-08-31):主程序入站链路对过大图片自有压缩/丢弃处理。
         读路径例外:CDN 偶发瞬态失败(联调实证 404),单次重试;动作 API 的
-        「失败不重试」纪律不适用于此。次数固定 1,不消费 max_retries
-        (该配置约束 M2 动作 API)。
+        「失败不重试」纪律不适用于此。次数固定 1,与动作 API 无关。
         """
 
         import asyncio as _asyncio

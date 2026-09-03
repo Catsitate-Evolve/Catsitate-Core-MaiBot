@@ -390,7 +390,7 @@ QQ空间虚拟流(qzone-qq)── 网关注入(route_message;receive 只进不�
 
 - **cookie(唯一合规路径)**:空间 cookie 经 adapter 能力 `adapter.napcat.account.get_cookies`(domain=`user.qzone.qq.com`)获取;持久化 `qzone_cookies.json` + `cookie_refresh_minutes`(默认 60 分钟)节流;获取失败或响应缺 `p_skey` 显式告警并跳过本轮拉取(有旧 cookie 时沿用旧值)。
 - **协议**:经典空间网页 cgi(`emotion_cgi_msglist_v6`;g_tk=hash33(p_skey) 签名;`frameElement.callback({...})` 响应截取解析)。msglist 条目即说说;转发说说走回退链([转发自XX]原文),纯图说说以图段承载,视频以 [视频] 占位。
-- **重试语义**:`max_retries` 默认 0——图片下载固定单次重试(读路径例外,联调实证 CDN 瞬态 404);动作 API 不重试(M2 起 max_retries 约束);`request_timeout_ms` 默认 10000。
+- **重试语义**:图片下载固定单次重试(读路径例外,联调实证 CDN 瞬态 404);动作 API 不重试(失败即告警跳过);`request_timeout_ms` 默认 10000。
 - **去重(`qzone_feeds` 表,tid 主键)**:入队=queued,注入成功=seen;同 tid 任意状态存在即跳过(不重复注入)。
 - **数据保留期清理(每日一次,深度审查 D-1)**:`qzone_comments` 保留 30 天(与源B反查时间下界对齐),`qzone_feeds` 的 seen 行保留 7 天(`recent_seen` 只需 `summary_days≤3`,留余量);queued 行不清理(回退未读语义由窗口收泵负责)。
 - 睡眠期不拉取不注入(绝对静默);`qzone.enabled` 关闭或模块停用(`_qzone_available=False`)时一切拉取/注入/场景手术/见闻注入跳过。
@@ -547,7 +547,6 @@ QQ空间虚拟流(qzone-qq)── 网关注入(route_message;receive 只进不�
 
 | 字段 | 默认 | 说明 |
 |---|---|---|
-| enabled | true | 模块开关 |
 | poke_tool_enabled | true | 主动戳工具开关 |
 | cooldown_seconds | 600 | 每用户冷却秒数 |
 
@@ -602,7 +601,6 @@ QQ空间虚拟流(qzone-qq)── 网关注入(route_message;receive 只进不�
 | poll_interval_minutes | 15 | 统一时间线发现层轮询间隔(分钟,含充实层新动态拉取) |
 | comment_poll_enabled | true | 统一通知轮询开关(双源:自己说说新评论+他人说说楼中楼新回复,始终运行醒着即可;M2.1 沿用作总开关) |
 | notification_interval_seconds | 120 | 统一通知轮询间隔(秒,模拟推送通知的检查频率;注册时下限 30 秒;M2.1) |
-| comment_poll_interval_minutes | 30 | **废弃**(M2 评论轮询间隔,分钟;M2.1 起由 `notification_interval_seconds` 替代,不再消费;保留仅为兼容旧配置,可安全删除) |
 | decision_window_seconds | 150 | 注入后等待 planner 轮完成的超时兜底(秒;须大于最坏轮延迟,慢模型实测 53s,150 留余量;wait 态延长至 3 倍硬上限) |
 | tool_whitelist | ["wait","query_memory","query_person_profile","memo_write","memo_read","inspect_image","view_friend_feeds","view_friend_feed_detail"] | 虚拟流 planner 工具白名单(按名过滤,**只管非 qzone_* 工具**——qzone_like/qzone_comment/qzone_reply/qzone_post 全域默认可用,不受此列表管理也不可剔除(v0.8.1,2026-09-02):view_friend_feeds 提供说说ID/图片hash后任何聊天里都能互动;默认不含 tool_search/msg_react/poke_user;reply 已废弃;表外非 qzone 工具一律不可用;旧配置缺 view_friend_feeds 或残留 qzone_*/reply 项时 on_load 告警) |
 | summary_count | 5 | 真实聊天注入的近期已见动态条数 |
@@ -619,7 +617,6 @@ QQ空间虚拟流(qzone-qq)── 网关注入(route_message;receive 只进不�
 | expression_llm_model | "replyer" | 表达润色模型(评论/回复/说说正文按人设口吻润色,task 名;v0.8.2 起默认与主程序回复模型同源;失败以草稿直发) |
 | expression_llm_timeout_ms | 0 | 表达生成超时(毫秒;0=主程序默认) |
 | request_timeout_ms | 10000 | 空间 HTTP 请求超时(毫秒) |
-| max_retries | 0 | 空间动作 API(评论/点赞/发布,M2 生效)失败重试次数;0=失败即告警跳过。M1 读路径(图片下载)固定单次重试(联调实证 CDN 瞬态 404),不受此配置影响 |
 | cookie_refresh_minutes | 60 | cookie 刷新节流(分钟,间隔内跳过重取) |
 
 注:QQ空间动态注入复用主程序 planner→replyer 链不占旁路记账;QQ空间模块的旁路 LLM 调用有三——日记(`qzone_diary` 模块)、表达润色层(`qzone_expression` 模块,评论/回复/发布说说的口吻润色)与空间见闻摘要(`qzone_digest` 模块,read_qzone 窗口结束触发,M3-r2 起),各自按模块记账。
@@ -647,6 +644,10 @@ QQ空间虚拟流(qzone-qq)── 网关注入(route_message;receive 只进不�
 | `enhance_notice_text` / `inject_to_context` | poke | 入站戳一戳通知解析整体删除(联调结论:改写效果不及理想) |
 | `min_level_for_poke` | poke | 主动戳好感度门槛已取消(仅冷却) |
 | `emoji_whitelist` | msg_react | 表情白名单改为内置 30 项精选表 |
+| `comment_poll_interval_minutes` | qzone | 废弃字段删除:由 `notification_interval_seconds` 替代,零消费(v1.0.0 清理) |
+| `max_retries` | qzone | 死配置删除:动作 API 固定不重试、读路径固定单次,配置从不生效(v1.0.0 清理) |
+| `speaker_lookup_hours` | memo | 零消费预留字段删除:说话人经消息映射解析,此窗从未使用(v1.0.0 清理) |
+| `enabled` | poke | 死开关删除:单一功能配单一开关,仅保留 `poke_tool_enabled`(用户裁定,v1.0.0 清理) |
 
 ---
 

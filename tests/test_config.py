@@ -102,7 +102,6 @@ def test_qzone_section_defaults():
     assert q.discovery_max_pages == 3
     assert q.own_feed_scan_count == 20
     assert q.request_timeout_ms == 10000
-    assert q.max_retries == 0
     assert q.cookie_refresh_minutes == 60
     # 2026-09-02 全域化:qzone_* 工具不再由白名单管理(默认可用不可剔除),
     # 白名单只管其余虚拟流工具;view_friend_feeds 仍在(虚拟流查看好友说说)
@@ -111,9 +110,8 @@ def test_qzone_section_defaults():
     assert "view_friend_feeds" in q.tool_whitelist
     assert q.tool_whitelist.index("view_friend_feeds") == q.tool_whitelist.index("inspect_image") + 1
     assert "tool_search" not in q.tool_whitelist and "msg_react" not in q.tool_whitelist
-    # M2 评论轮询两字段(spec §5;间隔字段 T11 起废弃,由 notification_interval_seconds 替代)
+    # M2 统一通知轮询总开关(spec §5;间隔由 notification_interval_seconds 承担)
     assert q.comment_poll_enabled is True
-    assert q.comment_poll_interval_minutes == 30
     # M2.1 统一通知轮询间隔(T11:高频短间隔模拟推送,注册时下限 30s)
     assert q.notification_interval_seconds == 120
     # M3 表达:日记三字段(入睡任务生成并发布空间日记说说)

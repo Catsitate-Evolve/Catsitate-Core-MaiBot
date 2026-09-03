@@ -117,11 +117,6 @@ class MemoSection(PluginConfigBase):
     max_ttl_hours: int = _f(168, "单条备忘有效期上限(小时)", label="有效期上限(小时)")
     entry_max_chars: int = _f(80, "备忘内容最大字符数(写入时强制)", label="内容最大字符数")
     inject_max: int = _f(5, "备忘注入合计条数上限", label="注入合计条数上限")
-    speaker_lookup_hours: int = _f(
-        72,
-        "说话人回溯时间窗(小时,群聊备忘归属兜底;预留:当前说话人经消息映射解析,此窗暂未消费)",
-        label="说话人回溯窗(小时)",
-    )
 
 
 class MsgReactSection(PluginConfigBase):
@@ -146,7 +141,6 @@ class PokeSection(PluginConfigBase):
     __ui_label__ = "戳一戳"
     __ui_order__ = 6
 
-    enabled: bool = _f(True, "戳一戳模块开关", label="戳一戳模块开关")
     poke_tool_enabled: bool = _f(True, "主动戳工具开关", label="主动戳工具开关")
     cooldown_seconds: int = _f(600, "主动戳每用户冷却秒数", label="主动戳冷却秒数")
 
@@ -237,7 +231,6 @@ class QzoneSection(PluginConfigBase):
         label="虚拟流工具白名单",
     )
     comment_poll_enabled: bool = _f(True, "统一通知轮询开关(双源:自己说说新评论+他人说说楼中楼新回复,始终运行醒着即可)", label="通知轮询开关")
-    comment_poll_interval_minutes: int = _f(30, "评论轮询间隔(分钟;废弃,由 notification_interval_seconds 替代,不再消费)", label="评论轮询间隔(分钟)")
     notification_interval_seconds: int = _f(120, "统一通知轮询间隔(秒,模拟推送通知的检查频率;最小30)", label="通知间隔(秒)")
     # 虚拟流会话身份不配置(2026-09-02 用户裁定):QZONE_VIRTUAL_GROUP_ID/NAME
     # 常量固化于 catsitate_core.qzone——伪群号可配置会被改成与真实群号相同的
@@ -256,11 +249,6 @@ class QzoneSection(PluginConfigBase):
     expression_llm_model: str = _f("replyer", "表达润色模型(评论/回复/说说正文按人设口吻润色;默认与主程序回复模型同源,失败时以草稿直发)", label="表达润色模型")
     expression_llm_timeout_ms: int = _f(0, "表达润色超时(毫秒,0=默认)", label="表达润色超时(ms)")
     request_timeout_ms: int = _f(10000, "空间 HTTP 请求超时(毫秒)", label="HTTP 超时(毫秒)")
-    max_retries: int = _f(
-        0,
-        "空间动作 API(评论/点赞/发布,M2 生效)失败重试次数;0=失败即告警跳过。M1 读路径(图片下载)固定单次重试(联调实证 CDN 瞬态 404),不受此配置影响",
-        label="失败重试次数",
-    )
     cookie_refresh_minutes: int = _f(60, "cookie 刷新节流(分钟,间隔内跳过重取)", label="cookie 刷新节流(分钟)")
 
 

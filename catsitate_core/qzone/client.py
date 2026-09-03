@@ -29,6 +29,7 @@ from catsitate_core.qzone.wire import (
     build_reply_form,
     extract_publish_tid,
     parse_feed_comments,
+    parse_qzone_mentions,
 )
 from catsitate_core.storage import JsonSnapshot
 
@@ -260,6 +261,13 @@ class QzoneClient:
             if block is not None:
                 f.comments = block.comments
                 f.comment_total = block.total
+            # 评论/楼中楼正文里的 @{uin,nick,...} 机器格式解析为可读 @昵称
+            # (联调实证 2026-09-03:楼中楼回复正文带机器 @ 原样泄漏进详情输出;
+            # 通知路径同款解析,此处对齐——detail 与浏览注入两路共用此数据)
+            for c in f.comments:
+                c.content = parse_qzone_mentions(c.content, bot_uin=self.bot_uin)
+                for r in c.replies:
+                    r.content = parse_qzone_mentions(r.content, bot_uin=self.bot_uin)
         return feeds
 
     async def get_user_feeds_raw(self, *, target_uin: str, num: int = 5) -> dict:

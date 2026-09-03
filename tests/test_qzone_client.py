@@ -566,3 +566,25 @@ def test_get_user_feeds_merges_comments():
     c0 = feeds[0].comments[0]
     assert c0.nickname == "小红" and c0.uin and c0.comment_tid
     assert isinstance(c0.replies, list)  # 楼中楼列表(载荷有则已解析)
+
+
+def test_get_user_feeds_parses_mention_markup_in_comments():
+    """评论/楼中楼正文里的 @{uin,nick,who,auto} 机器格式解析为可读 @昵称
+    (联调实证 2026-09-03:楼中楼机器 @ 原样泄漏进详情输出——detail 与浏览
+    注入两路共用此数据,解析收敛在 client 一处)。"""
+
+    payload = {"msglist": [{"tid": "tm1", "uin": "100", "nickname": "小明", "content": "正文",
+                            "created_time": "1750000000", "cmtnum": 1,
+                            "commentlist": [
+                                {"tid": "c1", "uin": "20000", "name": "小红",
+                                 "content": "@{uin:100,nick:小明,who:1,auto:1}冒个泡",
+                                 "create_time": "1750000100",
+                                 "list_3": [{"tid": "r1", "uin": "100", "name": "小明",
+                                             "content": "@{uin:20000,nick:小红,who:1,auto:1}收到啦",
+                                             "create_time": "1750000200"}]}]}],
+               "usrinfo": {"uin": "100"}, "logininfo": {"uin": "3545773341"}, "code": 0}
+    client, _ = _make_client([(200, ("_preloadCallback(" + _json.dumps(payload) + ")").encode("utf-8"))])
+    feeds = asyncio.run(client.get_user_feeds(target_uin="100", nickname="小明", num=3))
+    c = feeds[0].comments[0]
+    assert c.content == "@小明 冒个泡"  # 机器 @ 已解析(含 who/auto 额外字段)
+    assert c.replies[0].content == "@小红 收到啦"

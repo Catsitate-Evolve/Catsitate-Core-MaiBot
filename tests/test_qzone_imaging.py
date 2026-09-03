@@ -13,6 +13,7 @@ from __future__ import annotations
 import asyncio
 import hashlib
 import io
+import logging
 
 import pytest
 
@@ -130,6 +131,30 @@ def test_compose_rejects_empty_and_garbage():
         compose_numbered_grid([(1, b"not-an-image")])
 
 
+def test_badge_font_old_pillow_fallback_warns_once(monkeypatch, caplog):
+    """字体回退可见(终审 c-3,2026-09-03):旧版 Pillow load_default 无 size
+    参数 → 回退位图默认字体必须告警(降级不静默);模块级 flag 保证只告警
+    一次(多图每格都会调 _badge_font,逐次告警会刷屏)。"""
+
+    from catsitate_core.qzone import imaging as imaging_mod
+
+    class _OldPillowFont:
+        @staticmethod
+        def load_default(size=None):
+            if size is not None:
+                raise TypeError("load_default() got an unexpected keyword argument 'size'")
+            return "bitmap-default-font"
+
+    monkeypatch.setattr(imaging_mod, "_PILImageFont", _OldPillowFont)
+    monkeypatch.setattr(imaging_mod, "_BADGE_FONT_FALLBACK_WARNED", False)
+    with caplog.at_level(logging.WARNING, logger="catsitate_core.qzone.imaging"):
+        f1 = imaging_mod._badge_font(24)
+        f2 = imaging_mod._badge_font(24)
+    assert f1 == f2 == "bitmap-default-font"  # 两次都走回退分支取位图默认字体
+    warns = [r for r in caplog.records if "角标字体降级" in r.getMessage()]
+    assert len(warns) == 1, "降级告警必须打且只打一次(防多图逐格刷屏)"
+
+
 # ---- run_feed_image_pipeline:公共出口助手 ----
 
 
@@ -193,7 +218,11 @@ def test_pipeline_none_return_counts_as_failure():
     pack = asyncio.run(run_feed_image_pipeline(["u1", "u2"], downloader=dl, log=rec))
     assert pack.composed is False  # 只剩 1 张成功图 → 单图直返
     assert pack.segments == [("u2", _png(BLUE))]
-    assert pack.anchor.startswith("图1(")
+    # 锚序号=幸存图的**原始**序号(终审 M1):u1 失败后送出的是原图 2,
+    # 锚必须「图2(...)」——旧缺陷恒写「图1」会让 inspect_image/模型把
+    # 送出图误认成原图 1(单图直返不画角标,序号只能由锚承担)
+    assert pack.anchor.startswith("图2(")
+    assert not pack.anchor.startswith("图1(")
     assert any("u1" in w for w in rec.warnings)
 
 

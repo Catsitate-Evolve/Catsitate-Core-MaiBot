@@ -55,6 +55,26 @@ def test_build_message_empty_content_uses_placeholder():
     assert msg["raw_message"][0]["data"] == "(无文字内容)\n〔说说ID=t1〕"
 
 
+def test_build_message_all_failed_placeholder_shows_image_count():
+    """全失败占位带图数(终审 c-6,2026-09-03):图片全失败时占位「[图片×N]」
+    (N=该说说图片数,模型可知图数)——单个「[图片]」会把 3 图说说误读为 1 图。
+    两种全失败形态:管线空段(images=[],注入链 run_feed_image_pipeline 全失败/
+    合成回退;N 取 feed.image_urls)与逐图 None 段(images=[(url,None)…],
+    注入链极端兜底;N=len(images) 恰为全失败数)。"""
+    # 形态一:管线空段(N=feed.image_urls 计数)
+    msg = build_feed_message(_feed(abstime="", image_urls=["u1", "u2", "u3"]), seq=1, group_id="g",
+                             group_name="n", images=[], now_epoch=1.0)
+    assert msg["raw_message"][0]["data"] == "今天天气好 [图片×3]\n〔说说ID=t1〕"
+    # 形态二:逐图 None 段(N=len(images) 恰为全失败数)
+    msg2 = build_feed_message(_feed(abstime="", image_urls=["u1", "u2"]), seq=2, group_id="g",
+                              group_name="n", images=[("u1", None), ("u2", None)], now_epoch=1.0)
+    assert msg2["raw_message"][0]["data"] == "今天天气好 [图片×2]\n〔说说ID=t1〕"
+    # 单图全失败:维持「[图片]」不写「×1」
+    msg3 = build_feed_message(_feed(abstime="", image_urls=["u1"]), seq=3, group_id="g",
+                              group_name="n", images=[], now_epoch=1.0)
+    assert msg3["raw_message"][0]["data"] == "今天天气好 [图片]\n〔说说ID=t1〕"
+
+
 def test_build_message_reading_timestamp_and_publish_prefix():
     """时间语义(方案 B,2026-08-31):timestamp=阅读时刻(注入时刻,消息流时钟单调);
     发布时间由正文相对时间前缀承载(时区无关断言)。"""

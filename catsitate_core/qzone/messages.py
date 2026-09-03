@@ -6,7 +6,8 @@
 防 bot 把老说说当刚发生);message_id 全局唯一(tid+时间播种序号);is_mentioned
 仅浏览注入设置(嵌 message_info.additional_config,主程序只读该位置;通知消息
 不设——走自然回复概率,2026-09-02);图片段带 binary_data_base64,
-下载失败的图以 [图片] 占位;文本段末尾带参数独立尾行「〔说说ID=xxx〕」(tid 前 12 位,
+下载失败的图以 [图片] 占位(全失败按图数 [图片×N],终审 c-6);文本段末尾带
+参数独立尾行「〔说说ID=xxx〕」(tid 前 12 位,
 工具驱动 2026-09-01;可读性优化后换行独立成行,纯图说说也保留文本段承载锚);
 纯图说说正文为空时参数行即整段内容。
 图片体积治理=压缩到 RPC 帧预算内(12MB,用户裁定:压缩而非拒收)。
@@ -280,7 +281,9 @@ def build_feed_message(
     images: list[tuple[str, bytes]],
     now_epoch: float,
 ) -> dict:
-    """构造一条说说注入消息。images 为 (url, bytes) 列表,下载失败(None)的图以占位呈现。
+    """构造一条说说注入消息。images 为 (url, bytes) 列表,下载失败(None)的图
+    以占位呈现(全失败按图数 [图片×N],模型可知图数;images 空段时 N 取
+    feed.image_urls)。
 
     时间语义(方案 B,用户裁定 2026-08-31):timestamp=**注入时刻(阅读时间)**——
     消息流的时钟单调递增(自然阅读序),主程序时序机制(间隔样本/连发过滤/
@@ -298,9 +301,10 @@ def build_feed_message(
         post_epoch = None
 
     raw: list[dict] = []
+    failed = 0  # 未送出的图数(下载/合成失败与预算丢弃的 None 段)
     for url, data in images:
         if data is None:
-            text += " [图片]"
+            failed += 1
             continue
         # 组件形态对齐 napcat-adapter(联调缺陷#15):data 必须**留空**——它是描述槽,
         # 填占位文本会被主程序当成已有描述入库存证,VLM 视觉管线永不运行;
@@ -311,8 +315,13 @@ def build_feed_message(
             "hash": hashlib.sha256(data).hexdigest(),
             "binary_data_base64": base64.b64encode(data).decode("ascii"),
         })
-    if not raw and feed.image_urls and not images:
-        text += " [图片]"  # 有图但全未下载成功的占位
+    # 全失败占位(终审 c-6,2026-09-03):按图数 ×N 呈现——单个「[图片]」会把
+    # N 图说说误读为 1 图(模型可知图数);images 为空(注入链管线全失败/
+    # 合成回退空段)时 N 取 feed.image_urls,恰为该说说全失败图数
+    if feed.image_urls and not images:
+        failed = len(feed.image_urls)
+    if failed:
+        text += f" [图片×{failed}]" if failed > 1 else " [图片]"
 
     if post_epoch is not None:
         prefix = _time_prefix(datetime.fromtimestamp(post_epoch), datetime.fromtimestamp(now_epoch))

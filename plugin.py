@@ -1024,13 +1024,14 @@ class CatsitatePlugin(MaiBotPlugin):
             return "说说内容不能为空。"
         if len(content) > 500:
             return f"内容太长了({len(content)} 字,上限 500)。"
+        # 回注昵称前置读取(2026-09-03 复审修复+终审 b-1 前移):_bot_echo_nickname
+        # 读失败直接抛错(#33 裁定不兜底),若留在发布成功后的回注构造段,异常会让
+        # 工具以失败收尾——远端已发布却谎报失败,诱导模型重复发布。前移两步:
+        # 复审先置 do_publish 之前(失败时零发布调用);终审再前移到**润色之前**
+        # (b-1)——昵称坏时连润色 LLM 也不必烧,异常原样上抛工具层。
+        bot_echo_nickname = await self._bot_echo_nickname()
         # 表达润色:planner 草稿按人设+表达方式+场景语改写(失败以草稿直发)
         content = await self._qzone_polish(content, limit=500, scene="QQ空间里,想发一条自己的说说")
-        # 回注昵称前置读取(2026-09-03 复审修复):_bot_echo_nickname 读失败直接
-        # 抛错(#33 裁定不兜底),若留在发布成功后的回注构造段,异常会让工具以
-        # 失败收尾——远端已发布却谎报失败,诱导模型重复发布。前置到发布前:
-        # 失败时零发布调用,异常原样上抛工具层。
-        bot_echo_nickname = await self._bot_echo_nickname()
         try:
             # 同轮自愈(用户裁定 #7):AuthError 作废并重取 cookie 后原地重试一次
             tid, auth_err = await self._qzone_auth_retry(
@@ -1168,9 +1169,10 @@ class CatsitatePlugin(MaiBotPlugin):
                 body = clip_text(body, 300)  # 截断尾加"...",读的人知道还有下文
             line = f"〔{idx}〕{comment_time_prefix(f.abstime, now_epoch)}{body}"
             if pack.anchor:
-                # 图标注(Task 4):单图「图1(hash)」/多图「图1-图N(拼接,hash=…)」
-                # 单条(不再逐图列 hash;hash=拟合后实际送出字节的 sha256 前 8,
-                # 修复环 I1——与 content_items 一致,保 inspect_image 前缀反查)
+                # 图标注(Task 4):单图「图N(hash)」(N=原始序号,终审 M1)/多图
+                # 「图1-图N(拼接,hash=…)」单条(不再逐图列 hash;hash=拟合后
+                # 实际送出字节的 sha256 前 8,修复环 I1——与 content_items 一致,
+                # 保 inspect_image 前缀反查)
                 line += "\n" + pack.anchor
             line += f"\n〔说说ID={f.tid[:12]}〕"
             text_parts.append(line)
@@ -4164,9 +4166,9 @@ class CatsitatePlugin(MaiBotPlugin):
 
         # 直接抛错不兜底(用户裁定 2026-09-02 #33:除非主程序有 bug 才会空,
         # 静默回退「我」反而掩盖——曾把 bot 当普通用户污染统计)。调用方纪律
-        # (2026-09-03 复审修复):qzone_post 在发布 try 前读取(异常原样上抛,
-        # 零发布调用);日记补注/种子自举在各自 try 内构造(异常被捕获告警,
-        # 不沿 tick 链外泄)
+        # (2026-09-03 复审修复+终审 b-1):qzone_post 在润色与发布 try 之前读取
+        # (异常原样上抛,零润色/零发布调用);日记补注/种子自举在各自 try 内
+        # 构造(异常被捕获告警,不沿 tick 链外泄)
         value = await self.ctx.config.get("bot.nickname", "")
         nickname = str(value or "").strip()
         if not nickname:

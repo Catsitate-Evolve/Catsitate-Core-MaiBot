@@ -183,6 +183,14 @@ def test_relative_time_to_epoch_feb29_cross_year_rollback_returns_zero():
     assert _relative_time_to_epoch("2月29日", "", datetime(2024, 1, 15, 10, 0)) == 0
 
 
+def test_relative_time_to_epoch_out_of_range_hm_returns_zero():
+    """越界时分防护(终审 M2,2026-09-03):LIKE_TIME_RE 容忍「99:99」一类
+    形态——replace(hour=99) 抛 ValueError 且原先在 try 之外无人捕获,异常
+    会沿 get_like_events 中止通知扫描整轮;防护后与 2月29 同口径返回 0 不抛。"""
+    assert _relative_time_to_epoch("今天", "99:99", datetime(2026, 9, 3, 12, 0)) == 0
+    assert _relative_time_to_epoch("昨天", "9:99", datetime(2026, 9, 3, 12, 0)) == 0
+
+
 def test_relative_time_to_epoch_normal_paths_unaffected():
     """常规折算回归保护:今天/昨天/前天/N月N日(当年过去 + 未来跨年回退一年)
     不受防护影响。"""

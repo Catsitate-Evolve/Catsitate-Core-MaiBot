@@ -643,6 +643,20 @@ def test_qzone_post_echo_carries_full_content(tmp_path):
     assert msg["raw_message"][0]["data"] == f"我发布了一条说说:{long_content}\n〔说说ID=newtid0001〕"
 
 
+def test_qzone_post_nickname_read_precedes_polish(tmp_path):
+    """昵称读取前移(终审 b-1,2026-09-03):bot.nickname 读取失败(空值抛
+    RuntimeError,#33 不兜底)时,异常在**润色之前**上抛——不得先烧一次润色
+    LLM 再失败;零润色调用+零发布调用。"""
+
+    p = _make_tool_plugin(tmp_path)
+    p._ctx.config.nickname = ""  # #33 裁定:昵称空=主程序配置异常,直接抛错
+    with pytest.raises(RuntimeError, match="bot 昵称"):
+        asyncio.run(p.qzone_post(content="想发点什么都发不出去", stream_id="s1"))
+    assert p.expr_llm_calls == []  # 润色 LLM 一次都不该调(旧序会先润色后读昵称)
+    assert p.qzone_client.publish_calls == []  # 零发布调用
+    assert p._ctx.gateway.calls == []  # 零回注
+
+
 def test_qzone_post_validation_empty_content_and_session(tmp_path):
     """入参校验:空内容 → 显式拒绝;模块未启用 → 拒绝;两种拒绝形态均零
     发布调用、零回注。2026-09-02 起全域工具:不再有流门控(真实流亦可发,

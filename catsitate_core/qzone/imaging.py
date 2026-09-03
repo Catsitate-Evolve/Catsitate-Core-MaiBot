@@ -48,11 +48,24 @@ GRID_COLUMNS = 3
 Downloader = Callable[[str], "Awaitable[bytes | None]"]
 
 
+# 旧版 Pillow 字体降级告警只在首次打(模块级 flag,参考 messages.py 的
+# _PIL_MISSING_WARNED 模式):_draw_number_badge 每格调一次 _badge_font,
+# 逐次告警会随格数刷屏
+_BADGE_FONT_FALLBACK_WARNED = False
+
+
 def _badge_font(px: int):
     """PIL 默认字体:新版 Pillow 支持指定字号,旧版回退位图默认字体(纯数字可用)。"""
+    global _BADGE_FONT_FALLBACK_WARNED
     try:
         return _PILImageFont.load_default(size=px)
-    except TypeError:  # pragma: no cover - 旧版 Pillow 无 size 参数
+    except TypeError:
+        # 旧版 Pillow 无 size 参数(终审 c-3,2026-09-03):字体降级必须可见,
+        # 一次性告警防多图逐格刷屏
+        if not _BADGE_FONT_FALLBACK_WARNED:
+            _BADGE_FONT_FALLBACK_WARNED = True
+            logger.warning(
+                "旧版 Pillow 不支持 load_default(size=…),角标字体降级为位图默认字体(建议升级 Pillow≥10.1)")
         return _PILImageFont.load_default()
 
 
@@ -119,10 +132,11 @@ class FeedImagePack:
 
     segments:压缩预算后的图片段(注入消息形态 (url, bytes|None));多图合成后
     恒单项 [(原图任一 url, 合成 JPEG)],极端超预算丢弃置 None 交占位逻辑。
-    anchor:工具侧图标注文案——单图「图1(hash)」/多图「图1-图N(拼接,hash=…)」
-    单条;hash=**拟合后实际送出字节**的 sha256 前 8(与 content_items/注入段
-    一致,修复环 I1:压缩阶梯重编码后不得用压缩前 hash,inspect_image 前缀
-    反查口径);全失败或丢弃=空串(摘要行只列实际可反查的图)。
+    anchor:工具侧图标注文案——单图「图N(hash)」(N=该图原始序号:部分失败至
+    恰剩一张时与实际送出图一致,终审 M1;单图直返不画角标,序号由锚承担)/
+    多图「图1-图N(拼接,hash=…)」单条;hash=**拟合后实际送出字节**的 sha256
+    前 8(与 content_items/注入段一致,修复环 I1:压缩阶梯重编码后不得用压缩前
+    hash,inspect_image 前缀反查口径);全失败或丢弃=空串(摘要行只列实际可反查的图)。
     composed:合成图标记(工具侧 mime 恒 image/jpeg;单图原图直发才需魔数探测)。
     """
 
@@ -161,9 +175,11 @@ async def run_feed_image_pipeline(
     if not downloaded:
         return FeedImagePack([])
     if len(downloaded) == 1:
-        _ordinal, url, data = downloaded[0]
+        ordinal, url, data = downloaded[0]
         segments: list[tuple[str, bytes]] = [(url, data)]
-        span = 1  # 锚文案的 N:单图恒 1
+        # 锚文案的图号=幸存图的原始序号(终审 M1,2026-09-03):部分失败至恰剩
+        # 一张时送出的可能是原始第 N 图,恒写「图1」会让序号与实际字节错位
+        span = ordinal
         composed = False
     else:
         try:
@@ -189,5 +205,6 @@ async def run_feed_image_pipeline(
     elif composed:
         anchor = f"图1-图{span}(拼接,hash={hashlib.sha256(sent).hexdigest()[:8]})"
     else:
-        anchor = f"图1({hashlib.sha256(sent).hexdigest()[:8]})"
+        # 单图直返不画角标不变——原始序号由锚承担(终审 M1)
+        anchor = f"图{span}({hashlib.sha256(sent).hexdigest()[:8]})"
     return FeedImagePack(segments=list(fitted), anchor=anchor, composed=composed)

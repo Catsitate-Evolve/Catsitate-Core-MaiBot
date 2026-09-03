@@ -1212,9 +1212,10 @@ def test_qzone_like_via_feed_id_and_notify_origin(tmp_path):
     assert p.qzone_client.like_calls == [("likefeed0001", "10001")]  # 全量 tid+主人
 
     # 通知项 awaiting(合成 tid):缺省目标=origin_tid 真实说说,可点其原说说;
-    # 泵注入时会登记 FeedContext(owner=源A主人=bot,昵称=评论者)——此处按同款登记模拟
+    # 泵注入时登记 FeedContext(owner=源A主人=bot;2026-09-03 复审小修后通知分支
+    # owner_nickname 置空——评论者昵称与主人昵称语义错位)——此处按同款登记模拟
     p2 = _make_tool_plugin(tmp_path)
-    _register_feed(p2, tid="realtid", owner=BOT_UIN, nickname="小红")
+    _register_feed(p2, tid="realtid", owner=BOT_UIN, nickname="")
     p2.qzone_injector.window_started()
     p2.qzone_injector.enqueue_priority([FeedItem(
         tid="notify_comment_realtid_c1", abstime="1750000000", uin="20000",
@@ -1225,8 +1226,34 @@ def test_qzone_like_via_feed_id_and_notify_origin(tmp_path):
     assert popped is not None
     p2.qzone_injector.mark_injected(popped.tid, _time.monotonic())
     res2 = asyncio.run(p2.qzone_like(stream_id="s1"))
-    assert res2.startswith("点赞成功:小红 的说说")
+    assert res2.startswith("点赞成功:10000 的说说")  # 昵称缺省回退 owner_uin(bot 自己)
     assert p2.qzone_client.like_calls == [("realtid", BOT_UIN)]  # 真实 tid+源A主人=bot
+
+
+def test_qzone_like_on_notify_registration_falls_back_to_owner_uin(tmp_path):
+    """2026-09-03 复审小修:泵对通知项登记的 owner_nickname 置空——notify 分支
+    feed.nickname 实为评论者/点赞者昵称,与 owner_uin(说说主人)语义错位,原样
+    登记会让 qzone_like 回执张冠李戴(「点赞成功:小红 的说说」实为 bot 自己的
+    说说)。置空后回执昵称回退 owner_uin;评论者昵称仍留在 commenter_nickname;
+    registry 字段级合并保留浏览/detail 登记过的正确主人昵称(置空不清旧值)。"""
+
+    p = _make_tool_plugin(tmp_path)
+    p.qzone_injector.window_started()
+    p.qzone_injector.enqueue_priority([FeedItem(
+        tid="notify_comment_selff_c1", abstime="1750000000", uin="20000",
+        nickname="小红", content="(通知) 小红 评论了你的说说", source="notify",
+        origin_tid="selffeed001", friend_uin="",
+    )])
+    asyncio.run(p._qzone_pump())
+    ctx = p._qzone_registry.resolve("selffeed001")
+    assert ctx is not None
+    assert ctx.owner_uin == BOT_UIN  # 源A:说说主人=bot 自己
+    assert ctx.owner_nickname == ""  # 通知分支不再把评论者昵称当主人昵称
+    assert ctx.commenter_nickname == "小红"  # 评论者昵称留在正确字段
+    res = asyncio.run(p.qzone_like(feed_id="selffeed001", stream_id="s1"))
+    assert res.startswith("点赞成功:10000 的说说")  # 昵称回退 owner_uin
+    assert "小红" not in res  # 回执不显示评论者昵称
+    assert p.qzone_client.like_calls == [("selffeed001", BOT_UIN)]
 
 
 def test_notify_poll_self_skip_dedup_and_awaiting_occupied(tmp_path):
@@ -2285,6 +2312,19 @@ def test_qzone_data_prune_registered_in_on_load():
 
     src = inspect.getsource(plugin_mod)
     assert 'register("qzone_data_prune", 24 * 3600, self._qzone_data_prune)' in src
+
+
+def test_send_trigger_intent_text_no_stray_paren():
+    """2026-09-03 复审小修:发布触发 intent 文案两处删多余右括号
+    (「…直接写你想发的内容);」→「…直接写你想发的内容;」,browsed/非 browsed
+    各一处,轻量源码断言)。"""
+    import inspect
+
+    import plugin as plugin_mod
+
+    src = inspect.getsource(plugin_mod)
+    assert "内容);" not in src  # 残留右括号已删
+    assert src.count("直接写你想发的内容;") == 2  # 两处文案齐全
 
 
 def test_on_load_whitelist_warning_covers_view_friend_feeds(tmp_path):

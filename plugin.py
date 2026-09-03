@@ -806,7 +806,9 @@ class CatsitatePlugin(MaiBotPlugin):
             self.ctx.logger.exception("QQ空间点赞失败(tid=%s)", fid)
             return "点赞失败:远端接口异常,已记录日志。"
         self.qzone_seen.mark_interacted(fid)
-        nickname = ctx.owner_nickname if ctx else owner_uin
+        # 空昵称回退 owner_uin(2026-09-03 复审小修):通知登记的 owner_nickname
+        # 置空(评论者昵称与主人语义错位),回执不能显示空名——or 兜底补齐
+        nickname = (ctx.owner_nickname if ctx else "") or owner_uin
         self.qzone_comment_seen.fav_event(owner_uin, "OUT_LIKE", f"你点赞了 {owner_uin} 的说说")
         return f"点赞成功:{nickname} 的说说(说说ID={fid[:12]})"
 
@@ -1723,7 +1725,11 @@ class CatsitatePlugin(MaiBotPlugin):
         self._qzone_registry.register(FeedContext(
             tid=feed.origin_tid or feed.tid,
             owner_uin=(feed.friend_uin or bot_uin) if feed.source == "notify" else feed.uin,
-            owner_nickname=feed.nickname,
+            # notify 分支 feed.nickname 实为评论者/点赞者昵称,与 owner_uin(说说
+            # 主人)语义错位——原样登记会让 qzone_like 回执张冠李戴(2026-09-03
+            # 复审小修),置空串交消费方回退 owner_uin;registry 字段级合并保留
+            # 浏览/detail 登记过的正确主人昵称(新值空不清旧值)
+            owner_nickname="" if feed.source == "notify" else feed.nickname,
             commenter_uin=feed.uin if feed.source == "notify" else "",
             commenter_nickname=feed.nickname if feed.source == "notify" else "",
             comment_tid=feed.comment_tid,
@@ -1811,13 +1817,13 @@ class CatsitatePlugin(MaiBotPlugin):
         if browsed:
             intent = (
                 "你刚刷完QQ空间,现在有点想分享点什么。"
-                "如果确实想发,用 qzone_post 工具直接写你想发的内容);"
+                "如果确实想发,用 qzone_post 工具直接写你想发的内容;"
                 f"不想发就保持沉默,什么都不用做。当前活动:{activity}"
             )
         else:
             intent = (
                 f"你在忙{activity},忙里偷闲想上QQ空间发条说说。"
-                "如果确实想发,用 qzone_post 工具直接写你想发的内容);"
+                "如果确实想发,用 qzone_post 工具直接写你想发的内容;"
                 "不想发就保持沉默,什么都不用做。"
             )
         stream_id = self._qzone_expected_session_id()

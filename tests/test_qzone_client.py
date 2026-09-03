@@ -146,6 +146,26 @@ def test_cookie_manager_napcat_data_string(tmp_path):
     assert asyncio.run(cm.get()) == {"p_skey": "SK3", "uin": "oq2"}
 
 
+def test_cookie_snapshot_saved_at_is_epoch_seconds(tmp_path):
+    """2026-09-03 复审小修:快照 saved_at 存 epoch 秒(time.time)——原先误存
+    time.monotonic()(进程内时钟,跨重启归零,持久化后无意义);epoch 量级
+    (~1.7e9)与 monotonic(开机秒数)数量级可区分。"""
+
+    import time as _time
+
+    async def fake_api_call(method, **kw):
+        return {"cookies": {"p_skey": "SK9", "uin": "o999"}}
+
+    snapshot = _cookie_snapshot(tmp_path)
+    cm = CookieManager(snapshot, api_call=fake_api_call, refresh_minutes=60)
+    before = _time.time()
+    assert asyncio.run(cm.get()) == {"p_skey": "SK9", "uin": "o999"}
+    after = _time.time()
+    saved = snapshot.load()
+    assert saved["cookies"] == {"p_skey": "SK9", "uin": "o999"}
+    assert before <= saved["saved_at"] <= after  # epoch 秒,非 monotonic 量级
+
+
 def test_cookie_manager_invalidate_forces_refetch(tmp_path):
     """联调缺陷#7:失效标记后跳过快照与节流,强制重取;失败不回退旧值。"""
     calls = []

@@ -110,7 +110,10 @@ class CookieManager:
         self._cookies = cookies
         self._fetched_at = now
         self._invalidated = False
-        self.snapshot.save({"cookies": cookies, "saved_at": now})
+        # saved_at 存 epoch 秒(time.time)而非 now(monotonic):monotonic 钟只在
+        # 进程内可比,跨重启归零,持久化快照里无意义;epoch 秒跨进程可读
+        # (2026-09-03 复审小修;节流用的 _fetched_at 仍是 monotonic,不受影响)
+        self.snapshot.save({"cookies": cookies, "saved_at": time.time()})
         return cookies
 
 

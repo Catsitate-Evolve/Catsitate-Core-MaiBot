@@ -1041,6 +1041,22 @@ def test_fetch_recent_for_history_quote_resolve_failure_warns_once(tmp_path):
     assert "quote 发送者解析失败(stream=%s):%s" in args[0] and args[1] == "g1"
 
 
+def test_normalize_ts_bad_values_return_raw_without_raising(tmp_path):
+    """_normalize_ts 坏值防御(2026-09-03 复审):原为 staticmethod 而 except 分支
+    引用 self,坏时间戳触发即 NameError——改实例方法后,坏值(空串/非数值)返回
+    原字符串不抛,超大 epoch(OverflowError)同样不上抛,且逐条告警可见。"""
+
+    logs: list = []
+    p = _make_history_plugin(tmp_path, logs, [])
+    assert p._normalize_ts("") == ""  # 空串:返回原字符串(空)不抛
+    assert p._normalize_ts("abc") == "abc"  # 非数值:原样返回
+    assert p._normalize_ts("1e999") == "1e999"  # 超大 epoch:OverflowError 不上抛
+    # 正常值不受影响:epoch 浮点串归一化为 ISO
+    assert p._normalize_ts("1755225600.0") == datetime.fromtimestamp(1755225600.0).strftime("%Y-%m-%dT%H:%M:%S")
+    warns = [(lv, a, k) for lv, a, k in logs if lv == "warning" and "时间戳归一化失败" in a[0]]
+    assert len(warns) == 3  # 三个坏值逐条告警(不静默)
+
+
 def test_daily_decay_quote_resolve_failure_warns_once(tmp_path):
     """衰减路径告警粒度(修复轮 R1):两条群流各含一条带 reply_to 的 bot 消息,
     get_by_id 桩均抛异常 → _daily_decay 整轮恰一条「quote 发送者解析失败」warning。"""
@@ -1096,6 +1112,68 @@ def test_daily_decay_quote_resolve_failure_warns_once(tmp_path):
     quote_warns = [(lv, a, k) for lv, a, k in logs
                    if lv == "warning" and "quote 发送者解析失败" in a[0]]
     assert len(quote_warns) == 1  # 整轮至多一条(两条群流均解析失败只报一条)
+
+
+def test_daily_decay_reentry_guard_skips_round(tmp_path):
+    """衰减防重入(2026-09-03 复审):醒后 spawn 的 _daily_settle 与调度 tick 的
+    daily_decay/daily_settle 可并发跑两次衰减(delta 双计)——_decaying 在飞标记
+    跳过本轮(零人设读取/零衰减扫描/零落库);正常跑完 try/finally 复位标记。"""
+
+    from catsitate_core.favorability import BatchEngine
+    from catsitate_core.storage import SQLiteStore
+
+    logs: list = []
+    p = _make_history_plugin(tmp_path, logs, [])
+    p.config.plugin.enabled = True
+    p.config.favorability.decay_enabled = True
+    p.sleep = type("_S", (), {"is_sleeping": staticmethod(lambda: False)})()
+    p.store = SQLiteStore(tmp_path / "decay_guard.db")
+    p.fav_engine = BatchEngine(p.store, p.config.favorability)
+    p.fav_engine.ensure_schema()
+    p.fav_engine.apply_delta("u1", 42, "很好", judged_at="2026-08-01T12:00:00")  # 候选:score>0
+
+    async def _stub_refresh():
+        p._stream_cache = {"g1": {"session_id": "g1", "is_group_session": False, "user_id": "u1"}}
+
+    p._refresh_stream_cache = _stub_refresh
+
+    async def _fetch_stub(stream_id, limit):
+        del stream_id, limit
+        return []
+
+    p._fetch_recent = _fetch_stub
+
+    scan_calls: list = []
+
+    class _DecayStub:
+        async def scan_and_apply(self, candidates, persona="", behavior_style=""):
+            scan_calls.append(list(candidates))
+            return []
+
+    p.decay = _DecayStub()
+
+    persona_calls: list = []
+
+    async def _persona_stub():
+        persona_calls.append(1)
+        return "猫耳少女", ""
+
+    p._persona_context = _persona_stub
+
+    log_before = p.store.query("SELECT COUNT(*) FROM favorability_log")[0][0]
+
+    # 在飞标记 True(并发触发):整轮跳过——零人设读取、零衰减扫描、零落库
+    p._decaying = True
+    asyncio.run(p._daily_decay())
+    assert scan_calls == [] and persona_calls == []
+    assert p._decaying is True  # 跳过路径不动在飞标记(由在飞那轮负责复位)
+    assert p.store.query("SELECT COUNT(*) FROM favorability_log")[0][0] == log_before
+
+    # 标记复位后正常跑:扫描执行一轮;跑完标记自动复位(try/finally)
+    p._decaying = False
+    asyncio.run(p._daily_decay())
+    assert len(scan_calls) == 1 and len(persona_calls) == 1
+    assert p._decaying is False
 
 
 def test_resolve_quote_senders_dedup_and_failure_passthrough(tmp_path):

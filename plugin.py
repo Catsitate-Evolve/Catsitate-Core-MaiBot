@@ -170,6 +170,7 @@ class CatsitatePlugin(MaiBotPlugin):
     _qzone_notify_task_armed: bool = False  # 统一通知轮询调度任务已注册标记(热重载重注册防重)
     _qzone_poll_running: bool = False  # 浏览轮询后台拉取进行中(深度审查 A-2:tick 防重入标记)
     _qzone_notify_running: bool = False  # 通知轮询后台扫描进行中(同上,通知 tick 独立标记)
+    _decaying: bool = False  # 自然衰减进行中(2026-09-03 复审:醒后 spawn 与调度 tick 并发防重入,防 delta 双计)
     _qzone_send_armed: str = ""        # 发布触发已武装的窗口标记 "{day}|{start}"
     _qzone_send_first_poll_done: bool = False  # 本窗口首轮拉取是否已完成
     _qzone_sourcec_empty_rounds: int = 0  # 源C 连续空解析轮数(锚点漂移观测线,I-5)
@@ -311,6 +312,8 @@ class CatsitatePlugin(MaiBotPlugin):
         # 轮询后台任务防重入标记实例级重置(类属性共享可变态,卸载取消任务后不得残留 True)
         self._qzone_poll_running = False
         self._qzone_notify_running = False
+        # 衰减防重入标记实例级重置(同上;残留 True 会令醒后补跑衰减被永久跳过)
+        self._decaying = False
         # 源C 解析观测线状态实例级重置(同上,类属性共享可变态)
         self._qzone_sourcec_empty_rounds = 0
         self._qzone_sourcec_drift_warned = False
@@ -3057,6 +3060,13 @@ class CatsitatePlugin(MaiBotPlugin):
             return
         if not self.config.plugin.enabled or not self.config.favorability.decay_enabled:
             return
+        # 并发防护(2026-09-03 复审):醒后 _wake_up spawn 的 _daily_settle 与调度 tick
+        # 的 daily_decay/daily_settle 可并发(后台任务不与调度器串行),衰减会跑两次,
+        # 而 judge_id 幂等键只同秒去重——delta 双计。实例级在飞标记:在飞则跳过本轮。
+        if self._decaying:
+            self.ctx.logger.info("衰减本轮已在进行,跳过并发触发(防 delta 双计)")
+            return
+        self._decaying = True
         try:
             decay_quote_warned = False  # 本轮 _daily_decay 至多一条 quote 解析失败告警(不静默)
             candidates = []
@@ -3132,6 +3142,8 @@ class CatsitatePlugin(MaiBotPlugin):
                     self.ctx.logger.warning("衰减升特别被独占钳制(user=%s)", r["user_id"])
         except Exception:
             self.ctx.logger.exception("衰减扫描异常,本轮跳过")
+        finally:
+            self._decaying = False  # 在飞标记复位(异常/正常退出一致,防永久卡死跳过)
 
     def _stream_is_group(self, stream_id: str) -> bool:
         info = self._stream_cache.get(stream_id) or {}
@@ -3373,7 +3385,14 @@ class CatsitatePlugin(MaiBotPlugin):
             self.ctx.logger.warning("QQ空间日记内容为空,跳过发布")
             return
         try:
-            tid = await self.qzone_client.do_publish(content=diary_text)
+            # 同轮自愈(2026-09-03 复审修复,用户裁定 #7 语义,与 qzone_post 同款):
+            # AuthError 作废并重取 cookie 后原地重试一次——未接入前登录态失效当晚
+            # 日记会静默丢失(入睡任务无用户回执,失败只有日志可见)。
+            tid, auth_err = await self._qzone_auth_retry(
+                lambda: self.qzone_client.do_publish(content=diary_text), "日记发布")
+            if auth_err:
+                self.ctx.logger.warning("QQ空间日记发布失败:%s(内容已生成,发布跳过)", auth_err)
+                return
         except Exception:
             self.ctx.logger.exception("QQ空间日记发布失败(内容已生成,发布跳过)")
             return
@@ -3996,19 +4015,21 @@ class CatsitatePlugin(MaiBotPlugin):
             self.ctx.logger.info("结算取数: 共 %d 条,其中 bot 发言 %d 条(bot_user_id=%s)", len(history), bot_n, bot_id)
         return history
 
-    @staticmethod
-    def _normalize_ts(raw_ts: Any) -> str:
+    def _normalize_ts(self, raw_ts: Any) -> str:
         """消息时间戳归一化为 ISO(与 favorability.window_start 同格式,保证窗口过滤可比)。
 
         实机实测:主程序序列化的 timestamp 为 epoch 浮点(字符串);直接与 ISO window_start
         字符串比较恒 False,导致批次素材恒空(联调发现)。
+        实例方法(2026-09-03 复审修复):原 staticmethod 的 except 分支引用 self,
+        坏时间戳触发即 NameError;调用点 self._normalize_ts(...) 不受影响。
         """
 
         if raw_ts is None:
             return ""
         try:
             return datetime.fromtimestamp(float(raw_ts)).strftime("%Y-%m-%dT%H:%M:%S")
-        except (ValueError, TypeError, OSError):
+        except (ValueError, TypeError, OSError, OverflowError):
+            # OverflowError:超大 epoch(如 inf)超出平台范围,同样按坏值处理不上抛
             self.ctx.logger.warning("消息时间戳归一化失败,该消息将被窗口过滤排除: %r", raw_ts)
             return str(raw_ts)
 

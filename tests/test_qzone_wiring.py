@@ -987,6 +987,54 @@ def test_diary_generation_publish_failure_no_snapshot(tmp_path):
     )
 
 
+def test_diary_generation_auth_error_retries_in_round(tmp_path):
+    """日记发布接同轮自愈(2026-09-03 复审,用户裁定 #7 语义,与 qzone_post 同款):
+    AuthError → cookie 作废重取成功 → 原地重试一次发布成功;快照照常落(醒来回注)。
+    未接入前登录态失效当晚日记会静默丢失。"""
+
+    class _AuthOncePublish(_StubWriteClient):
+        def __init__(self):
+            super().__init__()
+            self.calls = 0
+
+        async def do_publish(self, *, content):
+            self.calls += 1
+            if self.calls == 1:
+                raise QzoneAuthError("登录态失效(code=-3000)")
+            return await super().do_publish(content=content)
+
+    p = _make_diary_plugin(tmp_path)
+    p.qzone_client = _AuthOncePublish()
+    p.qzone_cookie.get_result = {"p_skey": "fresh"}  # 重取成功
+    asyncio.run(p._generate_and_publish_diary())
+    assert p.qzone_client.calls == 2  # 失效一次,同轮原地重试
+    assert p.qzone_cookie.invalidate_calls == 1  # cookie 已作废并重取
+    # 仅重试成功那次计入发布(AuthError 次远端已拒发)
+    assert p.qzone_client.publish_calls == ["今天窝着刷手机,看到小明去公园散步,有点懒洋洋的。"]
+    data = p._pending_diary_snapshot.load()
+    assert data.get("text") == "今天窝着刷手机,看到小明去公园散步,有点懒洋洋的。"
+    assert data.get("tid") == "newtid0001"
+
+
+def test_diary_generation_auth_refetch_fail_skips_publish(tmp_path):
+    """日记发布登录态失效且 cookie 重取失败:告警跳过,零发布零快照——
+    失败显式暴露,不静默也不伪装成发布。"""
+
+    class _AuthFailPublish(_StubWriteClient):
+        async def do_publish(self, *, content):
+            raise QzoneAuthError("登录态失效(code=-3000)")
+
+    p = _make_diary_plugin(tmp_path)
+    p.qzone_client = _AuthFailPublish()
+    asyncio.run(p._generate_and_publish_diary())
+    assert p.qzone_client.publish_calls == []  # 零发布(桩失败路径不记录)
+    assert p.qzone_cookie.invalidate_calls == 1  # cookie 已作废并尝试重取(默认重取失败)
+    assert p._pending_diary_snapshot.load() == {}  # 未发布的日记不落快照
+    assert any(
+        level == "warning" and "QQ空间日记发布失败" in str(a[0]) for level, a in p.logs
+    )
+
+
 def test_echo_pending_diary_routes_self_message_and_clears(tmp_path):
     """醒来补注:pending 快照非空 → self 消息经网关注入虚拟流(user=bot 自己,
     无 is_mentioned 不触发决策轮,仅入历史供后续互动引用);正文截 60 字预览;

@@ -217,20 +217,22 @@ def format_comment_block(comments: list, *, comment_total: int = 0,
                          now_epoch: float = 0.0) -> str:
     """把结构化评论区块渲染为注入/详情可读文本(2026-09-02 设计共识)。
 
-    形态:首行「评论区(N条):」(QQ 截断时「评论区(前N条/共M条):」);每条顶层
-    评论一行「昵称(QQ):内容 (相对时间)〔评论ID=…〕」;楼中楼缩进一行一条,
-    超过 per_reply_limit 只展开前 N 条并尾标「共M条回复」;整块超 char_limit
-    截断并标注「评论过多,只显示前面部分」。评论ID 锚与〔说说ID=〕同款照抄
-    契约(qzone_reply 全域化后的 comment_id 来源之一)。空区块返回空串。"""
+    形态:首行「评论区(N条):」(QQ 截断时「评论区(前N条/共M条):」——N 为
+    **实际显示**条数,超长截断后按显示数计,终审 M-1 修复);每条顶层评论一行
+    「昵称(QQ):内容 (相对时间)〔评论ID=…〕」;楼中楼缩进一行一条,超过
+    per_reply_limit 只展开前 N 条并尾标「共M条回复」;整块超 char_limit 截断
+    并标注「评论过多,只显示前面部分」(预算含行分隔符与标注行本身,终审 L-1)。
+    评论ID 锚与〔说说ID=〕同款照抄契约(qzone_reply 全域化后的 comment_id
+    来源之一)。空区块:评论总数>0 时返回诚实提示(响应未包含评论内容,终审
+    M-2),总数为 0 返回空串(调用方按「还没有评论」口径处理)。"""
 
     if not comments:
+        if comment_total > 0:
+            return f"评论区(共{comment_total}条,本次响应未包含评论内容)。"
         return ""
-    total_label = (
-        f"前{len(comments)}条/共{comment_total}条"
-        if comment_total > len(comments) else f"{len(comments)}条"
-    )
-    lines = [f"评论区({total_label}):"]
-    used = len(lines[0])
+    TRUNCATION_MARK = "评论过多,只显示前面部分"
+    body: list[str] = []
+    used = 0
     truncated = False
     for c in comments:
         entry = f"{c.nickname}({c.uin}):{c.content}"
@@ -249,13 +251,23 @@ def format_comment_block(comments: list, *, comment_total: int = 0,
         if c.reply_total > len(shown_replies):
             pending.append(f"  ↳ …共{c.reply_total}条回复")
         block = "\n".join(pending)
-        if used + len(block) > char_limit:
+        # +1=行分隔符;截断时预留标注行,防最终拼接超出 char_limit
+        reserve = len(TRUNCATION_MARK) + 1 if len(body) < len(comments) - 1 else 1
+        if used + len(block) + reserve > char_limit:
             truncated = True
             break
-        lines.append(block)
-        used += len(block)
+        body.append(block)
+        used += len(block) + 1
+    # 首行按实际显示条数(M-1):被截断时「前K条」;QQ 侧截断时「前N/共M」
+    shown = len(body)
+    if truncated or comment_total > len(comments):
+        front = shown if truncated else len(comments)
+        header = f"评论区(前{front}条/共{comment_total}条):"
+    else:
+        header = f"评论区({shown}条):"
+    lines = [header, *body]
     if truncated:
-        lines.append("评论过多,只显示前面部分")
+        lines.append(TRUNCATION_MARK)
     return "\n".join(lines)
 
 

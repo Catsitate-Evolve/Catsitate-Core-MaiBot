@@ -223,6 +223,33 @@ def test_selfcheck_blocks_talk_value_zero():
 from catsitate_core.qzone.messages import RPC_IMAGE_BUDGET_BYTES, clip_text, fit_images_to_rpc_budget
 
 
+def test_format_comment_block_truncation_label_shows_actual_count():
+    """终审 M-1/L-1 修复(2026-09-03):超长截断后首行「前K条」按实际显示数计
+    (不再用 QQ 给的总量);预算含行分隔符与标注行,最终长度不超 char_limit。"""
+    from catsitate_core.qzone.messages import format_comment_block
+    from catsitate_core.qzone.wire import FeedComment
+
+    comments = [FeedComment(comment_tid=f"c{i}", uin="20000", nickname="小蓝",
+                            content="长" * 105, create_time="") for i in range(61)]
+    text = format_comment_block(comments, comment_total=61, now_epoch=0, char_limit=6000)
+    assert "评论过多,只显示前面部分" in text
+    # 首行标签=实际显示数(<61),不是 QQ 给的 61
+    import re as _re
+    m = _re.search(r"评论区\(前(\d+)条/共61条\):", text)
+    assert m and 0 < int(m.group(1)) < 61
+    assert len(text) <= 6000 + 40  # 预算收紧后不再有「显示条数+1」级的超出
+
+
+def test_format_comment_block_empty_but_total_positive_is_honest():
+    """终审 M-2 修复(2026-09-03):cmtnum>0 但 commentlist 未随载荷给出——
+    诚实提示「共N条,本次响应未包含」,不再返回空串伪装没评论;真正 0 条才空串。"""
+    from catsitate_core.qzone.messages import format_comment_block
+
+    text = format_comment_block([], comment_total=7, now_epoch=0)
+    assert "共7条" in text and "本次响应未包含" in text
+    assert format_comment_block([], comment_total=0) == ""
+
+
 def test_clip_text_marks_truncation():
     """可见内容截断(2026-09-02 用户裁定):超长截断尾加"..."让读者知道还有
     下文;未超长原样返回;空值安全。"""

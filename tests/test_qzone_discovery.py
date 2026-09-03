@@ -147,3 +147,15 @@ def test_feed_discovery_is_lightweight_index():
     """FeedDiscovery 是发现层轻量索引:仅 5 字段,与充实层 FeedItem(完整实体)分层。"""
     d = FeedDiscovery(tid="aa", uin="1", nickname="n", abstime="100", appid=311)
     assert (d.tid, d.uin, d.nickname, d.abstime, d.appid) == ("aa", "1", "n", "100", 311)
+
+
+def test_parse_unified_timeline_appid_fallback_to_appiconid():
+    """终审修复(2026-09-03):窗口边界条目缺 appid 但带同值 appiconid——
+    回退解析,不再整条丢弃(实机曾因此丢一条真实说说)。"""
+    from catsitate_core.qzone.discovery import parse_unified_timeline
+
+    text = ("_Callback({\"code\":0,\"data\":{main:{},data:["
+            "{key:'abc123def456789', appiconid:'311', abstime:1788164306,"
+            " opuin:'3298178030', nickname:'Hesitate_P'}]}})")
+    items = parse_unified_timeline(text)
+    assert len(items) == 1 and items[0].appid == 311 and items[0].tid == "abc123def456789"

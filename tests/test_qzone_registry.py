@@ -119,3 +119,15 @@ def test_feed_context_new_fields_default():
     ctx = FeedContext(tid="t", owner_uin="1")
     assert ctx.content_summary == "" and ctx.comment_map == {}
     assert not hasattr(ctx, "recent_comments")  # 死字段已删
+
+
+def test_register_comment_map_same_key_keeps_nonempty_nickname():
+    """终审 L-2 修复(2026-09-03):同键合并昵称取非空侧——浏览登记 (uin,昵称)
+    不被通知登记的 (uin, 空串) 覆盖;新键正常并入。"""
+    reg = FeedContextRegistry()
+    reg.register(_ctx("tidL2", comment_map={"c1": ("20000", "小红"), "c2": ("30000", "小刚")}))
+    reg.register(_ctx("tidL2", kind="notify_reply",
+                      comment_map={"c1": ("20000", "")}))  # 通知形态:昵称空
+    ctx = reg.resolve("tidL2")
+    assert ctx.comment_map["c1"] == ("20000", "小红")  # 昵称保留
+    assert ctx.comment_map["c2"] == ("30000", "小刚")  # 旧键保留

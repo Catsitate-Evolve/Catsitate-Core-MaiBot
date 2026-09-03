@@ -943,27 +943,34 @@ class CatsitatePlugin(MaiBotPlugin):
         fid, target_qq, ctx = self._qzone_resolve_feed(feed_id)
         if not fid:
             return f"未找到说说 {feed_id[:12]},可能已过期。"
-        # 楼中楼二元组与 @ 目标解析(2026-09-02 设计共识 Q6/Q11,三级):
-        # ① 通知上下文(源A/B:主评论作者=comment_uin,@ 目标=评论者 commenter)
+        # 楼中楼二元组与 @ 目标解析(2026-09-02 设计共识 Q6/Q11;终审 H-1 修复
+        # 2026-09-03:通知上下文只在锚匹配时采用——registry 字段级合并会让被
+        # 通知登记过的说说保留旧 comment_uin/commenter,无条件优先会把
+        # comment_map 命中的「另一条评论」错挂到通知的主评论线程并 @ 错人):
+        # ① 通知上下文且 ctx.comment_tid == comment_id(二元组精确对应本条评论)
         # ② comment_map(浏览注入/详情查看登记:comment_id → 主评论作者)
-        # ③ 全 miss=锚过期/未查过详情,显式拒绝+指引(Q11:不猜测回退,防 @ 错人)
+        # ③ 全 miss=锚过期/未查过详情,显式拒绝+指引(Q11:不猜测回退)
         bot_uin = str(self.config.favorability.bot_user_id or "").strip()
-        map_entry = ctx.comment_map.get(comment_id.strip()) if ctx else None
-        if ctx and ctx.comment_uin:
+        cid = comment_id.strip()
+        notify_hit = bool(ctx and ctx.comment_tid == cid)
+        map_entry = ctx.comment_map.get(cid) if ctx else None
+        if notify_hit and ctx.comment_uin:
             comment_uin = ctx.comment_uin
         elif map_entry:
             comment_uin = map_entry[0]
+        elif notify_hit:
+            comment_uin = bot_uin  # 源B形态:被回复的主评论=bot 自己
         else:
-            comment_uin = bot_uin  # 仅通知源B形态(主评论=bot 自己)时才会走到
-        if not (ctx and (ctx.comment_uin or ctx.commenter_uin)) and not map_entry:
-            return (f"未找到这条评论(评论ID={comment_id[:12]} 锚可能已过期)——"
+            comment_uin = bot_uin  # 防御不可达(下方拒绝条件先行拦截)
+        if not notify_hit and not map_entry:
+            return (f"未找到这条评论(评论ID={cid[:12]} 锚可能已过期)——"
                     "先用 view_friend_feed_detail 查看该说说,照抄最新评论ID再回复。")
         # @ 目标=正在对话的评论者/回复者(与二元组解耦:源B 回复线程头=bot 自己
-        # 的评论,但 @ 的是回复者;无评论者上下文时 @ 主评论作者;前缀由
-        # wire.build_reply_form 统一拼装)
-        at_uin = (ctx.commenter_uin if ctx and ctx.commenter_uin
-                  else (map_entry[0] if map_entry else comment_uin))
-        at_nick = ((ctx.commenter_nickname if ctx else "")
+        # 的评论,但 @ 的是回复者;仅锚匹配的通知才有评论者语境,否则 @ 主评论
+        # 作者;前缀由 wire.build_reply_form 统一拼装)
+        at_uin = ((ctx.commenter_uin if notify_hit and ctx else "")
+                  or (map_entry[0] if map_entry else comment_uin))
+        at_nick = ((ctx.commenter_nickname if notify_hit and ctx else "")
                    or (map_entry[1] if map_entry else "")
                    or at_uin or "好友")
         try:

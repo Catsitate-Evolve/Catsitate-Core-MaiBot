@@ -65,7 +65,14 @@ class FeedContextRegistry:
                 comment_uin=ctx.comment_uin or old.comment_uin,
                 kind=ctx.kind if ctx.kind != "feed" else old.kind,  # 浏览条目不清掉通知语义
                 content_summary=ctx.content_summary or old.content_summary,
-                comment_map={**old.comment_map, **ctx.comment_map},  # 键级合并:新评论并入,旧评论锚保留
+                # 键级合并:新评论并入,旧评论锚保留;同键时昵称取非空侧(终审
+                # L-2 修复——通知形态登记 (uin, "") 会把浏览评论区登记的
+                # (uin, 昵称) 覆盖成空昵称)
+                comment_map={
+                    **old.comment_map,
+                    **{k: (v[0], v[1] or old.comment_map.get(k, ("", ""))[1])
+                       for k, v in ctx.comment_map.items()},
+                },
             )
             ctx = merged
         self._entries[ctx.tid] = (ctx, time.monotonic())

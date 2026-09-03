@@ -1606,6 +1606,31 @@ def test_notify_scan_source_c_drift_warn_once(tmp_path):
     assert _drift_warnings() == 2  # 复位后的新漂移段落:第二次告警
 
 
+def test_qzone_reply_mixed_notify_and_comment_map_uses_matching_anchor(tmp_path):
+    """终审 H-1 修复(2026-09-03):通知登记过的说说(registry 字段级合并保留
+    comment_uin/commenter),回复评论区里**另一条**评论(comment_id≠通知主评论)
+    时——二元组与 @ 目标都取 comment_map 命中,不再被旧通知上下文错挂线程;
+    回复通知的那条主评论(锚匹配)时才用通知二元组与评论者。"""
+
+    p = _make_tool_plugin(tmp_path)
+    # 通知登记:主评论 ct_notify(作者=bot,源B 形态),评论者=小红
+    _register_feed(p, tid="feedMix", owner="10001", commenter_uin="20000",
+                   commenter_nickname="小红", comment_tid="ct_notify", comment_uin=BOT_UIN,
+                   comment_map={"ct_other": ("30000", "小蓝")})  # 浏览/detail 补充的评论锚
+    # ① 回复另一条评论:comment_map 命中(通知锚不匹配)→ 二元组=小蓝、@小蓝
+    res = asyncio.run(p.qzone_reply(feed_id="feedMix", comment_id="ct_other",
+                                    content="看到这条了", stream_id="s1"))
+    assert res.startswith("回复成功,已回复 小蓝")
+    call = p.qzone_client.reply_calls[-1]
+    assert call[3] == "30000" and call[6] == "30000"  # comment_uin/at_uin=评论作者
+    # ② 回复通知的主评论:锚匹配 → 通知二元组(bot 自己的主评论)+@评论者小红
+    res2 = asyncio.run(p.qzone_reply(feed_id="feedMix", comment_id="ct_notify",
+                                     content="回你", stream_id="s1"))
+    assert res2.startswith("回复成功,已回复 小红")
+    call2 = p.qzone_client.reply_calls[-1]
+    assert call2[3] == BOT_UIN and call2[6] == "20000"  # 二元组=bot、@=评论者
+
+
 def test_view_friend_feeds_pagination_empty_page_hint(tmp_path):
     """翻页(Q8=A 设计共识 2026-09-02):page 透传 client(pos=(page-1)*num);
     第 2 页为空 → 「没有更多了」诚实提示,不编造。"""

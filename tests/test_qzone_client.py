@@ -592,3 +592,13 @@ def test_get_user_feeds_parses_mention_markup_in_comments():
     c = feeds[0].comments[0]
     assert c.content == "@小明 冒个泡"  # 机器 @ 已解析(含 who/auto 额外字段)
     assert c.replies[0].content == "@小红 收到啦"
+
+
+def test_extract_timeline_cursor_basetime_fallback():
+    """游标提取回退分支(终审测试盲区):main.begintime 缺失时取 externparam
+    的 basetime;两者皆无返回空串(调用方终止翻页)。"""
+    from catsitate_core.qzone.client import QzoneClient
+
+    assert QzoneClient.extract_timeline_cursor("{main:{begintime:'1788164300'}}") == "1788164300"
+    assert QzoneClient.extract_timeline_cursor("externparam:'basetime=1785058947&pagenum=3'") == "1785058947"
+    assert QzoneClient.extract_timeline_cursor("{}") == ""

@@ -1,24 +1,19 @@
-"""数据迁移体系测试:PRAGMA user_version + 步骤注册表 + 链式执行。"""
+"""数据迁移体系测试:版本表 + 步骤注册表 + 链式执行。"""
 
 import logging
-import sqlite3
 
 from catsitate_core import migrations
-from catsitate_core.migrations import LATEST_DB_VERSION, read_db_version, run_migrations
+from catsitate_core.migrations import LATEST_DB_VERSION, _write_db_version, read_db_version, run_migrations
 from catsitate_core.storage import SQLiteStore
 
 _logger = logging.getLogger("catsitate.test.migrations")
 
 
-def _set_user_version(db_path, version: int) -> None:
-    """测试辅助:直接写 PRAGMA user_version(模拟既有库的版本状态)。"""
+def _prime_version(store: SQLiteStore, version: int) -> None:
+    """测试辅助:预置版本表(模拟既有库的版本状态)。"""
 
-    conn = sqlite3.connect(db_path)
-    try:
-        conn.execute(f"PRAGMA user_version = {int(version)}")
-        conn.commit()
-    finally:
-        conn.close()
+    store.execute("CREATE TABLE IF NOT EXISTS _schema_version (version INTEGER NOT NULL)")
+    _write_db_version(store, version)
 
 
 def test_fresh_db_runs_baseline_step_to_v1(tmp_path):
@@ -33,7 +28,7 @@ def test_fresh_db_runs_baseline_step_to_v1(tmp_path):
 
 
 def test_legacy_db_with_tables_migrates_to_v1(tmp_path):
-    # 旧库(已有表但 user_version=0):跑完版本=1,既有数据不动
+    # 旧库(已有表但无版本行):跑完版本=1,既有数据不动
     store = SQLiteStore(tmp_path / "legacy.db")
     store.execute("CREATE TABLE IF NOT EXISTS memo (id INTEGER PRIMARY KEY, content TEXT)")
     store.execute("INSERT INTO memo (content) VALUES ('既有数据')")
@@ -47,7 +42,7 @@ def test_legacy_db_with_tables_migrates_to_v1(tmp_path):
 def test_already_v1_skips_and_returns_zero(tmp_path):
     # 版本已是 1:跳过迁移,返回 0,版本保持 1
     store = SQLiteStore(tmp_path / "v1.db")
-    _set_user_version(store.db_path, 1)
+    _prime_version(store, 1)
     assert run_migrations(store, _logger) == 0
     assert read_db_version(store) == 1
     store.close()

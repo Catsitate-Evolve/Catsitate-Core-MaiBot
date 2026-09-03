@@ -1,24 +1,21 @@
-"""数据库迁移体系:PRAGMA user_version + 步骤注册表 + 链式执行。
+"""数据库迁移体系:版本表 + 步骤注册表 + 链式执行。
 
-参照主程序迁移体系的模式(SQLite 原生 PRAGMA user_version 存版本号、按
-from→to 步骤链逐步执行),只借模式不 import 主程序模块(插件仅依赖 SDK)。
+参照主程序迁移体系模式(按 from→to 步骤链逐步执行),版本号存
+`_schema_version` 表(全参数绑定读写;PRAGMA user_version 不支持参数绑定,
+拼接有安全扫描风险,改用表语义等价)。
 
 时序:on_load 中各 store 的 ensure_schema 先跑(CREATE IF NOT EXISTS /
 ALTER TABLE ADD COLUMN 自愈补缺),迁移链后跑——承担 ensure_schema 做不了的
 列改名/类型变更/行级数据变换/清理。
 
 纪律(错误显式暴露):
-- PRAGMA 读写走专用 sqlite3 连接:SQLiteStore.execute 的 with-block 只对
-  DML 事务有意义,PRAGMA 非事务语句不经 store 通道;
-- 版本号只在 handler 成功后推进:单步 handler 失败→告警+停止,版本停留,
-  下次启动重试(不阻断插件加载,数据不丢);
-- handler 必须幂等:store 按语句自动提交,失败重跑会重新执行已提交语句,
-  步骤编写时须保证重复执行结果一致。
+- 版本号只在 handler 成功后推进:单步失败→告警+停止,版本停留,下次启动
+  重试(不阻断插件加载,数据不丢);
+- handler 必须幂等:store 按语句自动提交,失败重跑会重新执行已提交语句。
 """
 
 from __future__ import annotations
 
-import sqlite3
 from typing import Callable
 
 from catsitate_core.storage import SQLiteStore
@@ -28,9 +25,9 @@ LATEST_DB_VERSION = 1
 
 
 def _noop(store: SQLiteStore) -> None:
-    """空操作:v1.0.0 无实际数据变换(ensure_schema 已自愈全部历史差异),只推基线版本号。"""
+    """空操作:v1.0.0 无实际数据变换(ensure_schema 已自愈全部历史差异)。"""
 
-    del store  # 不触碰数据库
+    del store
 
 
 # 迁移步骤注册表:(from_ver, to_ver, 描述, handler)——只增不改历史步骤
@@ -40,33 +37,24 @@ MIGRATION_STEPS: list[tuple[int, int, str, Callable[[SQLiteStore], None]]] = [
 
 
 def read_db_version(store: SQLiteStore) -> int:
-    """读 PRAGMA user_version(专用连接;启动摘要与测试共用)。"""
+    """读版本表(无行视为 0;启动摘要与测试共用)。"""
 
-    conn = sqlite3.connect(store.db_path)
-    try:
-        row = conn.execute("PRAGMA user_version").fetchone()
-    finally:
-        conn.close()
-    if row is None or len(row) == 0:
-        raise RuntimeError("PRAGMA user_version 读取结果为空(数据库形态异常)")
-    return int(row[0])
+    store.execute("CREATE TABLE IF NOT EXISTS _schema_version (version INTEGER NOT NULL)")
+    rows = store.query("SELECT version FROM _schema_version")
+    return int(rows[0][0]) if rows else 0
 
 
 def _write_db_version(store: SQLiteStore, version: int) -> None:
-    """写 PRAGMA user_version(专用连接,显式提交;版本号非法直接抛出)。"""
+    """写版本表(参数绑定;版本号非法直接抛出)。"""
 
     if version < 0:
-        raise ValueError(f"user_version 不能为负数: {version}")
-    conn = sqlite3.connect(store.db_path)
-    try:
-        conn.execute(f"PRAGMA user_version = {int(version)}")
-        conn.commit()
-    finally:
-        conn.close()
+        raise ValueError(f"数据库版本不能为负数: {version}")
+    store.execute("DELETE FROM _schema_version")
+    store.execute("INSERT INTO _schema_version (version) VALUES (?)", (version,))
 
 
 def run_migrations(store: SQLiteStore, logger) -> int:
-    """按注册表把 PRAGMA user_version 推进到 LATEST_DB_VERSION。
+    """按注册表把数据库版本推进到 LATEST_DB_VERSION。
 
     当前版本 >= LATEST 时直接返回 0;否则逐链执行(当前版本 v → 取
     from_ver == v 的步骤):handler 成功后写新版本号。返回本次实际执行步数;

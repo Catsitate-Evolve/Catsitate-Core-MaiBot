@@ -1,11 +1,11 @@
 # AGENTS.md — catsitate_core_maibot
 
-Catsitate 的 MaiBot 核心人格行为插件(独立 git repo;主程序在父目录 `../../../`,只读)。本指南用于插件的开发、测试与审查。
+Catsitate 的 MaiBot 核心人格行为插件(独立 git repo;运行宿主为 MaiBot 主程序——本插件置于其 `plugins/` 目录下,主程序文件对本仓库只读)。本指南用于插件的开发、测试与审查。
 
 ## 项目定位
 
 - 一个插件 `catsitate.core`,多模块:注入框架 / 时间节日天气感知 / 好感度(按人)/ 自然衰减 / 睡眠与日程 / 主动问候 / 备忘录提醒 / 贴表情 / 戳一戳 / reply 补传 / 图片重看 / 回复质检哨兵 / QQ空间(动态浏览·互动·表达)/ 内容护栏 / 数据迁移。
-- 人格与行为风格以 `Catsitate-Soul`(工作区同级仓库)为准;插件 prompt 模板是其运行形态之一。
+- 人格与行为风格素材在独立仓库 Catsitate-Soul(人格描述与行为风格以其为准);插件 prompt 模板是其运行形态之一。
 
 ## 硬约束(必须遵守)
 
@@ -49,7 +49,7 @@ Catsitate 的 MaiBot 核心人格行为插件(独立 git repo;主程序在父目
 ## 测试
 
 ```bash
-# 必须在此插件目录下运行(不在 MaiBot-dev 根,否则 pytest 会收集主程序测试并报 ImportError)
+# 必须在本仓库根目录下运行(不在宿主主程序目录,否则 pytest 会收集主程序测试并报 ImportError)
 python3 -m pytest tests/ -q        # 全量(当前 566 用例)
 python3 -m pytest tests/test_integration.py -v   # 集成冒烟
 ```

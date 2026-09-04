@@ -1384,7 +1384,7 @@ def test_diary_stable_ctx_includes_persona(tmp_path):
     p._plugin_config_instance = CatsitateConfig()
     captured = {}
 
-    async def side_llm(messages, model, module, timeout_ms=None):
+    async def side_llm(messages, model, module, timeout_ms=None, temperature=None):
         captured["messages"] = messages
         return {"success": True, "response": "今天很平静。" * 5}
 

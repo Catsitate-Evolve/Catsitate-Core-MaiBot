@@ -118,6 +118,25 @@ def test_qzone_section_defaults():
     assert q.diary_enabled is True
     assert q.diary_llm_model == "memory"
     assert q.diary_llm_timeout_ms == 0
+    # 篇幅区间指导与生成温度(2026-09-04:去目标字数随机化,对齐 diary_plugin
+    # qzone_min/max_word_count 配置指导形态;-1=不传温度走任务默认)
+    assert q.diary_word_count_min == 80
+    assert q.diary_word_count_max == 200
+    assert q.diary_llm_temperature == -1.0
+
+
+def test_qzone_diary_word_count_range_rejects_inverted():
+    """日记篇幅区间交叉校验:上限小于下限直接 ValidationError(拒绝加载,
+    不静默交换/钳制——错误显式暴露)。"""
+
+    import pytest
+    from pydantic import ValidationError
+
+    from catsitate_core.config import QzoneSection
+
+    QzoneSection(diary_word_count_min=100, diary_word_count_max=100)  # 相等合法
+    with pytest.raises(ValidationError, match="diary_word_count_max"):
+        QzoneSection(diary_word_count_min=300, diary_word_count_max=200)
 
 
 def test_qzone_constants():

@@ -1,5 +1,7 @@
 """Catsitate 插件配置模型(与一致;字段中文 label 供 WebUI 展示)。"""
 
+from pydantic import model_validator
+
 from maibot_sdk import Field, PluginConfigBase
 
 
@@ -243,6 +245,9 @@ class QzoneSection(PluginConfigBase):
     diary_enabled: bool = _f(True, "日记功能开关(入睡时生成并发布空间日记说说)", label="日记开关")
     diary_llm_model: str = _f("memory", "日记生成模型:填主程序 task 名", label="日记模型(task 名)")
     diary_llm_timeout_ms: int = _f(0, "日记生成 LLM 超时(毫秒);0=主程序默认", label="日记超时(毫秒)")
+    diary_word_count_min: int = _f(80, "日记目标篇幅下限(字,20~8000;进素材行作字数指导)", label="日记字数下限")
+    diary_word_count_max: int = _f(200, "日记目标篇幅上限(字,须≥下限;进素材行作字数指导)", label="日记字数上限")
+    diary_llm_temperature: float = _f(-1.0, "日记生成温度(0~2);-1=不传,走主程序任务默认", label="日记温度")
     digest_enabled: bool = _f(True, "空间见闻开关(read_qzone 窗口结束时旁路 LLM 摘要,注入真实聊天)", label="空间见闻开关")
     digest_llm_model: str = _f("memory", "空间见闻摘要模型", label="见闻模型")
     digest_llm_timeout_ms: int = _f(0, "空间见闻超时(毫秒,0=默认)", label="见闻超时(ms)")
@@ -250,6 +255,17 @@ class QzoneSection(PluginConfigBase):
     expression_llm_timeout_ms: int = _f(0, "表达润色超时(毫秒,0=默认)", label="表达润色超时(ms)")
     request_timeout_ms: int = _f(10000, "空间 HTTP 请求超时(毫秒)", label="HTTP 超时(毫秒)")
     cookie_refresh_minutes: int = _f(60, "cookie 刷新节流(分钟,间隔内跳过重取)", label="cookie 刷新节流(分钟)")
+
+    @model_validator(mode="after")
+    def _diary_word_count_ordered(self):
+        """日记篇幅区间交叉校验:上限小于下限直接拒绝加载(不静默交换/钳制)。"""
+
+        if self.diary_word_count_max < self.diary_word_count_min:
+            raise ValueError(
+                f"diary_word_count_max({self.diary_word_count_max})"
+                f" 必须大于等于 diary_word_count_min({self.diary_word_count_min})"
+            )
+        return self
 
 
 class GuardSection(PluginConfigBase):

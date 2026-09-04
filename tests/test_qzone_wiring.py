@@ -765,8 +765,10 @@ def _make_diary_plugin(tmp_path):
     p.qzone_seen.mark_seen("diaryfeed1", datetime.now().strftime("%Y-%m-%dT%H:%M:%S"))
     llm_calls: list = []
 
-    async def _fake_side_llm(messages, model, module, timeout_ms=None):
-        llm_calls.append({"messages": messages, "model": model, "module": module})
+    async def _fake_side_llm(messages, model, module, timeout_ms=None, temperature=None):
+        llm_calls.append(
+            {"messages": messages, "model": model, "module": module, "temperature": temperature}
+        )
         return {"success": True, "response": "今天窝着刷手机,看到小明去公园散步,有点懒洋洋的。"}
 
     p._side_llm_call = _fake_side_llm
@@ -944,10 +946,10 @@ def test_diary_chat_timeline_fallback_to_per_stream(tmp_path):
     assert "今天的聊天:" not in p.llm_calls[0]["messages"][1]["content"]
 
 
-def test_diary_weather_line_and_random_target_words(tmp_path, monkeypatch):
+def test_diary_weather_line_and_word_count_guidance(tmp_path):
     """M3 修正:日记素材补真实天气(time_aware 快照,无数据
-    省略该行)+目标字数随机化——stable_ctx 注入「本次目标约 {n} 字」,
-    n=random.randint(80,200)(模板「80~200字」表述保留)。"""
+    省略该行)+篇幅区间指导(2026-09-04:去目标字数随机化——
+    diary_word_count_min/max 配置区间进素材行,模板口径引用素材)。"""
 
     import re as _re
 
@@ -959,11 +961,11 @@ def test_diary_weather_line_and_random_target_words(tmp_path, monkeypatch):
     assert any(
         level == "exception" and "日记天气素材" in str(a[0]) for level, a in p.logs
     )
-    m = _re.search(r"\(目标 (\d+) 字左右\)", stable)
-    assert m and 80 <= int(m.group(1)) <= 200  # 随机目标字数注入(区间锁定)
-    assert "80~200字左右" in p.llm_calls[0]["messages"][0]["content"]  # 模板区间表述保留
+    # 默认配置区间进素材行(确定性,无随机)
+    assert "(目标篇幅80~200字)" in stable
+    assert "长度按素材里给的篇幅区间" in p.llm_calls[0]["messages"][0]["content"]
 
-    # 有快照:素材行出现(温度/天气码来自快照);随机字数可确定性注入
+    # 有快照:素材行出现(温度/天气码来自快照);自定义区间原样进素材
     p.store.execute(
         "CREATE TABLE IF NOT EXISTS weather_snapshot ("
         "id INTEGER PRIMARY KEY CHECK (id = 1), city TEXT NOT NULL, "
@@ -973,14 +975,65 @@ def test_diary_weather_line_and_random_target_words(tmp_path, monkeypatch):
         "INSERT INTO weather_snapshot (id, city, fetched_at, data) VALUES (1, '珠海', "
         "'2026-09-01T12:00:00', '{\"temperature_2m\": 26.5, \"weather_code\": 1}')"
     )
-    import plugin as plugin_mod
-
-    monkeypatch.setattr(plugin_mod.random, "randint", lambda a, b: 123)
+    p.config.qzone.diary_word_count_min = 120
+    p.config.qzone.diary_word_count_max = 350
     p.llm_calls.clear()
     asyncio.run(p._generate_and_publish_diary())
     stable = p.llm_calls[0]["messages"][1]["content"]
     assert "当前天气:温度 26.5°C(天气码 1)" in stable
-    assert "(目标 123 字左右)" in stable
+    assert "(目标篇幅120~350字)" in stable
+    assert not _re.search(r"目标 \d+ 字左右", stable)  # 旧随机目标行不复存在
+
+
+def test_diary_generation_temperature_passthrough(tmp_path):
+    """日记生成温度可配置:diary_llm_temperature ≥0 时传给 _side_llm_call;
+    默认 -1 传 None(走主程序任务默认)。RPC 层 kwargs 形态见单独断言。"""
+
+    p = _make_diary_plugin(tmp_path)
+    asyncio.run(p._generate_and_publish_diary())
+    assert p.llm_calls[0]["temperature"] is None  # 默认 -1 → 不携带
+
+    p.config.qzone.diary_llm_temperature = 0.3
+    p.llm_calls.clear()
+    asyncio.run(p._generate_and_publish_diary())
+    assert p.llm_calls[0]["temperature"] == 0.3
+
+
+def test_side_llm_call_temperature_rpc_kwargs(tmp_path):
+    """_side_llm_call 的 RPC kwargs 形态:temperature 仅在显式传入时携带
+    (主机 core.py args.get("temperature"),None 走任务默认);timeout_ms=0
+    归一 None 的既有行为不受影响。用基础装配(日记装配会把
+    _side_llm_call 整个换成记录桩,测不到真方法)。"""
+
+    p = _make_plugin(tmp_path)
+    # 记账表在 on_load 建(基础装配不跑 on_load),按同款 DDL 手工补
+    p.store.execute(
+        "CREATE TABLE IF NOT EXISTS llm_usage ("
+        "day TEXT NOT NULL, module TEXT NOT NULL, "
+        "calls INTEGER NOT NULL DEFAULT 0, tokens INTEGER NOT NULL DEFAULT 0, "
+        "PRIMARY KEY (day, module))"
+    )
+    captured: list[dict] = []
+
+    async def _cap(capability, **kwargs):
+        captured.append({"capability": capability, **kwargs})
+        return {"success": True, "response": "ok"}
+
+    p._ctx.call_capability = _cap
+    asyncio.run(p._side_llm_call([{"role": "user", "content": "x"}], "memory", "test"))
+    assert captured[0] == {
+        "capability": "llm.generate", "timeout_ms": None,
+        "prompt": [{"role": "user", "content": "x"}], "model": "memory",
+    }
+    asyncio.run(
+        p._side_llm_call([{"role": "user", "content": "x"}], "memory", "test",
+                         temperature=0.7, timeout_ms=120000)
+    )
+    assert captured[1] == {
+        "capability": "llm.generate", "timeout_ms": 120000,
+        "prompt": [{"role": "user", "content": "x"}], "model": "memory",
+        "temperature": 0.7,
+    }
 
 
 def test_diary_generation_disabled_or_unavailable_skips(tmp_path):
@@ -1002,7 +1055,7 @@ def test_diary_generation_llm_failure_skips_publish(tmp_path):
 
     p = _make_diary_plugin(tmp_path)
 
-    async def _fail(messages, model, module, timeout_ms=None):
+    async def _fail(messages, model, module, timeout_ms=None, temperature=None):
         return {"success": False, "response": "boom"}
 
     p._side_llm_call = _fail
@@ -1016,11 +1069,11 @@ def test_diary_generation_llm_failure_skips_publish(tmp_path):
 
 def test_diary_generation_empty_skips_and_long_publishes(tmp_path):
     """内容护栏(对齐 diary_plugin):空文本跳过发布;**不再设超长硬上限**
-    ——301 字照常发布(长度完全由模板目标字数软约束)。"""
+    ——301 字照常发布(长度完全由素材行的篇幅区间软约束)。"""
 
     p = _make_diary_plugin(tmp_path)
 
-    async def _empty(messages, model, module, timeout_ms=None):
+    async def _empty(messages, model, module, timeout_ms=None, temperature=None):
         return {"success": True, "response": "   "}
 
     p._side_llm_call = _empty
@@ -1030,7 +1083,7 @@ def test_diary_generation_empty_skips_and_long_publishes(tmp_path):
         level == "warning" and "内容为空" in str(a[0]) for level, a in p.logs
     )
 
-    async def _long(messages, model, module, timeout_ms=None):
+    async def _long(messages, model, module, timeout_ms=None, temperature=None):
         return {"success": True, "response": "字" * 301}
 
     p._side_llm_call = _long
@@ -1337,7 +1390,7 @@ def test_diary_guard_hit_skips_publish_and_snapshot(tmp_path):
     p = _make_diary_plugin(tmp_path)
     _enable_guard(p, ["敏感词"])
 
-    async def _llm(messages, model, module, timeout_ms=None):
+    async def _llm(messages, model, module, timeout_ms=None, temperature=None):
         return {"success": True, "response": "今天过得平静,日记里出现了敏感词,就到这里。"}
 
     p._side_llm_call = _llm

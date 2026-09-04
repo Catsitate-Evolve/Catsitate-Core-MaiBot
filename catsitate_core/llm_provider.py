@@ -143,7 +143,7 @@ SIDE_TEMPLATES: dict[str, dict] = {
             "改写后的内容:"
         ),
     },
-    # 空间见闻摘要(read_qzone 窗口结束触发,注入真实聊天的当日空间印象)
+    # 空间见闻摘要(read_qzone 窗口结束触发,注入真实聊天的空间印象)
     "qzone_digest": {
         "version": 3,
         "system": (

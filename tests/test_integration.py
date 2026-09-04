@@ -1604,3 +1604,49 @@ def test_wake_up_without_review_clears_buffer(tmp_path):
     assert not (tmp_path / "sleep_review").exists()  # 未派发回顾:零报告产出
     assert settle_calls == [1]  # 醒来补跑结算不受影响
     assert any(level == "info" and "回顾缓冲已清空" in str(a[0]) for level, a, _k in logs)
+
+
+def test_on_config_update_repoints_engine_config_refs(tmp_path):
+    """配置热重载后引擎引用重指:SDK 经 model_validate 重建 config 实例,
+    on_load 持有旧节引用的引擎若不重指会静默沿用旧值直到重启。"""
+
+    from catsitate_core.decay import DecayExecutor
+    from catsitate_core.schedule import ScheduleGenerator
+    from catsitate_core.services.scheduler import Scheduler
+    from catsitate_core.sleep import SleepManager
+
+    import plugin as plugin_mod
+
+    p = plugin_mod.CatsitatePlugin()
+    p._ctx = _StubCtx(tmp_path)
+    p._plugin_config_instance = CatsitateConfig()
+    store = SQLiteStore(tmp_path / "hot_reload.db")
+    p.memo = MemoService(store, p.config.memo)
+    p.fav_engine = BatchEngine(store, p.config.favorability)
+    p.fav_engine.ensure_schema()
+    p.decay = DecayExecutor(store, p.config.favorability, _fake_llm)
+    p.sleep = SleepManager(JsonSnapshot(tmp_path / "sleep_state.json"), p.config.sleep)
+    p.schedule_gen = ScheduleGenerator(_fake_llm, p.config.schedule, p.config.sleep)
+    p.assembler = InjectAssembler()
+    p._env_cache = {}
+    p._env_fetched_at = None
+    p._snapshot_cache = {}
+    p._scheduler = Scheduler(tick_seconds=60)
+    p._qzone_notify_task_armed = False
+    old_cfg = p._plugin_config_instance
+
+    # 模拟 SDK 热重载:整体替换 config 实例(qzone 关开关走自检跳过分支,自检依赖宿主 person)
+    new_cfg = CatsitateConfig()
+    new_cfg.qzone.enabled = False
+    p._plugin_config_instance = new_cfg
+    asyncio.run(p.on_config_update("self", {}, "测试"))
+
+    assert old_cfg is not new_cfg
+    assert p.sleep.config is new_cfg.sleep
+    assert p.schedule_gen.cfg is new_cfg.schedule
+    assert p.schedule_gen.sleep_cfg is new_cfg.sleep
+    assert p.memo.config is new_cfg.memo
+    assert p.fav_engine.config is new_cfg.favorability
+    assert p.decay.config is new_cfg.favorability
+    assert p.decay.engine.config is new_cfg.favorability  # 衰减器内嵌批次引擎同节重指
+    store.close()

@@ -1,4 +1,6 @@
 """自然衰减测试:互动时间判定/判定解析/扫描执行。"""
+import asyncio
+import logging
 from datetime import datetime
 from catsitate_core.config import FavorabilitySection
 from catsitate_core.decay import DecayExecutor, parse_decay_response, last_bot_interaction_time
@@ -17,6 +19,15 @@ def _msg(user_id: str, ts: str, quote: str = "", mentioned: str = "") -> dict:
 
 def test_parse_decay_response_ok():
     assert parse_decay_response('{"delta": -2, "note": "有点生疏了"}') == (-2, "有点生疏了")
+
+
+def test_parse_decay_response_accepts_float_delta():
+    # LLM 返回 -1.0 这类合法语义浮点不得误拒(bool 是 int 子类须拒绝)
+    assert parse_decay_response('{"delta": -1.0, "note": "生疏了"}') == (-1.0, "生疏了")
+
+
+def test_parse_decay_response_rejects_bool_delta():
+    assert parse_decay_response('{"delta": true, "note": "x"}')[0] is None
 
 
 def test_parse_decay_response_rejects_positive():
@@ -151,3 +162,65 @@ def test_scan_and_apply_exclusive_clamped_passthrough(tmp_path):
     result = asyncio.run(ex.scan_and_apply([("B", "2026-08-01T10:00:00")], now=lambda: NOW))
     assert result and result[0]["exclusive_clamped"] is False
     assert engine.get_level("B")["score"] == 42  # delta=0 不落分
+
+
+def test_scan_and_apply_preserves_window_start(tmp_path):
+    """衰减不消费批次素材:window_start 不被推进,未结算消息仍在结算素材内
+    (批次「顺延不丢」承诺;否则 ts > window_start 过滤会永久排除未结算消息)。"""
+    store = SQLiteStore(tmp_path / "d.db")
+    cfg = FavorabilitySection(decay_after_days=7, decay_max=3)
+    engine = BatchEngine(store, cfg)
+    engine.ensure_schema()
+    engine.apply_delta("u1", 42, "很好", judged_at="2026-08-01T10:00:00")
+    history = [
+        {"role": "user", "user_id": "u1", "stream_id": "p", "is_group": False, "addressed": None,
+         "text": "未结算消息", "seq": 1, "ts": "2026-08-05T10:00:00"},
+    ]
+
+    async def fake_llm(messages, model=""):
+        return {"success": True, "response": '{"delta": -2, "note": "生疏了"}', "model": model}
+
+    ex = DecayExecutor(store, cfg, fake_llm)
+    result = asyncio.run(ex.scan_and_apply([("u1", "2026-08-01T10:00:00")], now=lambda: NOW))
+    assert result and result[0]["delta"] == -2
+    row = engine.get_level("u1")
+    assert row["window_start"] == "2026-08-01T10:00:00"  # 未变(衰减不消费素材)
+    assert row["judged_at"] == NOW.strftime("%Y-%m-%dT%H:%M:%S")  # 判定时刻照常推进
+    text = "\n".join(engine.build_material("u1", history))
+    assert "未结算消息" in text  # 旧消息不被排除
+
+
+def test_scan_and_apply_float_delta_applied_as_int(tmp_path):
+    """LLM 返回 -1.0:parse 接受,钳制后取整落库(分数列是整数)。"""
+    store = SQLiteStore(tmp_path / "d.db")
+    cfg = FavorabilitySection(decay_after_days=7, decay_max=3)
+    engine = BatchEngine(store, cfg)
+    engine.ensure_schema()
+    engine.apply_delta("u1", 42, "很好", judged_at="2026-08-01T10:00:00")
+
+    async def fake_llm(messages, model=""):
+        return {"success": True, "response": '{"delta": -1.0, "note": "生疏了"}', "model": model}
+
+    ex = DecayExecutor(store, cfg, fake_llm)
+    result = asyncio.run(ex.scan_and_apply([("u1", "2026-08-01T10:00:00")], now=lambda: NOW))
+    assert result and result[0]["delta"] == -1
+    assert isinstance(result[0]["delta"], int)
+    assert engine.get_level("u1")["score"] == 41
+
+
+def test_scan_and_apply_parse_failure_warns(tmp_path, caplog):
+    """解析失败不得静默:显式 warning(与 LLM 调用失败同纪律)后跳过。"""
+    store = SQLiteStore(tmp_path / "d.db")
+    cfg = FavorabilitySection(decay_after_days=7, decay_max=3)
+    engine = BatchEngine(store, cfg)
+    engine.ensure_schema()
+    engine.apply_delta("u1", 42, "很好", judged_at="2026-08-01T10:00:00")
+
+    async def fake_llm(messages, model=""):
+        return {"success": True, "response": "不是 JSON", "model": model}
+
+    ex = DecayExecutor(store, cfg, fake_llm)
+    with caplog.at_level(logging.WARNING, logger="catsitate_core.decay"):
+        result = asyncio.run(ex.scan_and_apply([("u1", "2026-08-01T10:00:00")], now=lambda: NOW))
+    assert result == []
+    assert any("解析失败" in r.message for r in caplog.records)

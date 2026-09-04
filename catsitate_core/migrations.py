@@ -45,12 +45,15 @@ def read_db_version(store: SQLiteStore) -> int:
 
 
 def _write_db_version(store: SQLiteStore, version: int) -> None:
-    """写版本表(参数绑定;版本号非法直接抛出)。"""
+    """写版本表(参数绑定;版本号非法直接抛出)。
+
+    单语句 INSERT OR REPLACE:表无主键,以固定 rowid=1 的唯一性承担去重,
+    写入在单事务内原子完成——DELETE+INSERT 两语句各走独立事务,DELETE 后崩溃
+    会让版本表空、回读 0 触发迁移链整体重放(未来非幂等步骤会被重放)。"""
 
     if version < 0:
         raise ValueError(f"数据库版本不能为负数: {version}")
-    store.execute("DELETE FROM _schema_version")
-    store.execute("INSERT INTO _schema_version (version) VALUES (?)", (version,))
+    store.execute("INSERT OR REPLACE INTO _schema_version (rowid, version) VALUES (1, ?)", (version,))
 
 
 def run_migrations(store: SQLiteStore, logger) -> int:

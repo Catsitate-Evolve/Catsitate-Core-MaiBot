@@ -1,6 +1,7 @@
 """存储层测试。"""
 
 import json
+import logging
 import sqlite3
 
 from catsitate_core.storage import JsonSnapshot, SQLiteStore
@@ -50,3 +51,33 @@ def test_json_snapshot_atomic_replace(tmp_path):
     snap.save({"k": 1})
     assert not path.with_suffix(".json.tmp").exists()
     assert json.loads(path.read_text(encoding="utf-8")) == {"k": 1}
+
+
+def test_json_snapshot_load_corrupted_json_returns_empty_with_warning(tmp_path, caplog):
+    # 损坏的 JSON 必须按空处理且显式告警,不能上抛炸穿读取方
+    path = tmp_path / "corrupt.json"
+    path.write_text("{不是合法JSON", encoding="utf-8")
+    snap = JsonSnapshot(path)
+    with caplog.at_level(logging.WARNING, logger="catsitate_core.storage"):
+        assert snap.load() == {}
+    assert any("corrupt.json" in r.message for r in caplog.records)
+
+
+def test_json_snapshot_load_non_dict_returns_empty_with_warning(tmp_path, caplog):
+    # 合法 JSON 但不是对象:同样按空处理且告警
+    path = tmp_path / "list.json"
+    path.write_text("[1, 2]", encoding="utf-8")
+    snap = JsonSnapshot(path)
+    with caplog.at_level(logging.WARNING, logger="catsitate_core.storage"):
+        assert snap.load() == {}
+    assert any("list.json" in r.message for r in caplog.records)
+
+
+def test_json_snapshot_load_valid_dict_untouched(tmp_path, caplog):
+    # 正常 dict 原样返回,不触发告警
+    path = tmp_path / "ok.json"
+    path.write_text('{"a": 1}', encoding="utf-8")
+    snap = JsonSnapshot(path)
+    with caplog.at_level(logging.WARNING, logger="catsitate_core.storage"):
+        assert snap.load() == {"a": 1}
+    assert not caplog.records

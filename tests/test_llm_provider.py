@@ -2,6 +2,7 @@
 
 import pytest
 
+import catsitate_core.llm_provider as llm_provider
 from catsitate_core.llm_provider import (
     SIDE_TEMPLATES,
     build_side_prompt,
@@ -47,6 +48,26 @@ def test_all_templates_share_contract():
 def test_unknown_template_raises():
     with pytest.raises(ValueError, match="未知"):
         build_side_prompt("nope", [], [])
+
+
+def test_gbk_custom_prompts_candidate_warns_and_falls_back(
+    tmp_path, caplog, monkeypatch
+):
+    """custom_prompts 候选是非 UTF-8 字节(UnicodeDecodeError 是 ValueError 子类,
+    旧 except OSError 接不住会炸穿调用方):显式告警后回退内置模板。"""
+    custom_dir = tmp_path / "data" / "custom_prompts" / "zh-CN"
+    custom_dir.mkdir(parents=True)
+    (custom_dir / "catsitate_favorability.prompt").write_bytes("中文名".encode("gbk"))
+    monkeypatch.setattr(llm_provider, "_PROJECT_ROOT", tmp_path)
+    monkeypatch.setattr(llm_provider, "_template_cache", {})
+    monkeypatch.setattr(llm_provider, "_missing_warned", {})
+
+    with caplog.at_level("ERROR", logger="catsitate_core.llm_provider"):
+        messages, key = build_side_prompt("favorability", ["稳定"], ["素材"])
+
+    assert messages[0]["content"] == SIDE_TEMPLATES["favorability"]["system"]
+    assert key.startswith("favorability:v")
+    assert any("回退内置模板" in rec.message for rec in caplog.records)
 
 
 def test_qzone_scene_template_declared():

@@ -1,6 +1,6 @@
 # 存储层(storage.py)
 
-> 源码:`catsitate_core/storage.py`(74 行)。全文只有两个类:`SQLiteStore` 与 `JsonSnapshot`。
+> 源码:`catsitate_core/storage.py`(92 行)。全文只有两个类:`SQLiteStore` 与 `JsonSnapshot`。
 
 ## 一、模块职责与生命周期
 
@@ -40,10 +40,11 @@
 **`load() -> dict`**:
 
 - `open` + `json.load`;`FileNotFoundError` → 返回 `{}`(文件未创建是正常首启状态,不算错误);
-- 顶层不是 dict(如被写成 list/str)→ 返回 `{}`;
-- **其余异常不捕获**——文件存在但 JSON 损坏会抛 `JSONDecodeError` 向上走(错误显式暴露,由调用方告警)。
+- 文件存在但 JSON 非法(`JSONDecodeError`,属 `ValueError`)或权限/磁盘类 `OSError` → **告警后返回 `{}`**(日志含文件路径与「损坏内容已忽略,下次 save 覆盖重建」)——快照都是低价值可再生状态,炸穿读取方(如冷却判定、入睡链)比丢一次状态危害大,但告警保证不静默;
+- 顶层不是 dict(如被写成 list/str)→ 同样**告警后返回 `{}`**;
+- 正常 dict 原样返回。
 
-空安全的含义是"调用方拿到的永远是 dict,可以直接 `.get()`",不意味着坏文件被吞掉。
+空安全的含义是"调用方拿到的永远是 dict,可以直接 `.get()`";坏文件按空处理但必有告警日志,不静默吞掉也不上抛。
 
 **`save(data) -> None`**(原子写):
 
@@ -91,7 +92,7 @@
 | 无事务批量 | 全部使用方都是单语句语义,不存在"多语句要么全成要么全不成"的需求 | 调用方连续多次 `execute`(如 `ensure_schema` 迁移) | 每条独立提交;中途失败会留下部分写入(表结构迁移是幂等的 `IF NOT EXISTS`/先查列,重跑即修复) |
 | 单线程假设,无锁 | 所有存储调用都发生在插件进程的**同一个 asyncio 事件循环**里,单线程内天然串行,不需要锁 | 任何 `execute` / `query` / `save` | 直接执行;若未来引入线程池或多进程并发访问同一文件,`SQLiteStore` 不提供保护(`check_same_thread=False` 只是允许跨线程使用连接对象,不是并发安全) |
 | 同步 IO 跑在事件循环内 | SQLite 与 JSON 的读写都是同步阻塞调用(async 函数里直接调);本地小数据量下阻塞为微秒级 | 高频钩子内的 `memo.read`、冷却判定等 | 可接受;若某表涨到需要索引调优或查询变慢,才需要考虑 `asyncio.to_thread` |
-| `JsonSnapshot.load` 只兜 `FileNotFoundError` 与非 dict | 首启无文件是正常态;但坏 JSON 属于真实故障,静默当空会掩盖问题 | 文件存在但内容损坏 | `JSONDecodeError` 向上抛,由调用方决定告警;非 dict 顶层返回 `{}`(调用方约定用 `{"key": ...}` 包装一切非 dict 数据) |
+| `JsonSnapshot.load` 坏文件按空处理并告警 | 首启无文件是正常态;坏 JSON/非 dict 属于真实故障但快照均为低价值可再生状态,炸穿读取方危害更大 | 文件存在但内容损坏(JSON 非法/非 dict/读失败) | 告警(含路径与「下次 save 覆盖重建」)后返回 `{}`;调用方约定用 `{"key": ...}` 包装一切非 dict 数据 |
 | `JsonSnapshot.save` 失败重抛 | 写不进盘(磁盘满、权限)必须让调用方知道 | 任何 IO 异常 | 清理临时文件后抛出原异常,调用方告警处理;目标文件保持旧内容不被破坏 |
 | 库文件权限 0600 | 库内含 QQ 号、消息文本等隐私 | `SQLiteStore` 构造时一次性设置 | 后续新建的 WAL/SHM 附属文件由 SQLite 按库文件权限派生;凭据类 JSON(`qzone_cookies.json`)由 `mkstemp` 的 0600 天然保证,on_load 再对存量文件补收紧 |
 | WAL 模式在构造时设置一次 | WAL 是库级持久属性 | 首次构造 | 之后所有连接自动继承;生产容器内删除 `catsitate.db` 后随下次构造重建 |

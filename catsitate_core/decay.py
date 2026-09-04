@@ -18,7 +18,10 @@ _ISO = "%Y-%m-%dT%H:%M:%S"
 
 
 def parse_decay_response(text: str) -> tuple[int | None, str]:
-    """解析衰减判定 JSON;delta 必须为 [-decay_max, 0] 区间整数,否则 (None, 原因)。"""
+    """解析衰减判定 JSON;delta 必须为 [-decay_max, 0] 区间整数,否则 (None, 原因)。
+
+    delta 接受 int 与 float 形态(布尔除外:bool 是 int 子类,语义非数值须拒绝):
+    LLM 返回 -1.0 这类合法语义浮点不得误拒,调用点钳制后再取整。"""
 
     cleaned = text.strip()
     fence = re.search(r"```(?:json)?\s*(\{.*?\})\s*```", cleaned, re.DOTALL)
@@ -35,7 +38,7 @@ def parse_decay_response(text: str) -> tuple[int | None, str]:
     if not isinstance(data, dict):
         return None, "LLM 返回非对象 JSON"
     delta, note = data.get("delta"), data.get("note")
-    if not isinstance(delta, int) or not isinstance(note, str):
+    if not isinstance(delta, (int, float)) or isinstance(delta, bool) or not isinstance(note, str):
         return None, "delta/note 字段缺失或类型错误"
     if delta > 0:
         return None, "delta 必须 ≤ 0(衰减不可加分)"
@@ -143,9 +146,13 @@ class DecayExecutor:
                 continue
             delta, note = parse_decay_response(str(result.get("response") or ""))
             if delta is None:
+                # 解析失败同样显式告警(与上方 LLM 失败同纪律,失败不得静默),note 为第二元原因
+                logger.warning("衰减判定解析失败(user=%s): %s", user_id, note)
                 continue
             limit = max(1, self.config.decay_max)
             delta = max(-limit, min(0, delta))
+            # parse 已放宽 float 形态,钳制后取整落库(分数列是整数)
+            delta = int(delta)
             # 衰减 delta 恒 ≤ 0(parse_decay_response 已拒绝正 delta),分数只会下降,
             # 不可能触发「升特别被占位」的独占钳制(钳制仅在 apply_delta 升入特别时发生),
             # 故衰减路径 exclusive_clamped 恒 False 属设计必然(最终审查 M7)
@@ -153,6 +160,7 @@ class DecayExecutor:
             status = self.engine.apply_delta(
                 user_id, delta, note, judged_at=judged_at,
                 judge_id=f"decay-{judged_at}-{user_id}",  # 同秒多用户判重(审查 M-5,按人)
+                advance_window=False,  # 衰减不消费批次素材,保留结算窗口起点(顺延不丢)
             )
             results.append({"user_id": user_id, "delta": delta,
                             "exclusive_clamped": status == "clamped_exclusive"})

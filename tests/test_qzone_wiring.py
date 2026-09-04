@@ -2084,13 +2084,25 @@ def test_config_update_validates_schedule_threshold(tmp_path):
     只在 on_load 校验一次,热改坏值会静默停用日程主动发言直到下次重启。"""
     from types import SimpleNamespace
 
+    from catsitate_core.decay import DecayExecutor
+    from catsitate_core.favorability import BatchEngine
+    from catsitate_core.schedule import ScheduleGenerator
     from catsitate_core.services.scheduler import Scheduler
+    from catsitate_core.sleep import SleepManager
 
     p = _make_plugin(tmp_path)
     p.assembler = SimpleNamespace(reset=lambda: None)
     p._env_cache = {}
     p._snapshot_cache = {}
     p._scheduler = Scheduler(tick_seconds=60)
+    # 热重载分支会重指各引擎配置引用,离线装配须带上(on_load 同款最小集)
+    async def _llm(messages, model=""):
+        return {"success": True, "response": "{}", "model": model}
+
+    p.sleep = SleepManager(JsonSnapshot(tmp_path / "sleep_state.json"), p.config.sleep)
+    p.schedule_gen = ScheduleGenerator(_llm, p.config.schedule, p.config.sleep)
+    p.fav_engine = BatchEngine(p.store, p.config.favorability)
+    p.decay = DecayExecutor(p.store, p.config.favorability, _llm)
 
     async def _no_selfcheck():
         return False

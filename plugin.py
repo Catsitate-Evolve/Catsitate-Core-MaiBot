@@ -433,6 +433,14 @@ class CatsitatePlugin(MaiBotPlugin):
         self.store.close()
 
     async def on_config_update(self, scope: str, config_data: dict[str, Any], version: str) -> None:
+        """配置热重载回调。
+
+        scope="self" 刷新派生缓存、按新值重注册周期任务,并把各引擎的配置引用
+        重指到新 config 节(SDK 热重载经 model_validate 重建整个 config 实例,
+        on_load 时各引擎持有的旧节引用不重指会静默沿用旧值直到重启);
+        scope="bot" 失效人设缓存。
+        """
+
         del config_data, version  # 新配置已由 Runner 注入 self.config,这里只刷新派生缓存
         if scope == "self":
             self.assembler.reset()
@@ -464,6 +472,18 @@ class CatsitatePlugin(MaiBotPlugin):
             # 热改坏值会静默停用日程主动发言直到下次重启
             self._validate_schedule_threshold()
             self._setup_debug_logging()  # debug 开关随配置热生效
+            # 引擎配置引用重指(属性名以各引擎 __init__ 落库为准):睡眠/日程/备忘/
+            # 好感度批次/衰减引擎均在新节上读参;衰减器内嵌自己的批次引擎,同节一并重指
+            self.sleep.config = self.config.sleep
+            self.schedule_gen.cfg = self.config.schedule
+            self.schedule_gen.sleep_cfg = self.config.sleep
+            self.memo.config = self.config.memo
+            self.fav_engine.config = self.config.favorability
+            self.decay.config = self.config.favorability
+            self.decay.engine.config = self.config.favorability
+            self.ctx.logger.info(
+                "引擎配置引用已随热重载重指(sleep/schedule/memo/favorability/decay)"
+            )
             self.ctx.logger.info("catsitate_core 配置已刷新,派生缓存已重置")
         elif scope == "bot":
             # personality 变化影响等级规则块注入与哨兵人设(下次渲染自动生效)
@@ -2681,7 +2701,16 @@ class CatsitatePlugin(MaiBotPlugin):
         persona = await self._persona()
         chat_context = await self._recent_context_text(str(kwargs.get("session_id") or ""), limit=10)
         messages, _ = build_sentinel_prompt(persona, reply_text, chat_context)
-        result = await self._side_llm_call(messages, cfg.sentinel_model, "sentinel", cfg.sentinel_timeout_ms)
+        try:
+            result = await self._side_llm_call(messages, cfg.sentinel_model, "sentinel", cfg.sentinel_timeout_ms)
+        except Exception as exc:  # noqa: BLE001
+            # BLOCKING 钩子裸抛交由宿主未知处置;失败显式日志后放行(与晚安判定同款纪律,仅记异常简报防 PII)
+            self.ctx.logger.warning("哨兵层 LLM 调用异常(%s),放行回复", rpc_error_brief(exc))
+            return {"action": "continue", "modified_kwargs": kwargs}
+        if not isinstance(result, dict):
+            # 返回形态异常:非 dict 时下方 result.get 会崩,显式告警后放行
+            self.ctx.logger.warning("哨兵层 LLM 返回非对象结果(类型=%s),放行回复", type(result).__name__)
+            return {"action": "continue", "modified_kwargs": kwargs}
         if not result.get("success"):
             self.ctx.logger.warning("哨兵层 LLM 调用失败,放行回复:%s", result.get("response", "")[:200])
             return {"action": "continue", "modified_kwargs": kwargs}

@@ -219,3 +219,57 @@ def test_sentinel_check_empty_response_skips_llm():
     sent_result = asyncio.run(p.sentinel_check(**guard_result["modified_kwargs"]))
     assert sent_result == {"action": "continue", "modified_kwargs": guard_result["modified_kwargs"]}
     assert llm_calls == []
+
+
+def _arm_sentinel(p):
+    """哨兵启用 + 人设/上下文桩(判定前置于 LLM 调用,与 _side_llm_call 桩分层)。"""
+
+    p.config.reply_guard.enabled = True
+    p.config.reply_guard.sentinel_enabled = True
+
+    async def _persona():
+        return "猫耳少女"
+
+    async def _ctx_text(stream_id, limit=10):
+        del stream_id, limit
+        return "聊天上下文"
+
+    p._persona = _persona
+    p._recent_context_text = _ctx_text
+
+
+def test_sentinel_check_llm_exception_warns_and_passes():
+    """⑤哨兵 LLM 调用异常(RPC 超时等):BLOCKING 钩子不得裸抛——
+    显式告警(仅异常简报)后放行回复。"""
+
+    p = _make_guard_plugin()
+    _arm_sentinel(p)
+
+    async def _boom(*args, **kw):
+        raise RuntimeError("模拟 RPC 断连")
+
+    p._side_llm_call = _boom
+    kwargs = {"response": "正常回复", "output_items": [], "session_id": "private:1"}
+    result = asyncio.run(p.sentinel_check(**kwargs))
+    assert result == {"action": "continue", "modified_kwargs": kwargs}
+    assert any(
+        level == "warning" and "哨兵层 LLM 调用异常" in str(a[0]) for level, a in p.logs
+    )
+
+
+def test_sentinel_check_non_dict_result_warns_and_passes():
+    """⑥哨兵 LLM 返回非 dict:显式告警后放行(形态判别缺失时 result.get 直接崩)。"""
+
+    p = _make_guard_plugin()
+    _arm_sentinel(p)
+
+    async def _weird(*args, **kw):
+        return ["不是", "dict"]
+
+    p._side_llm_call = _weird
+    kwargs = {"response": "正常回复", "output_items": [], "session_id": "private:1"}
+    result = asyncio.run(p.sentinel_check(**kwargs))
+    assert result == {"action": "continue", "modified_kwargs": kwargs}
+    assert any(
+        level == "warning" and "非对象结果" in str(a[0]) for level, a in p.logs
+    )

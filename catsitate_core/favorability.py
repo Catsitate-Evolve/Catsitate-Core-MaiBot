@@ -153,11 +153,16 @@ class BatchEngine:
         note: str,
         judged_at: str,
         judge_id: str | None = None,
+        advance_window: bool = True,
     ) -> str:
         """结算结果落库:累加分数、重算等级、注记强制截断、写判定日志。
 
         返回状态:"ok" 或 "clamped_exclusive"(升「特别」但位被他人占据 → 钳 99 分/挚友)。
         judge_id: 判定日志幂等键;None 时默认 early-{judged_at}-{user_id}(日终结算须显式传 daily- 前缀)。
+        advance_window: 结算窗口起点两路语义——结算(early/daily)消费了批次素材,
+        推进到判定时刻(True);衰减不消费素材,保留既有 window_start(False),
+        否则 build_material 与未结算事件查询按 window_start 过滤会把未结算素材永久排除。
+        无既有记录时首条无旧窗可保,仍取判定时刻。
         """
 
         row = self.get_level(user_id)
@@ -174,6 +179,8 @@ class BatchEngine:
             status = "clamped_exclusive"
         trimmed_note = note.strip()[: self.config.note_max_chars]
         current = judged_at or datetime.now().strftime(_ISO)
+        # 窗口起点按两路语义取值:衰减路径保住未结算素材,批次顺延不丢
+        window_start = current if advance_window else ((row or {}).get("window_start") or current)
         # 幂等键带用户后缀(与 decay 同款):同秒多用户结算不撞键,INSERT OR IGNORE 不静默丢日志
         log_id = judge_id or f"early-{current}-{user_id}"
         self.store.execute(
@@ -187,7 +194,7 @@ class BatchEngine:
                 window_start = excluded.window_start,
                 judged_at = excluded.judged_at
             """,
-            (user_id, level, score, trimmed_note, current, current),
+            (user_id, level, score, trimmed_note, window_start, current),
         )
         # log.delta 记录判定意图,特别钳制时与实际落库分数变化可能有差
         self.store.execute(

@@ -2201,7 +2201,9 @@ class CatsitatePlugin(MaiBotPlugin):
                 # 评论,缺内容回退「你之前的评论」)+参数行;区别在归属——
                 # 自己说说下 origin_sender=bot。二元组锚=线程顶层评论(与
                 # qzone_reply 实际发送形态一致:楼中楼锚定顶层评论,不区分回复谁)
-                bot_ctx = clip_text(r.bot_reply_content or r.parent_comment_content, 20) or "你之前的评论"
+                bot_ctx = clip_text(
+                    parse_qzone_mentions(r.bot_reply_content or r.parent_comment_content, bot_uin=bot_uin), 20
+                ) or "你之前的评论"
                 notifications.append(FeedItem(
                     tid=f"notify_reply_{r.feed_tid}_{r.reply_tid}",
                     abstime=r.create_time, uin=str(r.uin), nickname=r.nickname,
@@ -2304,7 +2306,9 @@ class CatsitatePlugin(MaiBotPlugin):
                         # 回复者QQ/回复于时间,create_time 缺失省略不编造);
                         # 楼中楼二元组锚=线程顶层评论 id+作者(与 qzone_reply
                         # 实际发送形态一致:楼中楼锚定顶层评论,不区分回复谁)
-                        bot_ctx = clip_text(r.bot_reply_content or r.parent_comment_content, 20) or "你之前的评论"
+                        bot_ctx = clip_text(
+                            parse_qzone_mentions(r.bot_reply_content or r.parent_comment_content, bot_uin=bot_uin), 20
+                        ) or "你之前的评论"
                         notifications.append(FeedItem(
                             tid=f"notify_reply_{r.feed_tid}_{r.reply_tid}",
                             abstime=r.create_time, uin=str(r.uin), nickname=r.nickname,

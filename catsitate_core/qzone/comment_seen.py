@@ -182,23 +182,6 @@ class CommentSeenStore:
             (day, user_id, kind, text, now.strftime(_ISO)),
         )
 
-    def fav_events_on(self, day: str, user_id: str) -> list[dict]:
-        """某日某人的全部事件,按写入顺序(id 升序)。
-
-        自然日语义:按登记时写入的 day 匹配;见闻素材已改 fav_events_window
-        滚动窗(2026-09-04 翻案 H-2 自然日旧裁定)、结算走 fav_events_since
-        滚动窗,均勿用本方法——跨零点时昨晚事件 day=昨日会漏。"""
-
-        rows = self.store.query(
-            "SELECT id, day, user_id, kind, text, created_at FROM qzone_fav_events "
-            "WHERE day = ? AND user_id = ? ORDER BY id",
-            (day, user_id),
-        )
-        return [
-            {"id": r[0], "day": r[1], "user_id": r[2], "kind": r[3], "text": r[4], "created_at": r[5]}
-            for r in rows
-        ]
-
     def fav_events_since(self, user_id: str, since_iso: str) -> list[dict]:
         """某人自 since_iso(含排他下界,ISO 字符串比较)以来的全部事件,
         按 created_at 升序(H-2,2026-09-03:滚动窗,不限自然日)。
@@ -218,7 +201,8 @@ class CommentSeenStore:
 
     def fav_events_window(self, since_iso: str) -> list[dict]:
         """全部用户自 since_iso(含等于,ISO 字符串比较)以来的事件,按
-        created_at 升序(H-2/C-N1:日终候选并集的数据源)。
+        created_at 升序(H-2/C-N1:日终候选并集的数据源;2026-09-04 起亦作
+        见闻素材取数,近 24h 滚动窗)。
 
         纯空间互动好友(无 batch 行)经回看窗(now - window_hours)进入日终
         兜底候选;不限自然日——跨零点结算时昨晚互动的人也是候选。"""

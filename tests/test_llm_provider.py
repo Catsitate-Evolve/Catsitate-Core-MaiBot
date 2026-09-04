@@ -120,7 +120,7 @@ def test_visible_output_templates_natural_tone():
         system, _ = load_side_system(tid)
         assert not system.startswith("你是"), f"{tid} 仍以助手人设开头"
     assert "你睡了一觉" in SIDE_TEMPLATES["sleep_review"]["system"]
-    assert "回想一下今天在QQ空间的事" in SIDE_TEMPLATES["qzone_digest"]["system"]
+    assert "回想一下最近在QQ空间的事" in SIDE_TEMPLATES["qzone_digest"]["system"]
     # 工具向模板保持原样(image_relook 是给 bot 用的工具,输出不直接可见)
     assert SIDE_TEMPLATES["image_relook"]["version"] == 1
 

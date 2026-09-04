@@ -57,7 +57,7 @@ def test_settle_material_excludes_already_judged_events(tmp_path):
     material1 = engine.build_material("u1", history_with_event("2026-08-31T09:00:00", "2026-08-31T10:00:00", "早上聊过"))
     assert any("[空间互动]" in m for m in material1)
     engine.apply_delta("u1", 2, "聊得不错", judged_at="2026-08-31T10:30:00")  # window_start → 10:30
-    # 同日第二次结算(daily):fav_events_on 仍返回同日事件,ts=created_at(09:00)被窗口过滤排除
+    # 同日第二次结算(daily):旧自然日取数仍返回同日事件,ts=created_at(09:00)被窗口过滤排除
     material2 = engine.build_material("u1", history_with_event("2026-08-31T09:00:00", "2026-08-31T11:30:00", "下午又聊"))
     assert not any("[空间互动]" in m for m in material2)
     assert any("下午又聊" in m for m in material2)  # 窗口后的新消息正常进入素材
@@ -416,7 +416,7 @@ def _make_settle_plugin(tmp_path):
 
 def test_settle_events_use_rolling_window_not_natural_day(tmp_path):
     """H-2 回归:结算事件取数按 favorability.window_start 滚动窗(fav_events_since),
-    不按自然日(fav_events_on)——跨零点结算(如 00:30 日终)时,昨晚 23:00 记录的
+    不按登记自然日取数——跨零点结算(如 00:30 日终)时,昨晚 23:00 记录的
     事件 day=昨日,自然日查询取不到,滚动窗(窗口起点 22:00)能取到并进结算素材。"""
     import asyncio
     from datetime import timedelta

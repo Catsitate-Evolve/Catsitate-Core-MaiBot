@@ -22,13 +22,17 @@ def test_note_bot_comment_prevents_echo(tmp_path):
 
 
 def test_fav_events_roundtrip(tmp_path):
+    from datetime import timedelta
+
     s = CommentSeenStore(SQLiteStore(tmp_path / "t.db"))
     s.ensure_schema()
     today = datetime.now().strftime("%Y-%m-%d")  # fav_event 以当天为 day,动态取值防日期耦合
     s.fav_event("10001", "COMMENT", "小明评论了你的说说:好看")
     s.fav_event("10001", "OUT_COMMENT", "你评论了小明的说说")
-    rows = s.fav_events_on(today, "10001")
-    assert len(rows) == 2 and rows[0]["kind"] == "COMMENT"
+    # 昨日下界必取到登记(登记时刻即当下);两事件可能同秒,只断言集合不锁顺序
+    since = (datetime.now() - timedelta(days=1)).strftime("%Y-%m-%dT%H:%M:%S")
+    rows = s.fav_events_since("10001", since)
+    assert len(rows) == 2 and {e["kind"] for e in rows} == {"COMMENT", "OUT_COMMENT"}
     # 下界由当天动态推导(登记时刻即当下,不早于当天):任意日期运行均成立,不与真实日历耦合
     assert s.last_fav_interaction("10001") >= today
     assert s.last_fav_interaction("99999") == ""
@@ -145,14 +149,17 @@ def test_retry_columns_migration(tmp_path):
 def test_fav_event_same_day_dedup(tmp_path):
     """深度审查 A-N1:同日同 user+kind+text 只记一条——通知被拒回退后重发现时,
     发现侧会再次调用 fav_event,重复入库会放大结算素材与衰减计时。"""
+    from datetime import timedelta
+
     s = CommentSeenStore(SQLiteStore(tmp_path / "t.db"))
     s.ensure_schema()
-    today = datetime.now().strftime("%Y-%m-%d")
     s.fav_event("20000", "COMMENT", "小红 评论了你的说说「心情」: 好看")
     s.fav_event("20000", "COMMENT", "小红 评论了你的说说「心情」: 好看")  # revert 重发现的重复
     s.fav_event("20000", "COMMENT", "小红 评论了你的说说「心情」: 再看一次")  # 不同内容正常记
     s.fav_event("20000", "OUT_LIKE", "你点赞了 20000 的说说")  # 不同 kind 正常记
-    rows = s.fav_events_on(today, "20000")
+    # 昨日下界必取到全部登记(登记时刻即当下);去重只留 3 条
+    since = (datetime.now() - timedelta(days=1)).strftime("%Y-%m-%dT%H:%M:%S")
+    rows = s.fav_events_since("20000", since)
     assert len(rows) == 3
 
 
@@ -177,8 +184,8 @@ def test_fav_events_since_daytime_event_reachable_from_yesterday_bound(tmp_path)
 
 
 def test_fav_events_since_orders_by_created_at(tmp_path):
-    """H-2:fav_events_since 按 created_at 升序(滚动窗语义,与 fav_events_on
-    按写入序 id 不同)——结算素材按事件真实时间排序。"""
+    """H-2:fav_events_since 按 created_at 升序(滚动窗语义,非登记写入序)
+    ——结算素材按事件真实时间排序。"""
     from datetime import timedelta
 
     s = CommentSeenStore(SQLiteStore(tmp_path / "t.db"))
@@ -191,27 +198,6 @@ def test_fav_events_since_orders_by_created_at(tmp_path):
     )
     rows = s.fav_events_since("10001", (datetime.now() - timedelta(days=1)).strftime("%Y-%m-%dT%H:%M:%S"))
     assert [r["kind"] for r in rows] == ["LIKE", "COMMENT"]
-
-
-def test_fav_events_on_today_misses_last_night_but_since_yesterday_gets(tmp_path):
-    """H-2 ②(语义差异锁定):fav_events_on 按登记时写入的 day 自然日匹配;
-    fav_events_since 按 created_at 滚动窗——昨晚 23:00 记录的事件,今天自然日
-    取不到,昨日下界滚动窗能取到(见闻素材已改 fav_events_window 滚动窗,
-    2026-09-04 翻案 H-2 自然日旧裁定,不再与 fav_events_on 同口径)。"""
-    from datetime import timedelta
-
-    s = CommentSeenStore(SQLiteStore(tmp_path / "t.db"))
-    s.ensure_schema()
-    now = datetime.now()
-    yday_day = (now - timedelta(days=1)).strftime("%Y-%m-%d")
-    s.fav_event("10001", "COMMENT", "小红 评论了你的说说「心情」: 好看")
-    # 回拨为昨晚 23:00 记录(day=登记日;fav_event 写入时 day=今天,须同步改 day 保持行内自洽)
-    s.store.execute(
-        "UPDATE qzone_fav_events SET day = ?, created_at = ? WHERE user_id = '10001'",
-        (yday_day, f"{yday_day}T23:00:00"),
-    )
-    assert s.fav_events_on(now.strftime("%Y-%m-%d"), "10001") == []
-    assert s.fav_events_since("10001", f"{yday_day}T22:00:00") != []
 
 
 def test_fav_events_window_all_users_within_lookback(tmp_path):

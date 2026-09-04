@@ -1710,9 +1710,9 @@ def test_notify_scan_source_c_like_events(tmp_path):
     text = msg["raw_message"][0]["data"]
     assert text.startswith("赞了你的说说「我的晚间思绪」\n〔说说ID=ownfeed1 点赞于(今天")
     assert text.endswith(")〕")
-    # fav_event 记账(kind=LIKE):源C 好感度显式事件
-    today = datetime.now().strftime("%Y-%m-%d")
-    evs = p.qzone_comment_seen.fav_events_on(today, "20000")
+    # fav_event 记账(kind=LIKE):源C 好感度显式事件(滚动窗取数,昨日下界必取到当下登记)
+    since = (datetime.now() - timedelta(days=1)).strftime("%Y-%m-%dT%H:%M:%S")
+    evs = p.qzone_comment_seen.fav_events_since("20000", since)
     assert any(e["kind"] == "LIKE" and "小红" in e["text"] and "我的晚间思绪" in e["text"] for e in evs)
     # 过旧事件仍被登记(is_new 已 False,下轮判重不重扫)
     assert p.qzone_like_seen.is_new("30000_10000_cccc3333", liker_uin="30000", target_tid="ownfeed2") is False
@@ -2280,7 +2280,8 @@ def test_digest_fav_events_24h_rolling_window_catches_last_night(tmp_path):
     """见闻互动素材近 24h 滚动窗(2026-09-04 翻案 H-2 自然日旧裁定):旧代码按
     生成时刻自然日查(day=今天),零点前登记的事件 day=昨日取不到——跨零点会话
     互动素材全空;新代码 fav_events_window(now-24h) 滚动窗取到。压缩模拟
-    「零点前登记、零点后生成」(day=昨日+created_at=now-1h),任何时刻跑都确定。"""
+    「零点前登记、零点后生成」(day=昨日+created_at=now-1h),任何时刻跑都确定。
+    另插 now-25h 陈年事件断言不进素材——锁 24h 上界,防 since 放宽回归。"""
 
     p = _make_plugin(tmp_path)
     now = datetime.now()
@@ -2289,6 +2290,12 @@ def test_digest_fav_events_24h_rolling_window_catches_last_night(tmp_path):
     p.qzone_comment_seen.store.execute(
         "INSERT INTO qzone_fav_events (day, user_id, kind, text, created_at) "
         "VALUES (?, '10001', 'COMMENT', '昨夜评论了你的说说:好看', ?)", (yday, at))
+    # 超窗陈年事件(day/created_at 同取 25h 前,行内自洽):不得混进素材
+    old_day = (now - timedelta(hours=25)).strftime("%Y-%m-%d")
+    old_at = (now - timedelta(hours=25)).strftime("%Y-%m-%dT%H:%M:%S")
+    p.qzone_comment_seen.store.execute(
+        "INSERT INTO qzone_fav_events (day, user_id, kind, text, created_at) "
+        "VALUES (?, '10001', 'COMMENT', '前夜陈年评论:不该进素材', ?)", (old_day, old_at))
 
     captured: list = []
 
@@ -2301,8 +2308,10 @@ def test_digest_fav_events_24h_rolling_window_catches_last_night(tmp_path):
     p._persona_cache = "猫耳少女"
     p._style_cache = ""
     asyncio.run(p._qzone_generate_digest())
-    # day=昨日的事件仍在 24h 滚动窗内,进素材段(旧自然日口径查不到)
+    # day=昨日的事件仍在 24h 滚动窗内,进素材段(旧自然日口径查不到);
+    # now-25h 的陈年事件超窗,不进素材(锁 24h 上界)
     assert "昨夜评论了你的说说:好看" in "\n".join(captured)
+    assert "前夜陈年评论:不该进素材" not in "\n".join(captured)
     assert p._qzone_digest_snapshot.load().get("date") == datetime.now().strftime("%Y-%m-%d")
 
 

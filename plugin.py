@@ -232,7 +232,7 @@ class CatsitatePlugin(MaiBotPlugin):
         self._sleep_review_buffer_snapshot = JsonSnapshot(data_dir / "sleep_review_buffer.json")
         # 入睡任务发布的日记正文(醒来回注虚拟流用);持久化防重启丢失
         self._pending_diary_snapshot = JsonSnapshot(data_dir / "qzone_pending_diary.json")
-        # 空间见闻(read_qzone 窗口结束旁路 LLM 摘要的当日印象);持久化跨重启引用
+        # 空间见闻(read_qzone 窗口结束旁路 LLM 摘要的空间印象);持久化跨重启引用
         self._qzone_digest_snapshot = JsonSnapshot(data_dir / "qzone_digest.json")
         _loaded_buffer = self._sleep_review_buffer_snapshot.load()
         # JsonSnapshot.load 仅接受 dict(非 dict 一律返回 {}):缓冲以 {"messages": [...]} 包装存储
@@ -1481,7 +1481,7 @@ class CatsitatePlugin(MaiBotPlugin):
                 self.ctx.logger.info(
                     "QQ空间浏览窗口结束,浏览队列回退未读(%d 条);通知队列保留等待注入", reverted
                 )
-                # 见闻生成(M3):窗口边界把当日浏览+互动摘要为空间见闻,注入真实聊天
+                # 见闻生成(M3):窗口边界把近 24h 滚动窗内的浏览与互动摘要为空间见闻,注入真实聊天
                 self._spawn_background_task(self._qzone_generate_digest())
             if not in_read_window and not in_send_window:
                 return  # 非 qzone 窗口(自由时间/问候/睡眠):按窗口外处理
@@ -3957,7 +3957,7 @@ class CatsitatePlugin(MaiBotPlugin):
             # 首次结算已把 window_start 前移,已判事件被窗口过滤排除(真实消息同机制),
             # 防同一事件反复并入素材重判(审查必修)
             # H-2(2026-09-03):取数改 window_start 滚动窗(fav_events_since),与
-            # 聊天消息同窗口口径——旧自然日 fav_events_on 在跨零点结算(如 00:30
+            # 聊天消息同窗口口径——旧自然日取数在跨零点结算(如 00:30
             # 日终)时昨夜事件 day=昨日恒取空,空间互动素材整窗漏判。窗口起点空串
             # (该人尚无结算记录)= 全量事件,与 build_material 空窗口语义一致。
             window_start = (self.fav_engine.get_level(user_id) or {}).get("window_start") or ""

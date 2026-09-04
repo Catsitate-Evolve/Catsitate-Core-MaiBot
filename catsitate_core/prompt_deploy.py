@@ -63,11 +63,22 @@ def sync_prompt_templates(
     skipped = 0
     for source in sorted(source_dir.glob(TEMPLATE_GLOB)):
         target = target_dir / source.name
+        # 源文件读取失败(含非 UTF-8 编码损坏,UnicodeDecodeError 是 ValueError 子类)
+        # 必须跳过该模板而不是把空内容部署出去
         try:
             src_text = source.read_text(encoding="utf-8")
+        except (OSError, ValueError):
+            logger.exception("旁路模板源文件 %s 读取失败,跳过该模板", source)
+            continue
+        # 目标读取失败或内容损坏时按「内容不同」处理直接覆盖:
+        # 部署源是插件内置权威文件,覆盖即自愈
+        try:
             if target.is_file() and target.read_text(encoding="utf-8") == src_text:
                 skipped += 1
                 continue
+        except (OSError, ValueError):
+            logger.warning("旁路模板目标 %s 读取失败或已损坏,视为内容不同,覆盖重建", target)
+        try:
             target.write_text(src_text, encoding="utf-8")
             written += 1
         except OSError:

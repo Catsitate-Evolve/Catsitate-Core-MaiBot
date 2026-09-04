@@ -35,16 +35,21 @@ FESTIVAL_TABLE: dict[str, str] = {
 }
 
 
+def solar_term_on(day: date) -> str:
+    """某日的节气名(仅交节日当天非空);依赖缺失返回空(同 solar_terms_near 容错)。"""
+
+    if Solar is None:
+        return ""
+
+    return Solar.fromYmd(day.year, day.month, day.day).getLunar().getJieQi() or ""
+
+
 def solar_terms_near(now: date, days: int = 3) -> list[str]:
     """当天+临近 days 天的节气名列表(lunar-python 实算,按日期升序);依赖缺失返回空。"""
 
-    if Solar is None:
-        return []
-
     out: list[str] = []
     for offset in range(days + 1):
-        day = now + timedelta(days=offset)
-        name = Solar.fromYmd(day.year, day.month, day.day).getLunar().getJieQi()
+        name = solar_term_on(now + timedelta(days=offset))
         if name:
             out.append(name)
     return out

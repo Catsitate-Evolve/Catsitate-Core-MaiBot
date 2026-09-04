@@ -455,7 +455,7 @@ def test_threshold_met():
     assert threshold_met("陌生", "熟悉") is False
 
 
-from catsitate_core.schedule import ACTIVITY_WINDOW_LIMIT, apply_schedule_edit
+from catsitate_core.schedule import apply_schedule_delete
 
 BASE = {"date": "2026-08-16", "windows": [
     {"kind": "sleep", "start": "2026-08-16T23:00", "end": "2026-08-17T07:00"},
@@ -464,40 +464,41 @@ BASE = {"date": "2026-08-16", "windows": [
 ]}
 
 
-def test_edit_add_activity():
-    data, err, hist = apply_schedule_edit(
-        dict(BASE), "add", None,
-        {"kind": "daily", "start": "2026-08-16T14:00", "end": "2026-08-16T16:00",
-         "activity": "买菜", "plan_speak": False, "topic": ""},
-        [], min_sleep=240, max_sleep=660,
+def test_add_activity():
+    # 新增走 apply_schedule_add(原 apply_schedule_edit 的 add 分支裁撤,行为等价覆盖)
+    from catsitate_core.schedule import apply_schedule_add
+    data, err, hist, _ = apply_schedule_add(
+        dict(BASE), "14:00", "16:00", "买菜", "2026-08-16",
+        min_sleep=240, max_sleep=660, history=[],
     )
     assert err == "" and len(data["windows"]) == 3 and hist
 
 
-def test_edit_add_over_limit_rejected_with_reason():
+def test_add_over_limit_rejected_with_reason():
+    from catsitate_core.schedule import apply_schedule_add
     data = _copy.deepcopy(BASE)  # 深拷贝:dict(BASE) 浅拷贝会污染共享 BASE["windows"] 列表
     for i in range(7):
         data["windows"].append({"kind": "daily", "start": f"2026-08-16T1{i}:00", "end": f"2026-08-16T1{i}:30",
                                 "activity": f"活动{i}", "plan_speak": False, "topic": ""})
-    out, err, _ = apply_schedule_edit(
-        data, "add", None,
-        {"kind": "daily", "start": "2026-08-16T18:00", "end": "2026-08-16T19:00",
-         "activity": "x", "plan_speak": False, "topic": ""},
-        [], min_sleep=240, max_sleep=660,
+    out, err, _, _ = apply_schedule_add(
+        data, "18:00", "19:00", "x", "2026-08-16",
+        min_sleep=240, max_sleep=660, history=[],
     )
     assert err == "今天的日程已经排得满满当当了,再排下去会累坏的,明天再安排吧。"
 
 
-def test_edit_cannot_delete_sleep():
-    out, err, _ = apply_schedule_edit(dict(BASE), "delete", 0, None, [], min_sleep=240, max_sleep=660)
+def test_delete_cannot_delete_sleep():
+    out, err, _ = apply_schedule_delete(dict(BASE), 0, [], min_sleep=240, max_sleep=660)
     assert "睡眠窗口不可删除" in err and out == BASE
 
 
-def test_edit_sleep_time_respects_min_max():
-    out, err, _ = apply_schedule_edit(
-        dict(BASE), "update", 0,
-        {"kind": "sleep", "start": "2026-08-16T23:00", "end": "2026-08-17T01:00"},
-        [], min_sleep=240, max_sleep=660,
+def test_move_sleep_time_respects_min_max():
+    # 睡眠时长约束走 apply_schedule_move(原 apply_schedule_edit 的 update 分支裁撤,
+    # move 是生产唯一的睡眠改时间入口,行为等价覆盖)
+    from catsitate_core.schedule import apply_schedule_move
+    out, err, _, _ = apply_schedule_move(
+        dict(BASE), 0, "23:00", "01:00", "2026-08-16",
+        min_sleep=240, max_sleep=660, history=[],
     )
     assert "最短" in err  # 2h < 240min 拒绝
 

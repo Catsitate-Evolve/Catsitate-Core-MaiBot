@@ -214,7 +214,8 @@ def load_side_system(template_id: str) -> tuple[str, str]:
             return cached[1], _version_tag(template_id, cached[1])
         try:
             text = path.read_text(encoding="utf-8").strip()
-        except OSError:
+        except (OSError, ValueError):
+            # UnicodeDecodeError 是 ValueError 子类,与 OSError 一并显式告警后回退内置模板
             logger.exception("旁路模板 %s 读取失败,回退内置模板", path)
             break
         if not text:

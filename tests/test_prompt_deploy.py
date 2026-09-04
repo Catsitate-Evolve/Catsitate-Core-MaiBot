@@ -128,6 +128,39 @@ def test_unwritable_target_warns_but_does_not_raise(tmp_path: Path, caplog: pyte
     assert any("部署失败" in rec.message for rec in caplog.records)
 
 
+def test_gbk_target_overwritten_by_authoritative_source(tmp_path: Path, caplog: pytest.LogCaptureFixture) -> None:
+    # 目标文件是非 UTF-8 字节(UnicodeDecodeError 是 ValueError 子类,
+    # 旧 except OSError 接不住):按「内容不同」直接覆盖,插件内置权威源覆盖即自愈
+    plugin_root = _make_plugin_root(tmp_path)
+    project_root = _make_project_root(tmp_path)
+    target = _target_dir(project_root) / "catsitate_favorability.prompt"
+    target.write_bytes("中文名".encode("gbk"))
+
+    with caplog.at_level("WARNING", logger="catsitate_core.prompt_deploy"):
+        written, skipped = sync_prompt_templates(project_root, plugin_root)
+
+    assert (written, skipped) == (2, 0)
+    assert target.read_text(encoding="utf-8") == TEMPLATES["catsitate_favorability.prompt"]
+    assert any("覆盖重建" in rec.message for rec in caplog.records)
+
+
+def test_gbk_source_skipped_and_rest_deployed(tmp_path: Path, caplog: pytest.LogCaptureFixture) -> None:
+    # 源文件编码损坏:跳过该模板并显式告警,其余模板正常部署,不炸穿部署循环
+    plugin_root = _make_plugin_root(tmp_path)
+    (plugin_root / "prompt_templates" / "catsitate_favorability.prompt").write_bytes("中文名".encode("gbk"))
+    project_root = _make_project_root(tmp_path)
+
+    with caplog.at_level("ERROR", logger="catsitate_core.prompt_deploy"):
+        written, skipped = sync_prompt_templates(project_root, plugin_root)
+
+    assert (written, skipped) == (1, 0)
+    assert not (_target_dir(project_root) / "catsitate_favorability.prompt").exists()
+    assert (
+        _target_dir(project_root) / "catsitate_schedule_generate.prompt"
+    ).read_text(encoding="utf-8") == TEMPLATES["catsitate_schedule_generate.prompt"]
+    assert any("跳过该模板" in rec.message for rec in caplog.records)
+
+
 def test_qzone_scene_prompt_in_template_dir_and_syncs(tmp_path: Path) -> None:
     """空间场景模板入列插件 prompt_templates/(M3-r2 表达生成层起仓库内置 12 个),
     内容与 llm_provider 内置一致(插件为权威源);sync 后落在主程序

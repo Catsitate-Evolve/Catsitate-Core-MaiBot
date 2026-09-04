@@ -10,6 +10,7 @@ from catsitate_core.time_aware import (
     holiday_chain,
     lunar_festivals_near,
     parse_holiday_cn,
+    solar_term_on,
     solar_terms_near,
 )
 
@@ -92,6 +93,15 @@ def test_solar_terms_near():
     assert solar_terms_near(date(2026, 6, 20)) == ["夏至"]  # 次日夏至在 3 天窗口内(lunar-python 实算)
     assert solar_terms_near(date(2026, 9, 23)) == ["秋分"]
     assert solar_terms_near(date(2026, 5, 1)) == []
+
+
+def test_solar_term_on():
+    # 按日取节气:临近段构造用(仅交节日当天非空,非节气日返回空串)
+    assert solar_term_on(date(2026, 6, 21)) == "夏至"
+    assert solar_term_on(date(2026, 12, 22)) == "冬至"
+    assert solar_term_on(date(2026, 5, 1)) == ""  # 非节气日
+    # 与窗口版一致(窗口版逐日复用本函数)
+    assert [solar_term_on(date(2026, 6, 21)), solar_term_on(date(2026, 6, 22))] == ["夏至", ""]
 
 
 def test_lunar_festivals_near():

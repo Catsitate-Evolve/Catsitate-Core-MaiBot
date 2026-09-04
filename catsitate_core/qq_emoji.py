@@ -1,4 +1,4 @@
-"""贴表情可用表情表(用户精选 30 项,id 为 QQ 表情 id,对应 napcat set_msg_emoji_like 的 emoji_id)。"""
+"""贴表情可用表情表(用户精选 36 项,id 为 QQ 表情 id,对应 napcat set_msg_emoji_like 的 emoji_id)。"""
 
 from __future__ import annotations
 

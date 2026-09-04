@@ -88,7 +88,7 @@ def test_register_field_merge_preserves_comment_context():
 
     reg = FeedContextRegistry()
     reg.register(_ctx("tidX", commenter_uin="3298178030", commenter_nickname="可回收飞舞",
-                      comment_tid="8", comment_uin="3545773341", kind="notify_reply"))
+                      comment_tid="8", comment_uin="3545773341", kind="notify"))
     # 浏览/查看再登记:owner 同、无评论者字段、正文与近评有新值
     reg.register(_ctx("tidX", kind="feed", content_summary="测试二",
                       comment_map={"8": ("3545773341", "")}))
@@ -97,10 +97,10 @@ def test_register_field_merge_preserves_comment_context():
     assert ctx.commenter_uin == "3298178030"  # 评论者保留(不被浏览条目清空)
     assert ctx.commenter_nickname == "可回收飞舞" and ctx.comment_tid == "8"
     assert ctx.content_summary == "测试二" and ctx.comment_map["8"] == ("3545773341", "")  # 通知评论锚保留
-    assert ctx.kind == "notify_reply"  # 浏览条目不清掉通知语义
+    assert ctx.kind == "notify"  # 浏览条目不清掉通知语义
     # 新通知(另一位评论者)仍更新评论者信息
     reg.register(_ctx("tidX", commenter_uin="40000", commenter_nickname="新评论者",
-                      comment_tid="9", kind="notify_comment"))
+                      comment_tid="9", kind="notify"))
     ctx = reg.resolve("tidX")
     assert ctx.commenter_uin == "40000" and ctx.comment_tid == "9"
     assert ctx.content_summary == "测试二"  # 通知条目未带的字段保留旧值
@@ -119,7 +119,7 @@ def test_register_comment_map_same_key_keeps_nonempty_nickname():
     不被通知登记的 (uin, 空串) 覆盖;新键正常并入。"""
     reg = FeedContextRegistry()
     reg.register(_ctx("tidL2", comment_map={"c1": ("20000", "小红"), "c2": ("30000", "小刚")}))
-    reg.register(_ctx("tidL2", kind="notify_reply",
+    reg.register(_ctx("tidL2", kind="notify",
                       comment_map={"c1": ("20000", "")}))  # 通知形态:昵称空
     ctx = reg.resolve("tidL2")
     assert ctx.comment_map["c1"] == ("20000", "小红")  # 昵称保留

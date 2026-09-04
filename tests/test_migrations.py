@@ -48,6 +48,18 @@ def test_already_v1_skips_and_returns_zero(tmp_path):
     store.close()
 
 
+def test_write_db_version_replaces_single_row(tmp_path):
+    # 连写两个版本:表内恰一行且为最新值(单语句原子写,不得累积多行)
+    store = SQLiteStore(tmp_path / "ver.db")
+    store.execute("CREATE TABLE IF NOT EXISTS _schema_version (version INTEGER NOT NULL)")
+    _write_db_version(store, 1)
+    _write_db_version(store, 2)
+    rows = store.query("SELECT version FROM _schema_version")
+    assert rows == [(2,)]
+    assert read_db_version(store) == 2
+    store.close()
+
+
 def test_future_chain_executes_step_by_step(tmp_path, monkeypatch):
     # 多步链(模拟未来 v2 步骤):从 v0 起按注册表逐级执行,handler 副作用可见
     store = SQLiteStore(tmp_path / "chain.db")

@@ -3,11 +3,14 @@
 from __future__ import annotations
 
 import json
+import logging
 import os
 import sqlite3
 import tempfile
 from pathlib import Path
 from typing import Any, Sequence
+
+logger = logging.getLogger(__name__)
 
 
 class SQLiteStore:
@@ -56,7 +59,22 @@ class JsonSnapshot:
                 data = json.load(f)
         except FileNotFoundError:
             return {}
-        return data if isinstance(data, dict) else {}
+        # JSON 非法(ValueError 含 JSONDecodeError)与权限/磁盘类 OSError 都按空处理:
+        # 损坏内容已忽略,下次 save 覆盖重建;必须显式告警而非静默吞掉或上抛炸穿读取方。
+        except (OSError, ValueError) as exc:
+            logger.warning(
+                "快照文件读取失败,按空处理(损坏内容已忽略,下次 save 覆盖重建):%s,原因:%s",
+                self.file_path,
+                exc,
+            )
+            return {}
+        if not isinstance(data, dict):
+            logger.warning(
+                "快照文件内容不是 JSON 对象,按空处理(损坏内容已忽略,下次 save 覆盖重建):%s",
+                self.file_path,
+            )
+            return {}
+        return data
 
     def save(self, data: dict[str, Any]) -> None:
         parent = Path(self.file_path).parent

@@ -440,10 +440,49 @@ def test_do_publish_business_error_raises():
 def test_get_own_feed_comments():
     body = '_preloadCallback({"code":0,"msglist":[{"tid":"f1","content":"我的说说","commentlist":[{"tid":"c1","uin":10001,"name":"小明","content":"hi","create_time":1750000001}]}]});'.encode()
     client, seen = _post_client([(200, body)])
-    comments, ctx = asyncio.run(client.get_own_feed_comments(bot_uin="3545773341"))
+    comments, ctx, replies = asyncio.run(client.get_own_feed_comments(bot_uin="3545773341"))
     assert comments["f1"][0].comment_tid == "c1"
     assert ctx["f1"] == "我的说说"
+    assert replies == []  # 无 bot 评论的载荷:楼中楼视图为空(补跑解析不产假数据)
     assert seen[0]["params"]["uin"] == "3545773341"  # 原占位防误删,换真锚:msglist 请求以 bot_uin 为目标
+
+
+def test_get_own_feed_comments_three_views_with_bot_comment_replies():
+    """自己说说载荷三视图(源A 断链修复):bot 顶层评论+其 list_3 好友回复与
+    好友顶层评论同载荷并存——评论映射/正文上下文/楼中楼回复三视图一次请求
+    产出(补跑 parse_feed_replies,不发第二次请求),bot 自己的楼中楼回复与
+    好友顶层评论下的旁听楼中楼不进回复视图(只解析 bot 评论的 list_3)。"""
+    payload = {"code": 0,
+               "usrinfo": {"uin": "3545773341"}, "logininfo": {"uin": "3545773341"},
+               "msglist": [{"tid": "ownf1", "content": "我的说说正文", "cmtnum": 2,
+                            "commentlist": [
+                                # 好友的顶层评论(无楼中楼):进评论映射
+                                {"tid": "fc1", "uin": 10001, "name": "小明",
+                                 "content": "好友评论", "create_time": 1750000001},
+                                # bot 的顶层评论+list_3:好友回复进回复视图;
+                                # bot 自己的回复被解析层滤掉(不通知自己)
+                                {"tid": "bc1", "uin": "3545773341", "name": "我",
+                                 "content": "我的评论",
+                                 "list_3": [
+                                     {"tid": "rr1", "uin": 10001, "name": "小明",
+                                      "content": "回复你的评论", "create_time": 1750000002},
+                                     {"tid": "rr2", "uin": "3545773341", "name": "我",
+                                      "content": "bot 自己的楼中楼", "create_time": 1750000003},
+                                 ]},
+                            ]}]}
+    client, _ = _post_client([(200, ("_preloadCallback(" + _json.dumps(payload) + ")").encode("utf-8"))])
+    comments, ctx, replies = asyncio.run(client.get_own_feed_comments(bot_uin="3545773341"))
+    # 视图①评论映射:两条顶层评论(好友+bot 自己)原样可判
+    assert [c.comment_tid for c in comments["ownf1"]] == ["fc1", "bc1"]
+    # 视图②正文上下文:说说显示文本
+    assert ctx["ownf1"] == "我的说说正文"
+    # 视图③楼中楼:仅好友对 bot 评论的回复(bot 自己的 rr2 被滤);
+    # 二元组素材齐全(主评论=bot 的 bc1,feed 归属/上下文文本同视图)
+    assert len(replies) == 1
+    r = replies[0]
+    assert (r.reply_tid, r.uin, r.content) == ("rr1", "10001", "回复你的评论")
+    assert (r.feed_tid, r.parent_comment_tid, r.friend_uin) == ("ownf1", "bc1", "3545773341")
+    assert r.parent_comment_content == "我的评论" and r.feed_content == "我的说说正文"
 
 
 # ---- 统一时间线发现层(M3:feeds3_html_more,fake 注入,无网络) ----

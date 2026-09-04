@@ -82,7 +82,7 @@
 - `score = max(0, 旧分 + delta)`:负分钳到 0(结算与衰减共用此入口);
 - 重算等级;若升入「特别」但该位已被他人占据 → 钳制在 99 分/挚友,返回 `clamped_exclusive`(settle 层透传为 `exclusive_clamped` 字段,由调用方记告警日志);
 - 注记强制截断 `note_max_chars`(默认 40)字符;
-- `window_start`/`judged_at` 更新为本次判定时刻;判定日志 `INSERT OR IGNORE`,幂等键 `judge_id = {kind}-{judged_at}-{user_id}`(用户后缀防同秒多人撞键);
+- `judged_at` 更新为本次判定时刻;`window_start` 按 `advance_window` 参数两路取值——结算(early/daily)消费了批次素材,推进到判定时刻(默认 True);衰减不消费素材,保留既有 `window_start`(False,无既有记录时首条无旧窗可保仍取判定时刻),否则按窗口过滤素材会把未结算消息/事件永久排除(与「批次顺延不丢」一致);判定日志 `INSERT OR IGNORE`,幂等键 `judge_id = {kind}-{judged_at}-{user_id}`(用户后缀防同秒多人撞键);
 - 结算成功后 `reset_batch` 把该人全部流计数清零。
 
 ### 3. 日终结算(`_daily_settle`)
@@ -101,9 +101,9 @@
   3. 最近一次衰减判定时刻(`favorability_log` 中 `decay-` 前缀的最新 `judged_at`)——衰减判定本身即一次「想起」,7 天内不重复衰减。
 - 基准为空(从未直接互动)时回退 `favorability.judged_at`;仍为空则跳过。
 - **未互动天数用浮点比较**(`total_seconds()/86400 > decay_after_days`,默认 7 天),消除整天截断偏差。
-- 超过阈值且 score > 0 → 旁路 LLM(`decay` 模板,模型 `decay_llm_model`)判定衰减:JSON `{"delta": int, "note": str}`,delta 必须为 `[-decay_max, 0]` 区间整数(默认上限 3,正值直接判解析失败),note 为拟人化新注记。
-- 落库复用 `apply_delta`(judge_id = `decay-{judged_at}-{user_id}`)。衰减 delta 恒 ≤ 0、分数只会降,不可能触发「升特别被占位」钳制。
-- 单流取消息失败跳过该流;流已消亡(不在流缓存)跳过并告警;LLM 失败告警后跳过该人。
+- 超过阈值且 score > 0 → 旁路 LLM(`decay` 模板,模型 `decay_llm_model`)判定衰减:JSON `{"delta": int 或 float, "note": str}`,delta 语义为 `[-decay_max, 0]` 区间数值(默认上限 3,正值直接判解析失败;LLM 返回 `-1.0` 这类浮点形态同样接受,布尔拒绝),note 为拟人化新注记。
+- 落库复用 `apply_delta`(judge_id = `decay-{judged_at}-{user_id}`,`advance_window=False`,钳制取整后落库)。衰减 delta 恒 ≤ 0、分数只会降,不可能触发「升特别被占位」钳制;衰减不消费批次素材,`window_start` 保持不动,未结算消息留待下轮结算(顺延不丢)。
+- 单流取消息失败跳过该流;流已消亡(不在流缓存)跳过并告警;LLM 失败或判定 JSON 解析失败均告警后跳过该人。
 - 实例级 `_decaying` 在飞标记防并发双计(醒后补跑与调度 tick 可并发),finally 复位。
 
 ### 5. 注入块
@@ -119,7 +119,7 @@
 | 场景 | 行为 |
 |---|---|
 | LLM 调用异常/返回失败 | 结算返回 failed,旧值保留、批次不清零(素材仍在,下轮重判);衰减告警后跳过该人本轮。异常日志仅记类型不落响应原文(防 PII) |
-| 判定 JSON 解析失败 | 同上,failed 返回,不落库 |
+| 判定 JSON 解析失败 | 同上,failed 返回,不落库;衰减侧告警后跳过该人 |
 | 结算素材为空 | 不调 LLM 不落库,failed「素材为空,跳过结算」 |
 | daily 素材不足 `daily_settle_min` | `carried_over` 顺延:不落库不清零,消息留待下轮 |
 | 分数降到 0 以下 | `apply_delta` 统一钳到 0,不出现负分 |

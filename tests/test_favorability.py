@@ -170,6 +170,30 @@ def test_apply_delta_clamps_negative_score_to_zero(tmp_path):
     assert rows[0][0] == -5
 
 
+def test_apply_delta_default_advances_window(tmp_path):
+    """结算路径默认消费批次素材:window_start 推进到判定时刻(既有语义锁定)。"""
+
+    engine, _ = make_engine(tmp_path)
+    engine.apply_delta("u1", 5, "首条", judged_at="2026-08-16T08:00:00", judge_id="j1")
+    engine.apply_delta("u1", 3, "再结算", judged_at="2026-08-16T20:00:00", judge_id="j2")
+    row = engine.get_level("u1")
+    assert row["window_start"] == "2026-08-16T20:00:00"
+
+
+def test_apply_delta_advance_window_false_keeps_existing(tmp_path):
+    """advance_window=False(衰减路径):保留既有 window_start;首条记录无旧窗可保取判定时刻。"""
+
+    engine, _ = make_engine(tmp_path)
+    engine.apply_delta("u1", 5, "首条", judged_at="2026-08-16T08:00:00", judge_id="j1")
+    engine.apply_delta("u1", -1, "衰减", judged_at="2026-08-20T08:00:00", judge_id="j2", advance_window=False)
+    row = engine.get_level("u1")
+    assert row["window_start"] == "2026-08-16T08:00:00"  # 保留旧窗
+    assert row["judged_at"] == "2026-08-20T08:00:00"  # 判定时刻照常推进
+    # 无既有记录:首条无旧窗可保,仍取判定时刻
+    engine.apply_delta("u2", 5, "首条", judged_at="2026-08-21T08:00:00", judge_id="j3", advance_window=False)
+    assert engine.get_level("u2")["window_start"] == "2026-08-21T08:00:00"
+
+
 def test_schema_batch_counter_old_shape_rebuild(tmp_path):
     """batch_counter 旧形状(含 window_start 死列)检测 → 仅重建活跃账本(最终审查 M1)。"""
 

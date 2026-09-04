@@ -163,6 +163,24 @@ def test_fav_event_same_day_dedup(tmp_path):
     assert len(rows) == 3
 
 
+def test_fav_event_dedup_false_records_every_real_outbound_action(tmp_path):
+    """dedup=False(出站工具路径):同日同 user+kind+text 的两次调用对应两次
+    真实远端动作(事件文本不含 feed 标识),跳过查重直接入库——同日去重会把
+    同好友第二次真实互动的记账当重放吞掉,结算与见闻素材少记;通知扫描路径
+    保持默认去重(上方用例覆盖)。"""
+    from datetime import timedelta
+
+    s = CommentSeenStore(SQLiteStore(tmp_path / "t.db"))
+    s.ensure_schema()
+    text = "你点赞了 20000 的说说"
+    s.fav_event("20000", "OUT_LIKE", text, dedup=False)
+    s.fav_event("20000", "OUT_LIKE", text, dedup=False)  # 第二次真实点赞:必须入账
+    s.fav_event("20000", "OUT_LIKE", text)  # 默认 dedup=True:同文本判重跳过
+    since = (datetime.now() - timedelta(days=1)).strftime("%Y-%m-%dT%H:%M:%S")
+    rows = s.fav_events_since("20000", since)
+    assert len(rows) == 2  # 两次 dedup=False 全入库;默认去重那条不重复放大
+
+
 # ---------- H-2 滚动窗查询(2026-09-03 v1 清理:结算取数与自然日解耦) ----------
 
 

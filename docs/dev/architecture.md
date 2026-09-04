@@ -12,7 +12,7 @@ Catsitate 是 MaiBot(QQ 猫娘机器人)的拟人化人格插件。它在 MaiBot
 |---|---|---|
 | `id` | `catsitate.core` | 决定数据目录(`ctx.paths.data_dir`,生产容器为 `/data/plugins/catsitate.core/`)与能力归属 |
 | `host_application` / `sdk` | 宿主与 SDK 版本范围 | Runner 据此拒绝不兼容的组合 |
-| `capabilities` | 12 项能力白名单 | 插件可 `call_capability` 的全部能力(见下文) |
+| `capabilities` | 11 项能力白名单 | 插件可 `call_capability` 的全部能力(见下文) |
 | `dependencies` | holiday-calendar、lunar-python、Pillow | 自动安装的 Python 依赖 |
 
 与宿主共存的几个既定事实(均以插件侧适配解决,不改主程序):
@@ -33,7 +33,7 @@ Catsitate 是 MaiBot(QQ 猫娘机器人)的拟人化人格插件。它在 MaiBot
 3. **调度注册**——把周期任务注册进 `Scheduler`(`catsitate_core/services/scheduler.py`,60 秒 tick 的 asyncio 任务引擎,任务异常隔离不互相拖垮);
 4. **胶水逻辑**——跨模块的数据搬运(如把当日到期备忘拼进行程注入块)。
 
-业务逻辑本身(纯函数、状态机、引擎)全部在 `catsitate_core/` 包的 31 个模块文件里(顶层 17 个 + `services/` 1 个 + `qzone/` 13 个),绝大多数不依赖网络与宿主,可离线单测(`tests/` 全量跑不触网)。
+业务逻辑本身(纯函数、状态机、引擎)全部在 `catsitate_core/` 包的 32 个模块文件里(顶层 18 个 + `services/` 1 个 + `qzone/` 13 个),绝大多数不依赖网络与宿主,可离线单测(`tests/` 全量跑不触网)。
 
 ### 生命周期
 
@@ -43,7 +43,7 @@ Catsitate 是 MaiBot(QQ 猫娘机器人)的拟人化人格插件。它在 MaiBot
 |---|---|---|
 | 加载 | `on_load` | 部署旁路模板 → 建 `SQLiteStore`/各 `JsonSnapshot` → 实例化全部引擎(备忘/好感度/贴表情/戳一戳/睡眠/日程/空间)→ 建表(`ensure_schema`)→ 编译内容护栏 → 挂模块日志转发(`_ModuleLogForwarder`,把 `catsitate_core.*` 的 logger 输出路由到插件 ctx logger,否则不可见)→ 空间模块自检 + 网关就绪上报 → 向 `Scheduler` 注册 11 个周期任务 → 恢复当日日程 → 启动调度并立即刷一次环境数据 |
 | 卸载 | `on_unload` | 停调度器、取消全部后台任务(`_background_tasks`)、摘日志转发与 debug handler、关存储 |
-| 配置热重载 | `on_config_update` | `scope == "self"`:清空注入/环境/快照缓存、按新间隔重注册调度任务、重编译护栏、重跑空间自检、重校验阈值;`scope == "bot"`:失效人设/风格缓存并清注入缓存(下次渲染自动生效) |
+| 配置热重载 | `on_config_update` | `scope == "self"`:清空注入/环境/快照缓存、按新间隔重注册调度任务、重编译护栏、重跑空间自检、重校验阈值,并把各引擎(睡眠/日程/备忘/好感度批次/衰减,含衰减器内嵌批次引擎)的配置引用重指到新 config 节——SDK 热重载经 model_validate 重建整个 config 实例,不重指则引擎静默沿用旧节值直到重启;`scope == "bot"`:失效人设/风格缓存并清注入缓存(下次渲染自动生效) |
 
 ## 二、完整逻辑
 
@@ -79,7 +79,7 @@ Catsitate 是 MaiBot(QQ 猫娘机器人)的拟人化人格插件。它在 MaiBot
 
 **(4) `@MessageGateway`——虚拟流消息网关**:`catsitate_qzone`,platform `qzone-qq`,**receive 模式(只进不出)**——QQ 空间动态经 `ctx.gateway.route_message` 投递进虚拟群会话(`qzone_feed`),bot 对说说的动作一律经 `qzone_*` 工具发出(直接打字发不出去,方法体内的出站分支只做防御性拒发)。
 
-**(5) `call_capability`——能力调用**(`_manifest.json` 声明的 12 项):
+**(5) `call_capability`——能力调用**(`_manifest.json` 声明的 11 项):
 
 | 能力 | 用在哪 |
 |---|---|
@@ -207,9 +207,9 @@ catsitate_core_maibot/
 |---|---|---|---|
 | 只用 SDK 声明的 API | 插件与主程序分属两个进程,唯一通道是 RPC;越界调用在运行期直接失败 | 代码试图 import 主程序模块或调未声明能力 | 不存在此路径——`capabilities` 是静态白名单,Runner 在启动期校验 |
 | 主程序只读 | 主程序目录不是本插件的修改对象 | 任何想改主程序配置/代码的需求 | 插件侧规避(如场景替换在钩子里改载荷副本)或如实报告,不 patch |
-| 钩子失败不阻塞主链路 | 插件是宿主人格的增强,不能因自身故障让 bot 失语 | 任一 BLOCKING 钩子内抛异常 | 钩子各自捕获:注入钩子整轮跳过注入、晚安/护栏钩子放行原载荷,均 `logger.exception` 显式暴露 |
+| 钩子失败不阻塞主链路 | 插件是宿主人格的增强,不能因自身故障让 bot 失语 | 任一 BLOCKING 钩子内抛异常 | 钩子各自捕获:注入钩子整轮跳过注入、晚安/哨兵/护栏钩子放行原载荷,均 `logger.exception`/`warning` 显式暴露 |
 | 模块日志必须转发 | 插件 Runner 只路由插件自身 logger,`catsitate_core.*` 模块级 logger 的告警原本不可见 | 模块内 `logger.warning/exception` | `_ModuleLogForwarder` 挂在 `catsitate_core` logger 根上转投 ctx logger;卸载时摘除 |
-| 旁路模板部署失败不阻断加载 | 模板缺失时各调用点回退内置默认,功能不中断 | 主程序 `prompts/zh-CN/` 不存在或写入 OSError | 逐模板告警跳过;目录不存在说明插件不在 `plugins/` 下,整体告警跳过 |
+| 旁路模板部署失败不阻断加载 | 模板缺失时各调用点回退内置默认,功能不中断 | 主程序 `prompts/zh-CN/` 不存在、写入 OSError、源文件读取失败(含非 UTF-8 编码损坏) | 源读失败逐模板告警跳过;目标读失败/损坏视为内容不同,由插件内置权威源覆盖重建;目录不存在说明插件不在 `plugins/` 下,整体告警跳过 |
 | 长 IO 任务不得占住调度 tick | `Scheduler` 同 tick 串行执行各任务,分钟级 HTTP/LLM 会拖住睡眠/日程判定 | 浏览轮询、结算、衰减、环境刷新 | tick 内只做防重入标记 + `_spawn_background_task` 后台派发;后台任务异常经 done 回调 `logger.exception` 上报 |
 | 后台任务必须持有引用 | 裸 `asyncio.create_task` 的任务可能被垃圾回收 | 任何 `task.cancel()`/gather 清理路径 | `_spawn_background_task` 把任务存入 `_background_tasks`,done 后 discard;`on_unload` 统一取消 |
 | 空间模块整体可停用 | 依赖 cookie/自检/网关三重前置,任一失败继续用其余功能 | 自检失败、网关就绪上报被拒、`bot_user_id` 为空 | `_qzone_available = False`,空间轮询/注入/工具全部短路,告警留痕 |

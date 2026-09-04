@@ -26,7 +26,7 @@ from catsitate_core.qzone.like_seen import LikeSeenStore
 from catsitate_core.qzone.protocol import FeedItem
 from catsitate_core.qzone.registry import FeedContext, FeedContextRegistry
 from catsitate_core.qzone.seen_store import SeenStore
-from catsitate_core.qzone.wire import CommentItem, LikeEvent
+from catsitate_core.qzone.wire import CommentItem, LikeEvent, ReplyItem
 from catsitate_core.storage import JsonSnapshot, SQLiteStore
 
 BOT_UIN = "10000"
@@ -90,17 +90,19 @@ class _StubCtx:
 
 
 class _StubCommentClient:
-    """评论轮询输入桩:记录取数次数,get_own_feed_comments 返回固定输入。"""
+    """评论轮询输入桩:记录取数次数,get_own_feed_comments 返回固定三视图
+    (评论映射/正文上下文/楼中楼回复,reply 视图缺省空)。"""
 
-    def __init__(self, comments, ctx_map):
+    def __init__(self, comments, ctx_map, replies=()):
         self._comments = comments
         self._ctx_map = ctx_map
+        self._replies = list(replies)
         self.fetches = 0
 
     async def get_own_feed_comments(self, *, bot_uin, num=10):
         del bot_uin, num
         self.fetches += 1
-        return self._comments, self._ctx_map
+        return self._comments, self._ctx_map, self._replies
 
     async def get_unified_timeline(self, *, count=20, begintime=None):
         del count, begintime
@@ -396,6 +398,31 @@ def test_qzone_comment_target_resolution_failure_and_fallback(tmp_path):
     res2 = asyncio.run(p.qzone_comment(feed_id="seentid0001", content="补一条", stream_id="s1"))
     assert res2.startswith("评论成功,已发出:")
     assert p.qzone_client.comment_calls == [("seentid0001", "10003", "补一条")]
+
+
+def test_qzone_comment_reply_anchor_miss_skips_polish_llm(tmp_path):
+    """目标解析前置(2026-09-04):锚失效(说说/楼中楼二元组解析不到)是纯本地
+    判定,须在表达润色之前失败返回——旁路 LLM 一次都不调(旧序会先烧一次润色
+    再失败),零写调用;锚有效时行为不变(既有用例覆盖)。"""
+
+    p = _make_tool_plugin(tmp_path)
+    # qzone_comment:说说锚失效
+    res = asyncio.run(p.qzone_comment(feed_id="nosuchanchor", content="你好", stream_id="s1"))
+    assert "未找到说说" in res
+    assert p.expr_llm_calls == []  # 润色 LLM 零调用
+    assert p.qzone_client.comment_calls == []
+
+    # qzone_reply:说说锚失效
+    res2 = asyncio.run(p.qzone_reply(feed_id="nosuchanchor", comment_id="c1", content="你好", stream_id="s1"))
+    assert "未找到说说" in res2
+    assert p.qzone_client.reply_calls == []
+
+    # qzone_reply:说说锚有效但评论锚失效(二元组解析同样前置)
+    _register_feed(p, tid="feednoanchor", owner="10001")
+    res3 = asyncio.run(p.qzone_reply(feed_id="feednoanchor", comment_id="gone", content="你好", stream_id="s1"))
+    assert "未找到这条评论" in res3
+    assert p.expr_llm_calls == []  # 三种锚失效形态全零润色调用
+    assert p.qzone_client.reply_calls == []
 
 
 def test_qzone_comment_auth_error_invalidates_cookie(tmp_path):
@@ -965,15 +992,17 @@ def test_diary_weather_line_and_word_count_guidance(tmp_path):
     assert "(目标篇幅80~200字)" in stable
     assert "长度按素材里给的篇幅区间" in p.llm_calls[0]["messages"][0]["content"]
 
-    # 有快照:素材行出现(温度/天气码来自快照);自定义区间原样进素材
+    # 有快照:素材行出现(温度/天气码来自快照);fetched_at 须新鲜(1 小时前,
+    # 过期快照按无数据处理——见 test_weather_text_staleness);自定义区间原样进素材
     p.store.execute(
         "CREATE TABLE IF NOT EXISTS weather_snapshot ("
         "id INTEGER PRIMARY KEY CHECK (id = 1), city TEXT NOT NULL, "
         "fetched_at TEXT NOT NULL, data TEXT NOT NULL)"
     )
+    fresh_at = (datetime.now() - timedelta(hours=1)).strftime("%Y-%m-%dT%H:%M:%S")
     p.store.execute(
         "INSERT INTO weather_snapshot (id, city, fetched_at, data) VALUES (1, '珠海', "
-        "'2026-09-01T12:00:00', '{\"temperature_2m\": 26.5, \"weather_code\": 1}')"
+        f"'{fresh_at}', '{{\"temperature_2m\": 26.5, \"weather_code\": 1}}')"
     )
     p.config.qzone.diary_word_count_min = 120
     p.config.qzone.diary_word_count_max = 350
@@ -1456,6 +1485,27 @@ def test_guard_assembly_compiles_on_load_path(tmp_path, monkeypatch):
     assert any(level == "warning" and "整组护栏失效" in str(a[0]) for level, a in p.logs)
 
 
+def test_qzone_like_accounting_failure_still_reports_success(tmp_path):
+    """记账异常保护(2026-09-04):远端点赞成功后本地记账(fav_event 等 SQLite
+    写入)抛异常——只告警不误报失败;回执仍成功(谎报失败会诱导模型对同一条
+    说说重复点赞),与 qzone_comment/qzone_reply 的记账 try 保护同款。"""
+
+    p = _make_tool_plugin(tmp_path)
+    _register_feed(p, tid="likeacct01", owner="10001", nickname="小明")
+
+    def _boom(*a, **k):
+        raise RuntimeError("sqlite database is locked")
+
+    p.qzone_comment_seen.fav_event = _boom
+    res = asyncio.run(p.qzone_like(feed_id="likeacct01", stream_id="s1"))
+    assert res.startswith("点赞成功:小明 的说说")  # 回执不误报失败
+    assert p.qzone_client.like_calls == [("likeacct01", "10001")]  # 远端动作已成功
+    assert any(
+        level == "exception" and "点赞记账失败" in str(a[0]) and "远端已成功" in str(a[0])
+        for level, a in p.logs
+    )  # 错误显式暴露(告警留痕)
+
+
 def test_qzone_like_via_feed_id_and_notify_origin(tmp_path):
     """qzone_like:feed_id 参数(锚前缀)经 registry 解析为全量 tid;
     通知 awaiting 不再拒赞——缺省目标取 origin_tid(真实说说),owner=源A=bot。"""
@@ -1578,7 +1628,7 @@ def test_notify_scan_guard_awaits_until_turn_complete(tmp_path):
 
         async def get_own_feed_comments(self, *, bot_uin, num=10):
             fetches.append(1)
-            return {}, {}
+            return {}, {}, []
 
     p.qzone_client = _ProbeClient()
     asyncio.run(p._qzone_notify_scan())
@@ -1586,6 +1636,75 @@ def test_notify_scan_guard_awaits_until_turn_complete(tmp_path):
     p.qzone_injector.on_turn_complete(_time.monotonic())
     asyncio.run(p._qzone_notify_scan())
     assert fetches == [1]  # awaiting 释放后恢复取数
+
+
+def test_notify_scan_source_a_reply_under_bot_comment_notifies(tmp_path):
+    """源A 断链修复(2026-09-04):好友在自己说说下回复 bot 的评论(list_3,同载荷
+    第三视图)→ 通知注入(形态与源B 一致:楼中楼上下文+参数行);归属区别断言——
+    origin_sender/comment_uin=bot(自己说说、父评论作者是 bot);去重键登记
+    二次扫描不重发;bot 自己的楼中楼回复跳过(不通知自己)。"""
+
+    import time as _time
+
+    now_s = str(int(_time.time()))
+    replies = [
+        ReplyItem(reply_tid="rr1", parent_comment_tid="bc1", feed_tid="ownfeed1",
+                  friend_uin=BOT_UIN, uin="20000", nickname="小红",
+                  content="再来一句", create_time=now_s,
+                  feed_content="我的说说正文", parent_comment_content="我的评论"),
+        # bot 自己的楼中楼回复:不通知自己(插件层防御跳过,与顶层自评同款)
+        ReplyItem(reply_tid="rr_self", parent_comment_tid="bc1", feed_tid="ownfeed1",
+                  friend_uin=BOT_UIN, uin=BOT_UIN, nickname="我",
+                  content="bot 自己的楼中楼", create_time=now_s,
+                  feed_content="我的说说正文", parent_comment_content="我的评论"),
+    ]
+    # bot 自评(bci 的顶层评论):幂等登记不注入,不影响楼中楼段
+    comments = {"ownfeed1": [CommentItem(
+        comment_tid="bc1", uin=BOT_UIN, nickname="我", content="我的评论", create_time=now_s,
+    )]}
+    p = _make_plugin(tmp_path)
+    p.qzone_injector.window_started()
+    p.qzone_client = _StubCommentClient(comments, {"ownfeed1": "我的说说正文"}, replies)
+    # 原说说曾注入过(seen 记录 message_id)→ 通知注入消息带 reply 段引用它
+    p.qzone_seen.mark_queued("ownfeed1", abstime=now_s, author_uin=BOT_UIN, summary="我的说说正文")
+    p.qzone_seen.mark_seen("ownfeed1", "2026-09-01T10:00:00", "qzone_ownfeed1_3")
+
+    asyncio.run(p._qzone_notify_scan())
+    assert len(p._ctx.gateway.calls) == 1
+    msg = p._ctx.gateway.calls[0][1]
+    assert msg["message_info"]["user_info"]["user_id"] == "20000"
+    assert "notify_reply_ownfeed1_rr1" in msg["message_id"]
+    # reply 段引用原说说注入消息(自己说说:sender=bot 自己)
+    reply = msg["raw_message"][0]
+    assert reply["type"] == "reply"
+    assert reply["data"]["target_message_id"] == "qzone_ownfeed1_3"
+    assert reply["data"]["target_message_sender_id"] == BOT_UIN
+    # 正文=楼中楼上下文(bot 原评论前 20 字)+参数行(评论ID=主评论 bc1,
+    # 评论者QQ=回复者;动作时间随运行时刻→前缀+后缀断言)
+    text = msg["raw_message"][1]["data"]
+    assert text.startswith("回复了你的评论「我的评论」:再来一句\n〔说说ID=ownfeed1 评论ID=bc1 评论者QQ=20000 回复于(今天")
+    assert text.endswith(")〕")
+    # registry 登记对位:owner=bot(自己说说);主评论二元组=bot 的评论(作者=bot);
+    # 评论者=回复者(qzone_reply 的 @ 目标)
+    ctx = p._qzone_registry.resolve("ownfeed1")
+    assert ctx is not None
+    assert (ctx.owner_uin, ctx.comment_tid, ctx.comment_uin) == (BOT_UIN, "bc1", BOT_UIN)
+    assert (ctx.commenter_uin, ctx.commenter_nickname) == ("20000", "小红")
+    # 楼中楼去重键已登记(下轮判重);bot 自己的回复键零登记
+    assert p.qzone_comment_seen.is_new("ownfeed1:bc1:reply:rr1") is False
+    assert p.store.query(
+        "SELECT comment_key FROM qzone_comments WHERE comment_key LIKE '%rr_self%'"
+    ) == []
+    # fav_event 记账(COMMENT,指向回复者)
+    since = (datetime.now() - timedelta(days=1)).strftime("%Y-%m-%dT%H:%M:%S")
+    evs = p.qzone_comment_seen.fav_events_since("20000", since)
+    assert any(e["kind"] == "COMMENT" and "回复了你的评论" in e["text"] for e in evs)
+
+    # 二次扫描:释放 awaiting 后键判重不重发(取数发生,不是早退);bot 自评仍不注入
+    p.qzone_injector.on_turn_complete(_time.monotonic())
+    asyncio.run(p._qzone_notify_scan())
+    assert len(p._ctx.gateway.calls) == 1
+    assert p.qzone_client.fetches == 2
 
 
 def test_notify_poll_source_b_reply_registers_friend_thread_context(tmp_path, monkeypatch):
@@ -1628,7 +1747,7 @@ def test_notify_poll_source_b_reply_registers_friend_thread_context(tmp_path, mo
 
         async def get_own_feed_comments(self, *, bot_uin, num=10):
             del bot_uin, num
-            return {}, {}
+            return {}, {}, []
 
         async def get_user_feeds_raw(self, *, target_uin, num=5):
             assert target_uin == "30000"  # 只拉「被评论过+发现层活跃」的好友
@@ -1696,7 +1815,7 @@ def test_notify_scan_source_b_reply_without_parent_content_falls_back(tmp_path, 
 
         async def get_own_feed_comments(self, *, bot_uin, num=10):
             del bot_uin, num
-            return {}, {}
+            return {}, {}, []
 
         async def get_user_feeds_raw(self, *, target_uin, num=5):
             assert target_uin == "30000"
@@ -1739,7 +1858,7 @@ def test_notify_scan_source_c_like_events(tmp_path):
 
         async def get_own_feed_comments(self, *, bot_uin, num=10):
             del bot_uin, num
-            return {}, {}
+            return {}, {}, []
 
         async def get_like_events(self, *, count=30):
             del count
@@ -1796,7 +1915,7 @@ def test_notify_scan_source_c_like_auth_error_keeps_source_a_notifications(tmp_p
 
         async def get_own_feed_comments(self, *, bot_uin, num=10):
             del bot_uin, num
-            return comments, {"feeda": "说说正文"}
+            return comments, {"feeda": "说说正文"}, []
 
         async def get_like_events(self, *, count=30):
             del count
@@ -1837,7 +1956,7 @@ def test_notify_scan_source_c_runtime_error_keeps_source_a_notifications(tmp_pat
 
         async def get_own_feed_comments(self, *, bot_uin, num=10):
             del bot_uin, num
-            return comments, {"feeda": "说说正文"}
+            return comments, {"feeda": "说说正文"}, []
 
         async def get_like_events(self, *, count=30):
             del count
@@ -1917,7 +2036,7 @@ def test_notify_scan_reverts_registered_keys_on_failure(tmp_path):
 
         async def get_own_feed_comments(self, *, bot_uin, num=10):
             del bot_uin, num
-            return comments, {"feedh1": "正文"}
+            return comments, {"feedh1": "正文"}, []
 
         async def get_like_events(self, *, count=30):
             del count
@@ -1965,13 +2084,29 @@ def test_config_update_validates_schedule_threshold(tmp_path):
     只在 on_load 校验一次,热改坏值会静默停用日程主动发言直到下次重启。"""
     from types import SimpleNamespace
 
+    from catsitate_core.decay import DecayExecutor
+    from catsitate_core.favorability import BatchEngine
+    from catsitate_core.msg_react import MsgReactEngine
+    from catsitate_core.poke import PokeEngine
+    from catsitate_core.schedule import ScheduleGenerator
     from catsitate_core.services.scheduler import Scheduler
+    from catsitate_core.sleep import SleepManager
 
     p = _make_plugin(tmp_path)
     p.assembler = SimpleNamespace(reset=lambda: None)
     p._env_cache = {}
     p._snapshot_cache = {}
     p._scheduler = Scheduler(tick_seconds=60)
+    # 热重载分支会重指各引擎配置引用,离线装配须带上(on_load 同款最小集)
+    async def _llm(messages, model=""):
+        return {"success": True, "response": "{}", "model": model}
+
+    p.sleep = SleepManager(JsonSnapshot(tmp_path / "sleep_state.json"), p.config.sleep)
+    p.schedule_gen = ScheduleGenerator(_llm, p.config.schedule, p.config.sleep)
+    p.fav_engine = BatchEngine(p.store, p.config.favorability)
+    p.decay = DecayExecutor(p.store, p.config.favorability, _llm)
+    p.react = MsgReactEngine(JsonSnapshot(tmp_path / "msg_react_cooldown.json"), p.config.msg_react)
+    p.poke = PokeEngine(JsonSnapshot(tmp_path / "poke_cooldown.json"), p.config.poke)
 
     async def _no_selfcheck():
         return False
@@ -2058,7 +2193,7 @@ def test_notify_scan_source_c_drift_warn_once(tmp_path):
 
         async def get_own_feed_comments(self, *, bot_uin, num=10):
             del bot_uin, num
-            return {}, {}
+            return {}, {}, []
 
         async def get_like_events(self, *, count=30):
             del count
@@ -2494,7 +2629,7 @@ def test_notify_poll_source_b_spaces_friend_requests(tmp_path, monkeypatch):
 
         async def get_own_feed_comments(self, *, bot_uin, num=10):
             del bot_uin, num
-            return {}, {}
+            return {}, {}, []
 
         async def get_user_feeds_raw(self, *, target_uin, num=5):
             del num
@@ -2528,7 +2663,7 @@ def test_notify_scan_source_b_zero_pulls_when_discovery_no_overlap(tmp_path, mon
 
         async def get_own_feed_comments(self, *, bot_uin, num=10):
             del bot_uin, num
-            return {}, {}
+            return {}, {}, []
 
         async def get_user_feeds_raw(self, *, target_uin, num=5):
             del num, target_uin
@@ -2794,6 +2929,40 @@ def test_poll_tick_reentrancy_guard(tmp_path):
     asyncio.run(scenario())
     assert calls == [1]  # 防重入零次 + 恢复后恰一次
     assert p._qzone_poll_running is False  # 后台 feeds 完成后标记复位
+
+
+def test_poll_tick_closes_ended_window_while_previous_poll_running(tmp_path):
+    """窗口收尾不被上一轮拉取拖住(2026-09-04):窗口已结束且上一轮后台拉取
+    仍在跑(_qzone_poll_running=True)时,tick 防重入分支先行收窗——
+    window_ended 已执行、浏览队列清空、queued 行回退未读,无需等 poll_feeds
+    完成;tick 早退不清 running 标记(清位仍在 feeds 的 finally)。"""
+
+    p = _make_plugin(tmp_path)
+    now = datetime.now()
+    # 日程窗口已结束(1 小时前收尾):窗口判定=非浏览窗口
+    p._schedule_data = {"date": now.strftime("%Y-%m-%d"), "windows": [{
+        "kind": "daily", "start": (now - timedelta(hours=2)).strftime("%Y-%m-%dT%H:%M"),
+        "end": (now - timedelta(hours=1)).strftime("%Y-%m-%dT%H:%M"),
+        "activity": "逛空间", "plan_speak": False, "topic": "", "read_qzone": True,
+    }]}
+    p.qzone_injector.window_started()  # 上一轮窗口遗留的浏览态(未收窗)
+    p.qzone_seen.mark_queued("tailtid0001", abstime="1", author_uin="10001", summary="窗口尾未读动态")
+    p.qzone_injector.enqueue([FeedItem(
+        tid="tailtid0001", abstime="1750000000", uin="10001", nickname="小明", content="窗口尾动态",
+    )])
+    assert p.qzone_injector.stats()["p2_queued"] == 1
+
+    p._qzone_poll_running = True  # 上一轮后台拉取还在跑(tick 走防重入分支)
+    asyncio.run(p._qzone_poll_tick())
+
+    # 收窗不等上一轮拉取完成:窗口已关、浏览队列清空、queued 行回退未读(删除)
+    assert p.qzone_injector.window_active is False
+    assert p.qzone_injector.stats()["p2_queued"] == 0
+    assert p.store.query("SELECT COUNT(*) FROM qzone_feeds WHERE tid = 'tailtid0001'")[0][0] == 0
+    assert any(
+        level == "info" and "QQ空间浏览窗口结束,浏览队列回退未读" in str(a[0]) for level, a in p.logs
+    )
+    assert p._qzone_poll_running is True  # tick 早退不清标记(防重入语义不变)
 
 
 # ---- 深度审查 B-4:通知注入被拒不永久丢失 ----
@@ -3231,7 +3400,7 @@ def test_notify_scan_source_b_discovery_failure_does_not_block_source_a(tmp_path
             return {"feed1": [
                 CommentItem(comment_tid="c1", uin="20000", nickname="小红",
                             content="好友评论", create_time=str(int(_time.time()))),
-            ]}, {"feed1": "今天的心情"}
+            ]}, {"feed1": "今天的心情"}, []
 
         async def get_unified_timeline(self, *, count=20, begintime=None):
             del count
@@ -3276,7 +3445,7 @@ def test_notify_scan_source_b_auth_error_invalidates_cookie_and_keeps_source_a(t
             return {"feed1": [
                 CommentItem(comment_tid="c1", uin="20000", nickname="小红",
                             content="好友评论", create_time=str(int(_time.time()))),
-            ]}, {"feed1": "今天的心情"}
+            ]}, {"feed1": "今天的心情"}, []
 
         async def get_unified_timeline(self, *, count=20, begintime=None):
             del count
@@ -3310,7 +3479,7 @@ def test_notify_scan_source_b_skips_discovery_when_no_commented_friends(tmp_path
 
         async def get_own_feed_comments(self, *, bot_uin, num=10):
             del bot_uin, num
-            return {}, {}
+            return {}, {}, []
 
     p.qzone_client = _ProbeClient()
     asyncio.run(p._qzone_notify_scan())
@@ -3350,7 +3519,8 @@ def test_discovery_pagination_stops_on_all_seen(tmp_path):
 
 
 def test_discovery_pagination_stops_when_second_page_all_seen(tmp_path, monkeypatch):
-    """Task5:第 1 页含新动态 → 翻第 2 页;第 2 页全旧 → 止步(不再第 3 页)。"""
+    """Task5:第 1 页含新动态 → 翻第 2 页;第 2 页全旧 → 止步(不再第 3 页)。
+    页间有 2 秒防风控间隔(与充实层/通知源B 好友间隔同款),首页前无间隔。"""
 
     sleeps: list = []
     _patch_sleep(monkeypatch, sleeps)
@@ -3374,6 +3544,9 @@ def test_discovery_pagination_stops_when_second_page_all_seen(tmp_path, monkeypa
     p.qzone_client = _PagedClient([])
     asyncio.run(p._qzone_poll_feeds())
     assert calls == [None, "cur1"]  # 第 2 页无新说说即止步
+    # 首个 2.0=翻第 2 页的页间间隔(首页前无);第二个=充实层该好友拉取后的
+    # 好友间隔(t1 为新 tid 走充实层)——页间隔与充实层同款防风控口径
+    assert sleeps == [2.0, 2.0]
 
 
 def test_discovery_pagination_fetches_backlog_until_max_pages(tmp_path, monkeypatch):
@@ -3864,3 +4037,122 @@ def test_guard_assembly_rebuilds_on_config_update(tmp_path):
     p.config.guard.enabled = False
     p._assemble_guard()
     assert p._guard_compiled == []
+
+
+def test_diary_after_midnight_uses_sleep_day_materials(tmp_path):
+    """午夜后入睡的日记素材日(入睡日):now 已是次日 00:05,日期行/备忘
+    due_on/聊天时间线起点全部取 sleep_day(入睡日)——日记与日程同源修正,
+    不再用 now 取日(否则素材日写成次日)。"""
+
+    import plugin as plugin_mod
+
+    class _FakeDateTime(datetime):
+        _current = datetime(2026, 9, 5, 0, 5, 0)
+
+        @classmethod
+        def now(cls, tz=None):
+            del tz
+            return cls._current
+
+    p = _make_diary_plugin(tmp_path)
+    p._stream_cache = {}
+    p._stream_cache_at = 0.0
+    due_days: list[str] = []
+    real_due_on = p.memo.due_on
+
+    def _capture_due_on(day):
+        due_days.append(day)
+        return real_due_on(day)
+
+    p.memo.due_on = _capture_due_on
+    cap_calls: list[dict] = []
+
+    async def _capability(name, **kw):
+        cap_calls.append({"name": name, **kw})
+        if name == "message.get_by_time":
+            return []
+        return {"success": True, "response": "{}"}
+
+    p._ctx.call_capability = _capability
+    old = plugin_mod.datetime
+    plugin_mod.datetime = _FakeDateTime
+    try:
+        asyncio.run(p._generate_and_publish_diary(sleep_day="2026-09-04"))
+    finally:
+        plugin_mod.datetime = old
+
+    stable = p.llm_calls[0]["messages"][1]["content"]
+    assert "今天是2026年9月4日" in stable  # 素材日期行=入睡日(now 已是 9 月 5 日)
+    assert due_days == ["2026-09-04"]  # 备忘 due_on 用素材日
+    assert any(
+        c["name"] == "message.get_by_time"
+        and c["start_time"] == datetime(2026, 9, 4, 0, 0, 0).timestamp()
+        for c in cap_calls
+    )  # 聊天时间线起点=入睡日 00:00
+    assert p.qzone_client.publish_calls  # 全链路照常发布
+
+
+def test_weather_text_staleness_ceiling(tmp_path):
+    """天气快照新鲜度上限:只按 fetched_at 倒序取最新不查时效,持续拉取失败时
+    旧天气会被无限期当「当前天气」注入环境块/日程/日记素材——超 6 小时按
+    「无数据」处理(debug 记录不刷屏);1 小时内正常返回;fetched_at 解析失败
+    同样按过期(解析异常不得抛出)。"""
+
+    p = _make_diary_plugin(tmp_path)
+    p.store.execute(
+        "CREATE TABLE IF NOT EXISTS weather_snapshot ("
+        "id INTEGER PRIMARY KEY CHECK (id = 1), city TEXT NOT NULL, "
+        "fetched_at TEXT NOT NULL, data TEXT NOT NULL)"
+    )
+
+    def _insert(fetched_at: str) -> None:
+        p.store.execute("DELETE FROM weather_snapshot")
+        p.store.execute(
+            "INSERT INTO weather_snapshot (id, city, fetched_at, data) VALUES (1, '珠海', "
+            f"'{fetched_at}', '{{\"temperature_2m\": 26.5, \"weather_code\": 1}}')"
+        )
+
+    _insert((datetime.now() - timedelta(hours=7)).strftime("%Y-%m-%dT%H:%M:%S"))
+    assert p._weather_text() == "无数据"  # 7 小时前:过期
+    assert any(level == "debug" and "天气快照过期" in str(a[0]) for level, a in p.logs)
+
+    _insert((datetime.now() - timedelta(hours=1)).strftime("%Y-%m-%dT%H:%M:%S"))
+    assert p._weather_text() == "温度 26.5°C(天气码 1)"  # 1 小时前:正常
+
+    _insert("not-a-timestamp")
+    assert p._weather_text() == "无数据"  # 时刻不可解析:按过期,不抛出
+
+
+def test_diary_chat_timeline_success_without_messages_key_warns_and_falls_back(tmp_path):
+    """形态容错显式化:get_by_time 返回 dict+success 但缺 messages 键(或非 list)
+    时,旧逻辑静默按 0 条处理,日记会误写「今天没和人聊天」——现显式 warning
+    并回退逐流取数,时间线素材仍可用。"""
+
+    import time as _time
+
+    today = datetime.now()
+    p = _make_diary_plugin(tmp_path)
+    p._stream_cache = {
+        "g1": {"session_id": "g1", "is_group_session": True, "user_id": ""},
+    }
+    p._stream_cache_at = _time.time()
+    ten_five = today.replace(hour=10, minute=5, second=0, microsecond=0)
+    msgs = [_diary_msg("40000", "群友", "逐流回退的消息", ten_five.timestamp())]
+    requested: list[str] = []
+
+    async def _capability(name, **kw):
+        if name == "message.get_by_time":
+            return {"success": True}  # success 但缺 messages 键的畸形形态
+        if name == "message.get_recent":
+            requested.append(str(kw.get("chat_id")))
+            return list(msgs)
+        return {"success": True, "response": "{}"}
+
+    p._ctx.call_capability = _capability
+    asyncio.run(p._generate_and_publish_diary())
+    stable = p.llm_calls[0]["messages"][1]["content"]
+    assert "[10:05] 群友:逐流回退的消息" in stable  # 逐流回退路径被走到
+    assert requested == ["g1"]
+    assert any(
+        level == "warning" and "get_by_time 返回形态异常" in str(a[0]) for level, a in p.logs
+    )

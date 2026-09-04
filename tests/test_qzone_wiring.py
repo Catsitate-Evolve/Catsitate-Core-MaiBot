@@ -2273,6 +2273,68 @@ def test_digest_generated_on_window_end(tmp_path):
 
     src = inspect.getsource(plugin_mod)
     assert "_spawn_background_task(self._qzone_generate_digest())" in src
+    assert "fav_events_day" not in src  # 死代码删除防回归(2026-09-04,素材改 fav_events_window)
+
+
+def test_digest_fav_events_24h_rolling_window_catches_last_night(tmp_path):
+    """见闻互动素材近 24h 滚动窗(2026-09-04 翻案 H-2 自然日旧裁定):旧代码按
+    生成时刻自然日查(day=今天),零点前登记的事件 day=昨日取不到——跨零点会话
+    互动素材全空;新代码 fav_events_window(now-24h) 滚动窗取到。压缩模拟
+    「零点前登记、零点后生成」(day=昨日+created_at=now-1h),任何时刻跑都确定。"""
+
+    p = _make_plugin(tmp_path)
+    now = datetime.now()
+    yday = (now - timedelta(days=1)).strftime("%Y-%m-%d")
+    at = (now - timedelta(hours=1)).strftime("%Y-%m-%dT%H:%M:%S")
+    p.qzone_comment_seen.store.execute(
+        "INSERT INTO qzone_fav_events (day, user_id, kind, text, created_at) "
+        "VALUES (?, '10001', 'COMMENT', '昨夜评论了你的说说:好看', ?)", (yday, at))
+
+    captured: list = []
+
+    async def llm(messages, model, module, timeout_ms=None):
+        captured.append("\n".join(str(m.get("content", "")) for m in messages))
+        return {"success": True, "response": "昨晚收到评论,今天又刷到新动态。"}
+
+    p._side_llm_call = llm
+    # 人设缓存预置(离线桩无 ctx.config,不走异常兜底路径;实例级覆盖防测试间泄漏)
+    p._persona_cache = "猫耳少女"
+    p._style_cache = ""
+    asyncio.run(p._qzone_generate_digest())
+    # day=昨日的事件仍在 24h 滚动窗内,进素材段(旧自然日口径查不到)
+    assert "昨夜评论了你的说说:好看" in "\n".join(captured)
+    assert p._qzone_digest_snapshot.load().get("date") == datetime.now().strftime("%Y-%m-%d")
+
+
+def test_digest_fav_events_truncated_to_latest_10(tmp_path):
+    """见闻互动素材截断统一保留最新(2026-09-04):升序取尾 events[-10:](与结算
+    路径 events[-5:] 同款)——12 条窗内事件只保留最新 10 条,最早的 2 条截掉,
+    不再「丢掉下午互动的」。created_at 自 now-30min 起每条 +1 分钟递增(全部
+    落在 24h 窗内,升序可分辨)。"""
+
+    p = _make_plugin(tmp_path)
+    now = datetime.now()
+    for i in range(1, 13):
+        at = (now - timedelta(minutes=30) + timedelta(minutes=i - 1)).strftime("%Y-%m-%dT%H:%M:%S")
+        p.qzone_comment_seen.store.execute(
+            "INSERT INTO qzone_fav_events (day, user_id, kind, text, created_at) "
+            "VALUES (?, '10001', 'LIKE', ?, ?)",
+            (now.strftime("%Y-%m-%d"), f"事件{i:02d}", at),
+        )
+
+    captured: list = []
+
+    async def llm(messages, model, module, timeout_ms=None):
+        captured.append("\n".join(str(m.get("content", "")) for m in messages))
+        return {"success": True, "response": "今天和好多人互动了。"}
+
+    p._side_llm_call = llm
+    p._persona_cache = "猫耳少女"
+    p._style_cache = ""
+    asyncio.run(p._qzone_generate_digest())
+    material = "\n".join(captured)
+    assert all(f"事件{i:02d}" in material for i in range(3, 13))  # 最新 10 条全保留
+    assert "事件01" not in material and "事件02" not in material  # 最早的 2 条截掉
 
 
 def test_qzone_block_prefers_today_digest(tmp_path):

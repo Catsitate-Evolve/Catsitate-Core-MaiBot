@@ -2868,11 +2868,16 @@ class CatsitatePlugin(MaiBotPlugin):
             for e in seen
         ]
         try:
-            events = self.qzone_comment_seen.fav_events_day(day)
+            # 素材锚点统一为近 24h 滚动窗(浏览 recent_seen days=1 与互动 fav_events_window
+            # 同窗),跨零点会话昨晚素材自然衔接,不按自然日切割(2026-09-04 翻案 H-2 旧保留裁定)
+            events = self.qzone_comment_seen.fav_events_window(
+                (now - timedelta(days=1)).strftime("%Y-%m-%dT%H:%M:%S")
+            )
         except Exception:
             self.ctx.logger.exception("QQ空间见闻素材(互动事件)读取失败,本轮按空处理")
             events = []
-        lines += [clip_text(e["text"], 40) for e in events[:10]]
+        # 截断统一保留最新(升序取尾,与结算路径 events[-5:] 同款)
+        lines += [clip_text(e["text"], 40) for e in events[-10:]]
         if not lines:
             return  # 当日无素材:不生成,保留旧见闻
         persona, _ = await self._persona_context()

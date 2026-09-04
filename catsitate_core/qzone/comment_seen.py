@@ -185,9 +185,9 @@ class CommentSeenStore:
     def fav_events_on(self, day: str, user_id: str) -> list[dict]:
         """某日某人的全部事件,按写入顺序(id 升序)。
 
-        自然日语义(H-2 裁定保留):见闻生成 fav_events_day 同口径,按登记时
-        写入的 day 匹配;结算取数勿用本方法——跨零点结算时昨晚事件 day=昨日
-        会漏,改走 fav_events_since 滚动窗。"""
+        自然日语义:按登记时写入的 day 匹配;见闻素材已改 fav_events_window
+        滚动窗(2026-09-04 翻案 H-2 自然日旧裁定)、结算走 fav_events_since
+        滚动窗,均勿用本方法——跨零点时昨晚事件 day=昨日会漏。"""
 
         rows = self.store.query(
             "SELECT id, day, user_id, kind, text, created_at FROM qzone_fav_events "
@@ -232,14 +232,6 @@ class CommentSeenStore:
             {"id": r[0], "day": r[1], "user_id": r[2], "kind": r[3], "text": r[4], "created_at": r[5]}
             for r in rows
         ]
-
-    def fav_events_day(self, day: str) -> list[dict]:
-        """取某日全部好感度事件(见闻素材:谁与我互动/我做了什么)。"""
-
-        rows = self.store.query(
-            "SELECT user_id, kind, text FROM qzone_fav_events WHERE day = ? ORDER BY id", (day,)
-        )
-        return [{"user_id": r[0], "kind": r[1], "text": r[2]} for r in rows]
 
     def last_fav_interaction(self, user_id: str) -> str:
         """该人最近一次任一类事件的 created_at(ISO);无事件返回空串。"""

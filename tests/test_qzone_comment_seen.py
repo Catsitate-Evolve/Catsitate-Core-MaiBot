@@ -142,17 +142,6 @@ def test_retry_columns_migration(tmp_path):
     assert s.is_new("f1:c1:20000") is True  # 软回退语义在迁移表上同样成立
 
 
-def test_fav_events_day(tmp_path):
-    """见闻素材查询(M3):取某日全部好感度事件(user_id/kind/text,按写入顺序)——
-    read_qzone 窗口结束时旁路 LLM 摘要的「谁与我互动/我做了什么」素材源。"""
-    s = CommentSeenStore(SQLiteStore(tmp_path / "t.db"))
-    s.ensure_schema()
-    s.fav_event("100", "LIKE", "小明 赞了你的说说「x」")
-    s.fav_event("200", "OUT_LIKE", "你点赞了 200 的说说")  # 同日第二人,一并返回
-    rows = s.fav_events_day(datetime.now().strftime("%Y-%m-%d"))
-    assert len(rows) == 2 and rows[0]["user_id"] == "100" and rows[0]["kind"] == "LIKE"
-
-
 def test_fav_event_same_day_dedup(tmp_path):
     """深度审查 A-N1:同日同 user+kind+text 只记一条——通知被拒回退后重发现时,
     发现侧会再次调用 fav_event,重复入库会放大结算素材与衰减计时。"""
@@ -205,9 +194,10 @@ def test_fav_events_since_orders_by_created_at(tmp_path):
 
 
 def test_fav_events_on_today_misses_last_night_but_since_yesterday_gets(tmp_path):
-    """H-2 ②(语义差异锁定):fav_events_on 按登记时写入的 day 自然日匹配(见闻
-    fav_events_day 同口径,保留不改);fav_events_since 按 created_at 滚动窗——
-    昨晚 23:00 记录的事件,今天自然日取不到,昨日下界滚动窗能取到。"""
+    """H-2 ②(语义差异锁定):fav_events_on 按登记时写入的 day 自然日匹配;
+    fav_events_since 按 created_at 滚动窗——昨晚 23:00 记录的事件,今天自然日
+    取不到,昨日下界滚动窗能取到(见闻素材已改 fav_events_window 滚动窗,
+    2026-09-04 翻案 H-2 自然日旧裁定,不再与 fav_events_on 同口径)。"""
     from datetime import timedelta
 
     s = CommentSeenStore(SQLiteStore(tmp_path / "t.db"))

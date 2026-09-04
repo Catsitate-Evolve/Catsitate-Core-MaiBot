@@ -30,7 +30,7 @@ assert text.startswith("(今天") and text.endswith("今天天气好\n〔说说I
 ## 运行方法
 
 ```bash
-cd MaiBot-dev/plugins/catsitate_core_maibot && python3 -m pytest tests/ -q
+cd <本仓库根> && python3 -m pytest tests/ -q
 # 566 passed in ~6s(无需网络、无需主程序、无需 QQ 登录态)
 ```
 

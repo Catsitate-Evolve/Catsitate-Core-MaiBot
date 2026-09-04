@@ -1,4 +1,4 @@
-"""虚拟流注入消息构造测试(spec §2.2/§3.2)。"""
+"""虚拟流注入消息构造测试。"""
 import base64
 
 from catsitate_core.qzone import QZONE_PLATFORM
@@ -122,7 +122,7 @@ def test_build_message_pure_image_text_policy():
 
 
 def test_build_message_comment_total_without_list_is_honest():
-    """评论区门控(Task 4):commentlist 缺失但 cmtnum>0 时按 comment_total
+    """评论区门控:commentlist 缺失但 cmtnum>0 时按 comment_total
     放行,空块交 format_comment_block 出诚实提示(与详情工具两路一致)——
     旧行为 `if feed.comments:` 会静默跳过,模型对存在评论毫无感知。"""
     msg = build_feed_message(_feed(comments=[], comment_total=7), seq=1, group_id="g",
@@ -174,8 +174,8 @@ def test_build_notify_message_without_reply_segment():
 
 
 def test_gateway_declared_platform_constant():
-    """网关平台必须是常量 qzone-qq(连字符别名折叠进 qq 人物命名空间,spec §2.17)。
-    工具驱动 v0.7:网关改 receive(只进不出,动作经工具发出),无出站路由回调。"""
+    """网关平台必须是常量 qzone-qq(连字符别名折叠进 qq 人物命名空间)。
+    工具驱动架构:网关改 receive(只进不出,动作经工具发出),无出站路由回调。"""
     import inspect
 
     import plugin as _plugin  # tests/conftest 已把插件目录加入 sys.path
@@ -188,7 +188,7 @@ def test_gateway_declared_platform_constant():
 
 
 def test_tool_driven_wiring_source_assertions():
-    """工具驱动接线源码级断言(v0.7,2026-09-01):意图系统删除+三工具上线。"""
+    """工具驱动接线源码级断言(2026-09-01):意图系统删除+三工具上线。"""
     import inspect
 
     import plugin as _plugin
@@ -239,7 +239,7 @@ def test_tool_driven_wiring_source_assertions():
 
 
 def test_selfcheck_blocks_talk_value_zero():
-    """spec §2.18 硬性要求:talk_value=0 前置检测(注入消息会被主程序静默消费)。"""
+    """硬性要求:talk_value=0 前置检测(注入消息会被主程序静默消费)。"""
     import inspect
 
     import plugin as _plugin
@@ -433,7 +433,7 @@ class _StubCommentClient:
 
     async def get_like_events(self, *, count=30):
         del count
-        return []  # 源C 空:聚焦源A行为(通知扫描三源都要经本接口取数,Task 10)
+        return []  # 源C 空:聚焦源A行为(通知扫描三源都要经本接口取数)
 
 
 def _make_notify_poll_plugin(tmp_path, comments, ctx_map):
@@ -531,7 +531,7 @@ def test_notify_poll_injects_notify_message_with_and_without_reply_segment(tmp_p
     assert ctx2 is not None and ctx2.comment_tid == "ct3"
 
 
-# ---------- format_comment_param_line:通知参数行携带动作时间(M3-r2 Task 3) ----------
+# ---------- format_comment_param_line:通知参数行携带动作时间(M3-r2) ----------
 
 from datetime import datetime  # noqa: E402(与文件中途 import 风格一致)
 

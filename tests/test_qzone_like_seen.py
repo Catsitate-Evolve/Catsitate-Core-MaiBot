@@ -1,4 +1,4 @@
-"""赞事件去重存储测试(Task 10):is_new 发现即登记 + 30 天修剪。"""
+"""赞事件去重存储测试():is_new 发现即登记 + 30 天修剪。"""
 
 from datetime import datetime, timedelta
 

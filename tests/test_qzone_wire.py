@@ -217,7 +217,7 @@ def test_parse_feed_replies_parent_comment_content_defaults_empty():
     assert len(items) == 1 and items[0].parent_comment_content == ""
 
 
-# ---- 「与我相关」流赞事件解析(源C,Task 10) ----
+# ---- 「与我相关」流赞事件解析(源C) ----
 
 
 def _scope1_like_feed(liker_uin: str, owner_uin: str, nick: str, tid: str, fhash: str,

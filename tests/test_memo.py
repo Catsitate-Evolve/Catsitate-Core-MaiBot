@@ -93,11 +93,11 @@ def test_memo_remind_at_invalid_format_rejected(tmp_path):
     assert [e["content"] for e in svc.due_on("2026-08-16", now=lambda: NOW)] == ["内容"]
 
 
-# ---------- §3.10 memo 按人重构:主 QQ + 附带 QQ 人维度,流维度保留为元数据 ----------
+# ---------- memo 按人重构:主 QQ + 附带 QQ 人维度,流维度保留为元数据 ----------
 
 
 def test_write_with_extra_user_ids_and_cross_stream_visibility(tmp_path):
-    """§3.10:条目=主QQ+附带QQ 列表;任一牵连 QQ 命中当前对话对象即可见(跨流);流维度保留;无关人不可见。"""
+    """条目=主QQ+附带QQ 列表;任一牵连 QQ 命中当前对话对象即可见(跨流);流维度保留;无关人不可见。"""
 
     svc, _ = make_service(tmp_path)
     ok, msg = svc.write("A 和 B 一起出去玩", stream_id="s_qq_group", user_id="10001", ttl_hours=None, extra_user_ids=["10002"], now=lambda: NOW)
@@ -112,7 +112,7 @@ def test_write_with_extra_user_ids_and_cross_stream_visibility(tmp_path):
 
 
 def test_extra_user_ids_dedup_and_self_removal(tmp_path):
-    """§3.10:附带 QQ 去重且剔除主 QQ 自身(同一条目不重复牵连)。"""
+    """附带 QQ 去重且剔除主 QQ 自身(同一条目不重复牵连)。"""
 
     svc, _ = make_service(tmp_path)
     ok, msg = svc.write("约饭", stream_id="s", user_id="10001", ttl_hours=None, extra_user_ids=["10001", "10002", "10002"], now=lambda: NOW)
@@ -124,7 +124,7 @@ def test_extra_user_ids_dedup_and_self_removal(tmp_path):
 
 
 def test_extra_user_ids_limit_and_invalid(tmp_path):
-    """§3.10:附带 QQ 上限 5 个,超出截断并在返回消息中提示。"""
+    """附带 QQ 上限 5 个,超出截断并在返回消息中提示。"""
 
     svc, _ = make_service(tmp_path)
     ok, msg = svc.write("x", stream_id="s", user_id="1", ttl_hours=None, extra_user_ids=["2", "3", "4", "5", "6", "7"], now=lambda: NOW)
@@ -137,7 +137,7 @@ def test_extra_user_ids_limit_and_invalid(tmp_path):
 
 
 def test_migration_adds_extra_user_ids_column(tmp_path):
-    """§3.10:旧库 memo 表缺 extra_user_ids 列时 ensure_schema 自动补列,不抛异常。"""
+    """旧库 memo 表缺 extra_user_ids 列时 ensure_schema 自动补列,不抛异常。"""
 
     store = SQLiteStore(tmp_path / "m.db")
     store.execute(

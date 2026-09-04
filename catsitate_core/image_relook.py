@@ -1,4 +1,4 @@
-"""图片重看引擎(规格 §4.8):图片段定位 + VLM prompt 组装(文本前缀稳定)。"""
+"""图片重看引擎:图片段定位 + VLM prompt 组装(文本前缀稳定)。"""
 
 from __future__ import annotations
 
@@ -99,7 +99,7 @@ def build_relook_prompt(question: str, image_segment: dict) -> tuple[list[dict],
         tail = [f"问题:{question}", f"图片引用:{describe_segment(image_segment)}(无二进制,由调用方补图后重试)"]
     messages, cache_key = build_side_prompt("image_relook", [], tail)
     if data:
-        # 图片块追加到 user 消息内容之后(图片 token 无前缀缓存意义,§4.10)
+        # 图片块追加到 user 消息内容之后(图片 token 无前缀缓存意义)
         # MIME 按字节魔数嗅探,不再硬编码 png(最终审查 Important#3)
         messages[-1]["content"] = [
             {"type": "text", "text": tail[0]},

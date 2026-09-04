@@ -115,7 +115,7 @@ def fix_schedule(data: dict, *, min_sleep: int, max_sleep: int) -> dict:
         if default_sleep is not None:
             sleep = [default_sleep]
     keep = sleep[:1] + acts[:8]  # 恰好 1 睡眠 + 活动裁到 8
-    for w in keep:  # 钳制:非 daily 窗口的读/发空间标记清除(含旧 qzone 键一并迁移清理,spec §5「校验一条」的兜底链)
+    for w in keep:  # 钳制:非 daily 窗口的读/发空间标记清除(含旧 qzone 键一并迁移清理,「校验一条」的兜底链)
         if w.get("kind") != "daily":
             for attr in ("qzone", "read_qzone", "send_qzone"):
                 w.pop(attr, None)

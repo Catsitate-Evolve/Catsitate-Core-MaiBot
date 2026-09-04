@@ -198,7 +198,7 @@ catsitate_core_maibot/
 │       ├── imaging.py       说说图片管线与多图拼图
 │       └── wire.py          写路径纯函数(评论/回复/点赞参数)
 ├── tests/               离线单测(全量不触网)
-└── docs/                使用手册(plugin-manual.md)与本开发文档库(dev/)
+└── docs/                本开发文档库(dev/,仓库唯一文档源)
 ```
 
 ## 三、限制与回退清单

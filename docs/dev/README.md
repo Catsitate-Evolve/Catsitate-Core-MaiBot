@@ -30,14 +30,10 @@ Catsitate 是 MaiBot(QQ 机器人)的拟人化人格插件——让 bot 像真�
 | [modules/storage.md](modules/storage.md) | 存储层 | SQLite/JSON 持久化 |
 | [modules/guard.md](modules/guard.md) | 内容护栏 | 正则拦截违规文本 |
 
-## 运维手册
-
-日常配置与排障请查 [docs/plugin-manual.md](../plugin-manual.md)(面向部署者,与本文档库互补)。
-
 ## 快速上手
 
 ```bash
-# 跑全量测试(561 用例,离线 stub,不触网)
+# 跑全量测试(566 用例,离线 stub,不触网)
 cd MaiBot-dev/plugins/catsitate_core_maibot && python3 -m pytest tests/ -q
 
 # 查看当前版本

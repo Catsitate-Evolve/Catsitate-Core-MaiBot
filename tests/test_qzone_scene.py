@@ -1,4 +1,4 @@
-"""场景替换/工具白名单过滤/deferred reminder 剥除测试(spec §2.11/§2.12)。"""
+"""场景替换/工具白名单过滤/deferred reminder 剥除测试。"""
 from catsitate_core.qzone import QZONE_PLATFORM
 from catsitate_core.qzone.scene import (
     QZONE_SCENE_TEXT, filter_qzone_tools_for_stream, filter_tool_definitions, is_qzone_message,

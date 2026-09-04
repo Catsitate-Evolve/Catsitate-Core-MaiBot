@@ -1,4 +1,4 @@
-"""QQ空间组合层行为测试(工具驱动架构 v0.7):plugin 接线的行为断言,非源码字符串。
+"""QQ空间组合层行为测试(工具驱动架构):plugin 接线的行为断言,非源码字符串。
 
 _StubCtx 模式参照 test_integration.py:离线装配插件实例,依赖全部注入桩,
 只验证「组合层」行为——工具目标解析(registry/seen_store/awaiting)/评论频控/
@@ -166,7 +166,7 @@ def _make_plugin(tmp_path):
     p.qzone_seen.ensure_schema()
     p.qzone_comment_seen = CommentSeenStore(store)
     p.qzone_comment_seen.ensure_schema()
-    # 源C 赞事件去重(on_load 装配,离线测试手工补;Task 10)
+    # 源C 赞事件去重(on_load 装配,离线测试手工补)
     p.qzone_like_seen = LikeSeenStore(store)
     p.qzone_injector = FeedInjector(decision_window_s=75)
     p._qzone_session_ids = set()  # 实例级覆盖(类属性为共享 set,防测试间状态泄漏)
@@ -241,7 +241,7 @@ def test_poll_tick_window_start_opens_injector(tmp_path):
 
 
 def test_qzone_inject_multi_image_composes_numbered_grid(tmp_path):
-    """注入链多图合成(Task 4 C 方案,2026-09-03 用户裁定):[:3] 截断删除,
+    """注入链多图合成(C 方案,2026-09-03 用户裁定):[:3] 截断删除,
     5 图说说全量下载后拼成一张带序号角标的合成图——注入消息恒单图片段
     (hash=合成图 sha256),省 VLM token 与注入上下文。"""
 
@@ -282,7 +282,7 @@ def test_qzone_inject_multi_image_composes_numbered_grid(tmp_path):
     assert base64.b64decode(image_segs[0]["binary_data_base64"]) == composite
 
 
-# ---- 工具驱动 v0.7:qzone_comment/qzone_reply/qzone_like 工具行为测试 ----
+# ---- 工具驱动:qzone_comment/qzone_reply/qzone_like 工具行为测试 ----
 
 
 def _make_tool_plugin(tmp_path):
@@ -562,7 +562,7 @@ def test_qzone_post_success_publishes_and_echoes(tmp_path):
     assert msg["message_id"].startswith("qzone_self_")
     assert msg["platform"] == QZONE_PLATFORM
     assert msg["message_info"]["user_info"]["user_id"] == BOT_UIN
-    assert msg["message_info"]["group_info"]["group_id"] == "qzone_feed"  # 虚拟伪群号常量(v0.8.2 固化)
+    assert msg["message_info"]["group_info"]["group_id"] == "qzone_feed"  # 虚拟伪群号常量(固化,不可配置)
     # 无 is_mentioned:主程序只读 message_info.additional_config 位置,回注不设即不触发决策轮
     assert "is_mentioned" not in (msg["message_info"].get("additional_config") or {})
     assert msg["raw_message"] == [
@@ -590,7 +590,7 @@ def test_qzone_post_anchors_seen_and_registry(tmp_path):
         r["tid"] == "fullpubtid000123456" and r["author_uin"] == BOT_UIN
         and r["author_nickname"] == "我" and r["summary"] == "今天的心情很不错,写点什么好呢"
         for r in rows
-    )  # summary=正文前 50 字(Task 6 own-post 摘要依赖)
+    )  # summary=正文前 50 字(own-post 摘要依赖)
     assert p.qzone_seen.get_message_id("fullpubtid000123456") == msg["message_id"]
     ctx = p._qzone_registry.resolve("fullpubtid00")  # 前缀锚解析(registry 两级口径)
     assert ctx is not None and ctx.tid == "fullpubtid000123456"
@@ -599,7 +599,7 @@ def test_qzone_post_anchors_seen_and_registry(tmp_path):
 
 
 def test_qzone_post_route_failure_skips_local_anchor(tmp_path):
-    """Task 4 缓议修正:回注 route 失败(异常)时本地锚定三连跳过——注入没成功
+    """缓议修正:回注 route 失败(异常)时本地锚定三连跳过——注入没成功
     就无 message_id 可挂,锚定必落空(与日记补注路径对称);发布回执不受影响
     (说说已远端发布成功,谎报失败会诱导重复发布)。"""
 
@@ -945,7 +945,7 @@ def test_diary_chat_timeline_fallback_to_per_stream(tmp_path):
 
 
 def test_diary_weather_line_and_random_target_words(tmp_path, monkeypatch):
-    """M3 修正(规格 §5.2/§5.3):日记素材补真实天气(time_aware 快照,无数据
+    """M3 修正:日记素材补真实天气(time_aware 快照,无数据
     省略该行)+目标字数随机化——stable_ctx 注入「本次目标约 {n} 字」,
     n=random.randint(80,200)(模板「80~200字」表述保留)。"""
 
@@ -1015,7 +1015,7 @@ def test_diary_generation_llm_failure_skips_publish(tmp_path):
 
 
 def test_diary_generation_empty_skips_and_long_publishes(tmp_path):
-    """内容护栏(v0.8.2 对齐 diary_plugin):空文本跳过发布;**不再设超长硬上限**
+    """内容护栏(对齐 diary_plugin):空文本跳过发布;**不再设超长硬上限**
     ——301 字照常发布(长度完全由模板目标字数软约束)。"""
 
     p = _make_diary_plugin(tmp_path)
@@ -1117,7 +1117,7 @@ def test_echo_pending_diary_routes_self_message_and_clears(tmp_path):
     assert msg["message_id"].startswith("qzone_self_diary_")
     assert msg["platform"] == QZONE_PLATFORM
     assert msg["message_info"]["user_info"]["user_id"] == BOT_UIN
-    assert msg["message_info"]["group_info"]["group_id"] == "qzone_feed"  # 虚拟伪群号常量(v0.8.2 固化)
+    assert msg["message_info"]["group_info"]["group_id"] == "qzone_feed"  # 虚拟伪群号常量(固化,不可配置)
     assert "is_mentioned" not in (msg["message_info"].get("additional_config") or {})
     assert msg["raw_message"] == [{"type": "text", "data": "我昨晚发布的日记:昨晚的日记正文"}]
     assert p._pending_diary_snapshot.load() == {}
@@ -1214,7 +1214,7 @@ def test_diary_wired_into_sleep_flow():
     assert "_echo_pending_diary" in inspect.getsource(plugin_mod.CatsitatePlugin._sleep_tick)
 
 
-# ---- v1.0.0 内容护栏:三动作工具 + 日记拦截(Task 2)----
+# ---- v1.0.0 内容护栏:三动作工具 + 日记拦截----
 
 
 def _enable_guard(p, patterns):
@@ -1404,7 +1404,7 @@ def test_guard_assembly_compiles_on_load_path(tmp_path, monkeypatch):
 
 
 def test_qzone_like_via_feed_id_and_notify_origin(tmp_path):
-    """qzone_like v0.7:feed_id 参数(锚前缀)经 registry 解析为全量 tid;
+    """qzone_like:feed_id 参数(锚前缀)经 registry 解析为全量 tid;
     通知 awaiting 不再拒赞——缺省目标取 origin_tid(真实说说),owner=源A=bot。"""
 
     import time as _time
@@ -1659,7 +1659,7 @@ def test_notify_scan_source_b_reply_without_parent_content_falls_back(tmp_path, 
 
 
 def test_notify_scan_source_c_like_events(tmp_path):
-    """源C(Task 10):「与我相关」流赞事件 → 去重(qzone_likes 发现即登记)/
+    """源C:「与我相关」流赞事件 → 去重(qzone_likes 发现即登记)/
     跳过自己/新鲜度截断(过旧已登记不重扫)/fav_event(LIKE)记账/通知构造
     (「摘要」标题 + 点赞于参数行,ownfeed 未注入过则无 reply 段纯文本)。"""
 
@@ -1695,7 +1695,7 @@ def test_notify_scan_source_c_like_events(tmp_path):
 
     p = _make_plugin(tmp_path)
     p.qzone_injector.window_started()
-    # 自己的说说已发布回注(Task 4):qzone_feeds 有 summary → 通知带「摘要」标题
+    # 自己的说说已发布回注:qzone_feeds 有 summary → 通知带「摘要」标题
     p.qzone_seen.mark_queued("ownfeed1", abstime=str(now), author_uin=BOT_UIN, summary="我的晚间思绪")
     p.qzone_client = _StubLikeClient()
 
@@ -1989,7 +1989,7 @@ def test_notify_scan_drives_pump_on_stale_awaiting(tmp_path):
 
 
 def test_notify_scan_source_c_drift_warn_once(tmp_path):
-    """源C 漂移告警(v0.8.2 收敛:常规轮次不打「解析 N 条」观测日志,仅保留
+    """源C 漂移告警(收敛:常规轮次不打「解析 N 条」观测日志,仅保留
     异常信号):连续 3 轮取数成功但零事件打一次锚点漂移 warning(去重标记,
     后续空轮不重复告警);恢复有事件后计数与标记复位,再次连续 3 轮空才会
     告警第二次(新漂移段落)。"""
@@ -2136,7 +2136,7 @@ def test_view_friend_feed_detail_returns_comments_and_marks_seen(tmp_path):
 
 
 def test_view_friend_feed_detail_multi_image_composes_single_item(tmp_path):
-    """详情工具多图接入(Task 4 C 方案,2026-09-03):与列表工具同款——双图拼成
+    """详情工具多图接入(C 方案,2026-09-03):与列表工具同款——双图拼成
     一张角标合成图,恒单 content_item(mime 恒 jpeg);锚单条「图1-图2(拼接,…)」。"""
 
     from catsitate_core.qzone.imaging import compose_numbered_grid
@@ -2833,7 +2833,7 @@ def test_pump_keeps_feed_semantics_when_rejected(tmp_path):
 
 
 def test_pump_registers_content_summary_and_comment_map(tmp_path):
-    """M3-r2 Task 6 表达生成层素材:泵登记 FeedContext 带 content_summary(说说
+    """M3-r2 表达生成层素材:泵登记 FeedContext 带 content_summary(说说
     全文)与 comment_map(结构化评论的评论级锚,Q6)
     ——qzone_comment 生成正文时的场景素材;纯图说说以「(无文字)」占位。"""
 
@@ -3376,7 +3376,7 @@ def test_discovery_pagination_respects_configured_page_size(tmp_path, monkeypatc
     assert calls == [(7, None), (7, "cur1")]  # 页大小 7、上限 2 页
 
 
-# ---- M3-r2 Task 7:view_friend_feeds 全域查看工具 + inspect_image hash 路径 ----
+# ---- M3-r2 view_friend_feeds 全域查看工具 + inspect_image hash 路径 ----
 
 
 def test_view_friend_feeds_returns_media_dict(tmp_path):
@@ -3482,7 +3482,7 @@ def test_view_friend_feeds_anchor_hash_matches_sent_bytes_after_refit(tmp_path, 
 
 
 def test_view_friend_feeds_multi_image_composes_single_item(tmp_path):
-    """列表工具多图接入(Task 4 C 方案,2026-09-03):≥2 图拼成一张角标合成图
+    """列表工具多图接入(C 方案,2026-09-03):≥2 图拼成一张角标合成图
     → 恒单 content_item(mime 恒 image/jpeg,合成图不再需要魔数探测);锚文案
     单条「图1-图N(拼接,hash=合成图sha256前8)」,不再逐图列 hash。"""
 
@@ -3516,7 +3516,7 @@ def test_view_friend_feeds_multi_image_composes_single_item(tmp_path):
 
 
 def test_inspect_image_by_hash_prefix_skips_message_search(tmp_path, monkeypatch):
-    """inspect_image hash 路径(M3-r2 Task 7):image_hash 给定时跳过消息搜索
+    """inspect_image hash 路径(M3-r2):image_hash 给定时跳过消息搜索
     (_fetch_recent 零调用——主断言,hash 覆盖 view_friend_feeds 等非消息来源经
     tool result media 入库的图片);database.get 拉表(single_result=False)+
     插件侧前缀过滤,命中唯一复用 full_path→读文件→relook 链(旁路 LLM 收到补图)。"""
@@ -3603,7 +3603,7 @@ def test_inspect_image_hash_prefix_zero_and_multi_hit_errors(tmp_path, monkeypat
     assert fetch_calls == []  # 三种失败形态都不触发消息搜索
 
 
-# ---- M3-r2 Task 8:说说发布主动触发(分窗口形态)与冷启动种子自举 ----
+# ---- M3-r2 说说发布主动触发(分窗口形态)与冷启动种子自举 ----
 
 
 class _StubProactive:

@@ -17,7 +17,7 @@ def test_stable_prefix_first():
     assert "五级规则稳定段" in messages[1]["content"]
     assert messages[-2]["content"] == "素材1"
     assert messages[-1]["content"] == "素材2"
-    assert cache_key.startswith("favorability:v2+")  # 版本+内容哈希(v1.0.0 清理 Task 4 升 v2)
+    assert cache_key.startswith("favorability:v2+")  # 版本+内容哈希(清理时随模板升 v2)
 
 
 def test_tail_changes_do_not_change_prefix():

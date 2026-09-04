@@ -1,4 +1,4 @@
-"""好感度 v3 批次结算制(规格 §4.3):纯计数触发、日终兜底、顺延不丢弃。"""
+"""好感度 v3 批次结算制:纯计数触发、日终兜底、顺延不丢弃。"""
 
 from __future__ import annotations
 
@@ -162,7 +162,7 @@ class BatchEngine:
 
         row = self.get_level(user_id)
         score = (row["score"] if row else 0) + delta
-        # 负分钳制(规格 §3.1「分数可降到 0」):结算/衰减共用入口,落库前统一钳到 0,
+        # 负分钳制(「分数可降到 0」):结算/衰减共用入口,落库前统一钳到 0,
         # 不得出现负分(一处两路生效)
         score = max(0, score)
         level = _level_for_score(score)

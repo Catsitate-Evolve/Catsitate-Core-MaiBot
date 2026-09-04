@@ -1,4 +1,4 @@
-"""后台 asyncio 任务引擎:固定 tick,各模块注册周期性任务(规格 §3.2)。"""
+"""后台 asyncio 任务引擎:固定 tick,各模块注册周期性任务。"""
 
 from __future__ import annotations
 

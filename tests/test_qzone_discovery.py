@@ -167,7 +167,7 @@ def test_parse_unified_timeline_appid_fallback_to_appiconid():
     assert len(items) == 1 and items[0].appid == 311 and items[0].tid == "abc123def456789"
 
 
-# ---- 相对时间折算(Task 5 审查修复:非闰年 2月29日防护) ----
+# ---- 相对时间折算(审查修复:非闰年 2月29日防护) ----
 
 
 def test_relative_time_to_epoch_feb29_non_leap_year_returns_zero():

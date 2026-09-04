@@ -114,7 +114,7 @@ def parse_unified_timeline(text: str) -> list[FeedDiscovery]:
     return out
 
 
-# 「与我相关」流(scope=1)赞事件锚点(源C,Task 10):事件块起点 data-key=
+# 「与我相关」流(scope=1)赞事件锚点(源C):事件块起点 data-key=
 # "{liker}_{owner}_{hash}"(同一标签内紧邻 data-tid=目标说说),块体至下一
 # data-key 锚点/文本末尾;块内 data-uin=点赞者昵称锚(与统一时间线的 JS 对象
 # 字面量不同,该流是 HTML 片段,锚为属性形态)

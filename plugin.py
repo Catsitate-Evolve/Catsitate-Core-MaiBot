@@ -14,7 +14,6 @@ import hashlib
 import json
 import logging
 import os
-import random
 import sys
 import time
 
@@ -3471,7 +3470,8 @@ class CatsitatePlugin(MaiBotPlugin):
         与日程生成同属入睡任务——旁路 LLM 与发布 API 均不经消息链,不受睡眠
         拦截(深夜直发)。素材只取当日真实数据(日程活动/备忘/空间见闻/聊天
         时间线/真实天气,可省略行见各构建器),模板明令不得编造,防日记虚构
-        没发生的事;目标字数随机化注入。发布成功后正文存 pending
+        没发生的事;篇幅区间由配置指导(diary_word_count_min~max 进素材行,
+        不做随机化)。发布成功后正文存 pending
         快照,回注延迟到醒来(睡眠期 route_message 会被 sleep_gate 拦进回顾
         缓冲,白注入)。
         """
@@ -3500,9 +3500,9 @@ class CatsitatePlugin(MaiBotPlugin):
         # (「你是…」),不套蓝本的「我{personality_desc}」前缀以免读破
         nickname = await self._bot_echo_nickname()
         persona, _ = await self._persona_context()
-        # 目标字数随机化:每次生成注入随机目标(80~200),避免模板化
-        # 的定长输出;模板指令句的长度口径引用素材里这一行
-        target_words = random.randint(80, 200)
+        # 篇幅指导(2026-09-04 用户裁定:去目标字数随机化,对齐 diary_plugin
+        # qzone_min/max_word_count 形态):配置区间直接进素材行作软指导,
+        # 模板指令句的长度口径引用这一行
         now = datetime.now()
         material = (
             f"我的名字是{nickname}\n"
@@ -3514,11 +3514,19 @@ class CatsitatePlugin(MaiBotPlugin):
         )
         if weather_line:
             material += f"{weather_line}\n"
-        material += f"(目标 {target_words} 字左右)\n\n日记内容:"
+        material += (
+            f"(目标篇幅{self.config.qzone.diary_word_count_min}"
+            f"~{self.config.qzone.diary_word_count_max}字)\n\n日记内容:"
+        )
         messages, _ = build_side_prompt("qzone_diary", [material], [])
+        # 生成温度可配置(-1=不传,走主程序任务默认)
+        temperature = self.config.qzone.diary_llm_temperature
+        if temperature < 0:
+            temperature = None
         try:
             result = await self._side_llm_call(
-                messages, self.config.qzone.diary_llm_model, "qzone_diary", self.config.qzone.diary_llm_timeout_ms
+                messages, self.config.qzone.diary_llm_model, "qzone_diary",
+                self.config.qzone.diary_llm_timeout_ms, temperature=temperature
             )
         except Exception:
             self.ctx.logger.exception("QQ空间日记 LLM 生成失败,跳过本轮")
@@ -3530,7 +3538,7 @@ class CatsitatePlugin(MaiBotPlugin):
             return
         diary_text = str(result.get("response") or "").strip()
         # 不设硬上限截断/拦截(2026-09-02 用户裁定,对齐 diary_plugin:长度完全由
-        # 模板里的目标字数软约束;蓝本也无上限)。仅拦空文本——空日记没有发布意义
+        # 素材行的篇幅区间软约束;蓝本也无上限)。仅拦空文本——空日记没有发布意义
         if not diary_text:
             self.ctx.logger.warning("QQ空间日记内容为空,跳过发布")
             return
@@ -3990,18 +3998,24 @@ class CatsitatePlugin(MaiBotPlugin):
             self._settling.discard(key)
 
     async def _side_llm_call(
-        self, messages: list[dict], model: str, module: str, timeout_ms: int | None = None
+        self, messages: list[dict], model: str, module: str, timeout_ms: int | None = None,
+        temperature: float | None = None
     ) -> dict:
         """旁路 LLM 统一出口:model 填主程序 task 名;用量按模块记账。
 
         经 call_capability 直调,超时由各能力配置节传入(0/None=主程序默认 30s;
         配置默认值用 0 而非 None——主机配置回写经 tomlkit 序列化,None 会致激活失败)。
         联调实测:utils 模型 31-53s 会触发默认超时,慢模型建议配置 120000。
+        temperature 仅在显式传入时携带(主机 core.py 采纳 args["temperature"],
+        None 走任务默认)——当前仅日记生成使用(生成风格可配置)。
         """
 
-        result = await self.ctx.call_capability(
-            "llm.generate", timeout_ms=timeout_ms or None, prompt=messages, model=model or ""
-        )
+        call_args: dict[str, Any] = {
+            "timeout_ms": timeout_ms or None, "prompt": messages, "model": model or ""
+        }
+        if temperature is not None:
+            call_args["temperature"] = temperature
+        result = await self.ctx.call_capability("llm.generate", **call_args)
         if isinstance(result, dict):
             if "model" not in result and result.get("model_name"):
                 result = {**result, "model": result["model_name"]}

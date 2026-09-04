@@ -77,14 +77,18 @@ def test_qzone_expression_template_preserves_facts():
 
 
 def test_qzone_diary_template_declared():
-    """M3 表达:日记生成模板入 SIDE_TEMPLATES(v6,照搬 diary_plugin prompts.py
-    原文,仅占位符适配两段式布局)——指令块=蓝本编号要求+书写风格+输出卫生;
-    素材侧承载 我的名字是/今天是/回顾聊天记录/目标字数/日记内容: 引导。"""
+    """M3 表达:日记生成模板入 SIDE_TEMPLATES(v7:长度口径改素材篇幅区间,
+    v6 指令块照搬 diary_plugin prompts.py 原文,仅占位符适配两段式布局)——
+    指令块=蓝本编号要求+书写风格+输出卫生;素材侧承载
+    我的名字是/今天是/回顾聊天记录/篇幅区间/日记内容: 引导。"""
     t = SIDE_TEMPLATES["qzone_diary"]
-    assert t["version"] == 6
+    assert t["version"] == 7
     s = t["system"]
     # 蓝本核心逐句锁定(照搬验证:句式漂移会被抓)
     assert "现在我要写一篇日记,记录到现在为止的感受" in s
+    # v7:长度口径引用素材行的配置区间,不再硬编码具体区间
+    assert "长度按素材里给的篇幅区间" in s
+    assert "80~200" not in s
     assert "1. 开头必须是日期和天气" in s
     assert "2. 像睡前随手写的感觉,轻松自然" in s
     assert "3. 回忆到现在为止的对话,加入我的真实感受" in s
@@ -99,7 +103,7 @@ def test_qzone_diary_template_declared():
     messages, key = build_side_prompt("qzone_diary", ["我的名字是测试"], [])
     assert messages[0]["role"] == "system"
     assert messages[1]["content"] == "我的名字是测试"
-    assert key.startswith("qzone_diary:v6+")
+    assert key.startswith("qzone_diary:v7+")
 
 
 def test_qzone_diary_template_natural_tone():

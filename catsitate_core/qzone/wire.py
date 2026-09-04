@@ -288,16 +288,18 @@ def parse_feed_comments_full(payload: dict) -> dict[str, CommentBlock]:
 
 @dataclass
 class ReplyItem:
-    """bot 评论下的一条楼中楼回复(msglist.commentlist[].list_3 条目)。
+    """bot 参与的评论线程下的一条楼中楼回复(msglist.commentlist[].list_3 条目)。
 
     feed_content 为所属说说正文(通知 reply 段引用预览用,通知源B构造 FeedItem
-    时截 30 字传入);parent_comment_content 为被回复的 bot 主评论正文(楼中楼
-    上下文,可读性优化 2026-09-01:通知正文引用「bot 原评论前 20 字」);旧
+    时截 30 字传入);parent_comment_content 为线程顶层评论正文;bot_reply_content
+    为 bot 在该线程最近一条回复正文(通知上下文用:好友楼中楼回复的对象通常是
+    bot 的这条回复而非顶层评论——实机抓包实证:QQ 楼中楼全部挂顶层评论的
+    list_3,不区分回复谁,故线程内上下文取 bot 自己最近的发言);旧
     调用方不填默认空串。
     """
 
     reply_tid: str  # 回复自身 tid
-    parent_comment_tid: str  # 被回复的 bot 评论 tid
+    parent_comment_tid: str  # 线程顶层评论 tid(qzone_reply 楼中楼锚)
     feed_tid: str  # 所属说说 tid
     friend_uin: str  # 说说主人(用于意图路由 target_qq)
     uin: str  # 回复者
@@ -305,16 +307,20 @@ class ReplyItem:
     content: str
     create_time: str
     feed_content: str = ""  # 所属说说正文(通知 reply 段引用预览)
-    parent_comment_content: str = ""  # 被回复的 bot 主评论正文(楼中楼上下文)
+    parent_comment_content: str = ""  # 线程顶层评论正文
+    parent_comment_uin: str = ""  # 线程顶层评论作者(qzone_reply 二元组锚)
+    bot_reply_content: str = ""  # bot 在该线程最近一条回复(通知上下文)
 
 
 def parse_feed_replies(payload: dict, *, bot_uin: str) -> list[ReplyItem]:
-    """解析 msglist 载荷中 bot 评论的楼中楼回复(list_3)。
+    """解析 msglist 载荷中 bot 参与的评论线程的楼中楼回复(list_3)。
 
-    在 commentlist 中找 uin==bot_uin 的条目(即 bot 自己的评论),
-    解析其 list_3 数组中的每条回复为 ReplyItem(携带主评论正文
-    parent_comment_content 供通知正文楼中楼上下文引用)。无 bot 评论/无 list_3/
-    字段缺失容错跳过;bot 自己的楼中楼回复跳过(不通知自己)。
+    线程筛选=「bot 参与过」:顶层评论作者是 bot,或 list_3 中存在 bot 的回复
+    (实机抓包实证 2026-09-04:QQ 楼中楼一律挂在**顶层评论**的 list_3 下,与
+    回复谁无关——「好友评论→bot 楼中楼回复→好友再回复」的常见形态里,顶层
+    作者是好友,按顶层作者==bot 筛选会漏掉好友对 bot 回复的回应)。
+    bot 未参与的纯好友线程不产出(不通知自己没插过话的对话);
+    bot 自己的楼中楼回复跳过(不通知自己);字段缺失容错跳过。
 
     friend_uin(说说主人,意图路由 target_qq)取自载荷 usrinfo.uin——
     联调实测(test_qzone_client.MSGLIST_JSONP):usrinfo 是被拉取者,
@@ -330,13 +336,22 @@ def parse_feed_replies(payload: dict, *, bot_uin: str) -> list[ReplyItem]:
             continue
         feed_tid = str(feed.get("tid") or "")
         for c in feed.get("commentlist") or []:
-            if not isinstance(c, dict) or str(c.get("uin") or "") != bot_uin:
+            if not isinstance(c, dict):
                 continue
+            entries = [r for r in c.get("list_3") or [] if isinstance(r, dict)]
+            parent_is_bot = str(c.get("uin") or "") == bot_uin
+            bot_in_thread = any(str(r.get("uin") or "") == bot_uin for r in entries)
+            if not parent_is_bot and not bot_in_thread:
+                continue  # bot 未参与的纯好友线程:不通知(不插话他人对话)
+            # bot 在该线程最近一条回复(list_3 按时间序,取最后一条 bot 条目)
+            bot_reply_content = ""
+            for r in entries:
+                if str(r.get("uin") or "") == bot_uin:
+                    bot_reply_content = str(r.get("content") or "").strip()
             parent_tid = str(c.get("tid") or "")
             parent_content = str(c.get("content") or "").strip()
-            for r in c.get("list_3") or []:
-                if not isinstance(r, dict):
-                    continue
+            parent_uin = str(c.get("uin") or "")
+            for r in entries:
                 uin = str(r.get("uin") or "")
                 if not uin or uin == bot_uin:
                     continue  # bot 自己的楼中楼跳过
@@ -351,6 +366,8 @@ def parse_feed_replies(payload: dict, *, bot_uin: str) -> list[ReplyItem]:
                     create_time=str(r.get("create_time") or ""),
                     feed_content=str(feed.get("content") or "").strip(),
                     parent_comment_content=parent_content,
+                    parent_comment_uin=parent_uin,
+                    bot_reply_content=bot_reply_content,
                 ))
     if out and not friend_uin:
         logger.warning(

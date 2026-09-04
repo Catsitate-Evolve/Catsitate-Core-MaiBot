@@ -2196,10 +2196,12 @@ class CatsitatePlugin(MaiBotPlugin):
                         "QQ空间楼中楼回复过旧跳过(create_time=%s,昵称=%s)", r.create_time, r.nickname
                     )
                     continue
-                # 通知构造形态与源B 一致:正文=楼中楼上下文(bot 原评论前 20 字,
-                # 缺内容回退「你之前的评论」)+参数行;区别在归属——自己说说下
-                # origin_sender=bot、comment_uin=bot(父评论作者是 bot)
-                bot_ctx = clip_text(r.parent_comment_content, 20) if r.parent_comment_content else "你之前的评论"
+                # 通知构造形态与源B 一致:正文=楼中楼上下文(bot 在该线程最近的
+                # 发言前 20 字——好友楼中楼回复的对象通常是 bot 的回复而非顶层
+                # 评论,缺内容回退「你之前的评论」)+参数行;区别在归属——
+                # 自己说说下 origin_sender=bot。二元组锚=线程顶层评论(与
+                # qzone_reply 实际发送形态一致:楼中楼锚定顶层评论,不区分回复谁)
+                bot_ctx = clip_text(r.bot_reply_content or r.parent_comment_content, 20) or "你之前的评论"
                 notifications.append(FeedItem(
                     tid=f"notify_reply_{r.feed_tid}_{r.reply_tid}",
                     abstime=r.create_time, uin=str(r.uin), nickname=r.nickname,
@@ -2215,8 +2217,10 @@ class CatsitatePlugin(MaiBotPlugin):
                     origin_tid=r.feed_tid,
                     origin_content=r.feed_content or ctx.get(r.feed_tid) or "(无文字)",
                     origin_sender=bot_uin,  # 自己说说:原说说作者=bot
-                    # 楼中楼二元组素材(qzone_reply):主评论=bot 自己的评论(作者=bot)
-                    comment_tid=r.parent_comment_tid, comment_uin=bot_uin,
+                    # 楼中楼二元组素材(qzone_reply):锚=线程顶层评论 id+作者
+                    # (bot 自己的顶层评论时即 bot;好友顶层评论的线程内为好友)
+                    comment_tid=r.parent_comment_tid,
+                    comment_uin=r.parent_comment_uin or bot_uin,
                 ))
                 try:
                     self.qzone_comment_seen.fav_event(
@@ -2293,12 +2297,14 @@ class CatsitatePlugin(MaiBotPlugin):
                             )
                             continue
                         # 正文=自然可读+楼中楼上下文+参数独立尾行(可读性优化
-                        # 2026-09-01):引用 bot 原评论前 20 字(缺内容回退
-                        # 「你之前的评论」),@{uin,nick} 解析为 @昵称;〔〕参数行
-                        # 供模型照抄调用 qzone_reply(说说ID/主评论ID/回复者QQ/
-                        # 回复于时间,create_time 缺失省略不编造);
-                        # 楼中楼二元组的 commentUin=bot 自己(主评论作者是 bot)
-                        bot_ctx = clip_text(r.parent_comment_content, 20) if r.parent_comment_content else "你之前的评论"
+                        # 2026-09-01):引用 bot 在该线程最近的发言前 20 字
+                        # (好友楼中楼回复的对象通常是 bot 的回复而非顶层评论;
+                        # 缺内容回退「你之前的评论」),@{uin,nick} 解析为 @昵称;
+                        # 〔〕参数行供模型照抄调用 qzone_reply(说说ID/主评论ID/
+                        # 回复者QQ/回复于时间,create_time 缺失省略不编造);
+                        # 楼中楼二元组锚=线程顶层评论 id+作者(与 qzone_reply
+                        # 实际发送形态一致:楼中楼锚定顶层评论,不区分回复谁)
+                        bot_ctx = clip_text(r.bot_reply_content or r.parent_comment_content, 20) or "你之前的评论"
                         notifications.append(FeedItem(
                             tid=f"notify_reply_{r.feed_tid}_{r.reply_tid}",
                             abstime=r.create_time, uin=str(r.uin), nickname=r.nickname,
@@ -2315,9 +2321,11 @@ class CatsitatePlugin(MaiBotPlugin):
                             # 引用内容=原说说正文前 60 字(截断统一在 messages 构造层)
                             origin_tid=r.feed_tid, origin_content=r.feed_content,
                             origin_sender=friend_uin,
-                            # 楼中楼二元组素材(qzone_reply):主评论 tid+主评论作者
-                            # (源B=被回复的 bot 评论,作者=bot;@ 目标另由 commenter 承载)
-                            comment_tid=r.parent_comment_tid, comment_uin=bot_uin,
+                            # 楼中楼二元组素材(qzone_reply):锚=线程顶层评论
+                            # (bot 自己的顶层评论时即 bot;好友顶层评论的线程内
+                            # 为好友;@ 目标另由 commenter 承载)
+                            comment_tid=r.parent_comment_tid,
+                            comment_uin=r.parent_comment_uin or bot_uin,
                         ))
                         try:
                             self.qzone_comment_seen.fav_event(

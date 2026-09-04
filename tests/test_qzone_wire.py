@@ -110,12 +110,40 @@ def test_parse_feed_replies():
         ]},
     ]}]}
     items = parse_feed_replies(payload, bot_uin="3545773341")
-    assert len(items) == 1  # 只有 r1(bot 自己的 r2 被跳过,c2 不是 bot 的评论)
+    assert len(items) == 1  # 只有 r1(bot 自己的 r2 被跳过;c2 线程 bot 未参与,不通知)
     r = items[0]
     assert isinstance(r, ReplyItem)
     assert (r.reply_tid, r.parent_comment_tid, r.feed_tid, r.friend_uin) == ("r1", "c1", "f1", "8888")
     assert (r.uin, r.nickname, r.content) == ("10001", "小明", "回复bot")
     assert r.create_time == "1750000001"
+
+
+def test_parse_feed_replies_thread_under_friend_top_comment():
+    """实机抓包形态(2026-09-04):楼中楼一律挂**顶层评论**的 list_3,与回复谁
+    无关——「好友顶层评论→bot 楼中楼回复→好友再回复」线程的顶层作者是好友,
+    须按「bot 参与过线程」(父=bot 或 list_3 有 bot 回复)筛选才不漏;锚=
+    顶层评论(与 qzone_reply 发送形态一致),上下文=bot 在线程最近的回复;
+    纯好友线程(bot 未参与)仍不通知。"""
+    from catsitate_core.qzone.wire import parse_feed_replies
+
+    payload = {"usrinfo": {"uin": 3545773341}, "msglist": [{"tid": "f1", "commentlist": [
+        {"tid": 1, "uin": 3298178030, "name": "可回收飞舞", "content": "不赖", "list_3": [
+            {"tid": 1, "uin": 3545773341, "name": "bot",
+             "content": "@{uin:3298178030,nick:可回收飞舞}哈哈不赖", "create_time": 1788533758},
+            {"tid": 2, "uin": 3298178030, "name": "可回收飞舞",
+             "content": "@{uin:3545773341,nick:bot}来了呀", "create_time": 1788533995},
+        ]},
+        {"tid": 2, "uin": 10002, "name": "路人", "content": "闲聊", "list_3": [
+            {"tid": 3, "uin": 10001, "name": "小明", "content": "旁听", "create_time": 1788534000},
+        ]},
+    ]}]}
+    items = parse_feed_replies(payload, bot_uin="3545773341")
+    assert len(items) == 1
+    r = items[0]
+    assert (r.reply_tid, r.uin, r.nickname) == ("2", "3298178030", "可回收飞舞")
+    assert r.parent_comment_uin == "3298178030"  # 二元组锚=顶层评论作者
+    assert "哈哈不赖" in r.bot_reply_content  # 上下文=bot 在该线程最近的回复
+    assert r.parent_comment_content == "不赖"
 
 
 def test_parse_feed_replies_numeric_tid_normalized():

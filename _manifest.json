@@ -52,5 +52,11 @@
     "chat.get_all_streams",
     "person.get_id"
   ],
+  "i18n": {
+    "locales_path": "_locales",
+    "supported_locales": [
+      "zh-CN"
+    ]
+  },
   "id": "catsitate.core"
 }

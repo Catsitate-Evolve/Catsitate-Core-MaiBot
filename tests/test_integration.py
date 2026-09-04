@@ -253,7 +253,8 @@ def test_sleep_tick_natural_wake(tmp_path):
     p.sleep.enter_sleep(wake_at="2026-08-16T07:00:00", now=lambda: datetime(2026, 8, 15, 23, 0, 0))
     calls = {"review": 0, "settle": 0, "decay": 0}
 
-    async def _fake_review():
+    async def _fake_review(sleep_at=""):
+        del sleep_at  # 回顾桩只计数;入睡时刻参数由真实实现消费(备忘附列)
         calls["review"] += 1
 
     async def _fake_settle():
@@ -400,7 +401,7 @@ def test_generate_tomorrow_schedule_sets_generated_flag(tmp_path):
             return _materialize_template(DEFAULT_TEMPLATE_SCHEDULE, kw["target_date"]), "测试错误"
 
     p.schedule_gen = _FailingGen()
-    asyncio.run(p._generate_tomorrow_schedule())
+    asyncio.run(p._generate_tomorrow_schedule("2026-08-17"))
     assert p._schedule_generated is False  # 模板兜底日不视为生成日程
 
     class _OkGen:
@@ -414,7 +415,7 @@ def test_generate_tomorrow_schedule_sets_generated_flag(tmp_path):
             ]}, ""
 
     p.schedule_gen = _OkGen()
-    asyncio.run(p._generate_tomorrow_schedule())
+    asyncio.run(p._generate_tomorrow_schedule("2026-08-17"))
     assert p._schedule_generated is True
 
 
@@ -484,7 +485,8 @@ def test_enter_sleep_idempotent_when_already_sleeping(tmp_path):
     p.sleep.enter_sleep(wake_at="2099-01-01T07:00:00", now=lambda: datetime(2026, 8, 15, 23, 0, 0))
     calls = {"gen": 0}
 
-    async def _fake_gen():
+    async def _fake_gen(target_date):
+        del target_date
         calls["gen"] += 1
     p._generate_tomorrow_schedule = _fake_gen
 
@@ -644,7 +646,8 @@ def test_schedule_tick_cross_midnight_sleep_window_enters_sleep(tmp_path):
     p._speak_counts = {}
     p._remind_fired = {}
 
-    async def _fake_gen():
+    async def _fake_gen(target_date):
+        del target_date
         pass
     p._generate_tomorrow_schedule = _fake_gen
 
@@ -688,7 +691,8 @@ def test_sleep_tick_silent_on_quiet_elapsed_enters_sleep(tmp_path):
     p._pending_diary_snapshot = JsonSnapshot(tmp_path / "qzone_pending_diary.json")  # 醒态 sleep_tick 补注日记读取(on_load 装配,离线手工补)
     p._sleep_window_settled = ""
 
-    async def _fake_gen():
+    async def _fake_gen(target_date):
+        del target_date
         pass
     p._generate_tomorrow_schedule = _fake_gen
 
@@ -733,7 +737,8 @@ def test_sleep_window_passed_awake_settles_once(tmp_path):
 
     calls = {"gen": 0}
 
-    async def _fake_gen():
+    async def _fake_gen(target_date):
+        del target_date
         calls["gen"] += 1
     p._generate_tomorrow_schedule = _fake_gen
 
@@ -1419,3 +1424,183 @@ def test_diary_stable_ctx_includes_persona(tmp_path):
     assert captured["messages"][0]["role"] == "system"
     data = p._pending_diary_snapshot.load()  # 发布链走完:tid 随快照透传(口径)
     assert data.get("tid") == "tid123"
+
+
+def test_enter_sleep_after_midnight_targets_wake_day(tmp_path):
+    """午夜后入睡的目标日(默认配置下静默入睡的常态场景):睡眠窗 23:00→次日
+    07:30、入睡时刻次日 00:05——日程目标日必须是醒来日(窗口 end 所在自然日),
+    而非旧逻辑 now+1 的「醒来日的次日」;日记素材日必须是入睡日(窗口起始日)。"""
+
+    import plugin as plugin_mod
+    from catsitate_core.sleep import SleepManager
+
+    class _FakeDateTime(datetime):
+        _current = datetime(2026, 9, 5, 0, 5, 0)
+
+        @classmethod
+        def now(cls, tz=None):
+            del tz
+            return cls._current
+
+    p = plugin_mod.CatsitatePlugin()
+    p._ctx = _StubCtx(tmp_path)
+    p._plugin_config_instance = CatsitateConfig()
+    p._background_tasks = set()
+    p._pending_diary_snapshot = JsonSnapshot(tmp_path / "qzone_pending_diary.json")
+    # 09-04 的日程:睡眠窗 09-04T23:00 → 09-05T07:30(跨午夜)
+    p._schedule_data = {"date": "2026-09-04", "windows": [
+        {"kind": "sleep", "start": "2026-09-04T23:00", "end": "2026-09-05T07:30"},
+    ]}
+    p.sleep = SleepManager(JsonSnapshot(tmp_path / "sleep_state.json"), p.config.sleep)
+    captured = {"schedule": [], "diary": []}
+
+    async def _fake_schedule(target_date):
+        captured["schedule"].append(target_date)
+
+    async def _fake_diary(sleep_day=None):
+        captured["diary"].append(sleep_day)
+
+    p._generate_tomorrow_schedule = _fake_schedule
+    p._generate_and_publish_diary = _fake_diary
+
+    old = plugin_mod.datetime
+    plugin_mod.datetime = _FakeDateTime
+    try:
+        asyncio.run(p._enter_sleep())
+    finally:
+        plugin_mod.datetime = old
+
+    assert captured["schedule"] == ["2026-09-05"]  # 醒来日(旧 now+1 会错成 09-06)
+    assert captured["diary"] == ["2026-09-04"]  # 日记素材日=入睡日
+    # 醒来时刻照常按窗口 end clamp(00:05 入睡 +240min 下限早于 07:30,不动)
+    assert p.sleep.state.wake_at == "2026-09-05T07:30:00"
+
+
+def test_generate_tomorrow_schedule_target_date_drives_output(tmp_path):
+    """目标日显式传入贯穿全链路:LLM 异常模板兜底也用传入目标日物化(旧逻辑
+    函数内 now+1 推导,午夜后入睡生成的日程日期=醒来日的次日,醒来后整天被
+    当过期日程丢弃跑默认模板)。"""
+
+    import plugin as plugin_mod
+    from catsitate_core.schedule import ScheduleGenerator
+
+    p = plugin_mod.CatsitatePlugin()
+    p._ctx = _StubCtx(tmp_path)
+    p._plugin_config_instance = CatsitateConfig()
+    p._persona_cache = "猫耳少女"  # 人设/风格缓存预置,绕开 config 桩读取
+    p._style_cache = ""
+    p._today_review_text = lambda: "无"
+    p._weather_text = lambda: "无"
+    p._fav_summary_text = lambda: "无"
+    p.memo = type("_M", (), {"due_on": staticmethod(lambda day: [])})()
+    p._schedule_data = {}
+    p._schedule_edit_history = []
+    p._schedule_generated = False
+
+    async def _boom_llm(messages, model=""):
+        raise RuntimeError("boom")
+
+    p.schedule_gen = ScheduleGenerator(_boom_llm, p.config.schedule, p.config.sleep)
+    asyncio.run(p._generate_tomorrow_schedule("2026-09-05"))
+    assert p._schedule_data["date"] == "2026-09-05"  # 模板兜底也取传入目标日
+    assert p._schedule_generated is False  # 兜底日不视为生成日程(既有语义)
+
+
+def test_sleep_review_memo_annex_cross_midnight(tmp_path):
+    """回顾备忘附列跨午夜:睡眠窗 23:00 起、remind_at 在入睡日 23:00~24:00 段
+    的备忘在入睡日(旧逻辑从不查)与醒来日「今天」(日期已换)两边单查都查不
+    到,静默丢失——按「入睡日 ∪ 今天」并集取再过滤 [入睡时刻, 现在],两边不漏;
+    未到期(晚于现在)的备忘不提前列出。"""
+
+    import plugin as plugin_mod
+
+    class _FakeDateTime(datetime):
+        _current = datetime(2026, 9, 5, 7, 30, 0)
+
+        @classmethod
+        def now(cls, tz=None):
+            del tz
+            return cls._current
+
+    p = plugin_mod.CatsitatePlugin()
+    p._ctx = _StubCtx(tmp_path)
+    p._plugin_config_instance = CatsitateConfig()
+    due_days: list[str] = []
+
+    class _Memo:
+        def due_on(self, day):
+            due_days.append(day)
+            return list({
+                "2026-09-04": [
+                    {"id": 1, "content": "睡前备忘", "stream_id": "s1",
+                     "user_id": "u1", "remind_at": "2026-09-04T23:30:00"},
+                ],
+                "2026-09-05": [
+                    {"id": 2, "content": "早晨备忘", "stream_id": "s1",
+                     "user_id": "u1", "remind_at": "2026-09-05T08:00:00"},
+                    {"id": 3, "content": "凌晨备忘", "stream_id": "s1",
+                     "user_id": "u1", "remind_at": "2026-09-05T06:00:00"},
+                ],
+            }.get(day, []))
+
+    p.memo = _Memo()
+    p._sleep_review_buffer = [
+        {"stream_id": "s1", "user_id": "u1", "nickname": "昵称",
+         "text": "睡着后发的消息", "ts": "2026-09-05T01:00:00"},
+    ]
+    p._sleep_review_buffer_snapshot = JsonSnapshot(tmp_path / "sleep_review_buffer.json")
+
+    async def _stub_side_llm(messages, model="", module="", timeout_ms=None):
+        del messages, model, module, timeout_ms
+        return {"success": True, "response": "摘要", "model": ""}
+
+    p._side_llm_call = _stub_side_llm
+    old = plugin_mod.datetime
+    plugin_mod.datetime = _FakeDateTime
+    try:
+        asyncio.run(p._write_sleep_review(sleep_at="2026-09-04T23:05:00"))
+    finally:
+        plugin_mod.datetime = old
+
+    assert sorted(due_days) == ["2026-09-04", "2026-09-05"]  # 两日并集都查
+    reports = list((tmp_path / "sleep_review" / "reports").glob("sleep_review_*.md"))
+    assert len(reports) == 1
+    text = reports[0].read_text(encoding="utf-8")
+    assert "睡前备忘" in text  # 入睡日 23:30(入睡后~午夜前):旧逻辑静默丢失段
+    assert "凌晨备忘" in text  # 今日 06:00(睡眠期内)在列
+    assert "早晨备忘" not in text  # 今日 08:00 晚于现在 07:30:未到期不提前列
+
+
+def test_wake_up_without_review_clears_buffer(tmp_path):
+    """回顾关闭时的缓冲清理:唯一清理点原在 _write_sleep_review 开头,关闭回顾
+    后无人派发 → 缓冲跨夜无界增长且睡眠期每条消息全量重写 JSON;_wake_up 就地
+    清空内存与快照并留 info 日志。"""
+
+    import plugin as plugin_mod
+    from catsitate_core.sleep import SleepManager
+
+    p = plugin_mod.CatsitatePlugin()
+    logs: list = []
+    p._ctx = _StubCtx(tmp_path)
+    p._ctx.logger = _CollectLogger(logs)
+    p._plugin_config_instance = CatsitateConfig()
+    p.config.sleep.review_enabled = False
+    p._background_tasks = set()
+    p.sleep = SleepManager(JsonSnapshot(tmp_path / "sleep_state.json"), p.config.sleep)
+    p.sleep.enter_sleep(wake_at="2026-08-16T07:00:00", now=lambda: datetime(2026, 8, 15, 23, 0, 0))
+    p._sleep_review_buffer = [
+        {"stream_id": "s1", "user_id": "u1", "nickname": "",
+         "text": "睡眠期消息", "ts": "2026-08-16T01:00:00"},
+    ]
+    p._sleep_review_buffer_snapshot = JsonSnapshot(tmp_path / "sleep_review_buffer.json")
+    p._sleep_review_buffer_snapshot.save({"messages": p._sleep_review_buffer})
+    settle_calls: list = []
+    p._dispatch_daily_settle = lambda: settle_calls.append(1)
+
+    asyncio.run(p._wake_up())
+    assert p.sleep.state.state == "awake"
+    assert p._sleep_review_buffer == []  # 内存缓冲已清空
+    assert p._sleep_review_buffer_snapshot.load() == {"messages": []}  # 快照同步清空
+    assert not (tmp_path / "sleep_review").exists()  # 未派发回顾:零报告产出
+    assert settle_calls == [1]  # 醒来补跑结算不受影响
+    assert any(level == "info" and "回顾缓冲已清空" in str(a[0]) for level, a, _k in logs)

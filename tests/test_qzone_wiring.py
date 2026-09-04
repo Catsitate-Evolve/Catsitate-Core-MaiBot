@@ -965,15 +965,17 @@ def test_diary_weather_line_and_word_count_guidance(tmp_path):
     assert "(目标篇幅80~200字)" in stable
     assert "长度按素材里给的篇幅区间" in p.llm_calls[0]["messages"][0]["content"]
 
-    # 有快照:素材行出现(温度/天气码来自快照);自定义区间原样进素材
+    # 有快照:素材行出现(温度/天气码来自快照);fetched_at 须新鲜(1 小时前,
+    # 过期快照按无数据处理——见 test_weather_text_staleness);自定义区间原样进素材
     p.store.execute(
         "CREATE TABLE IF NOT EXISTS weather_snapshot ("
         "id INTEGER PRIMARY KEY CHECK (id = 1), city TEXT NOT NULL, "
         "fetched_at TEXT NOT NULL, data TEXT NOT NULL)"
     )
+    fresh_at = (datetime.now() - timedelta(hours=1)).strftime("%Y-%m-%dT%H:%M:%S")
     p.store.execute(
         "INSERT INTO weather_snapshot (id, city, fetched_at, data) VALUES (1, '珠海', "
-        "'2026-09-01T12:00:00', '{\"temperature_2m\": 26.5, \"weather_code\": 1}')"
+        f"'{fresh_at}', '{{\"temperature_2m\": 26.5, \"weather_code\": 1}}')"
     )
     p.config.qzone.diary_word_count_min = 120
     p.config.qzone.diary_word_count_max = 350
@@ -3864,3 +3866,122 @@ def test_guard_assembly_rebuilds_on_config_update(tmp_path):
     p.config.guard.enabled = False
     p._assemble_guard()
     assert p._guard_compiled == []
+
+
+def test_diary_after_midnight_uses_sleep_day_materials(tmp_path):
+    """午夜后入睡的日记素材日(入睡日):now 已是次日 00:05,日期行/备忘
+    due_on/聊天时间线起点全部取 sleep_day(入睡日)——日记与日程同源修正,
+    不再用 now 取日(否则素材日写成次日)。"""
+
+    import plugin as plugin_mod
+
+    class _FakeDateTime(datetime):
+        _current = datetime(2026, 9, 5, 0, 5, 0)
+
+        @classmethod
+        def now(cls, tz=None):
+            del tz
+            return cls._current
+
+    p = _make_diary_plugin(tmp_path)
+    p._stream_cache = {}
+    p._stream_cache_at = 0.0
+    due_days: list[str] = []
+    real_due_on = p.memo.due_on
+
+    def _capture_due_on(day):
+        due_days.append(day)
+        return real_due_on(day)
+
+    p.memo.due_on = _capture_due_on
+    cap_calls: list[dict] = []
+
+    async def _capability(name, **kw):
+        cap_calls.append({"name": name, **kw})
+        if name == "message.get_by_time":
+            return []
+        return {"success": True, "response": "{}"}
+
+    p._ctx.call_capability = _capability
+    old = plugin_mod.datetime
+    plugin_mod.datetime = _FakeDateTime
+    try:
+        asyncio.run(p._generate_and_publish_diary(sleep_day="2026-09-04"))
+    finally:
+        plugin_mod.datetime = old
+
+    stable = p.llm_calls[0]["messages"][1]["content"]
+    assert "今天是2026年9月4日" in stable  # 素材日期行=入睡日(now 已是 9 月 5 日)
+    assert due_days == ["2026-09-04"]  # 备忘 due_on 用素材日
+    assert any(
+        c["name"] == "message.get_by_time"
+        and c["start_time"] == datetime(2026, 9, 4, 0, 0, 0).timestamp()
+        for c in cap_calls
+    )  # 聊天时间线起点=入睡日 00:00
+    assert p.qzone_client.publish_calls  # 全链路照常发布
+
+
+def test_weather_text_staleness_ceiling(tmp_path):
+    """天气快照新鲜度上限:只按 fetched_at 倒序取最新不查时效,持续拉取失败时
+    旧天气会被无限期当「当前天气」注入环境块/日程/日记素材——超 6 小时按
+    「无数据」处理(debug 记录不刷屏);1 小时内正常返回;fetched_at 解析失败
+    同样按过期(解析异常不得抛出)。"""
+
+    p = _make_diary_plugin(tmp_path)
+    p.store.execute(
+        "CREATE TABLE IF NOT EXISTS weather_snapshot ("
+        "id INTEGER PRIMARY KEY CHECK (id = 1), city TEXT NOT NULL, "
+        "fetched_at TEXT NOT NULL, data TEXT NOT NULL)"
+    )
+
+    def _insert(fetched_at: str) -> None:
+        p.store.execute("DELETE FROM weather_snapshot")
+        p.store.execute(
+            "INSERT INTO weather_snapshot (id, city, fetched_at, data) VALUES (1, '珠海', "
+            f"'{fetched_at}', '{{\"temperature_2m\": 26.5, \"weather_code\": 1}}')"
+        )
+
+    _insert((datetime.now() - timedelta(hours=7)).strftime("%Y-%m-%dT%H:%M:%S"))
+    assert p._weather_text() == "无数据"  # 7 小时前:过期
+    assert any(level == "debug" and "天气快照过期" in str(a[0]) for level, a in p.logs)
+
+    _insert((datetime.now() - timedelta(hours=1)).strftime("%Y-%m-%dT%H:%M:%S"))
+    assert p._weather_text() == "温度 26.5°C(天气码 1)"  # 1 小时前:正常
+
+    _insert("not-a-timestamp")
+    assert p._weather_text() == "无数据"  # 时刻不可解析:按过期,不抛出
+
+
+def test_diary_chat_timeline_success_without_messages_key_warns_and_falls_back(tmp_path):
+    """形态容错显式化:get_by_time 返回 dict+success 但缺 messages 键(或非 list)
+    时,旧逻辑静默按 0 条处理,日记会误写「今天没和人聊天」——现显式 warning
+    并回退逐流取数,时间线素材仍可用。"""
+
+    import time as _time
+
+    today = datetime.now()
+    p = _make_diary_plugin(tmp_path)
+    p._stream_cache = {
+        "g1": {"session_id": "g1", "is_group_session": True, "user_id": ""},
+    }
+    p._stream_cache_at = _time.time()
+    ten_five = today.replace(hour=10, minute=5, second=0, microsecond=0)
+    msgs = [_diary_msg("40000", "群友", "逐流回退的消息", ten_five.timestamp())]
+    requested: list[str] = []
+
+    async def _capability(name, **kw):
+        if name == "message.get_by_time":
+            return {"success": True}  # success 但缺 messages 键的畸形形态
+        if name == "message.get_recent":
+            requested.append(str(kw.get("chat_id")))
+            return list(msgs)
+        return {"success": True, "response": "{}"}
+
+    p._ctx.call_capability = _capability
+    asyncio.run(p._generate_and_publish_diary())
+    stable = p.llm_calls[0]["messages"][1]["content"]
+    assert "[10:05] 群友:逐流回退的消息" in stable  # 逐流回退路径被走到
+    assert requested == ["g1"]
+    assert any(
+        level == "warning" and "get_by_time 返回形态异常" in str(a[0]) for level, a in p.logs
+    )

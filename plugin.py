@@ -2825,7 +2825,7 @@ class CatsitatePlugin(MaiBotPlugin):
         if stream_id in self._qzone_session_id_set():
             state = self.qzone_injector.describe_current()
             return f"qzone:v:{state}", f"[空间] {state}"
-        # 当日空间见闻优先(M3):窗口结束旁路 LLM 摘要的当日印象,比逐条
+        # 当日空间见闻优先(M3):窗口结束旁路 LLM 摘要的空间印象,比逐条
         # 「近期刷到」更像人转述见过的事;无当日见闻回退下方既有路径
         digest = self._qzone_digest_snapshot.load()
         today = datetime.now().strftime("%Y-%m-%d")
@@ -2848,7 +2848,7 @@ class CatsitatePlugin(MaiBotPlugin):
         return key, text
 
     async def _qzone_generate_digest(self) -> None:
-        """read_qzone 窗口结束:把当日浏览与互动摘要为见闻。
+        """read_qzone 窗口结束:把近 24h 滚动窗内的浏览与互动摘要为见闻。
 
         主程序会话摘要由 bot 发言后的回写服务生成,虚拟流 receive-only 无
         发言投递,主程序记忆层不会为虚拟流产出内容,插件亦无 API 读取记忆
@@ -2879,7 +2879,7 @@ class CatsitatePlugin(MaiBotPlugin):
         # 截断统一保留最新(升序取尾,与结算路径 events[-5:] 同款)
         lines += [clip_text(e["text"], 40) for e in events[-10:]]
         if not lines:
-            return  # 当日无素材:不生成,保留旧见闻
+            return  # 窗内无素材:不生成,保留旧见闻
         persona, _ = await self._persona_context()
         stable_ctx = [f"bot 人设:{persona}", f"日期:{day}"]
         messages, _ = build_side_prompt("qzone_digest", stable_ctx, ["素材:\n" + "\n".join(lines)])

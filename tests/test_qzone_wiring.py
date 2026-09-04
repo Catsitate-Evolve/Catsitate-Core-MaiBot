@@ -2086,6 +2086,8 @@ def test_config_update_validates_schedule_threshold(tmp_path):
 
     from catsitate_core.decay import DecayExecutor
     from catsitate_core.favorability import BatchEngine
+    from catsitate_core.msg_react import MsgReactEngine
+    from catsitate_core.poke import PokeEngine
     from catsitate_core.schedule import ScheduleGenerator
     from catsitate_core.services.scheduler import Scheduler
     from catsitate_core.sleep import SleepManager
@@ -2103,6 +2105,8 @@ def test_config_update_validates_schedule_threshold(tmp_path):
     p.schedule_gen = ScheduleGenerator(_llm, p.config.schedule, p.config.sleep)
     p.fav_engine = BatchEngine(p.store, p.config.favorability)
     p.decay = DecayExecutor(p.store, p.config.favorability, _llm)
+    p.react = MsgReactEngine(JsonSnapshot(tmp_path / "msg_react_cooldown.json"), p.config.msg_react)
+    p.poke = PokeEngine(JsonSnapshot(tmp_path / "poke_cooldown.json"), p.config.poke)
 
     async def _no_selfcheck():
         return False
@@ -3515,7 +3519,8 @@ def test_discovery_pagination_stops_on_all_seen(tmp_path):
 
 
 def test_discovery_pagination_stops_when_second_page_all_seen(tmp_path, monkeypatch):
-    """Task5:第 1 页含新动态 → 翻第 2 页;第 2 页全旧 → 止步(不再第 3 页)。"""
+    """Task5:第 1 页含新动态 → 翻第 2 页;第 2 页全旧 → 止步(不再第 3 页)。
+    页间有 2 秒防风控间隔(与充实层/通知源B 好友间隔同款),首页前无间隔。"""
 
     sleeps: list = []
     _patch_sleep(monkeypatch, sleeps)
@@ -3539,6 +3544,9 @@ def test_discovery_pagination_stops_when_second_page_all_seen(tmp_path, monkeypa
     p.qzone_client = _PagedClient([])
     asyncio.run(p._qzone_poll_feeds())
     assert calls == [None, "cur1"]  # 第 2 页无新说说即止步
+    # 首个 2.0=翻第 2 页的页间间隔(首页前无);第二个=充实层该好友拉取后的
+    # 好友间隔(t1 为新 tid 走充实层)——页间隔与充实层同款防风控口径
+    assert sleeps == [2.0, 2.0]
 
 
 def test_discovery_pagination_fetches_backlog_until_max_pages(tmp_path, monkeypatch):

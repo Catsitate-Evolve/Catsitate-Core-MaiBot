@@ -62,7 +62,7 @@
 
 部署:`on_load` 时 `prompt_deploy.sync_prompt_templates()` 把 `prompt_templates/catsitate_*.prompt` 自动同步到主程序 `prompts/zh-CN/`(内容一致跳过、变更覆盖);主程序 `load_prompts()` 在插件启动后调用,同次启动即生效,无需重启。mtime 缓存+版本标签(内置版本号+文本哈希)参与缓存键——模板或占位符替换值变更即缓存失效。全部缺失时告警一次后回退内置(不静默)。
 
-prompt 组装纪律(`build_side_prompt`,规格 §4.9/§4.10):**稳定段在前、变量素材在后**(缓存友好)——[system=任务指令+输出格式][稳定上下文=人设背景等配置数据][变量素材=每次不同的待处理内容]。
+prompt 组装纪律(`build_side_prompt`):**稳定段在前、变量素材在后**(前缀字节稳定,LLM 请求前缀缓存可命中)——[system=任务指令+输出格式][稳定上下文=人设背景等配置数据][变量素材=每次不同的待处理内容]。
 
 空间相关模板清单:`qzone_scene`(虚拟流场景说明)/ `qzone_expression`(润色)/ `qzone_diary`(日记)/ `qzone_digest`(见闻)。
 

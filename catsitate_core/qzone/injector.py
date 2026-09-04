@@ -8,7 +8,8 @@ P2=浏览动态。next_to_inject 优先弹 P1——模拟「刷着动态→弹�
 (planner.after_response 无 tool_calls,由 plugin 转发 on_turn_complete)。
 超时兜底:常规 decision_window_s;wait 态(wait 是 tool_call,其响应不满足完成信号)
 延长到 hard_cap_multiplier×decision_window_s(自注入时刻起算,wait 不重置起点),
-防止 wait 期间注入下一条并入批处理导致出站意图错靶(回顾修订)。
+防止 wait 期间注入下一条并入同一决策轮(wait 的回复尚未返回,新条目会
+挤进同轮上下文干扰决策)。
 窗口结束:浏览队列(P2)与 awaiting 状态一并丢弃(SeenStore.revert_pending 由
 plugin 调用回退未读);通知队列(P1)保留——通知是推送语义,不隶属任何窗口,
 等注入条件(bot 醒着/泵空闲)满足后继续(M3-r2 P1/P2 分治)。

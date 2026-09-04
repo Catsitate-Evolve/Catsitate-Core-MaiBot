@@ -12,7 +12,7 @@ Catsitate 是 MaiBot(QQ 猫娘机器人)的拟人化人格插件。它在 MaiBot
 |---|---|---|
 | `id` | `catsitate.core` | 决定数据目录(`ctx.paths.data_dir`,生产容器为 `/data/plugins/catsitate.core/`)与能力归属 |
 | `host_application` / `sdk` | 宿主与 SDK 版本范围 | Runner 据此拒绝不兼容的组合 |
-| `capabilities` | 12 项能力白名单 | 插件可 `call_capability` 的全部能力(见下文) |
+| `capabilities` | 11 项能力白名单 | 插件可 `call_capability` 的全部能力(见下文) |
 | `dependencies` | holiday-calendar、lunar-python、Pillow | 自动安装的 Python 依赖 |
 
 与宿主共存的几个既定事实(均以插件侧适配解决,不改主程序):
@@ -33,7 +33,7 @@ Catsitate 是 MaiBot(QQ 猫娘机器人)的拟人化人格插件。它在 MaiBot
 3. **调度注册**——把周期任务注册进 `Scheduler`(`catsitate_core/services/scheduler.py`,60 秒 tick 的 asyncio 任务引擎,任务异常隔离不互相拖垮);
 4. **胶水逻辑**——跨模块的数据搬运(如把当日到期备忘拼进行程注入块)。
 
-业务逻辑本身(纯函数、状态机、引擎)全部在 `catsitate_core/` 包的 31 个模块文件里(顶层 17 个 + `services/` 1 个 + `qzone/` 13 个),绝大多数不依赖网络与宿主,可离线单测(`tests/` 全量跑不触网)。
+业务逻辑本身(纯函数、状态机、引擎)全部在 `catsitate_core/` 包的 32 个模块文件里(顶层 18 个 + `services/` 1 个 + `qzone/` 13 个),绝大多数不依赖网络与宿主,可离线单测(`tests/` 全量跑不触网)。
 
 ### 生命周期
 
@@ -79,7 +79,7 @@ Catsitate 是 MaiBot(QQ 猫娘机器人)的拟人化人格插件。它在 MaiBot
 
 **(4) `@MessageGateway`——虚拟流消息网关**:`catsitate_qzone`,platform `qzone-qq`,**receive 模式(只进不出)**——QQ 空间动态经 `ctx.gateway.route_message` 投递进虚拟群会话(`qzone_feed`),bot 对说说的动作一律经 `qzone_*` 工具发出(直接打字发不出去,方法体内的出站分支只做防御性拒发)。
 
-**(5) `call_capability`——能力调用**(`_manifest.json` 声明的 12 项):
+**(5) `call_capability`——能力调用**(`_manifest.json` 声明的 11 项):
 
 | 能力 | 用在哪 |
 |---|---|

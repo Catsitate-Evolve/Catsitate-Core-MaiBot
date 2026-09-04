@@ -66,7 +66,7 @@ registry 的 `register` 是**字段级合并**(新值非空覆盖旧值,空值�
 - **P1=通知**(评论/楼中楼回复/赞):推送语义,**任何时刻可注入**,不依赖浏览窗口;窗口结束时保留。
 - **P2=浏览动态**:仅 read_qzone 窗口内可注入;窗口结束时清空(未读回退 seen 表)。
 - 两队列各自按发布时间(abstime)降序——信息流降序,最新先看。
-- `next_to_inject`:awaiting 未释放时返回 None(串行语义);P1 非空优先,否则窗口内取 P2。一次只允许一条动态处于 awaiting(已注入待轮完成),推进条件=**轮完成信号**(planner.after_response 无 tool_calls 的响应,经 `qzone_turn_signal` 钩子转发 `on_turn_complete`);`wait` 工具调用切换上限档位(常规 `decision_window_s` → 3 倍硬上限,起点锚定注入时刻不重置),防 wait 期间注入下一条并入批处理导致出站错靶。
+- `next_to_inject`:awaiting 未释放时返回 None(串行语义);P1 非空优先,否则窗口内取 P2。一次只允许一条动态处于 awaiting(已注入待轮完成),推进条件=**轮完成信号**(planner.after_response 无 tool_calls 的响应,经 `qzone_turn_signal` 钩子转发 `on_turn_complete`);`wait` 工具调用切换上限档位(常规 `decision_window_s` → 3 倍硬上限,起点锚定注入时刻不重置),防 wait 期间注入下一条并入同一决策轮。
 
 ### 2.6 通知消息构造
 

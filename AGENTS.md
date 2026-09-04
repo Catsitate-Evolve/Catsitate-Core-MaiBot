@@ -34,7 +34,7 @@ Catsitate 的 MaiBot 核心人格行为插件(独立 git repo;运行宿主为 Ma
 
 - `plugin.py` — 插件入口(生命周期/调度/工具注入);顶部 `sys.path.insert(0, 插件目录)` 后绝对导入 `catsitate_core.*`
 - `catsitate_core/` — 领域模块,各模块独立、解耦
-  - `config.py` 配置树(叶子字段为准,7 个 `*_timeout_ms` 默认 **0**=主程序默认;tomlkit 无法序列化 None)
+  - `config.py` 配置树(叶子字段为准,11 个 `*_timeout_ms` 字段中 9 个默认 **0**=主程序默认(其余:日程生成 120s、空间 HTTP 10s);tomlkit 无法序列化 None)
   - `llm_provider.py` 旁路 LLM 模板与请求组装:`load_side_system` 读取链 `data/custom_prompts/zh-CN/catsitate_{id}.prompt` → `prompts/zh-CN/catsitate_{id}.prompt` → 内置默认(mtime 缓存,缺文件每进程告警一次)
   - `prompt_deploy.py` 模板自动部署:`on_load` 时把 `prompt_templates/catsitate_*.prompt`(12 个)同步到主程序 `prompts/zh-CN/`(内容一致跳过、变更覆盖、结构异常显式告警不阻断)
   - `guard.py` 内容护栏纯匹配器(正则编译与命中)
@@ -50,7 +50,7 @@ Catsitate 的 MaiBot 核心人格行为插件(独立 git repo;运行宿主为 Ma
 
 ```bash
 # 必须在本仓库根目录下运行(不在宿主主程序目录,否则 pytest 会收集主程序测试并报 ImportError)
-python3 -m pytest tests/ -q        # 全量(当前 566 用例)
+python3 -m pytest tests/ -q        # 全量(当前 602 用例)
 python3 -m pytest tests/test_integration.py -v   # 集成冒烟
 ```
 

@@ -154,7 +154,7 @@ def test_phase2_engines_assemble(tmp_path):
     from catsitate_core.config import CatsitateConfig
     from catsitate_core.decay import DecayExecutor
     from catsitate_core.favorability import BatchEngine
-    from catsitate_core.schedule import ScheduleGenerator, apply_schedule_edit
+    from catsitate_core.schedule import ScheduleGenerator, apply_schedule_add
     from catsitate_core.sleep import SleepManager
     from catsitate_core.storage import JsonSnapshot, SQLiteStore
     cfg = CatsitateConfig()
@@ -168,16 +168,14 @@ def test_phase2_engines_assemble(tmp_path):
     sleep_mgr = SleepManager(JsonSnapshot(tmp_path / "sleep_state.json"), cfg.sleep)
     gen = ScheduleGenerator(fake_llm, cfg.schedule, cfg.sleep)
     assert decay and sleep_mgr and gen
-    # 工具修改冒烟
-    data, err, hist = apply_schedule_edit(
+    # 工具修改冒烟(add 路径;delete 专用实现与 move 的行为覆盖见 test_schedule.py)
+    data, err, hist, _ = apply_schedule_add(
         {"date": "2026-08-16", "windows": [
             {"kind": "sleep", "start": "2026-08-16T23:00", "end": "2026-08-17T07:00"},
             {"kind": "daily", "start": "2026-08-16T09:00", "end": "2026-08-16T11:00",
              "activity": "a", "plan_speak": False, "topic": ""}]},
-        "add", None,
-        {"kind": "daily", "start": "2026-08-16T14:00", "end": "2026-08-16T16:00",
-         "activity": "b", "plan_speak": False, "topic": ""},
-        [], min_sleep=cfg.sleep.min_sleep_minutes, max_sleep=cfg.sleep.max_sleep_minutes,
+        "14:00", "16:00", "b", "2026-08-16",
+        min_sleep=cfg.sleep.min_sleep_minutes, max_sleep=cfg.sleep.max_sleep_minutes, history=[],
     )
     assert err == ""
 
@@ -1611,6 +1609,8 @@ def test_on_config_update_repoints_engine_config_refs(tmp_path):
     on_load 持有旧节引用的引擎若不重指会静默沿用旧值直到重启。"""
 
     from catsitate_core.decay import DecayExecutor
+    from catsitate_core.msg_react import MsgReactEngine
+    from catsitate_core.poke import PokeEngine
     from catsitate_core.schedule import ScheduleGenerator
     from catsitate_core.services.scheduler import Scheduler
     from catsitate_core.sleep import SleepManager
@@ -1627,6 +1627,8 @@ def test_on_config_update_repoints_engine_config_refs(tmp_path):
     p.decay = DecayExecutor(store, p.config.favorability, _fake_llm)
     p.sleep = SleepManager(JsonSnapshot(tmp_path / "sleep_state.json"), p.config.sleep)
     p.schedule_gen = ScheduleGenerator(_fake_llm, p.config.schedule, p.config.sleep)
+    p.react = MsgReactEngine(JsonSnapshot(tmp_path / "msg_react_cooldown.json"), p.config.msg_react)
+    p.poke = PokeEngine(JsonSnapshot(tmp_path / "poke_cooldown.json"), p.config.poke)
     p.assembler = InjectAssembler()
     p._env_cache = {}
     p._env_fetched_at = None
@@ -1649,4 +1651,57 @@ def test_on_config_update_repoints_engine_config_refs(tmp_path):
     assert p.fav_engine.config is new_cfg.favorability
     assert p.decay.config is new_cfg.favorability
     assert p.decay.engine.config is new_cfg.favorability  # 衰减器内嵌批次引擎同节重指
+    assert p.react.config is new_cfg.msg_react  # 贴表情冷却参数热改即生效
+    assert p.poke.config is new_cfg.poke  # 戳一戳冷却参数热改即生效
     store.close()
+
+
+def _env_plugin_for_fixed_day(tmp_path, monkeypatch, fixed_day):
+    """环境块测试公共装配:固定 today、禁网(在线节日/天气走回退链)。"""
+
+    from types import SimpleNamespace
+
+    import plugin as plugin_mod
+
+    class _FixedDate(date):
+        @classmethod
+        def today(cls):
+            return cls(*fixed_day)
+
+    class _NoNetClient:
+        def __init__(self, *a, **k):
+            raise OSError("测试禁网:在线节日/天气一律走回退链")
+
+    monkeypatch.setattr(plugin_mod, "date", _FixedDate)
+    monkeypatch.setattr(plugin_mod.httpx, "AsyncClient", _NoNetClient)
+    p = plugin_mod.CatsitatePlugin()
+    p._ctx = _StubCtx(tmp_path)
+    p._plugin_config_instance = CatsitateConfig()
+    p.config.plugin.enabled = True  # 默认关:环境块测试需总开关开
+    p.sleep = SimpleNamespace(is_sleeping=lambda: False)
+    p._env_cache = {}  # on_load 装配,离线测试手工补
+    p._env_fetched_at = None
+    asyncio.run(p._refresh_environment())
+    return p
+
+
+def test_environment_upcoming_solar_term_carries_date(tmp_path, monkeypatch):
+    """临近节气带日期进「临近」段:旧实现拿裸节气名按「月」过滤,临近节气
+    恒被整段丢弃(当天节气走 today_terms 不受影响,仅「临近」段缺失)。"""
+
+    p = _env_plugin_for_fixed_day(tmp_path, monkeypatch, (2026, 12, 21))  # 次日冬至
+
+    env = p._env_cache["env"]
+    assert "临近:" in env
+    assert "12月22日 冬至" in env  # 带日期构造,不再被裸名过滤丢弃
+    assert "节日:冬至" not in env  # 冬至非当天:不进今日段(当天无节气)
+
+
+def test_environment_upcoming_days_without_solar_term_no_entry(tmp_path, monkeypatch):
+    """临近窗口无节气日不产生临近节气条目(5/1 前后 3 天无节气)。"""
+
+    p = _env_plugin_for_fixed_day(tmp_path, monkeypatch, (2026, 5, 1))
+
+    env = p._env_cache["env"]
+    assert "立夏" not in env and "小满" not in env  # 最近节气 5/5 立夏、5/21 小满均不在窗口
+    assert "冬至" not in env

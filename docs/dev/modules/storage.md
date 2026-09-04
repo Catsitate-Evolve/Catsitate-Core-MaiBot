@@ -56,7 +56,7 @@
 
 ### 使用方一览
 
-**SQLite(全部落在同一个 `catsitate.db`,共 9 张表)**:
+**SQLite(全部落在同一个 `catsitate.db`,共 11 张表,含迁移版本表)**:
 
 | 使用方 | 表 | 内容 |
 |---|---|---|
@@ -68,6 +68,7 @@
 | `qzone/seen_store.py` → `SeenStore` | `qzone_feeds` | 动态去重(`state=queued/seen`,附注入时的 `message_id`) |
 | `qzone/comment_seen.py` → `CommentSeenStore` | `qzone_comments` / `qzone_fav_events` | 评论去重 / 好感度显式事件 |
 | `qzone/like_seen.py` → `LikeSeenStore` | `qzone_likes` | 赞事件去重(键 = 点赞者+说说) |
+| `migrations.py` | `_schema_version` | 数据库结构版本号(单行;版本间由迁移脚本链式升级) |
 
 **JsonSnapshot(每个文件一个实例,共 8 个)**:
 

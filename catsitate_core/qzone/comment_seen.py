@@ -1,4 +1,4 @@
-"""评论观察存储:窗口外评论轮询的去重登记 + 好感度显式事件表。
+"""评论观察存储:统一通知轮询的去重登记 + 好感度显式事件表。
 
 两张表:qzone_comments(评论去重,幂等主键 comment_key)/ qzone_fav_events
 (好感度显式事件——fav_count 已豁免虚拟流,空间互动不依赖 batch_counter)。

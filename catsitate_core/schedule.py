@@ -461,40 +461,25 @@ ACTIVITY_WINDOW_LIMIT = 8
 _EDIT_LIMIT_REASON = "今天的日程已经排得满满当当了,再排下去会累坏的,明天再安排吧。"
 
 
-def apply_schedule_edit(
-    data: dict, action: str, window_index: int | None, new_window: dict | None,
-    history: list[dict], *, min_sleep: int, max_sleep: int,
+def apply_schedule_delete(
+    data: dict, window_index: int, history: list[dict], *,
+    min_sleep: int, max_sleep: int,
 ) -> tuple[dict, str, list[dict]]:
-    """update_schedule 工具修改:add/update/delete;返回 (日程, 错误或"", 修改历史)。
+    """update_schedule 工具的 delete 专用实现;返回 (日程, 错误或"", 修改历史)。
 
-    约束:活动窗口 1~8(超限返回拟人化拒绝文案);睡眠窗口不可删;时间修改
-    受 [min_sleep, max_sleep] 校验;修改历史记录 {time, action, before, after}。
+    约束:睡眠窗口不可删;删除后整表校验(活动窗口仍须 1~8、不重叠);修改
+    历史记录 {time, action, before, after}。新增/挪窗走 apply_schedule_add/
+    apply_schedule_move(带锚点压缩),本函数不再承担(update_schedule 只路由
+    view/move/add/delete 四动作,add/move 各有专用实现)。
     """
 
     windows = [dict(w) for w in (data.get("windows") or [])]
     before = json.dumps(data, ensure_ascii=False)
-    err = ""
-    if action == "add":
-        if not isinstance(new_window, dict) or new_window.get("kind") == "sleep":
-            return data, "新增仅支持活动窗口", history
-        if sum(1 for w in windows if w.get("kind") != "sleep") >= ACTIVITY_WINDOW_LIMIT:
-            return data, _EDIT_LIMIT_REASON, history
-        windows.append(dict(new_window))
-    elif action == "update":
-        if window_index is None or not (0 <= window_index < len(windows)) or not isinstance(new_window, dict):
-            return data, "窗口序号非法", history
-        if windows[window_index].get("kind") == "sleep":
-            # 睡眠窗口只允许改时间:kind 恒为 sleep(联调:LLM 常误传 daily,强制纠正)
-            new_window = {**dict(new_window), "kind": "sleep"}
-        windows[window_index] = dict(new_window)
-    elif action == "delete":
-        if window_index is None or not (0 <= window_index < len(windows)):
-            return data, "窗口序号非法", history
-        if windows[window_index].get("kind") == "sleep":
-            return data, "睡眠窗口不可删除", history
-        windows.pop(window_index)
-    else:
-        return data, f"未知操作: {action}", history
+    if window_index is None or not (0 <= window_index < len(windows)):
+        return data, "窗口序号非法", history
+    if windows[window_index].get("kind") == "sleep":
+        return data, "睡眠窗口不可删除", history
+    windows.pop(window_index)
     candidate = {"date": data.get("date", ""), "windows": windows}
     checked, verr = validate_schedule(candidate, min_sleep=min_sleep, max_sleep=max_sleep)
     if checked is None:
@@ -502,7 +487,7 @@ def apply_schedule_edit(
     checked["windows"] = sort_windows(checked["windows"])
     history.append({
         "time": datetime.now().strftime("%Y-%m-%dT%H:%M:%S"),
-        "action": action, "before": before,
+        "action": "delete", "before": before,
         "after": json.dumps(checked, ensure_ascii=False),
     })
     return checked, "", history

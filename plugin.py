@@ -82,7 +82,7 @@ from catsitate_core.schedule import (
     DEFAULT_TEMPLATE_SCHEDULE,
     _materialize_template,
     apply_schedule_add,
-    apply_schedule_edit,
+    apply_schedule_delete,
     apply_schedule_move,
     build_proactive_intent,
     current_window,
@@ -101,6 +101,7 @@ from catsitate_core.time_aware import (
     lunar_festivals_near,
     lunar_festivals_upcoming,
     parse_holiday_cn,
+    solar_term_on,
     solar_terms_near,
 )
 
@@ -275,7 +276,7 @@ class CatsitatePlugin(MaiBotPlugin):
         # 三期 M1:QQ空间感知模块(网关/客户端/注入泵;启动自检失败则保持停用并已告警)
         self.qzone_seen = SeenStore(self.store)
         self.qzone_seen.ensure_schema()
-        # M2:评论去重与好感度显式事件表(窗口外评论轮询/点赞/出站评论的数据源)
+        # M2:评论去重与好感度显式事件表(通知轮询/点赞/出站评论的数据源)
         self.qzone_comment_seen = CommentSeenStore(self.store)
         self.qzone_comment_seen.ensure_schema()
         # M3 源C:赞事件去重(「与我相关」流,同一人同一条说说只通知一次)
@@ -473,7 +474,8 @@ class CatsitatePlugin(MaiBotPlugin):
             self._validate_schedule_threshold()
             self._setup_debug_logging()  # debug 开关随配置热生效
             # 引擎配置引用重指(属性名以各引擎 __init__ 落库为准):睡眠/日程/备忘/
-            # 好感度批次/衰减引擎均在新节上读参;衰减器内嵌自己的批次引擎,同节一并重指
+            # 好感度批次/衰减/贴表情/戳一戳引擎均在新节上读参;衰减器内嵌自己的
+            # 批次引擎,同节一并重指
             self.sleep.config = self.config.sleep
             self.schedule_gen.cfg = self.config.schedule
             self.schedule_gen.sleep_cfg = self.config.sleep
@@ -481,8 +483,10 @@ class CatsitatePlugin(MaiBotPlugin):
             self.fav_engine.config = self.config.favorability
             self.decay.config = self.config.favorability
             self.decay.engine.config = self.config.favorability
+            self.react.config = self.config.msg_react
+            self.poke.config = self.config.poke
             self.ctx.logger.info(
-                "引擎配置引用已随热重载重指(sleep/schedule/memo/favorability/decay)"
+                "引擎配置引用已随热重载重指(sleep/schedule/memo/favorability/decay/msg_react/poke)"
             )
             self.ctx.logger.info("catsitate_core 配置已刷新,派生缓存已重置")
         elif scope == "bot":
@@ -597,8 +601,8 @@ class CatsitatePlugin(MaiBotPlugin):
                 min_sleep=min_sleep, max_sleep=max_sleep, history=self._schedule_edit_history,
             )
         elif action == "delete":
-            data, err, history = apply_schedule_edit(
-                self._schedule_data, "delete", window_index, None, self._schedule_edit_history,
+            data, err, history = apply_schedule_delete(
+                self._schedule_data, window_index, self._schedule_edit_history,
                 min_sleep=min_sleep, max_sleep=max_sleep,
             )
         else:
@@ -1591,6 +1595,10 @@ class CatsitatePlugin(MaiBotPlugin):
             try:
                 cursor: str | None = None
                 for _page_idx in range(max_pages):
+                    if _page_idx > 0:
+                        # 页间请求间隔:与充实层/通知源B 好友间隔同款 2 秒防风控口径
+                        # (长时间离线补全会连发多页,无间隔易触发服务端限流)
+                        await asyncio.sleep(2.0)
                     batch, cursor = await self.qzone_client.get_unified_timeline(
                         count=page_size, begintime=cursor
                     )
@@ -3175,7 +3183,13 @@ class CatsitatePlugin(MaiBotPlugin):
             day = today + timedelta(days=offset)
             upcoming.extend(f"{day.month}月{day.day}日 {n}" for n in holidays.get(day.strftime("%m-%d"), []))
         upcoming += [n for n in lunar_festivals_upcoming(today, days=3) if "月" in n]
-        upcoming += [n for n in solar_terms_near(today, days=3) if "月" in n]
+        # 临近节气带日期构造:solar_terms_near 返回裸节气名,曾按「月」过滤导致
+        # 临近节气恒被整段丢弃——改为逐日实算(当天不进 upcoming,today_terms 已含)
+        for offset in range(1, 4):
+            day = today + timedelta(days=offset)
+            term = solar_term_on(day)
+            if term:
+                upcoming.append(f"{day.month}月{day.day}日 {term}")
         upcoming = dedup_festival_names(upcoming)
         text = build_environment_text(today, cfg.city, weather, today_holidays, today_terms, upcoming=upcoming)
         self._env_cache["env"] = text

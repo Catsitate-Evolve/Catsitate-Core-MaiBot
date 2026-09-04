@@ -25,7 +25,7 @@ class FeedContext:
     commenter_nickname: str = ""
     comment_tid: str = ""     # 通知场景:主评论 tid(楼中楼回复用)
     comment_uin: str = ""     # 通知场景:主评论作者 uin(楼中楼二元组)
-    kind: str = "feed"        # "feed"=浏览动态 / "notify_comment"=说说被评论 / "notify_reply"=评论被回复 / "self"=自己发布
+    kind: str = "feed"        # "feed"=浏览动态 / "notify"=通知(生产登记恒传 feed.source) / "self"=自己发布(qzone_post)
     # 说说正文全文(2026-09-02 用户裁定:登记不截断)。旧「近评摘要」字符串列表
     # 已删(Q7 裁定:润色架构后无消费方的死字段)。
     content_summary: str = ""

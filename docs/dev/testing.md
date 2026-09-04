@@ -1,6 +1,6 @@
 # 测试体系
 
-> 对应代码:`tests/`(33 个文件,561 个用例,全量离线运行约 6 秒)。
+> 对应代码:`tests/`(34 个文件,566 个用例,全量离线运行约 6 秒)。
 
 ## 测试哲学
 
@@ -31,7 +31,7 @@ assert text.startswith("(今天") and text.endswith("今天天气好\n〔说说I
 
 ```bash
 cd MaiBot-dev/plugins/catsitate_core_maibot && python3 -m pytest tests/ -q
-# 561 passed in ~6s(无需网络、无需主程序、无需 QQ 登录态)
+# 566 passed in ~6s(无需网络、无需主程序、无需 QQ 登录态)
 ```
 
 跑单个模块:
@@ -43,7 +43,7 @@ python3 -m pytest tests/test_qzone_wiring.py -k auth_retry -q   # 按关键字�
 
 依赖:pytest + PIL(多图合成链需要真实可解码图字节)。无其它外部依赖。
 
-## 测试文件组织(33 个文件按模块分组)
+## 测试文件组织(34 个文件按模块分组)
 
 | 分组 | 文件 | 覆盖 |
 |---|---|---|

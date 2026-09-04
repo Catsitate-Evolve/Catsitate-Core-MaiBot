@@ -1,7 +1,4 @@
-"""Catsitate 核心插件入口:薄接线层,业务逻辑全部在 catsitate_core 包内。
-
-规格:docs/superpowers/specs/2026-08-14-catsitate-core-maibot-design.md
-"""
+"""Catsitate 核心插件入口:薄接线层,业务逻辑全部在 catsitate_core 包内。"""
 
 from __future__ import annotations
 

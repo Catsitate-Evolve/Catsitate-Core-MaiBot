@@ -126,7 +126,7 @@ def _time_prefix(post_dt: datetime, now_dt: datetime) -> str:
 def comment_time_prefix(create_time: str, now_epoch: float) -> str:
     """评论注入正文的时间前缀薄封装(终审 I2,方案 B 同款语义):发布时间由正文承载。
 
-    调用方为 format_comment_param_line(M3-r2 Task 3,2026-09-01):通知参数行的
+    调用方为 format_comment_param_line(M3-r2,2026-09-01):通知参数行的
     动作时间(评论于/回复于)经本函数产出;通知内容的时间前缀仍由
     build_feed_message 从 abstime 统一处理,本函数不直接面向轮询侧;
     语义与 _time_prefix 一致。

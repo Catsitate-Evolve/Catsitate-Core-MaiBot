@@ -1,4 +1,4 @@
-"""Catsitate 插件配置模型(与规格 §6 一致;字段中文 label 供 WebUI 展示)。"""
+"""Catsitate 插件配置模型(与一致;字段中文 label 供 WebUI 展示)。"""
 
 from maibot_sdk import Field, PluginConfigBase
 

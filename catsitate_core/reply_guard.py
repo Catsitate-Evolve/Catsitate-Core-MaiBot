@@ -1,4 +1,4 @@
-"""reply 上下文补传与哨兵判定(规格 §4.7):纯逻辑,SDK 适配在 Task 14。"""
+"""reply 上下文补传与哨兵判定:纯逻辑,SDK 适配在 plugin.py 接线层。"""
 
 from __future__ import annotations
 
@@ -79,7 +79,7 @@ def backfill_reply_items(
 def build_sentinel_prompt(
     persona_background: str, reply_text: str, chat_context: str
 ) -> tuple[list[dict], str]:
-    """哨兵层 prompt:指令(system)+人设背景为稳定段,待判定回复+上下文为变量尾(§4.10)。"""
+    """哨兵层 prompt:指令(system)+人设背景为稳定段,待判定回复+上下文为变量尾。"""
 
     return build_side_prompt(
         "sentinel",

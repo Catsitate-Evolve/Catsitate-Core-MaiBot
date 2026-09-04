@@ -1,6 +1,6 @@
 """LLM Provider 声明与旁路请求组装辅助。
 
-旁路 LLM 请求缓存规范(规格 §4.10):稳定段在前、变量素材在后,模板版本化。
+旁路 LLM 请求缓存规范:稳定段在前、变量素材在后,模板版本化。
 结构 = [任务指令+输出格式(system,模板固定)][稳定上下文(5 级规则/白名单/人设背景,配置数据)][变量素材]。
 """
 
@@ -230,7 +230,7 @@ def _replacements_tag(replacements: dict[str, str]) -> str:
 
 
 def _version_tag(template_id: str, system_text: str) -> str:
-    """模板版本标签:内置版本号 + 文本哈希(模板变更即缓存失效,§4.10)。"""
+    """模板版本标签:内置版本号 + 文本哈希(模板变更即缓存失效)。"""
 
     digest = hashlib.md5(system_text.encode("utf-8")).hexdigest()[:8]
     return f"{template_id}:v{SIDE_TEMPLATES[template_id]['version']}+{digest}"
@@ -240,7 +240,7 @@ def build_side_prompt(
     template_id: str, stable_ctx: list[str], variable_tail: list[str],
     replacements: dict[str, str] | None = None,
 ) -> tuple[list[dict], str]:
-    """按稳定段前置纪律组装旁路 prompt(规格 §4.9 签名)。
+    """按稳定段前置纪律组装旁路 prompt(签名)。
 
     Args:
         template_id: 模板 id(SIDE_TEMPLATES 键)。

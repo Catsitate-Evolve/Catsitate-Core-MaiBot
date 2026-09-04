@@ -1,4 +1,4 @@
-"""配置模型默认值测试(与规格 §6 一致)。"""
+"""配置模型默认值测试(与一致)。"""
 
 from catsitate_core.config import CatsitateConfig
 
@@ -110,7 +110,7 @@ def test_qzone_section_defaults():
     assert "view_friend_feeds" in q.tool_whitelist
     assert q.tool_whitelist.index("view_friend_feeds") == q.tool_whitelist.index("inspect_image") + 1
     assert "tool_search" not in q.tool_whitelist and "msg_react" not in q.tool_whitelist
-    # M2 统一通知轮询总开关(spec §5;间隔由 notification_interval_seconds 承担)
+    # M2 统一通知轮询总开关(间隔由 notification_interval_seconds 承担)
     assert q.comment_poll_enabled is True
     # M2.1 统一通知轮询间隔(T11:高频短间隔模拟推送,注册时下限 30s)
     assert q.notification_interval_seconds == 120

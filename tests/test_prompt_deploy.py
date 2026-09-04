@@ -209,7 +209,7 @@ def test_qzone_digest_prompt_in_template_dir_and_syncs(tmp_path: Path) -> None:
 
 @pytest.mark.parametrize("template_id", sorted(SIDE_TEMPLATES))
 def test_side_templates_mirror_prompt_files(template_id: str) -> None:
-    """全部旁路模板镜像一致(v1.0.0 清理 Task 4):prompt_templates/*.prompt 为
+    """全部旁路模板镜像一致(v1.0.0 清理):prompt_templates/*.prompt 为
     权威源,SIDE_TEMPLATES 内置兜底必须逐字一致——2026-09-03 曾有 5 个模板
     (decay/schedule_generate/sleep_confirm/sleep_review/favorability)漂移,
     此用例覆盖全部模板防复发(load_side_system 对文件 strip 后使用,比较同口径)。"""

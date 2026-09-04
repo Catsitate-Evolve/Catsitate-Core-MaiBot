@@ -1,4 +1,4 @@
-"""空间动态去重存储(spec §2.15):state=queued(已入队)/seen(已成功注入);interacted 独立标记。
+"""空间动态去重存储:state=queued(已入队)/seen(已成功注入);interacted 独立标记。
 
 seen 的语义是「成功进入过 planner 上下文」——窗口结束仍未注入的 queued 行回退删除
 (下个窗口重新可见),防止窗口尾丢弃的动态永久丢失。

@@ -48,7 +48,7 @@ def last_bot_interaction_time(
     """流内该用户最近一次被 bot 直接回应的时间(ISO);从未直接回应返回 None。
 
     私聊:任意 bot 消息即回应;群聊:bot 消息 @ 或 quote(reply 段经 message.get_by_id
-    解析原发送者)了该用户才算——bot 回应他人不得重置本用户计时(规格 §3.1 群聊防误判)。
+    解析原发送者)了该用户才算——bot 回应他人不得重置本用户计时(群聊防误判)。
     quote 的原发送者由 plugin.py _daily_decay 预解析后注入 resolved_quote_user_id
     (解析失败不注入该字段);本函数为纯函数,只比对注入字段,不做任何消息解析/网络调用。
     """
@@ -137,7 +137,7 @@ class DecayExecutor:
             except Exception as exc:  # noqa: BLE001
                 # 仅记异常类型,不插值 exc 本体:LLM API 错误可能含请求体/PII(安全复审)
                 logger.warning("好感度衰减判定失败(user=%s): %s", user_id, rpc_error_brief(exc))
-                continue  # 显式日志后跳过(规格 §3.1 失败不得静默)
+                continue  # 显式日志后跳过(失败不得静默)
             if not isinstance(result, dict) or not result.get("success"):
                 logger.warning("衰减判定 LLM 失败(user=%s): %s", user_id, str(result)[:120])
                 continue

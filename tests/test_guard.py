@@ -1,4 +1,4 @@
-"""内容护栏纯匹配器测试(v1.0.0 Task 1):compile_guard / match_guard + 配置节 + on_load 装配。"""
+"""内容护栏纯匹配器测试(v1.0.0):compile_guard / match_guard + 配置节 + on_load 装配。"""
 
 from catsitate_core.config import CatsitateConfig, GuardSection, QzoneSection
 from catsitate_core.guard import compile_guard, match_guard

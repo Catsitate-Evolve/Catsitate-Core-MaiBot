@@ -1,4 +1,4 @@
-"""评论观察存储(spec §3.7/§3.9):窗口外评论轮询的去重登记 + 好感度显式事件表。
+"""评论观察存储:窗口外评论轮询的去重登记 + 好感度显式事件表。
 
 两张表:qzone_comments(评论去重,幂等主键 comment_key)/ qzone_fav_events
 (好感度显式事件——fav_count 已豁免虚拟流,空间互动不依赖 batch_counter)。
@@ -163,7 +163,7 @@ class CommentSeenStore:
         return n
 
     def fav_event(self, user_id: str, kind: str, text: str) -> None:
-        """好感度显式事件(spec §3.9):评论/点赞/出站互动统一入表,日终结算
+        """好感度显式事件:评论/点赞/出站互动统一入表,日终结算
         素材与衰减计时基准的数据源;day=当天。
 
         同日去重(深度审查 A-N1):同 user+kind+text+day 只记一条——通知被拒

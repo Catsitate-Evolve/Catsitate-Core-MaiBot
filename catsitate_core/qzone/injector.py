@@ -1,4 +1,4 @@
-"""串行注入决策核心(纯状态机,IO 由 plugin 接线;spec §2.4)。
+"""串行注入决策核心(纯状态机,IO 由 plugin 接线)。
 
 双优先级队列(M2.1 统一通知通道):P1=通知(评论/楼中楼回复)、
 P2=浏览动态。next_to_inject 优先弹 P1——模拟「刷着动态→弹通知→
@@ -8,7 +8,7 @@ P2=浏览动态。next_to_inject 优先弹 P1——模拟「刷着动态→弹�
 (planner.after_response 无 tool_calls,由 plugin 转发 on_turn_complete)。
 超时兜底:常规 decision_window_s;wait 态(wait 是 tool_call,其响应不满足完成信号)
 延长到 hard_cap_multiplier×decision_window_s(自注入时刻起算,wait 不重置起点),
-防止 wait 期间注入下一条并入批处理导致出站意图错靶(spec §2.4 回顾修订)。
+防止 wait 期间注入下一条并入批处理导致出站意图错靶(回顾修订)。
 窗口结束:浏览队列(P2)与 awaiting 状态一并丢弃(SeenStore.revert_pending 由
 plugin 调用回退未读);通知队列(P1)保留——通知是推送语义,不隶属任何窗口,
 等注入条件(bot 醒着/泵空闲)满足后继续(M3-r2 P1/P2 分治)。
@@ -159,7 +159,7 @@ class FeedInjector:
 
     def on_wait_state(self, now: float) -> None:
         # wait 只切换上限档位(常规→hard_cap),不重算起点:硬上限锚定注入时刻
-        # (spec §2.4,与用例 test_wait_state_extends_hard_cap_3x 的 +200/+230 语义一致)。
+        # (与用例 test_wait_state_extends_hard_cap_3x 的 +200/+230 语义一致)。
         del now
         if self._awaiting is not None:
             self._awaiting.wait_extension = True
@@ -175,7 +175,7 @@ class FeedInjector:
 
     @property
     def awaiting_author(self) -> str:
-        """当前动态作者 uin(注入块按人上下文/说话人交叉校验用,spec §2.16)。"""
+        """当前动态作者 uin(注入块按人上下文/说话人交叉校验用)。"""
         return self._awaiting.feed.uin if self._awaiting else ""
 
     def awaiting_timed_out(self, now: float) -> bool:

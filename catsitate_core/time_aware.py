@@ -1,4 +1,4 @@
-"""时间/节日/天气感知(规格 §4.2):公历回退链 + lunar-python 农历节日/节气。"""
+"""时间/节日/天气感知:公历回退链 + lunar-python 农历节日/节气。"""
 
 from __future__ import annotations
 

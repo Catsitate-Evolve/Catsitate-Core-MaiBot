@@ -560,7 +560,7 @@ def test_client_fetch_unified_cursor_passthrough_via_get_unified_timeline():
 
 
 def test_client_fetch_likes_raw_scope1():
-    """源C 赞事件输入通道:feeds3_html_more?scope=1(与我相关),Task 10 的
+    """源C 赞事件输入通道:feeds3_html_more?scope=1(「与我相关」流)。
     get_like_events 消费此原始文本;赞事件只取最新一页(不携带翻页游标)。"""
     client, seen = _unified_client([(200, b'{"code":0,"data":{}}')])
     asyncio.run(client._fetch_likes_raw(count=10))
@@ -569,7 +569,7 @@ def test_client_fetch_likes_raw_scope1():
 
 
 def _msglist_payload_with_comments():
-    """msglist 载荷(含一条带 commentlist 的说说),M3-r2 Task 6 表达生成层素材源。"""
+    """msglist 载荷(含一条带 commentlist 的说说),M3-r2 表达生成层素材源。"""
     return '_preloadCallback(' + _json.dumps({
         "code": 0, "msglist": [
             {"tid": "t1", "appid": 311, "created_time": 1, "content": "今天的心情",

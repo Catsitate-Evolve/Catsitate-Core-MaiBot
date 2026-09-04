@@ -1,6 +1,6 @@
 """注入框架:主链路注入的唯一出口(缓存纪律在此保证)。
 
-顺序固定:等级规则块 → 环境块 → 日程块 → 空间块 → 备忘块 → 好感度块(按稳定性降序,规格 §4.1)。
+顺序固定:等级规则块 → 环境块 → 日程块 → 空间块 → 备忘块 → 好感度块(按稳定性降序)。
 空块跳过;同一 (module, content_key, text) 内容未变时字节级复用上一轮渲染结果。
 缓存上限 LRU(背包 M-1):内容键含全量文本,长周期运行会无界增长,超限逐最旧。
 """
@@ -10,7 +10,7 @@ from __future__ import annotations
 from collections import OrderedDict
 from dataclasses import dataclass
 
-BLOCK_ORDER: tuple[str, ...] = ("level_rule", "environment", "schedule", "qzone", "memo", "favorability")  # 三期:qzone 块插日程块之后(spec §3.4)
+BLOCK_ORDER: tuple[str, ...] = ("level_rule", "environment", "schedule", "qzone", "memo", "favorability")  # 三期:qzone 块插日程块之后
 
 CACHE_MAX = 512  # 渲染缓存条数上限(M-1,超限 LRU 逐最旧)
 
@@ -38,7 +38,7 @@ class InjectAssembler:
             if block.module not in BLOCK_ORDER:
                 continue
             if block.module in by_module:
-                # 规格 §4.1:每模块每轮仅一块,重复属调用方错误,显式暴露不静默覆盖
+                # 每模块每轮仅一块,重复属调用方错误,显式暴露不静默覆盖
                 raise ValueError(f"注入块模块重复: {block.module}(每模块每轮仅允许一块)")
             by_module[block.module] = block
         messages: list[dict] = []

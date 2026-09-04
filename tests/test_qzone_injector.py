@@ -1,4 +1,4 @@
-"""串行注入状态机测试(spec §2.4):轮完成推进/超时兜底/wait 延长/窗口回退。"""
+"""串行注入状态机测试:轮完成推进/超时兜底/wait 延长/窗口回退。"""
 from catsitate_core.qzone.injector import FeedInjector
 from catsitate_core.qzone.protocol import FeedItem
 

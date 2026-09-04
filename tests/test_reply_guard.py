@@ -1,5 +1,5 @@
 """reply 补传与哨兵判定测试:三条件触发/合并截断/哨兵解析;
-v1.0.0 Task 3 增 replyer 内容护栏钩子(实例级)与哨兵空 response 短路。"""
+v1.0.0 增 replyer 内容护栏钩子(实例级)与哨兵空 response 短路。"""
 
 from __future__ import annotations
 
@@ -98,7 +98,7 @@ def test_parse_sentinel_bare_braces():
     assert ok is False and reason == "与上下文不符"
 
 
-# ---------- plugin 实例级:replyer 内容护栏钩子与哨兵空短路(v1.0.0 Task 3) ----------
+# ---------- plugin 实例级:replyer 内容护栏钩子与哨兵空短路(v1.0.0) ----------
 
 
 class _CollectLogger:

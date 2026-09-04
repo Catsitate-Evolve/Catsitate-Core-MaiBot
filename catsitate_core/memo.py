@@ -1,6 +1,6 @@
-"""短时备忘录(规格 §4.4):单条 TTL 可传,写入长度源头强制。
+"""短时备忘录:单条 TTL 可传,写入长度源头强制。
 
-§3.10 按人重构:条目 = 主 QQ(user_id)+ 附带 QQ 列表(extra_user_ids,JSON 数组字符串);
+按人重构:条目 = 主 QQ(user_id)+ 附带 QQ 列表(extra_user_ids,JSON 数组字符串);
 stream_id 保留为元数据列(流内条目仍按流可见),可见性 = 流命中 OR 任一牵连 QQ 命中当前对话对象。
 """
 
@@ -16,7 +16,7 @@ from .storage import SQLiteStore
 
 _ISO = "%Y-%m-%dT%H:%M:%S"
 _REMIND_AT_RE = re.compile(r"^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}(:\d{2})?$")
-_EXTRA_USER_IDS_MAX = 5  # 附带 QQ 上限(spec §9),超出截断并提示
+_EXTRA_USER_IDS_MAX = 5  # 附带 QQ 上限,超出截断并提示
 
 
 def validate_remind_at(remind_at: str) -> str:
@@ -60,7 +60,7 @@ class MemoService:
         cols = [r[1] for r in self.store.query("PRAGMA table_info(memo)")]
         if "remind_at" not in cols:
             self.store.execute("ALTER TABLE memo ADD COLUMN remind_at TEXT NOT NULL DEFAULT ''")
-        if "extra_user_ids" not in cols:  # §3.10 按人重构:旧库补附带 QQ 列
+        if "extra_user_ids" not in cols:  # 按人重构:旧库补附带 QQ 列
             self.store.execute("ALTER TABLE memo ADD COLUMN extra_user_ids TEXT NOT NULL DEFAULT '[]'")
 
     # 保持一期位置参数签名(stream_id/user_id/ttl_hours 位置必填),仅追加 remind_at/extra_user_ids——
@@ -92,7 +92,7 @@ class MemoService:
         remind_at = str(remind_at or "")
         if err := validate_remind_at(remind_at):
             return False, err  # 格式非法拒绝写入,防 due_on 永不匹配导致静默丢提醒(审查 M-10)
-        # 附带 QQ 清洗:去空/去重(保序)/剔除主 QQ 自身,超上限截断并提示(§3.10)
+        # 附带 QQ 清洗:去空/去重(保序)/剔除主 QQ 自身,超上限截断并提示
         main_uid = str(user_id or "")
         cleaned: list[str] = []
         for raw in extra_user_ids or []:
@@ -145,14 +145,14 @@ class MemoService:
     ) -> list[dict]:
         """读取未过期备忘(当前流相关 + 当前说话人相关),返回含剩余有效时间。
 
-        §3.10:说话人维度含主 QQ 与附带 QQ(跨流可见);stream 精确命中 OR user 命中任一即返回。
+        说话人维度含主 QQ 与附带 QQ(跨流可见);stream 精确命中 OR user 命中任一即返回。
         """
 
         now_fn = now or datetime.now
         current = now_fn()
         # 空维度 = 无此条件(非匹配空值行);双空无归属范围,直接返回空(审查 M1)
-        # 非空维度保持 OR 语义:流相关 ∪ 说话人相关(规格 §4.4);
-        # §3.10 说话人维度扩为:主 QQ 命中 OR 附带 QQ 列表(JSON 数组,LIKE "qq" 带引号精确段)命中
+        # 非空维度保持 OR 语义:流相关 ∪ 说话人相关;
+        # 说话人维度扩为:主 QQ 命中 OR 附带 QQ 列表(JSON 数组,LIKE "qq" 带引号精确段)命中
         conditions: list[str] = []
         params: list = []
         if stream_id:

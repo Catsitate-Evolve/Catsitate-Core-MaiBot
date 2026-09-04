@@ -1,4 +1,4 @@
-"""贴表情引擎(规格 §4.5):白名单 LLM 选表情 + 每流冷却护栏(JSON 快照),无概率旁路。"""
+"""贴表情引擎:白名单 LLM 选表情 + 每流冷却护栏(JSON 快照),无概率旁路。"""
 
 from __future__ import annotations
 
@@ -41,7 +41,7 @@ def parse_choice_resp(response: str) -> tuple[str | None, str]:
 
 
 class MsgReactEngine:
-    """贴表情引擎:选表情 prompt 组装与每流冷却(JSON 快照限频,规格 §4.5)。"""
+    """贴表情引擎:选表情 prompt 组装与每流冷却(JSON 快照限频)。"""
 
     def __init__(self, snapshot: JsonSnapshot, config: MsgReactSection) -> None:
         self.snapshot = snapshot
@@ -73,7 +73,7 @@ class MsgReactEngine:
     def build_choose_prompt(
         self, target_text: str, intent: str
     ) -> tuple[list[dict], str]:
-        """组装选表情 prompt:内置 QQ 表情表属稳定段,目标消息+意图为变量尾(§4.10)。"""
+        """组装选表情 prompt:内置 QQ 表情表属稳定段,目标消息+意图为变量尾。"""
 
         return build_side_prompt(
             "msg_react",

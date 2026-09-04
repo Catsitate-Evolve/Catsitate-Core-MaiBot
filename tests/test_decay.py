@@ -47,7 +47,7 @@ def test_last_bot_interaction_group_only_at_mention():
 
 
 def test_last_bot_interaction_group_quote_hit_after_resolve():
-    """quote 命中(规格 §3.1):bot 消息 reply 段经 message.get_by_id 解析原发送者,
+    """quote 命中:bot 消息 reply 段经 message.get_by_id 解析原发送者,
     由 plugin.py 预解析注入 resolved_quote_user_id —— == 目标则互动命中。"""
 
     # 解析出的原发送者 == 目标 u1 → 命中

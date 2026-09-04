@@ -63,7 +63,7 @@ class _StubCtx:
         self.chat = type("_C", (), {"get_all_streams": self._get_all_streams})()
 
     async def _get_all_streams(self, platform="qq"):
-        del platform  # 桩与 SDK 签名对齐(get_all_streams(platform=...),Task 10 双平台取数)
+        del platform  # 桩与 SDK 签名对齐(get_all_streams(platform=...),双平台取数)
         return list(self._streams)
 
     async def call_capability(self, name, **kw):
@@ -321,7 +321,7 @@ def test_schedule_inject_block_text():
 
 
 def test_schedule_block_appends_qzone_browsing_suffix(tmp_path):
-    """规格 §6 集成表(M3 修正 I-2):read_qzone 窗口的日程注入块行末追加
+    """集成表(M3 修正 I-2):read_qzone 窗口的日程注入块行末追加
     「(正在刷QQ空间)」(明文状态,告知 planner 当前正在刷空间);普通 daily
     窗口不追加。"""
     import asyncio
@@ -995,7 +995,7 @@ def _make_history_plugin(tmp_path, logs, recent, by_id=None):
 
 
 def test_fetch_recent_for_history_quote_resolves_sender(tmp_path):
-    """结算路径 quote 语义(规格 §3.1):bot 消息 reply 段经 message.get_by_id 解析原发送者,
+    """结算路径 quote 语义:bot 消息 reply 段经 message.get_by_id 解析原发送者,
     与结算目标一致 → addressed=True;解析出他人 → False;用户消息不读 addressed。"""
 
     logs: list = []
@@ -1293,7 +1293,7 @@ def test_sleep_review_report_file_permission(tmp_path):
 
 
 def test_memo_write_tool_related_ids_and_speaker_fallback(tmp_path):
-    """§3.10 接线:memo_write 解析 related_user_ids(逗号分隔,兼容中文逗号)传附带 QQ;
+    """接线:memo_write 解析 related_user_ids(逗号分隔,兼容中文逗号)传附带 QQ;
     群聊 user_id 空时以 fav_count 维护的最近说话人映射兜底为主 QQ。"""
     import asyncio
     import json
@@ -1319,7 +1319,7 @@ def test_memo_write_tool_related_ids_and_speaker_fallback(tmp_path):
 
 
 def test_inject_blocks_memo_single_read_or_semantics(tmp_path):
-    """§3.10 注入块:备忘原「流+说话人」两查合并为一次 read(stream_id, speaker)
+    """注入块:备忘原「流+说话人」两查合并为一次 read(stream_id, speaker)
     (OR 语义单次含两维度),去重与 inject_max 截断保留。"""
     import asyncio
 
@@ -1417,5 +1417,5 @@ def test_diary_stable_ctx_includes_persona(tmp_path):
     assert "回顾一下到现在为止的聊天记录:" in stable
     assert "今天的日程:自由活动" in stable  # 原有当日素材段保留(蓝本头不挤掉素材)
     assert captured["messages"][0]["role"] == "system"
-    data = p._pending_diary_snapshot.load()  # 发布链走完:tid 随快照透传(Task 4 口径)
+    data = p._pending_diary_snapshot.load()  # 发布链走完:tid 随快照透传(口径)
     assert data.get("tid") == "tid123"

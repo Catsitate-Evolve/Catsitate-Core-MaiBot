@@ -106,7 +106,7 @@ def test_material_aggregates_streams(tmp_path):
 
 
 def test_material_respects_batch_window(tmp_path):
-    """结算后的旧批次消息不进入新批次素材(规格 §4.3「批次内」)。
+    """结算后的旧批次消息不进入新批次素材(「批次内」)。
 
     窗口写入为测试模拟(apply_delta 落 window_start),生产窗口已落
     favorability.window_start(apply_delta 结算时以 judged_at 为准),按人过滤跨流生效。
@@ -157,7 +157,7 @@ def test_apply_delta_level_and_note_truncation(tmp_path):
 
 
 def test_apply_delta_clamps_negative_score_to_zero(tmp_path):
-    """I1:负分钳制(规格 §3.1「分数可降到 0」)——score=2 时 delta=-5 → 落库 0 分且 level=0。"""
+    """I1:负分钳制(「分数可降到 0」)——score=2 时 delta=-5 → 落库 0 分且 level=0。"""
 
     engine, _ = make_engine(tmp_path)
     engine.apply_delta("u1", 2, "初始", judged_at="2026-08-16T12:00:00", judge_id="j1")

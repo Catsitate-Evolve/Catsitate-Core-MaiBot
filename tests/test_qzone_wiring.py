@@ -26,7 +26,7 @@ from catsitate_core.qzone.like_seen import LikeSeenStore
 from catsitate_core.qzone.protocol import FeedItem
 from catsitate_core.qzone.registry import FeedContext, FeedContextRegistry
 from catsitate_core.qzone.seen_store import SeenStore
-from catsitate_core.qzone.wire import CommentItem, LikeEvent
+from catsitate_core.qzone.wire import CommentItem, LikeEvent, ReplyItem
 from catsitate_core.storage import JsonSnapshot, SQLiteStore
 
 BOT_UIN = "10000"
@@ -90,17 +90,19 @@ class _StubCtx:
 
 
 class _StubCommentClient:
-    """评论轮询输入桩:记录取数次数,get_own_feed_comments 返回固定输入。"""
+    """评论轮询输入桩:记录取数次数,get_own_feed_comments 返回固定三视图
+    (评论映射/正文上下文/楼中楼回复,reply 视图缺省空)。"""
 
-    def __init__(self, comments, ctx_map):
+    def __init__(self, comments, ctx_map, replies=()):
         self._comments = comments
         self._ctx_map = ctx_map
+        self._replies = list(replies)
         self.fetches = 0
 
     async def get_own_feed_comments(self, *, bot_uin, num=10):
         del bot_uin, num
         self.fetches += 1
-        return self._comments, self._ctx_map
+        return self._comments, self._ctx_map, self._replies
 
     async def get_unified_timeline(self, *, count=20, begintime=None):
         del count, begintime
@@ -396,6 +398,31 @@ def test_qzone_comment_target_resolution_failure_and_fallback(tmp_path):
     res2 = asyncio.run(p.qzone_comment(feed_id="seentid0001", content="补一条", stream_id="s1"))
     assert res2.startswith("评论成功,已发出:")
     assert p.qzone_client.comment_calls == [("seentid0001", "10003", "补一条")]
+
+
+def test_qzone_comment_reply_anchor_miss_skips_polish_llm(tmp_path):
+    """目标解析前置(2026-09-04):锚失效(说说/楼中楼二元组解析不到)是纯本地
+    判定,须在表达润色之前失败返回——旁路 LLM 一次都不调(旧序会先烧一次润色
+    再失败),零写调用;锚有效时行为不变(既有用例覆盖)。"""
+
+    p = _make_tool_plugin(tmp_path)
+    # qzone_comment:说说锚失效
+    res = asyncio.run(p.qzone_comment(feed_id="nosuchanchor", content="你好", stream_id="s1"))
+    assert "未找到说说" in res
+    assert p.expr_llm_calls == []  # 润色 LLM 零调用
+    assert p.qzone_client.comment_calls == []
+
+    # qzone_reply:说说锚失效
+    res2 = asyncio.run(p.qzone_reply(feed_id="nosuchanchor", comment_id="c1", content="你好", stream_id="s1"))
+    assert "未找到说说" in res2
+    assert p.qzone_client.reply_calls == []
+
+    # qzone_reply:说说锚有效但评论锚失效(二元组解析同样前置)
+    _register_feed(p, tid="feednoanchor", owner="10001")
+    res3 = asyncio.run(p.qzone_reply(feed_id="feednoanchor", comment_id="gone", content="你好", stream_id="s1"))
+    assert "未找到这条评论" in res3
+    assert p.expr_llm_calls == []  # 三种锚失效形态全零润色调用
+    assert p.qzone_client.reply_calls == []
 
 
 def test_qzone_comment_auth_error_invalidates_cookie(tmp_path):
@@ -1458,6 +1485,27 @@ def test_guard_assembly_compiles_on_load_path(tmp_path, monkeypatch):
     assert any(level == "warning" and "整组护栏失效" in str(a[0]) for level, a in p.logs)
 
 
+def test_qzone_like_accounting_failure_still_reports_success(tmp_path):
+    """记账异常保护(2026-09-04):远端点赞成功后本地记账(fav_event 等 SQLite
+    写入)抛异常——只告警不误报失败;回执仍成功(谎报失败会诱导模型对同一条
+    说说重复点赞),与 qzone_comment/qzone_reply 的记账 try 保护同款。"""
+
+    p = _make_tool_plugin(tmp_path)
+    _register_feed(p, tid="likeacct01", owner="10001", nickname="小明")
+
+    def _boom(*a, **k):
+        raise RuntimeError("sqlite database is locked")
+
+    p.qzone_comment_seen.fav_event = _boom
+    res = asyncio.run(p.qzone_like(feed_id="likeacct01", stream_id="s1"))
+    assert res.startswith("点赞成功:小明 的说说")  # 回执不误报失败
+    assert p.qzone_client.like_calls == [("likeacct01", "10001")]  # 远端动作已成功
+    assert any(
+        level == "exception" and "点赞记账失败" in str(a[0]) and "远端已成功" in str(a[0])
+        for level, a in p.logs
+    )  # 错误显式暴露(告警留痕)
+
+
 def test_qzone_like_via_feed_id_and_notify_origin(tmp_path):
     """qzone_like:feed_id 参数(锚前缀)经 registry 解析为全量 tid;
     通知 awaiting 不再拒赞——缺省目标取 origin_tid(真实说说),owner=源A=bot。"""
@@ -1580,7 +1628,7 @@ def test_notify_scan_guard_awaits_until_turn_complete(tmp_path):
 
         async def get_own_feed_comments(self, *, bot_uin, num=10):
             fetches.append(1)
-            return {}, {}
+            return {}, {}, []
 
     p.qzone_client = _ProbeClient()
     asyncio.run(p._qzone_notify_scan())
@@ -1588,6 +1636,75 @@ def test_notify_scan_guard_awaits_until_turn_complete(tmp_path):
     p.qzone_injector.on_turn_complete(_time.monotonic())
     asyncio.run(p._qzone_notify_scan())
     assert fetches == [1]  # awaiting 释放后恢复取数
+
+
+def test_notify_scan_source_a_reply_under_bot_comment_notifies(tmp_path):
+    """源A 断链修复(2026-09-04):好友在自己说说下回复 bot 的评论(list_3,同载荷
+    第三视图)→ 通知注入(形态与源B 一致:楼中楼上下文+参数行);归属区别断言——
+    origin_sender/comment_uin=bot(自己说说、父评论作者是 bot);去重键登记
+    二次扫描不重发;bot 自己的楼中楼回复跳过(不通知自己)。"""
+
+    import time as _time
+
+    now_s = str(int(_time.time()))
+    replies = [
+        ReplyItem(reply_tid="rr1", parent_comment_tid="bc1", feed_tid="ownfeed1",
+                  friend_uin=BOT_UIN, uin="20000", nickname="小红",
+                  content="再来一句", create_time=now_s,
+                  feed_content="我的说说正文", parent_comment_content="我的评论"),
+        # bot 自己的楼中楼回复:不通知自己(插件层防御跳过,与顶层自评同款)
+        ReplyItem(reply_tid="rr_self", parent_comment_tid="bc1", feed_tid="ownfeed1",
+                  friend_uin=BOT_UIN, uin=BOT_UIN, nickname="我",
+                  content="bot 自己的楼中楼", create_time=now_s,
+                  feed_content="我的说说正文", parent_comment_content="我的评论"),
+    ]
+    # bot 自评(bci 的顶层评论):幂等登记不注入,不影响楼中楼段
+    comments = {"ownfeed1": [CommentItem(
+        comment_tid="bc1", uin=BOT_UIN, nickname="我", content="我的评论", create_time=now_s,
+    )]}
+    p = _make_plugin(tmp_path)
+    p.qzone_injector.window_started()
+    p.qzone_client = _StubCommentClient(comments, {"ownfeed1": "我的说说正文"}, replies)
+    # 原说说曾注入过(seen 记录 message_id)→ 通知注入消息带 reply 段引用它
+    p.qzone_seen.mark_queued("ownfeed1", abstime=now_s, author_uin=BOT_UIN, summary="我的说说正文")
+    p.qzone_seen.mark_seen("ownfeed1", "2026-09-01T10:00:00", "qzone_ownfeed1_3")
+
+    asyncio.run(p._qzone_notify_scan())
+    assert len(p._ctx.gateway.calls) == 1
+    msg = p._ctx.gateway.calls[0][1]
+    assert msg["message_info"]["user_info"]["user_id"] == "20000"
+    assert "notify_reply_ownfeed1_rr1" in msg["message_id"]
+    # reply 段引用原说说注入消息(自己说说:sender=bot 自己)
+    reply = msg["raw_message"][0]
+    assert reply["type"] == "reply"
+    assert reply["data"]["target_message_id"] == "qzone_ownfeed1_3"
+    assert reply["data"]["target_message_sender_id"] == BOT_UIN
+    # 正文=楼中楼上下文(bot 原评论前 20 字)+参数行(评论ID=主评论 bc1,
+    # 评论者QQ=回复者;动作时间随运行时刻→前缀+后缀断言)
+    text = msg["raw_message"][1]["data"]
+    assert text.startswith("回复了你的评论「我的评论」:再来一句\n〔说说ID=ownfeed1 评论ID=bc1 评论者QQ=20000 回复于(今天")
+    assert text.endswith(")〕")
+    # registry 登记对位:owner=bot(自己说说);主评论二元组=bot 的评论(作者=bot);
+    # 评论者=回复者(qzone_reply 的 @ 目标)
+    ctx = p._qzone_registry.resolve("ownfeed1")
+    assert ctx is not None
+    assert (ctx.owner_uin, ctx.comment_tid, ctx.comment_uin) == (BOT_UIN, "bc1", BOT_UIN)
+    assert (ctx.commenter_uin, ctx.commenter_nickname) == ("20000", "小红")
+    # 楼中楼去重键已登记(下轮判重);bot 自己的回复键零登记
+    assert p.qzone_comment_seen.is_new("ownfeed1:bc1:reply:rr1") is False
+    assert p.store.query(
+        "SELECT comment_key FROM qzone_comments WHERE comment_key LIKE '%rr_self%'"
+    ) == []
+    # fav_event 记账(COMMENT,指向回复者)
+    since = (datetime.now() - timedelta(days=1)).strftime("%Y-%m-%dT%H:%M:%S")
+    evs = p.qzone_comment_seen.fav_events_since("20000", since)
+    assert any(e["kind"] == "COMMENT" and "回复了你的评论" in e["text"] for e in evs)
+
+    # 二次扫描:释放 awaiting 后键判重不重发(取数发生,不是早退);bot 自评仍不注入
+    p.qzone_injector.on_turn_complete(_time.monotonic())
+    asyncio.run(p._qzone_notify_scan())
+    assert len(p._ctx.gateway.calls) == 1
+    assert p.qzone_client.fetches == 2
 
 
 def test_notify_poll_source_b_reply_registers_friend_thread_context(tmp_path, monkeypatch):
@@ -1630,7 +1747,7 @@ def test_notify_poll_source_b_reply_registers_friend_thread_context(tmp_path, mo
 
         async def get_own_feed_comments(self, *, bot_uin, num=10):
             del bot_uin, num
-            return {}, {}
+            return {}, {}, []
 
         async def get_user_feeds_raw(self, *, target_uin, num=5):
             assert target_uin == "30000"  # 只拉「被评论过+发现层活跃」的好友
@@ -1698,7 +1815,7 @@ def test_notify_scan_source_b_reply_without_parent_content_falls_back(tmp_path, 
 
         async def get_own_feed_comments(self, *, bot_uin, num=10):
             del bot_uin, num
-            return {}, {}
+            return {}, {}, []
 
         async def get_user_feeds_raw(self, *, target_uin, num=5):
             assert target_uin == "30000"
@@ -1741,7 +1858,7 @@ def test_notify_scan_source_c_like_events(tmp_path):
 
         async def get_own_feed_comments(self, *, bot_uin, num=10):
             del bot_uin, num
-            return {}, {}
+            return {}, {}, []
 
         async def get_like_events(self, *, count=30):
             del count
@@ -1798,7 +1915,7 @@ def test_notify_scan_source_c_like_auth_error_keeps_source_a_notifications(tmp_p
 
         async def get_own_feed_comments(self, *, bot_uin, num=10):
             del bot_uin, num
-            return comments, {"feeda": "说说正文"}
+            return comments, {"feeda": "说说正文"}, []
 
         async def get_like_events(self, *, count=30):
             del count
@@ -1839,7 +1956,7 @@ def test_notify_scan_source_c_runtime_error_keeps_source_a_notifications(tmp_pat
 
         async def get_own_feed_comments(self, *, bot_uin, num=10):
             del bot_uin, num
-            return comments, {"feeda": "说说正文"}
+            return comments, {"feeda": "说说正文"}, []
 
         async def get_like_events(self, *, count=30):
             del count
@@ -1919,7 +2036,7 @@ def test_notify_scan_reverts_registered_keys_on_failure(tmp_path):
 
         async def get_own_feed_comments(self, *, bot_uin, num=10):
             del bot_uin, num
-            return comments, {"feedh1": "正文"}
+            return comments, {"feedh1": "正文"}, []
 
         async def get_like_events(self, *, count=30):
             del count
@@ -2060,7 +2177,7 @@ def test_notify_scan_source_c_drift_warn_once(tmp_path):
 
         async def get_own_feed_comments(self, *, bot_uin, num=10):
             del bot_uin, num
-            return {}, {}
+            return {}, {}, []
 
         async def get_like_events(self, *, count=30):
             del count
@@ -2496,7 +2613,7 @@ def test_notify_poll_source_b_spaces_friend_requests(tmp_path, monkeypatch):
 
         async def get_own_feed_comments(self, *, bot_uin, num=10):
             del bot_uin, num
-            return {}, {}
+            return {}, {}, []
 
         async def get_user_feeds_raw(self, *, target_uin, num=5):
             del num
@@ -2530,7 +2647,7 @@ def test_notify_scan_source_b_zero_pulls_when_discovery_no_overlap(tmp_path, mon
 
         async def get_own_feed_comments(self, *, bot_uin, num=10):
             del bot_uin, num
-            return {}, {}
+            return {}, {}, []
 
         async def get_user_feeds_raw(self, *, target_uin, num=5):
             del num, target_uin
@@ -2796,6 +2913,40 @@ def test_poll_tick_reentrancy_guard(tmp_path):
     asyncio.run(scenario())
     assert calls == [1]  # 防重入零次 + 恢复后恰一次
     assert p._qzone_poll_running is False  # 后台 feeds 完成后标记复位
+
+
+def test_poll_tick_closes_ended_window_while_previous_poll_running(tmp_path):
+    """窗口收尾不被上一轮拉取拖住(2026-09-04):窗口已结束且上一轮后台拉取
+    仍在跑(_qzone_poll_running=True)时,tick 防重入分支先行收窗——
+    window_ended 已执行、浏览队列清空、queued 行回退未读,无需等 poll_feeds
+    完成;tick 早退不清 running 标记(清位仍在 feeds 的 finally)。"""
+
+    p = _make_plugin(tmp_path)
+    now = datetime.now()
+    # 日程窗口已结束(1 小时前收尾):窗口判定=非浏览窗口
+    p._schedule_data = {"date": now.strftime("%Y-%m-%d"), "windows": [{
+        "kind": "daily", "start": (now - timedelta(hours=2)).strftime("%Y-%m-%dT%H:%M"),
+        "end": (now - timedelta(hours=1)).strftime("%Y-%m-%dT%H:%M"),
+        "activity": "逛空间", "plan_speak": False, "topic": "", "read_qzone": True,
+    }]}
+    p.qzone_injector.window_started()  # 上一轮窗口遗留的浏览态(未收窗)
+    p.qzone_seen.mark_queued("tailtid0001", abstime="1", author_uin="10001", summary="窗口尾未读动态")
+    p.qzone_injector.enqueue([FeedItem(
+        tid="tailtid0001", abstime="1750000000", uin="10001", nickname="小明", content="窗口尾动态",
+    )])
+    assert p.qzone_injector.stats()["p2_queued"] == 1
+
+    p._qzone_poll_running = True  # 上一轮后台拉取还在跑(tick 走防重入分支)
+    asyncio.run(p._qzone_poll_tick())
+
+    # 收窗不等上一轮拉取完成:窗口已关、浏览队列清空、queued 行回退未读(删除)
+    assert p.qzone_injector.window_active is False
+    assert p.qzone_injector.stats()["p2_queued"] == 0
+    assert p.store.query("SELECT COUNT(*) FROM qzone_feeds WHERE tid = 'tailtid0001'")[0][0] == 0
+    assert any(
+        level == "info" and "QQ空间浏览窗口结束,浏览队列回退未读" in str(a[0]) for level, a in p.logs
+    )
+    assert p._qzone_poll_running is True  # tick 早退不清标记(防重入语义不变)
 
 
 # ---- 深度审查 B-4:通知注入被拒不永久丢失 ----
@@ -3233,7 +3384,7 @@ def test_notify_scan_source_b_discovery_failure_does_not_block_source_a(tmp_path
             return {"feed1": [
                 CommentItem(comment_tid="c1", uin="20000", nickname="小红",
                             content="好友评论", create_time=str(int(_time.time()))),
-            ]}, {"feed1": "今天的心情"}
+            ]}, {"feed1": "今天的心情"}, []
 
         async def get_unified_timeline(self, *, count=20, begintime=None):
             del count
@@ -3278,7 +3429,7 @@ def test_notify_scan_source_b_auth_error_invalidates_cookie_and_keeps_source_a(t
             return {"feed1": [
                 CommentItem(comment_tid="c1", uin="20000", nickname="小红",
                             content="好友评论", create_time=str(int(_time.time()))),
-            ]}, {"feed1": "今天的心情"}
+            ]}, {"feed1": "今天的心情"}, []
 
         async def get_unified_timeline(self, *, count=20, begintime=None):
             del count
@@ -3312,7 +3463,7 @@ def test_notify_scan_source_b_skips_discovery_when_no_commented_friends(tmp_path
 
         async def get_own_feed_comments(self, *, bot_uin, num=10):
             del bot_uin, num
-            return {}, {}
+            return {}, {}, []
 
     p.qzone_client = _ProbeClient()
     asyncio.run(p._qzone_notify_scan())

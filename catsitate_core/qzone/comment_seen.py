@@ -162,21 +162,26 @@ class CommentSeenStore:
             self.store.execute("DELETE FROM qzone_comments WHERE created_at < ?", (cutoff,))
         return n
 
-    def fav_event(self, user_id: str, kind: str, text: str) -> None:
+    def fav_event(self, user_id: str, kind: str, text: str, *, dedup: bool = True) -> None:
         """好感度显式事件:评论/点赞/出站互动统一入表,日终结算
         素材与衰减计时基准的数据源;day=当天。
 
         同日去重(深度审查 A-N1):同 user+kind+text+day 只记一条——通知被拒
-        回退后重发现时发现侧会重复调用本方法,不去重会重复放大结算素材。"""
+        回退后重发现时发现侧会重复调用本方法,不去重会重复放大结算素材。
+        dedup=False 跳过查重直接入库:出站工具路径(qzone_like/qzone_comment/
+        qzone_reply 成功后的记账)每次调用对应一次真实远端动作,事件文本不含
+        feed 标识,同日对同一好友的第二次真实互动会被同日去重误吞——结算与
+        见闻素材少记;通知扫描路径保持默认去重(防「回退→重发现」重放)。"""
 
         now = datetime.now()
         day = now.strftime(_DAY)
-        existing = self.store.query(
-            "SELECT 1 FROM qzone_fav_events WHERE day = ? AND user_id = ? AND kind = ? AND text = ? LIMIT 1",
-            (day, user_id, kind, text),
-        )
-        if existing:
-            return  # 同日同事件去重(重发现重复,非新互动)
+        if dedup:
+            existing = self.store.query(
+                "SELECT 1 FROM qzone_fav_events WHERE day = ? AND user_id = ? AND kind = ? AND text = ? LIMIT 1",
+                (day, user_id, kind, text),
+            )
+            if existing:
+                return  # 同日同事件去重(重发现重复,非新互动)
         self.store.execute(
             "INSERT INTO qzone_fav_events (day, user_id, kind, text, created_at) VALUES (?, ?, ?, ?, ?)",
             (day, user_id, kind, text, now.strftime(_ISO)),

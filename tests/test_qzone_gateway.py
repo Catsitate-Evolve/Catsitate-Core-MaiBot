@@ -415,7 +415,8 @@ class _StubCtx2:
 
 
 class _StubCommentClient:
-    """通知轮询输入桩:get_own_feed_comments 返回固定 (comments, feed 上下文)。"""
+    """通知轮询输入桩:get_own_feed_comments 返回固定三视图(评论映射/正文
+    上下文/楼中楼回复,reply 视图恒空——本文件用例不涉及楼中楼)。"""
 
     def __init__(self, comments, ctx_map):
         self._comments = comments
@@ -425,7 +426,7 @@ class _StubCommentClient:
     async def get_own_feed_comments(self, *, bot_uin, num=10):
         del bot_uin, num
         self.calls += 1
-        return self._comments, self._ctx_map
+        return self._comments, self._ctx_map, []
 
     async def get_unified_timeline(self, *, count=20, begin=0):
         del count

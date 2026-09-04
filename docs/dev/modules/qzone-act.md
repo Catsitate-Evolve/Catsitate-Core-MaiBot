@@ -53,7 +53,7 @@ registry 的 `register` 是**字段级合并**(新值非空覆盖旧值,空值�
 
 `_qzone_notify_scan`(每 120s,醒着即可,睡眠中跳过)三源检测,单轮上限 3 条(防通知风暴):
 
-- **源A(自己说说下的新评论)**:`get_own_feed_comments`(单次 msglist 请求两用:评论映射 + 正文上下文)。逐条以 `feed_tid:comment_tid:uin` 为去重键 `is_new` 登记判新;自己发出的评论重见即幂等登记不注入;早于 `summary_days`(默认 3 天)的过旧通知跳过。正文=「评论了你的说说:…」+ 参数行。
+- **源A(自己说说下的新评论,含 bot 评论下的楼中楼回复)**:`get_own_feed_comments`(单次 msglist 请求三用:评论映射 + 正文上下文 + bot 评论的 list_3 楼中楼回复,第三视图同载荷补跑 `parse_feed_replies`,不发第二次请求)。逐条以 `feed_tid:comment_tid:uin` 为去重键 `is_new` 登记判新;自己发出的评论重见即幂等登记不注入;早于 `summary_days`(默认 3 天)的过旧通知跳过。正文=「评论了你的说说:…」+ 参数行;楼中楼回复正文=「回复了你的评论「{bot原评论前20字}」:…」(与源B 同形态,去重键 `{feed_tid}:{parent_comment_tid}:reply:{reply_tid}`)——「好友评论→bot 楼中楼回复→好友再回复」在自己说说下的线程由此覆盖(源B 名单交叉显式排除 bot 自己)。好友回复另一好友的旁听线程不通知(bot 不插话他人对话)。
 - **源B(自己在他人说说下的评论收到楼中楼回复)**:搭发现层便车——本地反查近 30 天 bot 评论过的好友(`bot_commented_friends`),与统一时间线单页的活跃作者取交集,只对「有新活动且评论过」的好友拉原始载荷(`get_user_feeds_raw`),`parse_feed_replies` 解析 bot 评论的 list_3。零交集时零源B 拉取。正文=「回复了你的评论「{bot原评论前20字}」:…」+ 参数行;二元组 comment_uin=bot 自己(主评论作者是 bot)。
 - **源C(有人赞了我的说说)**:「与我相关」流(`feeds3_html_more?scope=1`),`parse_like_events` 解析赞事件(条目锚=data-key 三元组,头部窗口须含「赞了我的说说」;相对时间「今天/昨天/N月N日 HH:MM」折算 epoch,非法时间置 0 不编造)。去重走 `qzone_likes` 表(键=liker_owner_hash,取消赞再赞不重复通知)。正文=「赞了你的说说「{标题}」」(标题素材取 seen 表 summary——自己发布的说说才有,未登记则无标题)+ 参数行。
 

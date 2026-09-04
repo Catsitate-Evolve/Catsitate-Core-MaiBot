@@ -832,11 +832,20 @@ class CatsitatePlugin(MaiBotPlugin):
         except Exception:
             self.ctx.logger.exception("QQ空间点赞失败(tid=%s)", fid)
             return "点赞失败:远端接口异常,已记录日志。"
-        self.qzone_seen.mark_interacted(fid)
+        # 记账(远端已成功,记账失败仅告警——错误显式暴露但不误报失败;与
+        # qzone_comment/qzone_reply 同款 try 保护:SQLite 异常不得让已成功的
+        # 远端点赞以失败收尾诱导重复点赞)
+        try:
+            self.qzone_seen.mark_interacted(fid)
+            # dedup=False:工具路径每次调用对应一次真实远端动作,事件文本不含
+            # feed 标识,同日去重会吞掉同好友第二次真实点赞的记账
+            self.qzone_comment_seen.fav_event(
+                owner_uin, "OUT_LIKE", f"你点赞了 {owner_uin} 的说说", dedup=False)
+        except Exception:
+            self.ctx.logger.exception("QQ空间点赞记账失败(远端已成功,仅告警)")
         # 空昵称回退 owner_uin(2026-09-03 复审小修):通知登记的 owner_nickname
         # 置空(评论者昵称与主人语义错位),回执不能显示空名——or 兜底补齐
         nickname = (ctx.owner_nickname if ctx else "") or owner_uin
-        self.qzone_comment_seen.fav_event(owner_uin, "OUT_LIKE", f"你点赞了 {owner_uin} 的说说")
         return f"点赞成功:{nickname} 的说说(说说ID={fid[:12]})"
 
     def _qzone_expression_call(self):
@@ -920,6 +929,11 @@ class CatsitatePlugin(MaiBotPlugin):
             return "评论内容不能为空。"
         if len(content) > 200:
             return f"评论太长了({len(content)} 字,上限 200),请精简。"
+        # 目标解析前置:纯本地查询(registry → seen_store → awaiting → 显式失败,
+        # fid 回填全量 tid)——锚失效时在润色之前失败返回,旁路 LLM 润色不白耗
+        fid, owner_uin, ctx = self._qzone_resolve_feed(feed_id)
+        if not fid:
+            return f"未找到说说 {feed_id[:12]},可能已过期,请核对消息尾部的说说ID。"
         # 表达润色:planner 草稿按人设+表达方式+场景语改写(失败以草稿直发)
         content = await self._qzone_polish(content, limit=200, scene="QQ空间里,想给好友的说说写一条评论")
         # v1.0.0 内容护栏:润色后的最终文本匹配(草稿直发形态同样覆盖),命中即
@@ -930,10 +944,6 @@ class CatsitatePlugin(MaiBotPlugin):
                 "内容护栏拦截:qzone_comment 命中规则%d,未发布(文本:%s...)", hit, content[:60]
             )
             return f"内容被拦截(命中规则{hit}),未发布。"
-        # 目标解析:registry → seen_store → awaiting → 显式失败(fid 回填全量 tid)
-        fid, owner_uin, ctx = self._qzone_resolve_feed(feed_id)
-        if not fid:
-            return f"未找到说说 {feed_id[:12]},可能已过期,请核对消息尾部的说说ID。"
         # @ 前缀(napcat 适配器同格式,QQ 空间原生支持):nick 默认 QQ 号,
         # registry 有该评论者昵称则用昵称(通知场景回应评论最自然)
         at_nick = ""
@@ -966,7 +976,9 @@ class CatsitatePlugin(MaiBotPlugin):
             fav_target = at_user_id.strip() or owner_uin
             fav_kind = "COMMENT" if at_user_id.strip() else "OUT_COMMENT"
             fav_text = f"你在 {owner_uin} 的说说下评论" + (f"并@了 {at_nick}" if at_user_id.strip() else "")
-            self.qzone_comment_seen.fav_event(fav_target, fav_kind, fav_text)
+            # dedup=False:工具路径每次调用对应一次真实远端动作(同日去重会吞掉
+            # 同好友第二次真实评论的记账)
+            self.qzone_comment_seen.fav_event(fav_target, fav_kind, fav_text, dedup=False)
         except Exception:
             self.ctx.logger.exception("QQ空间评论记账失败(远端已成功,仅告警)")
         return f"评论成功,已发出:「{receipt_body}」"
@@ -996,16 +1008,8 @@ class CatsitatePlugin(MaiBotPlugin):
         content = content.strip()
         if len(content) > 200:
             return f"回复太长了({len(content)} 字,上限 200)。"
-        # 表达润色:planner 草稿按人设+表达方式+场景语改写(失败以草稿直发)
-        content = await self._qzone_polish(content, limit=200, scene="QQ空间里,想回复好友在你的说说下写的评论")
-        # v1.0.0 内容护栏:润色后的最终文本匹配(草稿直发形态同样覆盖),命中即
-        # 拦截——零 API 调用零记账,回执明示规则编号
-        hit = match_guard(self._guard_compiled, content)
-        if hit:
-            self.ctx.logger.warning(
-                "内容护栏拦截:qzone_reply 命中规则%d,未发布(文本:%s...)", hit, content[:60]
-            )
-            return f"内容被拦截(命中规则{hit}),未发布。"
+        # 目标解析前置(说说+楼中楼二元组,均为纯本地查询)——锚失效时在润色
+        # 之前失败返回,旁路 LLM 润色不白耗
         fid, target_qq, ctx = self._qzone_resolve_feed(feed_id)
         if not fid:
             return f"未找到说说 {feed_id[:12]},可能已过期。"
@@ -1031,6 +1035,16 @@ class CatsitatePlugin(MaiBotPlugin):
         if not notify_hit and not map_entry:
             return (f"未找到这条评论(评论ID={cid[:12]} 锚可能已过期)——"
                     "先用 view_friend_feed_detail 查看该说说,照抄最新评论ID再回复。")
+        # 表达润色:planner 草稿按人设+表达方式+场景语改写(失败以草稿直发)
+        content = await self._qzone_polish(content, limit=200, scene="QQ空间里,想回复好友在你的说说下写的评论")
+        # v1.0.0 内容护栏:润色后的最终文本匹配(草稿直发形态同样覆盖),命中即
+        # 拦截——零 API 调用零记账,回执明示规则编号
+        hit = match_guard(self._guard_compiled, content)
+        if hit:
+            self.ctx.logger.warning(
+                "内容护栏拦截:qzone_reply 命中规则%d,未发布(文本:%s...)", hit, content[:60]
+            )
+            return f"内容被拦截(命中规则{hit}),未发布。"
         # @ 目标=正在对话的评论者/回复者(与二元组解耦:源B 回复线程头=bot 自己
         # 的评论,但 @ 的是回复者;仅锚匹配的通知才有评论者语境,否则 @ 主评论
         # 作者;前缀由 wire.build_reply_form 统一拼装)
@@ -1059,7 +1073,10 @@ class CatsitatePlugin(MaiBotPlugin):
             self.ctx.logger.exception("QQ空间楼中楼回复失败(feed=%s,comment=%s)", fid[:12], comment_id)
             return "回复失败:远端接口异常,已记录日志。"
         try:
-            self.qzone_comment_seen.fav_event(at_uin, "COMMENT", f"你回复了 {at_nick} 的评论")
+            # dedup=False:工具路径每次调用对应一次真实远端动作(同日去重会吞掉
+            # 同好友第二次真实回复的记账)
+            self.qzone_comment_seen.fav_event(
+                at_uin, "COMMENT", f"你回复了 {at_nick} 的评论", dedup=False)
         except Exception:
             self.ctx.logger.exception("QQ空间楼中楼记账失败(仅告警)")
         return f"回复成功,已回复 {at_nick} 的评论:「{content}」"
@@ -1438,12 +1455,55 @@ class CatsitatePlugin(MaiBotPlugin):
         调度器串行 await 各任务(60s tick),逐好友 2s sleep+HTTP 的长 IO 若在
         tick 内执行会拖住 sleep_tick/schedule_tick 等全部任务——长 IO 移入
         _qzone_poll_feeds 后台任务,守卫与窗口逻辑也随迁(单一事实源)。
+        防重入分支先收窗再返回:窗口结束恰逢上一轮拉取未完时,收窗原本要等
+        上一轮跑完+下个 tick,期间上一轮尾部的泵会照常注入浏览动态(时间纪律
+        越界)——_qzone_maybe_close_read_window 幂等,不与后台轮竞争。
         """
 
         if self._qzone_poll_running:
+            await self._qzone_maybe_close_read_window()
             return  # 上一轮后台拉取还在跑,跳过(防重入)
         self._qzone_poll_running = True
         self._spawn_background_task(self._qzone_poll_feeds())
+
+    async def _qzone_maybe_close_read_window(self, *, in_read_window: bool | None = None) -> None:
+        """浏览窗口收尾(幂等):窗口结束即持泵锁收窗、回退浏览队列未读,并派发
+        见闻生成——从 _qzone_poll_feeds 抽出,供 tick 防重入分支先行收窗。
+
+        为什么独立成方法:窗口结束若恰逢上一轮后台拉取仍在跑,收窗在旧位置要
+        等上一轮跑完+下个 tick 才执行,期间上一轮尾部的 _qzone_pump 会因
+        window_active 未翻转照常弹出 P2 注入——窗口结束后仍在注入浏览动态;
+        先行收窗只翻标志不动数据(queued 行回退未读,不丢不重)。
+        in_read_window 未给时按 _qzone_poll_feeds 开头同款前置(可用性/睡眠/
+        日程)与 win/current_window 判定自算,防止窗口判定前置条件不一致;
+        已收窗(window_active=False)则空转,重复调用安全。
+        """
+
+        if in_read_window is None:
+            if not self._qzone_available:
+                return
+            if self.config.sleep.enabled and self.sleep.is_sleeping():
+                return  # 睡眠绝对静默(与 poll_feeds 开头同款前置)
+            if not self._schedule_data:
+                return  # 日程未生成/未恢复:无窗口可言
+            win = current_window(self._schedule_data, datetime.now().strftime("%Y-%m-%dT%H:%M"))
+            in_read_window = bool(win and win.get("kind") == "daily" and win.get("read_qzone"))
+        if in_read_window or not self.qzone_injector.window_active:
+            return  # 仍在浏览窗口/已收窗:空转(幂等)
+        # 浏览窗口结束(含 read→仅 send 邻接切换:send 窗口无浏览语义,
+        # 浏览队列同样回退未读);通知队列保留 P1 等待注入。
+        # 持泵锁收窗(终审竞态修复,2026-09-02):window_ended/revert_pending
+        # 与在途泵(弹出→下载→route→mark_seen 的秒级 await 间隙)竞态会
+        # 删掉在途动态的 queued 行/清掉已弹出 P1 状态——下窗口重复注入
+        # 同一条说说、P1 被占位 awaiting 卡住
+        async with self._qzone_pump_lock:
+            self.qzone_injector.window_ended()
+            reverted = self.qzone_seen.revert_pending()
+        self.ctx.logger.info(
+            "QQ空间浏览窗口结束,浏览队列回退未读(%d 条);通知队列保留等待注入", reverted
+        )
+        # 见闻生成(M3):窗口边界把近 24h 滚动窗内的浏览与互动摘要为空间见闻,注入真实聊天
+        self._spawn_background_task(self._qzone_generate_digest())
 
     async def _qzone_poll_feeds(self) -> None:
         """空间窗口内周期拉取(M3 统一时间线架构);窗口切换时收泵并回退未读。
@@ -1470,21 +1530,9 @@ class CatsitatePlugin(MaiBotPlugin):
             win = current_window(self._schedule_data, datetime.now().strftime("%Y-%m-%dT%H:%M"))
             in_read_window = bool(win and win.get("kind") == "daily" and win.get("read_qzone"))
             in_send_window = bool(win and win.get("kind") == "daily" and win.get("send_qzone"))
-            if not in_read_window and self.qzone_injector.window_active:
-                # 浏览窗口结束(含 read→仅 send 邻接切换:send 窗口无浏览语义,
-                # 浏览队列同样回退未读);通知队列保留 P1 等待注入。
-                # 持泵锁收窗(终审竞态修复,2026-09-02):window_ended/revert_pending
-                # 与在途泵(弹出→下载→route→mark_seen 的秒级 await 间隙)竞态会
-                # 删掉在途动态的 queued 行/清掉已弹出 P1 状态——下窗口重复注入
-                # 同一条说说、P1 被占位 awaiting 卡住
-                async with self._qzone_pump_lock:
-                    self.qzone_injector.window_ended()
-                    reverted = self.qzone_seen.revert_pending()
-                self.ctx.logger.info(
-                    "QQ空间浏览窗口结束,浏览队列回退未读(%d 条);通知队列保留等待注入", reverted
-                )
-                # 见闻生成(M3):窗口边界把近 24h 滚动窗内的浏览与互动摘要为空间见闻,注入真实聊天
-                self._spawn_background_task(self._qzone_generate_digest())
+            # 窗口收尾(窗口结束→持泵锁收窗+回退未读+见闻生成派发)抽为幂等辅助
+            # 方法,与 tick 防重入分支共用;此处传入已算得的窗口判定,不自算
+            await self._qzone_maybe_close_read_window(in_read_window=in_read_window)
             if not in_read_window and not in_send_window:
                 return  # 非 qzone 窗口(自由时间/问候/睡眠):按窗口外处理
             # 发布触发武装:按窗口标识 "{day}|{start}" 判重——邻接
@@ -1966,7 +2014,8 @@ class CatsitatePlugin(MaiBotPlugin):
     async def _qzone_notify_scan(self) -> None:
         """统一通知扫描(原 _qzone_notify_poll_tick 主体,始终运行,醒着即可;M2.1 替代旧评论轮询)。
 
-        三源检测:源A=自己说说下的新评论;源B=自己在他人说说下的评论收到的
+        三源检测:源A=自己说说下的新评论(含 bot 评论下的楼中楼回复 list_3,
+        同载荷三视图补跑解析);源B=自己在他人说说下的评论收到的
         新楼中楼回复(list_3);源C=有人赞了我的说说(「与我相关」流 scope=1)。
         通知构造为 FeedItem(source="notify")走 P1
         优先级队列(插队于浏览动态之前),泵注入成功后登记 FeedContext 供
@@ -2029,15 +2078,16 @@ class CatsitatePlugin(MaiBotPlugin):
                 return
             if auth_err:
                 return  # 同轮自愈失败已显式告警,下轮(120s)再试
-            comments, ctx = scanned_a
+            comments, ctx, own_replies = scanned_a
             for feed_tid, items in comments.items():
                 for c in items:
                     if not c.comment_tid:
                         continue  # 空 comment_tid 的畸形条目:跳过(防空 tid 畸形请求,T11 审查遗留)
                     if str(c.uin) == bot_uin:
-                        # 自己发出的评论:重见即登记(幂等,note_bot_comment 独立键空间;
-                        # 自己说说的主人即 bot,friend_uin 记 bot_uin——源B 反查会因此
-                        # 跳过自己,自己说说已在源A覆盖),不注入
+                        # 自己说说(含楼中楼)由源A 覆盖:顶层评论+bot 评论下的
+                        # list_3 回复(下方楼中楼段);friend_uin 记 bot_uin 使源B
+                        # 名单反查跳过自己(源B 只管他人说说下的 bot 评论)。
+                        # 自己的顶层评论重见即幂等登记,不注入
                         self.qzone_comment_seen.note_bot_comment(
                             feed_tid, bot_uin, c.content, datetime.now().strftime("%Y-%m-%dT%H:%M:%S")
                         )
@@ -2093,6 +2143,59 @@ class CatsitatePlugin(MaiBotPlugin):
                         break
                 if len(notifications) >= 3:
                     break
+            # 源A 楼中楼段:好友在自己说说下回复 bot 的评论(list_3,同载荷第三视图)
+            # ——「好友评论→bot 楼中楼回复→好友再回复」线程原本永久断链(源B 名单
+            # 交叉显式排除 bot 自己,解析层丢弃楼中楼)。边界:只覆盖「回复 bot
+            # 评论」的线程(parse_feed_replies 只解析 bot 评论的 list_3);好友回复
+            # 另一好友的旁听线程不通知——bot 不插话他人对话
+            for r in own_replies:
+                if len(notifications) >= 3:
+                    break
+                if not r.feed_tid or not r.reply_tid:
+                    continue  # 空 feed/reply tid 的畸形条目:跳过(防空 tid 畸形请求)
+                if str(r.uin) == bot_uin:
+                    continue  # bot 自己的楼中楼回复不通知(解析层已滤,此处防重)
+                key = f"{r.feed_tid}:{r.parent_comment_tid}:reply:{r.reply_tid}"
+                if not self.qzone_comment_seen.is_new(key):
+                    continue
+                registered_keys.append(key)  # 原子性:入队前异常时回退(终审 H-1)
+                try:
+                    reply_epoch = float(str(r.create_time or "").strip())
+                except ValueError:
+                    reply_epoch = 0.0
+                if reply_epoch > 0 and reply_epoch < stale_before:
+                    self.ctx.logger.info(
+                        "QQ空间楼中楼回复过旧跳过(create_time=%s,昵称=%s)", r.create_time, r.nickname
+                    )
+                    continue
+                # 通知构造形态与源B 一致:正文=楼中楼上下文(bot 原评论前 20 字,
+                # 缺内容回退「你之前的评论」)+参数行;区别在归属——自己说说下
+                # origin_sender=bot、comment_uin=bot(父评论作者是 bot)
+                bot_ctx = clip_text(r.parent_comment_content, 20) if r.parent_comment_content else "你之前的评论"
+                notifications.append(FeedItem(
+                    tid=f"notify_reply_{r.feed_tid}_{r.reply_tid}",
+                    abstime=r.create_time, uin=str(r.uin), nickname=r.nickname,
+                    content=(
+                        f"回复了你的评论「{bot_ctx}」:"
+                        f"{parse_qzone_mentions(r.content, bot_uin=bot_uin)}\n"
+                        + format_comment_param_line(
+                            feed_tid=r.feed_tid, comment_tid=r.parent_comment_tid, commenter_uin=str(r.uin),
+                            action="回复", create_time=str(r.create_time or ""), now_epoch=now_epoch,
+                        )
+                    ),
+                    source="notify", dedup_key=key,
+                    origin_tid=r.feed_tid,
+                    origin_content=r.feed_content or ctx.get(r.feed_tid) or "(无文字)",
+                    origin_sender=bot_uin,  # 自己说说:原说说作者=bot
+                    # 楼中楼二元组素材(qzone_reply):主评论=bot 自己的评论(作者=bot)
+                    comment_tid=r.parent_comment_tid, comment_uin=bot_uin,
+                ))
+                try:
+                    self.qzone_comment_seen.fav_event(
+                        str(r.uin), "COMMENT", f"{r.nickname} 回复了你的评论: {r.content[:40]}"
+                    )
+                except Exception:
+                    self.ctx.logger.exception("QQ空间楼中楼事件好感度记账失败(仅告警)")
 
             # ---- 源B:自己在他人说说下的评论收到的新回复(list_3) ----
             # M3 重构:搭统一时间线便车——只对「发现层显示有新活动+bot 评论过该好友」
@@ -2275,9 +2378,14 @@ class CatsitatePlugin(MaiBotPlugin):
                         origin_sender=bot_uin,
                     ))
                     try:
+                        # 标题缺失的退化文本须拼入 target_tid 前 8 位:同人多条
+                        # 不同说说的赞事件文本同为「(我的内容)」,同日去重会让
+                        # 第二条真实赞被当重放吞掉;tid 片段保证事件文本可区分
+                        # (保持 dedup=True——通知扫描路径必须防「回退→重发现」重放)
+                        degraded = f"(我的内容 {str(ev.target_tid)[:8]})"
                         self.qzone_comment_seen.fav_event(
                             str(ev.liker_uin), "LIKE",
-                            f"{ev.liker_nickname or ev.liker_uin} 赞了你的说说{title or '(我的内容)'}",
+                            f"{ev.liker_nickname or ev.liker_uin} 赞了你的说说{title or degraded}",
                         )
                     except Exception:
                         self.ctx.logger.exception("QQ空间赞事件好感度记账失败(仅告警)")

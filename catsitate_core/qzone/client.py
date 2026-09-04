@@ -23,12 +23,14 @@ from catsitate_core.qzone.wire import (
     parse_feed_comments_full,
     CommentItem,
     LikeEvent,
+    ReplyItem,
     build_comment_form,
     build_like_form,
     build_publish_form,
     build_reply_form,
     extract_publish_tid,
     parse_feed_comments,
+    parse_feed_replies,
     parse_qzone_mentions,
 )
 from catsitate_core.storage import JsonSnapshot
@@ -439,19 +441,23 @@ class QzoneClient:
 
     async def get_own_feed_comments(
         self, *, bot_uin: str, num: int = 10
-    ) -> tuple[dict[str, list[CommentItem]], dict[str, str]]:
-        """拉取自己说说下的好友评论(评论回复轮询的输入)。
+    ) -> tuple[dict[str, list[CommentItem]], dict[str, str], list[ReplyItem]]:
+        """拉取自己说说下的好友评论与 bot 评论的楼中楼回复(通知源A 的输入)。
 
-        单次 msglist 请求产出两视图:评论映射(feed_tid → [CommentItem],
-        wire.parse_feed_comments)与正文上下文(feed_tid → 显示文本,转发/视频
-        回退链沿用 parse_msglist——get_user_feeds 解析会丢 commentlist,故两用
-        共用 _fetch_msglist 的原始载荷,不再发第二次请求)。
+        单次 msglist 请求产出三视图(同载荷补跑解析,不发第二次请求):
+        评论映射(feed_tid → [CommentItem],wire.parse_feed_comments)、正文
+        上下文(feed_tid → 显示文本,转发/视频回退链沿用 parse_msglist——
+        get_user_feeds 解析会丢 commentlist,故两用共用 _fetch_msglist 的原始
+        载荷)与楼中楼回复列表(wire.parse_feed_replies,bot 评论下的 list_3)
+        ——自己说说下载荷本就含 bot 评论的楼中楼,补跑解析即可让源A 覆盖
+        「好友评论 → bot 楼中楼回复 → 好友再回复」线程,与源B 共用同解析层。
         """
         payload = await self._fetch_msglist(target_uin=bot_uin, num=num)
         comments = parse_feed_comments(payload)
         feeds = parse_msglist(payload, target_uin=str(bot_uin), nickname="我")
         ctx = {f.tid: f.content for f in feeds}
-        return comments, ctx
+        replies = parse_feed_replies(payload, bot_uin=str(bot_uin))
+        return comments, ctx, replies
 
     async def download_image(self, url: str) -> bytes | None:
         """下载原图,失败返回 None(调用方以占位注入)。防盗链头带上 Referer。

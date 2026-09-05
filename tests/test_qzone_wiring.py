@@ -2931,6 +2931,43 @@ def test_poll_tick_reentrancy_guard(tmp_path):
     assert p._qzone_poll_running is False  # 后台 feeds 完成后标记复位
 
 
+def test_update_schedule_coerces_string_params(tmp_path):
+    """入参形态矫正:模型经宿主传参不做类型矫正,字符串 "false" 不得被裸
+    bool() 误判为 True;字符串序号转整数;真值字符串("true"/"1")按真处理。"""
+
+    p = _make_plugin(tmp_path)
+    p.config.plugin.enabled = True
+    p._schedule_edit_history = []
+    p._ctx.paths = type("_Paths", (), {"data_dir": tmp_path})()
+    p._schedule_generated = False
+    now = datetime.now()
+    day, nxt = now.strftime("%Y-%m-%d"), (now + timedelta(days=1)).strftime("%Y-%m-%d")
+    p._schedule_data = {"date": day, "windows": [
+        {"kind": "daily", "start": f"{day}T08:00", "end": f"{day}T09:00",
+         "activity": "闲逛", "plan_speak": False, "topic": ""},
+        {"kind": "sleep", "start": f"{day}T23:00", "end": f"{nxt}T07:30", "activity": ""},
+    ]}
+    # 字符串 "false":不落标记(裸 bool() 会误判 True)
+    res = asyncio.run(p.update_schedule(action="add", start="10:00", end="11:00",
+                                         activity="看看书", read_qzone="false", send_qzone="false",
+                                         stream_id="s1", user_id="10001"))
+    assert "日程已更新" in res
+    w = next(w for w in p._schedule_data["windows"] if w.get("activity") == "看看书")
+    assert "read_qzone" not in w and "send_qzone" not in w
+    # 字符串 "true"/"1":按真落标记
+    res = asyncio.run(p.update_schedule(action="add", start="20:00", end="21:00",
+                                         activity="刷刷空间", read_qzone="true", send_qzone="1",
+                                         stream_id="s1", user_id="10001"))
+    assert "日程已更新" in res
+    w = next(w for w in p._schedule_data["windows"] if w.get("activity") == "刷刷空间")
+    assert w.get("read_qzone") is True and w.get("send_qzone") is True
+    # 字符串序号:delete 走 int 矫正
+    res = asyncio.run(p.update_schedule(action="delete", window_index="1",
+                                         stream_id="s1", user_id="10001"))
+    assert "日程已更新" in res
+    assert all(w.get("activity") != "看看书" for w in p._schedule_data["windows"])
+
+
 def test_update_schedule_add_qzone_window(tmp_path):
     """update_schedule 工具适配 QQ空间窗口字段:add 传 read_qzone/send_qzone
     落进新窗口,view 文本带「(刷空间)/(发说说)」标注。"""

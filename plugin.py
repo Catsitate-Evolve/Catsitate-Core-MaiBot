@@ -594,6 +594,12 @@ class CatsitatePlugin(MaiBotPlugin):
             return "今天还没有日程,等睡前一并安排吧。"
         if action == "view":
             return "当前日程(每行开头是窗口序号):\n" + schedule_overview_text(self._schedule_data)
+        # 入参形态矫正:宿主不按声明类型矫型,模型可能传字符串形态的序号/布尔
+        try:
+            window_index = int(window_index)
+        except (TypeError, ValueError):
+            return "window_index 需为窗口序号整数(view 结果每行开头的数字)。"
+        rq_flag, sq_flag = _tool_bool(read_qzone), _tool_bool(send_qzone)
         day = self._schedule_data.get("date") or datetime.now().strftime("%Y-%m-%d")
         min_sleep, max_sleep = self.config.sleep.min_sleep_minutes, self.config.sleep.max_sleep_minutes
         adjustments: list[str] = []
@@ -606,7 +612,7 @@ class CatsitatePlugin(MaiBotPlugin):
             data, err, history, adjustments = apply_schedule_add(
                 self._schedule_data, start, end, activity, day,
                 min_sleep=min_sleep, max_sleep=max_sleep, history=self._schedule_edit_history,
-                read_qzone=bool(read_qzone), send_qzone=bool(send_qzone),
+                read_qzone=rq_flag, send_qzone=sq_flag,
             )
         elif action == "delete":
             data, err, history = apply_schedule_delete(
@@ -3134,7 +3140,7 @@ class CatsitatePlugin(MaiBotPlugin):
         拖住同 tick 串行的全部任务(与 qzone_poll 模式同源问题)。"""
 
         if self._env_refresh_running:
-            self.ctx.logger.info("环境刷新后台仍在进行,跳过本 tick 派发(L-1 防重入)")
+            self.ctx.logger.info("环境刷新后台仍在进行,跳过本 tick 派发(防重入)")
             return
         self._env_refresh_running = True
         self._spawn_background_task(self._refresh_environment_bg())
@@ -3235,7 +3241,7 @@ class CatsitatePlugin(MaiBotPlugin):
         共享防重入守卫——在飞则跳过本轮(间隔小时级,跳过后下个周期自然重试)。"""
 
         if self._daily_settle_running:
-            self.ctx.logger.info("日终结算后台仍在进行,跳过本轮派发(L-1 防重入)")
+            self.ctx.logger.info("日终结算后台仍在进行,跳过本轮派发(防重入)")
             return
         self._daily_settle_running = True
         self._spawn_background_task(self._daily_settle_bg())
@@ -3283,7 +3289,7 @@ class CatsitatePlugin(MaiBotPlugin):
                 str(e["user_id"]) for e in self.qzone_comment_seen.fav_events_window(since)
             }
         except Exception:
-            self.ctx.logger.exception("回看窗空间事件反查失败,日终候选仅用 batch 活跃(深度审查 C-N1/H-2)")
+            self.ctx.logger.exception("回看窗空间事件反查失败,日终候选仅回退当日活跃流")
             event_users = set()
         candidates |= {u for u in event_users if u and u != bot_uin}
         for user_id in sorted(candidates):
@@ -3385,7 +3391,7 @@ class CatsitatePlugin(MaiBotPlugin):
         两路并发由 _daily_decay 内的 _decaying 标记拦截(防 delta 双计)。"""
 
         if self._daily_decay_running:
-            self.ctx.logger.info("衰减后台仍在进行,跳过本 tick 派发(L-1 防重入)")
+            self.ctx.logger.info("衰减后台仍在进行,跳过本 tick 派发(防重入)")
             return
         self._daily_decay_running = True
         self._spawn_background_task(self._daily_decay_bg())
@@ -3906,16 +3912,16 @@ class CatsitatePlugin(MaiBotPlugin):
         if self._schedule_tick_fired.get(day) == mark:
             logger.debug("schedule_tick 跳过:窗口已触发(mark=%s)", mark)
             return  # 同窗口只触发一次
-        if self._speak_counts.get(day, 0) >= self.config.schedule.daily_speak_limit:
-            logger.debug("schedule_tick 跳过:已达每日发言上限 %s", self.config.schedule.daily_speak_limit)
-            return
         logger.debug("schedule_tick 进入窗口 kind=%s 活动=%s", win.get("kind"), win.get("activity"))
         if win.get("read_qzone") or win.get("send_qzone"):
             # qzone 窗口开始即首拉:拉取间隔=两次拉取的间距而非独立节奏,进入
-            # 窗口立即派发一轮拉取(60 秒粒度检出),窗口内后续刷新仍由定间隔
-            # 任务承担;poll_feeds 的间距判定防两路相邻撞车。发不发言与刷不刷
-            # 空间互不牵连,故置于发言上限判定之前
+            # 窗口立即派发一轮拉取(60 秒粒度检出),窗口内后续刷新由定间隔
+            # 任务承担;poll_feeds 的间距判定防两路相邻撞车。置于发言上限判定
+            # 之前——刷空间与发不发消息互不牵连,超限当天入窗首拉不得被牵连跳过
             await self._qzone_poll_tick()
+        if self._speak_counts.get(day, 0) >= self.config.schedule.daily_speak_limit:
+            logger.debug("schedule_tick 跳过:已达每日发言上限 %s", self.config.schedule.daily_speak_limit)
+            return
         if win.get("kind") == "greeting":
             await self._greet_exclusive(day, win)  # 主动问候:仅特别者+私聊通道,无日程窗口的群流路径
             self._schedule_tick_fired[day] = mark
@@ -3981,7 +3987,7 @@ class CatsitatePlugin(MaiBotPlugin):
                 "_recent": last_bump or "",
             })
         candidates.sort(key=lambda c: (c["_level"], c["_recent"]), reverse=True)
-        logger.debug("2.1 候选流: 活跃 %d -> 门槛过滤后 %d", len(rows), len(candidates))
+        logger.debug("日程候选流: 活跃 %d -> 门槛过滤后 %d", len(rows), len(candidates))
         return [{k: c[k] for k in ("stream_id", "user_id", "level_name", "note")} for c in candidates]
 
     async def _greet_exclusive(self, day: str, win: dict) -> bool:
@@ -4648,6 +4654,18 @@ class CatsitatePlugin(MaiBotPlugin):
                 text = "".join(s.get("data", "") for s in (m.get("raw_message") or []) if isinstance(s, dict) and s.get("type") == "text")
             lines.append(f"[{m.get('message_id')}] {text}")
         return "\n".join(lines)
+
+
+def _tool_bool(value: Any) -> bool:
+    """工具布尔参数形态矫正:宿主 materialize_args 不按声明类型矫型,模型
+    可能传字符串("true"/"false")——bool("false") 为 True 会静默错置标记,
+    故字符串仅按明确真值词判定,其余(含缺省)一律 False。"""
+
+    if isinstance(value, bool):
+        return value
+    if isinstance(value, str):
+        return value.strip().lower() in ("true", "1", "yes", "是")
+    return bool(value)
 
 
 def _pack_image_content_items(pack: FeedImagePack) -> list[dict]:

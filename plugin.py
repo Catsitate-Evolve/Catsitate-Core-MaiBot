@@ -1588,6 +1588,20 @@ class CatsitatePlugin(MaiBotPlugin):
         # 见闻生成:窗口边界把近 24h 滚动窗内的浏览与互动摘要为空间见闻,注入真实聊天
         self._spawn_background_task(self._qzone_generate_digest())
 
+    def _qzone_enter_rate_limit_backoff(self) -> None:
+        """进入发现层限流共享退避(warn-once):首页经共享层与翻页穿透路径撞
+        -10001 时统一走此入口——退避期内全部消费方零请求,期满自动恢复探测。"""
+
+        self._qzone_discovery_backoff_until = (
+            time.monotonic() + DISCOVERY_RATE_LIMIT_BACKOFF_SECONDS
+        )
+        if not self._qzone_discovery_backoff_warned:
+            self._qzone_discovery_backoff_warned = True
+            self.ctx.logger.warning(
+                "QQ空间发现层限流(network busy),进入 30 分钟退避"
+                "(浏览与通知源B 共享,期间零请求),期满自动恢复"
+            )
+
     async def _qzone_shared_discovery(self, count: int) -> tuple[str, list]:
         """发现层统一入口:单飞+共享缓存+限流退避(浏览层与通知源B 共用一次请求源)。
 
@@ -1631,15 +1645,7 @@ class CatsitatePlugin(MaiBotPlugin):
                 # 限流退避(两消费方共享):风控窗口分钟~小时级,15 分钟节奏重试
                 # 即持续撞墙——退避期内零请求,期满自动恢复探测;告警单次化
                 # (退避期内静默返态,不重复刷 warning)
-                self._qzone_discovery_backoff_until = (
-                    time.monotonic() + DISCOVERY_RATE_LIMIT_BACKOFF_SECONDS
-                )
-                if not self._qzone_discovery_backoff_warned:
-                    self._qzone_discovery_backoff_warned = True
-                    self.ctx.logger.warning(
-                        "QQ空间发现层限流(network busy),进入 30 分钟退避"
-                        "(浏览与通知源B 共享,期间零请求),期满自动恢复"
-                    )
+                self._qzone_enter_rate_limit_backoff()
                 return "rate_limited", []
             # 首页列表与续页游标同源缓存:浏览层积压补全穿透翻页时取游标直发
             self._qzone_discovery_cache = (now, discoveries)
@@ -1763,6 +1769,14 @@ class CatsitatePlugin(MaiBotPlugin):
                 # legacy——cookie 失效对两路径同源,回退只会重复失败多打一轮 API
                 self.qzone_cookie.invalidate()
                 self.ctx.logger.warning("QQ空间登录态失效(统一时间线),cookie 已作废,下轮重取")
+                return
+            except QzoneRateLimitError:
+                # 翻页穿透路径撞限流(首页已由共享层转换,此分支只接续页):
+                # 进入共享退避并终止本轮——绝不能落进下方 legacy 回退,那是
+                # 1→N+1 次请求的放大,恰在风控期间火上浇油;终止发生在发现层
+                # 阶段(充实未运行,本轮零登记),已发现列表作废,下轮重拉
+                self._qzone_enter_rate_limit_backoff()
+                self.ctx.logger.warning("QQ空间服务限流(翻页),本轮浏览终止,下轮再试")
                 return
             except Exception:
                 self.ctx.logger.exception("QQ空间统一时间线拉取失败,回退逐好友旧路径")

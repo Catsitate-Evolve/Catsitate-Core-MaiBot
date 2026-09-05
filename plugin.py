@@ -18,6 +18,15 @@ import sys
 import time
 
 import httpx
+
+# 空间风控实证(2026-09-05):httpx 的 Python TLS/HTTP 指纹同 cookie 同参数下,
+# 滚动窗口内零星请求即被空间网关判 -10001(network busy),同刻 curl_cffi 的
+# Chrome 指纹恒过(真浏览器同样恒过)。curl_cffi 为可选依赖(容器 venv 预装),
+# 缺失时回退 httpx 原行为,不阻断插件加载
+try:
+    from curl_cffi.requests import AsyncSession as _CurlAsyncSession
+except ImportError:  # pragma: no cover - 部署环境未装时走 httpx 回退
+    _CurlAsyncSession = None
 from maibot_sdk import Command, HookHandler, MaiBotPlugin, MessageGateway, Tool
 from maibot_sdk.types import HookMode, HookOrder, ToolParameterInfo
 
@@ -209,6 +218,7 @@ class CatsitatePlugin(MaiBotPlugin):
     _qzone_send_first_poll_done: bool = False  # 本窗口首轮拉取是否已完成
     _qzone_sourcec_empty_rounds: int = 0  # 源C 连续空解析轮数(锚点漂移观测线)
     _qzone_sourcec_drift_warned: bool = False  # 源C 锚点漂移告警已发标记(warn-once 去重;恢复有事件即复位)
+    _qzone_curl_session: Any | None = None  # curl_cffi 持久会话(Chrome 指纹过空间风控;on_load 实例创建)
 
     # ---------- 生命周期 ----------
 
@@ -356,6 +366,10 @@ class CatsitatePlugin(MaiBotPlugin):
         self._qzone_discovery_backoff_until = 0.0
         self._qzone_discovery_backoff_warned = False
         self._qzone_notify_running = False
+        # curl_cffi 持久会话实例级重建(Chrome 指纹传输层,on_unload 关闭;缺依赖
+        # 时保持 None,fetch 走 httpx 回退)。会话复用连接贴近真实浏览器,跨请求
+        # 不再每轮新建 TLS 握手
+        self._qzone_curl_session = _CurlAsyncSession(impersonate="chrome") if _CurlAsyncSession is not None else None
         # 衰减防重入标记实例级重置(同上;残留 True 会令醒后补跑衰减被永久跳过)
         self._decaying = False
         # 日终结算/衰减/环境刷新后台派发防重入标记实例级重置(同上;残留 True 永久跳过派发)
@@ -466,6 +480,10 @@ class CatsitatePlugin(MaiBotPlugin):
             task.cancel()
         if self._background_tasks:
             await asyncio.gather(*self._background_tasks, return_exceptions=True)
+        if self._qzone_curl_session is not None:
+            # 在后台任务取消之后再关:避免在途请求占用已关闭会话
+            await self._qzone_curl_session.close()
+            self._qzone_curl_session = None
         self.store.close()
 
     async def on_config_update(self, scope: str, config_data: dict[str, Any], version: str) -> None:
@@ -1438,16 +1456,34 @@ class CatsitatePlugin(MaiBotPlugin):
     # ---------- QQ空间(感知 / 互动) ----------
 
     async def _qzone_http_fetch(self, method: str, url: str, *, params: dict, headers: dict, timeout_ms: int, data: dict | None = None) -> tuple[int, bytes]:
-        """httpx 薄封装(client.py 的 fetch 注入点;超时与异常上抛由调用方告警)。
+        """插件传输层(client.py 的 fetch 注入点;超时与异常上抛由调用方告警)。
+
+        传输策略(2026-09-05 空间风控实证):优先 curl_cffi `impersonate="chrome"`
+        ——Chrome TLS/HTTP 指纹是过空间风控的必要条件,同 cookie 同参数下 httpx
+        指纹在滚动窗口内零星请求即被 -10001(network busy)封锁,同刻 Chrome
+        指纹与真浏览器恒过;大单页(count=50)即使 Chrome 指纹也会被单独封,
+        页大小口径见 config。会话跨请求持久复用(keep-alive,更贴近真实浏览器);
+        impersonation 自带成套浏览器头(UA/sec-ch-ua),外部 UA 头会破坏一致性
+        故剥离,仅保留语义头(Cookie/Referer/Origin/Content-Type/Accept)。
+        curl_cffi 缺失(部署环境未装)时回退 httpx 新建客户端(原行为)。
 
         统一返回 **bytes**:二进制图片经 resp.text 的 UTF-8 解码会失真,
         再 encode('latin-1') 必炸;文本/JSON 由 client 侧显式
         utf-8 解码。params 为空时必须传 None:httpx 的 params={} 会把 URL
         既有 query 整体清空——签名 URL 由此被剥签名致 404。
-        data 为写路径表单(dict 时 httpx 自动 form-encode,
+        data 为写路径表单(dict 时按 requests 语义 form-encode,
         Content-Type 由调用方 headers 指定);读路径保持 None。
         """
 
+        if _CurlAsyncSession is not None:
+            if self._qzone_curl_session is None:  # 防御:未经 on_load 的离线装配场景
+                self._qzone_curl_session = _CurlAsyncSession(impersonate="chrome")
+            headers = {k: v for k, v in headers.items() if k.lower() != "user-agent"}
+            resp = await self._qzone_curl_session.request(
+                method, url, params=params or None, headers=headers,
+                data=data, timeout=timeout_ms / 1000,
+            )
+            return resp.status_code, resp.content
         async with httpx.AsyncClient(timeout=timeout_ms / 1000) as client:
             resp = await client.request(method, url, params=params or None, headers=headers, data=data)
             return resp.status_code, resp.content
@@ -1666,11 +1702,11 @@ class CatsitatePlugin(MaiBotPlugin):
         ②过滤(说说 appid=311 且 seen 未登记的新 tid,is_new_candidate 纯查)→
         ③充实层按作者 uin 分组、每组 1 次 get_user_feeds 只拉有新动态的好友
         (1+N 次调用,N=有新动态的作者数,与好友总数无关)。
-        发现层非登录态失败回退 _qzone_poll_feeds_legacy 旧逐好友路径。
+        发现层任何失败(限流/登录态/未知异常)一律告警后跳过本轮——绝不回退
+        逐好友放大路径(风控帮凶,2026-09-05 生产实证)。
         send_qzone 窗口:仅 send 窗口(无 read)在窗口开始即派发
         发布触发后早退(无浏览语义);同窗形态(read+send)在首轮拉取收尾
-        (含零新动态轮与 legacy 回退轮)派发发布触发(等泵空闲,
-        分享有上下文)。
+        (含零新动态轮)派发发布触发(等泵空闲,分享有上下文)。
         """
 
         try:
@@ -1779,9 +1815,11 @@ class CatsitatePlugin(MaiBotPlugin):
                 self.ctx.logger.warning("QQ空间服务限流(翻页),本轮浏览终止,下轮再试")
                 return
             except Exception:
-                self.ctx.logger.exception("QQ空间统一时间线拉取失败,回退逐好友旧路径")
-                await self._qzone_poll_feeds_legacy()
-                self._qzone_send_first_poll_finish(win)  # legacy 完整跑完一轮同样算首轮完成
+                # 未知失败(超时/HTTP 5xx/响应畸形):告警后跳过本轮,等下轮拉取
+                # 间距自然重试。绝不回退 legacy 逐好友路径——风控/服务端故障期
+                # 1→N+1 放大恰是火上浇油(2026-09-05 上午实证:未分类 -10001 落
+                # 此分支连发逐好友回退,加重风控持续数小时;限流/登录态分支同口径)
+                self.ctx.logger.exception("QQ空间统一时间线拉取失败,本轮跳过(不回退逐好友路径)")
                 return
             if not discoveries:
                 await self._qzone_pump()  # 空发现也泵——超时推进兜底(旧路径每轮必泵语义)
@@ -1857,8 +1895,9 @@ class CatsitatePlugin(MaiBotPlugin):
     async def _qzone_poll_feeds_legacy(self) -> None:
         """旧逐好友浏览路径(统一时间线重构前架构):好友列表→每人 get_user_feeds(num=3)。
 
-        仅作发现层失败的回退路径(窗口守卫已由 _qzone_poll_feeds 完成);保留
-        OneBot 好友列表通道——统一时间线端点不可用时仍可逛空间。
+        已不再被自动回退(2026-09-05:发现层任何失败均跳过本轮,逐好友 1→N+1
+        放大是风控帮凶);方法保留供手工调用/调试(窗口守卫已由
+        _qzone_poll_feeds 完成)。保留 OneBot 好友列表通道。
         """
 
         # 拉取架构:好友列表走 adapter OneBot API,

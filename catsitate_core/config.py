@@ -18,7 +18,7 @@ class PluginSection(PluginConfigBase):
     __ui_order__ = 0
 
     enabled: bool = _f(False, "插件总开关", label="插件总开关")
-    config_version: str = _f("1.0.4", "配置版本", label="配置版本")
+    config_version: str = _f("1.0.5", "配置版本", label="配置版本")
     llm_daily_call_warning_threshold: int = _f(50, "旁路 LLM 每日调用告警阈值", label="旁路 LLM 每日告警阈值")
 
 
@@ -239,7 +239,10 @@ class QzoneSection(PluginConfigBase):
     # 值,会话路由与 person 折叠随之漂移;旧配置残留键由加载侧告警提示可移除
     summary_count: int = _f(5, "真实聊天注入的近期已见动态条数", label="见闻摘要条数")
     summary_days: int = _f(3, "见闻摘要回溯天数", label="见闻回溯天数")
-    discovery_count: int = _f(50, "发现层单页拉取条数(统一时间线)", label="发现页大小")
+    # 页大小风控实证(2026-09-05):count=50 的单页拉取即使 Chrome 指纹也会被
+    # 空间网关单独判 -10001(官方页面恒用 count=10),20 实测稳定通过——
+    # 默认 20,勿调回 50;积压靠翻页补全(discovery_max_pages)
+    discovery_count: int = _f(20, "发现层单页拉取条数(统一时间线;勿超 20,风控对大单页单独封锁)", label="发现页大小")
     discovery_max_pages: int = _f(3, "发现层翻页上限(长时间离线后的积压补全;稳态至多 1 次真实调用,共享缓存命中时为 0 次)", label="发现翻页上限")
     own_feed_scan_count: int = _f(20, "通知源A扫描自己最近 N 条说说的评论(单次请求条数,不增加调用次数)", label="自扫说说数")
     diary_enabled: bool = _f(True, "日记功能开关(入睡时生成并发布空间日记说说)", label="日记开关")

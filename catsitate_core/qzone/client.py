@@ -213,11 +213,16 @@ class QzoneClient:
         cookies = await self.cookie_provider()
         if not cookies:
             raise RuntimeError("空间 cookie 不可用,跳过请求")
-        # UA 必带(联调实证:无 UA 空间接口直接 500 空体)
+        # UA 必带(联调实证:无 UA 空间接口直接 500 空体);Accept/Accept-Language
+        # 为浏览器 XHR 基线头(官方页面请求齐备,补齐降低请求特征分)。
+        # 注:传输层若走 curl_cffi(Chrome 指纹),UA 头会被剥离由指纹自带——
+        # impersonation 的 UA/sec-ch-ua 是成套的,外部 UA 会破坏一致性
         headers = {
             "Cookie": "; ".join(f"{k}={v}" for k, v in cookies.items()),
             "User-Agent": BROWSER_UA,
             "Referer": referer,
+            "Accept": "*/*",
+            "Accept-Language": "zh-CN,zh;q=0.9",
         }
         if binary and not _is_qq_image_host(urlparse(url).hostname or ""):
             # 深度防御:白名单已在 download_image 入口拦截,此处兜底
@@ -386,6 +391,8 @@ class QzoneClient:
             "Referer": f"https://user.qzone.qq.com/{referer_uin}",
             "Origin": "https://user.qzone.qq.com",
             "Content-Type": "application/x-www-form-urlencoded",
+            "Accept": "*/*",
+            "Accept-Language": "zh-CN,zh;q=0.9",
         }
         status, raw = await self.fetch("POST", url, params=params, headers=headers,
                                        timeout_ms=self.timeout_ms, data=form)

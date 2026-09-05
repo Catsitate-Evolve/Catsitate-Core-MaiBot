@@ -3384,9 +3384,10 @@ def test_poll_feeds_unified_timeline_enriches_new_only_and_injects(tmp_path, mon
     )
 
 
-def test_poll_feeds_falls_back_to_legacy_on_discovery_failure(tmp_path, monkeypatch):
-    """M3 T3-②:发现层失败(非登录态异常)→显式告警+回退旧逐好友路径——好友列表
-    →get_user_feeds→mark_queued→注入链照常工作,错误不静默。"""
+def test_poll_feeds_discovery_failure_skips_round_without_legacy(tmp_path, monkeypatch):
+    """风控实证 2026-09-05:发现层未知失败(超时/HTTP 5xx/响应畸形)→显式告警+
+    跳过本轮,绝不回退 legacy 逐好友路径——1→N+1 放大是风控帮凶,与限流/登录态
+    分支同口径。"""
 
     sleeps: list = []
     _patch_sleep(monkeypatch, sleeps)
@@ -3413,13 +3414,11 @@ def test_poll_feeds_falls_back_to_legacy_on_discovery_failure(tmp_path, monkeypa
     asyncio.run(p._qzone_poll_feeds())
 
     assert any(
-        level == "exception" and "统一时间线拉取失败" in str(a[0]) and "回退逐好友旧路径" in str(a[0])
+        level == "exception" and "统一时间线拉取失败" in str(a[0]) and "本轮跳过" in str(a[0])
         for level, a in p.logs
     )
-    assert legacy_pulls == [("10001", 3)]  # legacy 路径逐好友拉取(num=3 原口径)
-    assert len(p._ctx.gateway.calls) == 1  # 旧路径动态仍注入
-    assert p._ctx.gateway.calls[0][1]["message_id"].startswith("qzone_lt1_")
-    assert p.qzone_seen.is_new_candidate("lt1") is False  # 已登记
+    assert legacy_pulls == []  # 不回退 legacy 逐好友路径(零放大)
+    assert p._ctx.gateway.calls == []  # 本轮零注入,下轮拉取间距后自然重试
 
 
 def test_poll_feeds_rate_limit_skips_round_without_legacy_fallback(tmp_path):
@@ -4026,8 +4025,9 @@ def _disc(tid, uin, abstime, appid=311):
 
 def test_discovery_pagination_stops_on_all_seen(tmp_path):
     """Task5:本页无新说说 tid 即止步——稳态(无新动态)恒 1 次调用不翻页;
-    页大小取自 discovery_count(默认 50)。窗口预置开启,绕开窗口开始的
-    revert_pending 回收(queued 判重基准保持稳定,同 T3 测试注释口径)。"""
+    页大小取自 discovery_count(默认 20,风控实证大单页被网关单独封锁)。
+    窗口预置开启,绕开窗口开始的 revert_pending 回收(queued 判重基准保持
+    稳定,同 T3 测试注释口径)。"""
 
     p = _make_plugin(tmp_path)
     p._schedule_data = _active_qzone_schedule()
@@ -4045,7 +4045,7 @@ def test_discovery_pagination_stops_on_all_seen(tmp_path):
     p.qzone_seen.mark_queued("t2", abstime="200", author_uin="101", summary="b")
     asyncio.run(p._qzone_poll_feeds())
     # 第 1 页全部已见(更早页只会更旧),翻页止步:恰 1 次调用,页大小=配置值
-    assert calls == [(50, None)]
+    assert calls == [(20, None)]
 
 
 def test_discovery_pagination_stops_when_second_page_all_seen(tmp_path, monkeypatch):
@@ -4103,7 +4103,7 @@ def test_discovery_pagination_fetches_backlog_until_max_pages(tmp_path, monkeypa
     p.qzone_client = _BacklogClient([])
     asyncio.run(p._qzone_poll_feeds())
     # 默认上限 3 页止步(即便第 3 页仍有新动态);两页积压场景由上一用例覆盖
-    assert calls == [(50, None), (50, "cur1"), (50, "cur2")]
+    assert calls == [(20, None), (20, "cur1"), (20, "cur2")]
 
 
 def test_discovery_pagination_respects_configured_page_size(tmp_path, monkeypatch):

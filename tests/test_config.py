@@ -34,7 +34,7 @@ def test_config_defaults():
 def test_default_config_dump():
     cfg = CatsitateConfig()
     data = cfg.model_dump(mode="json")
-    assert data["plugin"]["config_version"] == "1.0.4"
+    assert data["plugin"]["config_version"] == "1.0.5"
     assert data["favorability"]["level_rule_familiar"] == "认识一段时间,可自然闲聊"
     assert len(data["favorability"]) >= 5
 
@@ -98,7 +98,7 @@ def test_qzone_section_defaults():
     assert q.summary_count == 5
     assert q.summary_days == 3
     # M3-r2 Task5:发现层翻页与拉取数量(源A自扫/源B单页与浏览流同口径)
-    assert q.discovery_count == 50
+    assert q.discovery_count == 20  # 风控实证(2026-09-05):count=50 大单页被网关单独封锁
     assert q.discovery_max_pages == 3
     assert q.own_feed_scan_count == 20
     assert q.request_timeout_ms == 10000

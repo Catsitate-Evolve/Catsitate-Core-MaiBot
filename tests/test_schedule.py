@@ -110,6 +110,38 @@ def test_add_window_hhmm(tmp_path):
     assert hist
 
 
+def test_add_window_qzone_flags(tmp_path):
+    """add 携带 QQ空间窗口标记(read_qzone/send_qzone):仅 True 时写入键,
+    与日程生成器输出形态一致;缺省不产生键。"""
+
+    from catsitate_core.schedule import apply_schedule_add, apply_schedule_move
+    data = {"date": "2026-09-05", "windows": [
+        {"kind": "sleep", "start": "2026-09-05T23:00", "end": "2026-09-06T07:30", "activity": ""},
+    ]}
+    out, err, _, _ = apply_schedule_add(
+        data, "20:00", "21:00", "刷刷空间", "2026-09-05",
+        min_sleep=240, max_sleep=660, history=[], read_qzone=True, send_qzone=True,
+    )
+    assert err == ""
+    w = next(w for w in out["windows"] if w.get("activity") == "刷刷空间")
+    assert w.get("read_qzone") is True and w.get("send_qzone") is True
+    # 缺省:无键(消费方 .get() 判定,缺省即 False)
+    out2, err2, _, _ = apply_schedule_add(
+        out, "21:00", "22:00", "闲逛", "2026-09-05", min_sleep=240, max_sleep=660, history=[],
+    )
+    assert err2 == ""
+    w2 = next(w for w in out2["windows"] if w.get("activity") == "闲逛")
+    assert "read_qzone" not in w2 and "send_qzone" not in w2
+    # move 保留标记(展开原窗口字典)
+    idx = next(i for i, w in enumerate(out2["windows"]) if w.get("activity") == "刷刷空间")
+    out3, err3, _, _ = apply_schedule_move(
+        out2, idx, "19:00", "20:00", "2026-09-05", min_sleep=240, max_sleep=660, history=[],
+    )
+    assert err3 == ""
+    w3 = next(w for w in out3["windows"] if w.get("activity") == "刷刷空间")
+    assert w3.get("read_qzone") is True and w3["start"] == "2026-09-05T19:00"
+
+
 def test_add_anchor_squeezes_earlier_window_tail(tmp_path):
     from catsitate_core.schedule import apply_schedule_add
     data = {"date": "2026-08-16", "windows": [

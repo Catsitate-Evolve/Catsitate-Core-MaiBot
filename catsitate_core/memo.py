@@ -63,8 +63,8 @@ class MemoService:
         if "extra_user_ids" not in cols:  # 按人重构:旧库补附带 QQ 列
             self.store.execute("ALTER TABLE memo ADD COLUMN extra_user_ids TEXT NOT NULL DEFAULT '[]'")
 
-    # 保持一期位置参数签名(stream_id/user_id/ttl_hours 位置必填),仅追加 remind_at/extra_user_ids——
-    # 一期调用方(memo_write 工具/命令)无需改动
+    # 保持既有位置参数签名(stream_id/user_id/ttl_hours 位置必填),仅追加 remind_at/extra_user_ids——
+    # 既有调用方(memo_write 工具/命令)无需改动
     def write(
         self,
         content: str,
@@ -91,7 +91,7 @@ class MemoService:
             return False, f"有效期过长:单条上限 {self.config.max_ttl_hours} 小时"
         remind_at = str(remind_at or "")
         if err := validate_remind_at(remind_at):
-            return False, err  # 格式非法拒绝写入,防 due_on 永不匹配导致静默丢提醒(审查 M-10)
+            return False, err  # 格式非法拒绝写入,防 due_on 永不匹配导致静默丢提醒
         # 附带 QQ 清洗:去空/去重(保序)/剔除主 QQ 自身,超上限截断并提示
         main_uid = str(user_id or "")
         cleaned: list[str] = []
@@ -150,7 +150,7 @@ class MemoService:
 
         now_fn = now or datetime.now
         current = now_fn()
-        # 空维度 = 无此条件(非匹配空值行);双空无归属范围,直接返回空(审查 M1)
+        # 空维度 = 无此条件(非匹配空值行);双空无归属范围,直接返回空
         # 非空维度保持 OR 语义:流相关 ∪ 说话人相关;
         # 说话人维度扩为:主 QQ 命中 OR 附带 QQ 列表(JSON 数组,LIKE "qq" 带引号精确段)命中
         conditions: list[str] = []

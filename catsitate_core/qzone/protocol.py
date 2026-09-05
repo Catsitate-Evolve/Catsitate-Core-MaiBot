@@ -1,6 +1,6 @@
 """QQ 空间网页 cgi 协议纯函数(蓝本 Maizone 3.0.2 + 联调实证 2026-08-30 修正)。
 
-关键事实(联调裁定):emotion_cgi_msglist_v6 是「指定用户说说列表」(uin=目标,
+关键事实(联调实证):emotion_cgi_msglist_v6 是「指定用户说说列表」(uin=目标,
 响应顶层 msglist,条目含 tid/created_time/content/pic[].url1/commentlist),
 不是好友聚合接口(vFeeds 形态不存在);好友列表经 adapter 的 OneBot API 获取。
 仅放纯函数:解析与签名。IO(QzoneClient)在 client.py,便于离线单测。
@@ -18,14 +18,14 @@ if TYPE_CHECKING:  # 仅类型标注用,避免 protocol↔wire 循环导入
 
 logger = logging.getLogger(__name__)
 
-FEED_APPID_SHUOSHUO = 311  # 说说类动态(msglist 条目即说说,M2 互动路径沿用此常量)
+FEED_APPID_SHUOSHUO = 311  # 说说类动态(msglist 条目即说说,互动路径沿用此常量)
 
 
 @dataclass
 class FeedItem:
     """一条好友说说(来自指定用户的 msglist)。
 
-    M2.1 统一通知通道扩展:source 区分注入条目的队列来源("feed"=浏览动态
+    统一通知通道扩展:source 区分注入条目的队列来源("feed"=浏览动态
     P2 / "notify"=通知 P1;registry 登记与通知分支判定依据此值);friend_uin
     为通知源B(他人说说楼中楼回复)的说说主人 uin——楼中楼回复 API 的 target_qq,
     源A(自己说说评论)留空,泵侧回退 bot 自己。origin_* 为通知 reply 段
@@ -41,9 +41,9 @@ class FeedItem:
     content: str
     image_urls: list[str] = field(default_factory=list)
     appid: int = FEED_APPID_SHUOSHUO
-    source: str = "feed"  # "feed"=浏览动态 / "notify"=通知(T11 统一通知通道)
+    source: str = "feed"  # "feed"=浏览动态 / "notify"=通知(统一通知通道)
     friend_uin: str = ""  # 通知源B:说说主人(楼中楼 target_qq);源A/浏览动态为空
-    # 通知项的去重键(深度审查 B-4):is_new 发现即登记,注入被宿主拒绝/异常时泵侧
+    # 通知项的去重键:is_new 发现即登记,注入被宿主拒绝/异常时泵侧
     # 据此回退登记(revert),下轮通知轮询重新发现——通知不因一次拒绝永久丢失。
     # notify_reply 键含 parent_comment tid(tid 后缀不可还原),故构造时直接传入。
     dedup_key: str = ""
@@ -117,7 +117,7 @@ def parse_msglist(payload: dict, *, target_uin: str, nickname: str) -> list[Feed
 
 
 def _feed_display_text(feed: dict) -> str:
-    """动态正文回退链(联调缺陷#4 实证形态):content → 转发原文(rt_con) → [视频]。
+    """动态正文回退链(联调实证形态):content → 转发原文(rt_con) → [视频]。
 
     纯图说说(content 空且带 pic)正文保持空——由消息构造层省略文本段,图段承载内容。
     """

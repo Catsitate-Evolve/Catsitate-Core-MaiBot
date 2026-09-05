@@ -1,4 +1,4 @@
-"""日程引擎(二期 3.3):数据模型/校验/生成/执行判定/工具修改。"""
+"""日程引擎:数据模型/校验/生成/执行判定/工具修改。"""
 
 from __future__ import annotations
 
@@ -269,10 +269,10 @@ class ScheduleGenerator:
             try:
                 result = await self.llm_call(messages, self.cfg.schedule_llm_model)
             except Exception as exc:  # noqa: BLE001
-                # 仅记异常类型,不插值 exc 本体:LLM API 错误可能含请求体/PII(安全复审)
+                # 仅记异常类型,不插值 exc 本体:LLM API 错误可能含请求体/PII
                 return _materialize_template(DEFAULT_TEMPLATE_SCHEDULE, target_date), f"日程生成 LLM 异常: {rpc_error_brief(exc)}"
             if not isinstance(result, dict) or not result.get("success"):
-                # 不落响应原文(安全复审):仅记失败形态
+                # 不落响应原文:仅记失败形态
                 if isinstance(result, dict):
                     detail = f"success={result.get('success')}"
                 else:
@@ -299,7 +299,7 @@ class ScheduleGenerator:
                 return checked, ""
             return _materialize_template(DEFAULT_TEMPLATE_SCHEDULE, target_date), f"日程钳制修复后仍无效: {last_err or verr}"
         except Exception as exc:  # noqa: BLE001
-            # 仅记异常类型,不插值 exc 本体:LLM API 错误可能含请求体/PII(安全复审)
+            # 仅记异常类型,不插值 exc 本体:LLM API 错误可能含请求体/PII
             return _materialize_template(DEFAULT_TEMPLATE_SCHEDULE, target_date), f"日程钳制修复异常: {rpc_error_brief(exc)}"
 
 
@@ -337,12 +337,12 @@ def parse_hm(hm: str, day: str) -> str | None:
 def compress_with_anchor(
     windows: list[dict], anchor_index: int,
 ) -> tuple[list[dict], str, list[str]]:
-    """锚点压缩(联调对齐:新操作窗口挤旧窗口,不整体顺延):
+    """锚点压缩(新操作窗口挤旧窗口,不整体顺延):
     - 锚点窗口保持完整;
     - 锚点之前的窗口:end 提前到锚点 start(尾部压缩);窗口不可拆分,锚点后部分释放为自由时间;
     - 锚点之后的窗口:start 推迟到前一窗 end(头部压缩,链式);
     - 睡眠窗口特殊:与锚点重叠时入睡推迟到锚点 end、醒来时间不变;
-    - 任一窗口被压至 start>=end(挤没)即返回错误(不自动删除窗口,Q1=A);
+    - 任一窗口被压至 start>=end(挤没)即返回错误(不自动删除窗口);
     返回 (窗口列表, 错误, 调整明细[「<活动> 由 <原> 压缩为 <新>」])。
     """
 

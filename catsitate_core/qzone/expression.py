@@ -16,7 +16,7 @@ from catsitate_core.llm_provider import build_side_prompt, rpc_error_brief
 def _sanitize(text: str) -> str:
     """输出卫生:剥首尾引号与空白(模型偶尔给正文套引号)。
 
-    不做规则剥离 emoji(用户裁定 2026-09-02):字符级过滤会误伤表达,
+    不做规则剥离 emoji:字符级过滤会误伤表达,
     emoji 与否交给润色模板的措辞约束。"""
     return text.strip().strip('"“”').strip()
 
@@ -42,7 +42,7 @@ async def polish_action_text(
     messages, _ = build_side_prompt("qzone_expression", stable_ctx, variable_tail)
     # 调用异常兜底(2026-09-02):RPC 超时(E_TIMEOUT)等异常原先直接上抛会炸掉
     # 整个动作工具——契约是「润色失败不阻断动作,以草稿直发」;E_TIMEOUT 以
-    # 明显的超时警告浮出(用户裁定),异常简报走 rpc_error_brief
+    # 明显的超时警告浮出,异常简报走 rpc_error_brief
     try:
         result = await llm_call(messages)
     except Exception as exc:  # noqa: BLE001
@@ -59,7 +59,7 @@ async def polish_action_text(
             logger.warning("QQ空间表达润色返回空文本,以草稿直发")
         return ""
     if len(text) > limit:
-        # 超长只做一次软性改短重润(2026-09-02 用户裁定:不再设硬截断——
+        # 超长只做一次软性改短重润,不设硬截断——
         # 重润仍超长就按模型原样发出,长度交给措辞约束与模型自律)
         if logger:
             logger.warning("QQ空间表达润色超长(%d 字>上限 %d),这次改短一些重新润色", len(text), limit)

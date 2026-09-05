@@ -20,7 +20,7 @@ def parse_qzone_mentions(text: str, *, bot_uin: str) -> str:
     好友回复正文里的 @ 是花括号机器格式,直接拼进通知会糊住语义——解析为
     「@昵称 」(后接一个空格,拟 QQ 客户端 @ 展示形态;原文紧跟的至多一个
     空格被合并,不产生双空格)。缺 nick 回退 @uin;无 uin 的畸形花括号原样
-    保留(不吞文本)。bot_uin 仅作语境(Q2=a 用户裁定:@bot 自己也保留,
+    保留(不吞文本)。bot_uin 仅作语境(@bot 自己也保留,
     不过滤)。
     """
     del bot_uin

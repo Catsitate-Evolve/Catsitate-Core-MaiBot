@@ -26,10 +26,10 @@ class FeedContext:
     comment_tid: str = ""     # 通知场景:主评论 tid(楼中楼回复用)
     comment_uin: str = ""     # 通知场景:主评论作者 uin(楼中楼二元组)
     kind: str = "feed"        # "feed"=浏览动态 / "notify"=通知(生产登记恒传 feed.source) / "self"=自己发布(qzone_post)
-    # 说说正文全文(2026-09-02 用户裁定:登记不截断)。旧「近评摘要」字符串列表
-    # 已删(Q7 裁定:润色架构后无消费方的死字段)。
+    # 说说正文全文(登记不截断)。旧「近评摘要」字符串列表
+    # 已删(润色架构后无消费方的死字段)。
     content_summary: str = ""
-    # 评论级锚上下文(Q6 设计共识,2026-09-02):comment_tid → (主评论作者 uin, 昵称)。
+    # 评论级锚上下文(2026-09-02):comment_tid → (主评论作者 uin, 昵称)。
     # 浏览注入/查看工具从结构化评论填充;通知注入填通知二元组。qzone_reply 解析
     # comment_id 时据此确定主评论作者与 @ 目标(无通知上下文时的唯一来源)。
     comment_map: dict[str, tuple[str, str]] = field(default_factory=dict)
@@ -42,7 +42,7 @@ class FeedContextRegistry:
         self._ttl = ttl_seconds
 
     def register(self, ctx: FeedContext) -> None:
-        """登记/更新条目——**字段级合并**(2026-09-02 联调缺陷修复):新值非空
+        """登记/更新条目——**字段级合并**:新值非空
         覆盖旧值,新值为空的字段保留旧值。
 
         动机:同一说说会先后被多种来源登记(浏览注入/view_friend_feeds 的
@@ -65,8 +65,8 @@ class FeedContextRegistry:
                 comment_uin=ctx.comment_uin or old.comment_uin,
                 kind=ctx.kind if ctx.kind != "feed" else old.kind,  # 浏览条目不清掉通知语义
                 content_summary=ctx.content_summary or old.content_summary,
-                # 键级合并:新评论并入,旧评论锚保留;同键时昵称取非空侧(终审
-                # L-2 修复——通知形态登记 (uin, "") 会把浏览评论区登记的
+                # 键级合并:新评论并入,旧评论锚保留;同键时昵称取非空侧(通知
+                # 形态登记 (uin, "") 会把浏览评论区登记的
                 # (uin, 昵称) 覆盖成空昵称)
                 comment_map={
                     **old.comment_map,

@@ -7,7 +7,7 @@ from datetime import date, timedelta
 
 try:
     from lunar_python import Solar
-except ImportError:  # 依赖未安装:农历节日/节气缺失(环境块跳过该片段),显式告警不阻断(审查 Minor#6)
+except ImportError:  # 依赖未安装:农历节日/节气缺失(环境块跳过该片段),显式告警不阻断
     Solar = None
 
 # Open-Meteo WMO 天气码 → 中文(常见码)

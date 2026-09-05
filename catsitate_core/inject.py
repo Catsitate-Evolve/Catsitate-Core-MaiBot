@@ -2,7 +2,7 @@
 
 顺序固定:等级规则块 → 环境块 → 日程块 → 空间块 → 备忘块 → 好感度块(按稳定性降序)。
 空块跳过;同一 (module, content_key, text) 内容未变时字节级复用上一轮渲染结果。
-缓存上限 LRU(背包 M-1):内容键含全量文本,长周期运行会无界增长,超限逐最旧。
+缓存上限 LRU:内容键含全量文本,长周期运行会无界增长,超限逐最旧。
 """
 
 from __future__ import annotations
@@ -10,9 +10,9 @@ from __future__ import annotations
 from collections import OrderedDict
 from dataclasses import dataclass
 
-BLOCK_ORDER: tuple[str, ...] = ("level_rule", "environment", "schedule", "qzone", "memo", "favorability")  # 三期:qzone 块插日程块之后
+BLOCK_ORDER: tuple[str, ...] = ("level_rule", "environment", "schedule", "qzone", "memo", "favorability")  # QQ空间功能:qzone 块插日程块之后
 
-CACHE_MAX = 512  # 渲染缓存条数上限(M-1,超限 LRU 逐最旧)
+CACHE_MAX = 512  # 渲染缓存条数上限(超限 LRU 逐最旧)
 
 
 @dataclass(frozen=True)

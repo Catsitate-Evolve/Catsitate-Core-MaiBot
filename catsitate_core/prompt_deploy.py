@@ -6,7 +6,7 @@
 
 模板内容以插件为权威源:目标缺失或内容不同则覆盖写入;内容一致跳过。
 WebUI 编辑产物写 `data/custom_prompts/zh-CN/`(插件优先读取),不受覆盖影响。
-写入失败显式告警,不阻断插件加载(审查 M3,禁止静默 fallback)。
+写入失败显式告警,不阻断插件加载(禁止静默 fallback)。
 """
 
 from __future__ import annotations

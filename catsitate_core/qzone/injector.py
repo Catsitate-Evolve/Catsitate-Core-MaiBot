@@ -1,9 +1,9 @@
 """串行注入决策核心(纯状态机,IO 由 plugin 接线)。
 
-双优先级队列(M2.1 统一通知通道):P1=通知(评论/楼中楼回复)、
+双优先级队列(统一通知通道):P1=通知(评论/楼中楼回复)、
 P2=浏览动态。next_to_inject 优先弹 P1——模拟「刷着动态→弹通知→
 先看通知→回完继续刷」的注意力模型;两队列各自按发布时间降序
-(T11 阅读顺序修订:信息流降序,QQ 空间 App 实际形态,最新在上)。串行注入语义不变:一次只允许
+(阅读顺序:信息流降序,QQ 空间 App 实际形态,最新在上)。串行注入语义不变:一次只允许
 一条动态处于 awaiting(已注入待轮完成),推进条件 = 轮完成信号
 (planner.after_response 无 tool_calls,由 plugin 转发 on_turn_complete)。
 超时兜底:常规 decision_window_s;wait 态(wait 是 tool_call,其响应不满足完成信号)
@@ -12,7 +12,7 @@ P2=浏览动态。next_to_inject 优先弹 P1——模拟「刷着动态→弹�
 挤进同轮上下文干扰决策)。
 窗口结束:浏览队列(P2)与 awaiting 状态一并丢弃(SeenStore.revert_pending 由
 plugin 调用回退未读);通知队列(P1)保留——通知是推送语义,不隶属任何窗口,
-等注入条件(bot 醒着/泵空闲)满足后继续(M3-r2 P1/P2 分治)。
+等注入条件(bot 醒着/泵空闲)满足后继续(P1/P2 分治)。
 """
 
 from __future__ import annotations
@@ -69,14 +69,14 @@ class FeedInjector:
 
     # ---- 队列 ----
     def enqueue(self, feeds: list[FeedItem]) -> int:
-        """浏览动态入队(P2)并保持全局按发布时间降序(T11:信息流降序,
+        """浏览动态入队(P2)并保持全局按发布时间降序(信息流降序,
         QQ 空间 App 实际形态,最新在上)。跨好友/跨轮次合并保序:每次入队后
         整体重排(abstime 数值降序,非法/缺失 abstime 排最尾按 0 处理)。"""
         return self._enqueue_into(self._queue_p2, feeds)
 
     def enqueue_priority(self, items: list[FeedItem]) -> int:
         """通知入队(P1):优先于浏览动态注入;队内同样按发布时间降序——
-        多条通知积压时最新先看(与 P2 阅读顺序一致,计划裁定非 FIFO)。"""
+        多条通知积压时最新先看(与 P2 阅读顺序一致,非 FIFO)。"""
         return self._enqueue_into(self._queue_p1, items)
 
     @staticmethod
@@ -112,7 +112,7 @@ class FeedInjector:
         return self._popped
 
     def requeue_popped(self) -> None:
-        """把已弹出未标记的项放回原队列队首(2026-09-02 终审修复)。
+        """把已弹出未标记的项放回原队列队首。
 
         动机:泵在 next_to_inject(弹出)与 mark_injected(标记)之间有图片下载/
         压缩/route 等真实挂起点——取消(热重载/任务回收)落在该间隙时,弹出项

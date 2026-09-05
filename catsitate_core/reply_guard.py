@@ -7,7 +7,7 @@ import re
 
 from .llm_provider import build_side_prompt
 
-# 上下文工具列表(联调裁定:内置常量,不再作为可配置项)
+# 上下文工具列表(内置常量,不作为可配置项)
 CONTEXT_TOOLS: tuple[str, ...] = (
     "query_memory", "query_person_profile", "fetch_history", "view_forward_message", "memo_read",
 )
@@ -54,9 +54,9 @@ def backfill_reply_items(
 ) -> list[dict]:
     """为满足触发条件的 reply 调用补 reply_reference,不改动其它工具调用。
 
-    匹配宿主真实快照形态(H-1 修复,2026-09-03):reply 调用是 FunctionCallItem,
+    匹配宿主真实快照形态(2026-09-03 修复):reply 调用是 FunctionCallItem,
     工具名在 item["tool_call"]["func_name"],参数在 item["tool_call"]["args"]——
-    一期误判顶层 tool_name/arguments 键(宿主快照无此二键),匹配恒不中,
+    旧实现误判顶层 tool_name/arguments 键(宿主快照无此二键),匹配恒不中,
     补传自上线以来从未生效。命中项浅拷贝 item 与 tool_call 后写入
     reply_reference,不原地改宿主列表中的条目。"""
 

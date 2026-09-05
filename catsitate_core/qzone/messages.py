@@ -1,16 +1,16 @@
 """虚拟流注入消息构造(message_dict 对齐主程序 plugin_runtime/host/message_utils.py 格式)。
 
-纪律(联调修正 2026-08-31 方案 B):timestamp=**注入时刻(阅读时间)**——消息流时钟
+纪律:timestamp=**注入时刻(阅读时间)**——消息流时钟
 单调递增,主程序时序机制(get_recent 24h 窗/间隔样本/连发过滤)消费正确的到达
-语义;**发布时间由正文相对时间前缀承载**(今天 HH:MM / M月d日 HH:MM,联调缺陷#5
+语义;**发布时间由正文相对时间前缀承载**(今天 HH:MM / M月d日 HH:MM,
 防 bot 把老说说当刚发生);message_id 全局唯一(tid+时间播种序号);is_mentioned
 仅浏览注入设置(嵌 message_info.additional_config,主程序只读该位置;通知消息
 不设——走自然回复概率,2026-09-02);图片段带 binary_data_base64,
-下载失败的图以 [图片] 占位(全失败按图数 [图片×N],终审 c-6);文本段末尾带
+下载失败的图以 [图片] 占位(全失败按图数 [图片×N]);文本段末尾带
 参数独立尾行「〔说说ID=xxx〕」(tid 前 12 位,
 工具驱动 2026-09-01;可读性优化后换行独立成行,纯图说说也保留文本段承载锚);
 纯图说说正文为空时参数行即整段内容。
-图片体积治理=压缩到 RPC 帧预算内(12MB,用户裁定:压缩而非拒收)。
+图片体积治理=压缩到 RPC 帧预算内(12MB,压缩而非拒收)。
 """
 
 from __future__ import annotations
@@ -63,7 +63,7 @@ def _pil_compress(data: bytes, max_dim: int, quality: int) -> bytes:
         out = buf.getvalue()
     except Exception:
         # 损坏/非图字节(CDN 200 错误页等)解码失败:返回原样交丢弃路径兜底
-        # (终审 M-1 修复,2026-09-02:此前异常会炸掉整轮注入)
+        # (此前异常会炸掉整轮注入)
         logger.warning("图片压缩解码失败(字节数=%d),保留原样走丢弃路径兜底", len(data))
         return data
     return out if len(out) < len(data) else data  # 压缩反而更大(如小图)则保留原样
@@ -106,7 +106,7 @@ def fit_images_to_rpc_budget(
 
 
 def clip_text(text: str, limit: int) -> str:
-    """可见内容截断(2026-09-02 用户裁定):超长截断时尾部加 "...",
+    """可见内容截断:超长截断时尾部加 "...",
     让模型/用户知道内容被截断了;未超长原样返回。"""
 
     text = str(text or "")
@@ -124,9 +124,9 @@ def _time_prefix(post_dt: datetime, now_dt: datetime) -> str:
 
 
 def comment_time_prefix(create_time: str, now_epoch: float) -> str:
-    """评论注入正文的时间前缀薄封装(终审 I2,方案 B 同款语义):发布时间由正文承载。
+    """评论注入正文的时间前缀薄封装(与浏览注入同款时间语义):发布时间由正文承载。
 
-    调用方为 format_comment_param_line(M3-r2,2026-09-01):通知参数行的
+    调用方为 format_comment_param_line:通知参数行的
     动作时间(评论于/回复于)经本函数产出;通知内容的时间前缀仍由
     build_feed_message 从 abstime 统一处理,本函数不直接面向轮询侧;
     语义与 _time_prefix 一致。
@@ -170,13 +170,13 @@ def build_notify_message(
 ) -> dict:
     """构造通知注入消息——带 reply 段引用原说说(napcat quote 式上下文关联)。
 
-    与 build_feed_message 的分工(联调修正):通知不走浏览动态的图片/时间前缀
+    与 build_feed_message 的分工:通知不走浏览动态的图片/时间前缀
     管线,正文由通知轮询侧精简构造(reply 段已带原说说上下文,正文不重复引用
     原文);reply 段置首,target_message_id=原说说**注入时的消息 id**(泵侧经
     seen_store.get_message_id(origin_tid) 查得),target_message_content 直接取
     feed.origin_content(可读性优化 2026-09-01:**原说说正文**前 60 字,非通知
     文本——bot 一眼看到「这条评论发生在哪条说说下」);原说说未注入过时调用方
-    传空 id → reply 段省略(回退纯文本)。timestamp 同方案 B=注入时刻。
+    传空 id → reply 段省略(回退纯文本)。timestamp 同为注入时刻。
     """
 
     raw: list[dict] = []
@@ -197,7 +197,7 @@ def build_notify_message(
         "message_info": {
             "user_info": {"user_id": str(feed.uin), "user_nickname": feed.nickname},
             "group_info": {"group_id": group_id, "group_name": group_name},
-            # 不设 is_mentioned(2026-09-02 用户裁定):通知走主程序自然回复概率,
+            # 不设 is_mentioned:通知走主程序自然回复概率,
             # 不再强制触发 planner 轮——bot 看到通知但不必然回应(拟人化留白);
             # 浏览注入(build_feed_message)保留强制=串行浏览决策环的设计依赖
         },
@@ -205,7 +205,7 @@ def build_notify_message(
     }
 
 
-# 评论块展示上限(设计共识 Q9,2026-09-02):顶层评论全量;每条评论楼中楼最多
+# 评论块展示上限:顶层评论全量;每条评论楼中楼最多
 # 展开 REPLY_EXPAND_LIMIT 条(超出标注总回复数);整块超 COMMENT_BLOCK_CHAR_LIMIT
 # 截断并标注——工具结果/注入消息要装进模型上下文,无上限会撑爆
 REPLY_EXPAND_LIMIT = 10
@@ -216,16 +216,16 @@ def format_comment_block(comments: list, *, comment_total: int = 0,
                          per_reply_limit: int = REPLY_EXPAND_LIMIT,
                          char_limit: int = COMMENT_BLOCK_CHAR_LIMIT,
                          now_epoch: float = 0.0) -> str:
-    """把结构化评论区块渲染为注入/详情可读文本(2026-09-02 设计共识)。
+    """把结构化评论区块渲染为注入/详情可读文本。
 
     形态:首行「评论区(N条):」(QQ 截断时「评论区(前N条/共M条):」——N 为
-    **实际显示**条数,超长截断后按显示数计,终审 M-1 修复);每条顶层评论一行
+    **实际显示**条数,超长截断后按显示数计);每条顶层评论一行
     「昵称(QQ):内容 (相对时间)〔评论ID=…〕」;楼中楼缩进一行一条,超过
     per_reply_limit 只展开前 N 条并尾标「共M条回复」;整块超 char_limit 截断
-    并标注「评论过多,只显示前面部分」(预算含行分隔符与标注行本身,终审 L-1)。
+    并标注「评论过多,只显示前面部分」(预算含行分隔符与标注行本身)。
     评论ID 锚与〔说说ID=〕同款照抄契约(qzone_reply 全域化后的 comment_id
-    来源之一)。空区块:评论总数>0 时返回诚实提示(响应未包含评论内容,终审
-    M-2),总数为 0 返回空串(调用方按「还没有评论」口径处理)。"""
+    来源之一)。空区块:评论总数>0 时返回诚实提示(响应未包含评论内容),
+    总数为 0 返回空串(调用方按「还没有评论」口径处理)。"""
 
     if not comments:
         if comment_total > 0:
@@ -259,7 +259,7 @@ def format_comment_block(comments: list, *, comment_total: int = 0,
             break
         body.append(block)
         used += len(block) + 1
-    # 首行按实际显示条数(M-1):被截断时「前K条」;QQ 侧截断时「前N/共M」
+    # 首行按实际显示条数:被截断时「前K条」;QQ 侧截断时「前N/共M」
     shown = len(body)
     if truncated or comment_total > len(comments):
         front = shown if truncated else len(comments)
@@ -285,7 +285,7 @@ def build_feed_message(
     以占位呈现(全失败按图数 [图片×N],模型可知图数;images 空段时 N 取
     feed.image_urls)。
 
-    时间语义(方案 B,用户裁定 2026-08-31):timestamp=**注入时刻(阅读时间)**——
+    时间语义:timestamp=**注入时刻(阅读时间)**——
     消息流的时钟单调递增(自然阅读序),主程序时序机制(间隔样本/连发过滤/
     get_recent 24h 窗)全部拿到正确的到达语义;**发布时间由正文前缀承载**
     (今天 HH:MM / M月d日 HH:MM),abstime 非法/缺失时不加前缀。
@@ -306,7 +306,7 @@ def build_feed_message(
         if data is None:
             failed += 1
             continue
-        # 组件形态对齐 napcat-adapter(联调缺陷#15):data 必须**留空**——它是描述槽,
+        # 组件形态对齐 napcat-adapter:data 必须**留空**——它是描述槽,
         # 填占位文本会被主程序当成已有描述入库存证,VLM 视觉管线永不运行;
         # hash 显式给 sha256(与 adapter 一致)
         raw.append({
@@ -315,7 +315,7 @@ def build_feed_message(
             "hash": hashlib.sha256(data).hexdigest(),
             "binary_data_base64": base64.b64encode(data).decode("ascii"),
         })
-    # 全失败占位(终审 c-6,2026-09-03):按图数 ×N 呈现——单个「[图片]」会把
+    # 全失败占位:按图数 ×N 呈现——单个「[图片]」会把
     # N 图说说误读为 1 图(模型可知图数);images 为空(注入链管线全失败/
     # 合成回退空段)时 N 取 feed.image_urls,恰为该说说全失败图数
     if feed.image_urls and not images:
@@ -335,7 +335,7 @@ def build_feed_message(
         body = prefix
     else:
         body = f"{prefix}(无文字内容)".strip()
-    # 评论区块(2026-09-02 设计共识:浏览注入带完整讨论,避免信息不全)——
+    # 评论区块(浏览注入带完整讨论,避免信息不全)——
     # 正文与评论区空行分隔;QQ 截断 commentlist 时按 comment_total 标「前N/共M」;
     # commentlist 缺失但 cmtnum>0 时同样放行,空块交 format_comment_block 出诚实提示
     if feed.comments or feed.comment_total:
@@ -343,7 +343,7 @@ def build_feed_message(
             feed.comments, comment_total=feed.comment_total, now_epoch=now_epoch)
         if comment_block:
             body = f"{body}\n\n{comment_block}"
-    # 工具参数独立尾行(可读性优化 2026-09-01,Q1=a+Q4=a):换行+〔说说ID=…〕
+    # 工具参数独立尾行(可读性优化 2026-09-01):换行+〔说说ID=…〕
     # 独立成行——消除与正文/时间前缀的行内语义混淆(旧「(说说 xxx)」行内尾注
     # 易被模型当正文一部分);tid 取前 12 位短码,模型照抄给
     # qzone_comment/qzone_like 的 feed_id;纯图说说也保证有文本段——参数行
@@ -359,7 +359,7 @@ def build_feed_message(
             "user_info": {"user_id": str(feed.uin), "user_nickname": feed.nickname},
             "group_info": {"group_id": group_id, "group_name": group_name},
             # is_mentioned 必须嵌在 message_info.additional_config 内:主程序
-            # is_mentioned_bot_in_message 只读该位置(联调缺陷#3,顶层键会被丢弃)。
+            # is_mentioned_bot_in_message 只读该位置(顶层键会被丢弃)。
             # 浏览注入保留强制触发:串行浏览决策环(每条说说注入后 planner 轮决定
             # 互动与否)依赖它;通知消息已移除(走自然概率,见 build_notify_message)
             "additional_config": {"is_mentioned": 1.0},

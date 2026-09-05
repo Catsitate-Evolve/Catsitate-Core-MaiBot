@@ -1,4 +1,4 @@
-"""好感度自然衰减引擎(二期 3.1):互动时间判定 + LLM 判定衰减 + apply_delta。"""
+"""好感度自然衰减引擎:互动时间判定 + LLM 判定衰减 + apply_delta。"""
 
 from __future__ import annotations
 
@@ -138,7 +138,7 @@ class DecayExecutor:
             try:
                 result = await self.llm_call(messages, self.config.decay_llm_model)
             except Exception as exc:  # noqa: BLE001
-                # 仅记异常类型,不插值 exc 本体:LLM API 错误可能含请求体/PII(安全复审)
+                # 仅记异常类型,不插值 exc 本体:LLM API 错误可能含请求体/PII
                 logger.warning("好感度衰减判定失败(user=%s): %s", user_id, rpc_error_brief(exc))
                 continue  # 显式日志后跳过(失败不得静默)
             if not isinstance(result, dict) or not result.get("success"):
@@ -155,11 +155,11 @@ class DecayExecutor:
             delta = int(delta)
             # 衰减 delta 恒 ≤ 0(parse_decay_response 已拒绝正 delta),分数只会下降,
             # 不可能触发「升特别被占位」的独占钳制(钳制仅在 apply_delta 升入特别时发生),
-            # 故衰减路径 exclusive_clamped 恒 False 属设计必然(最终审查 M7)
+            # 故衰减路径 exclusive_clamped 恒 False 属设计必然
             judged_at = now_fn().strftime(_ISO)
             status = self.engine.apply_delta(
                 user_id, delta, note, judged_at=judged_at,
-                judge_id=f"decay-{judged_at}-{user_id}",  # 同秒多用户判重(审查 M-5,按人)
+                judge_id=f"decay-{judged_at}-{user_id}",  # 同秒多用户判重(按人)
                 advance_window=False,  # 衰减不消费批次素材,保留结算窗口起点(顺延不丢)
             )
             results.append({"user_id": user_id, "delta": delta,

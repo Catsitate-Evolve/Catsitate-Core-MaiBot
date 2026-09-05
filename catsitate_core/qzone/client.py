@@ -39,7 +39,7 @@ logger = logging.getLogger(__name__)
 
 COOKIE_DOMAIN = "user.qzone.qq.com"
 MSGLIST_URL = "https://user.qzone.qq.com/proxy/domain/taotao.qq.com/cgi-bin/emotion_cgi_msglist_v6"
-# 统一时间线(发现层):1 次调用覆盖全好友动态,与好友数无关(M3 架构)
+# 统一时间线(发现层):1 次调用覆盖全好友动态,与好友数无关
 UNIFIED_TIMELINE_URL = "https://user.qzone.qq.com/proxy/domain/ic2.qzone.qq.com/cgi-bin/feeds/feeds3_html_more"
 BROWSER_UA = (
     "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) "
@@ -49,7 +49,7 @@ BROWSER_UA = (
 AUTH_ERROR_CODES = {-3000, -10005}
 # 操作过于频繁业务码(联调实证 2026-09-02,-10049):同评论线程反复回复/短时间
 # 连续写动作触发——不是登录态问题,重试只会更频;调用方据此给出带限制说明的
-# 工具回执,让模型自行收敛(用户裁定:不做硬频控,限制写进工具返回)
+# 工具回执,让模型自行收敛(不做硬频控,限制写进工具返回)
 BIZ_CODE_TOO_FREQUENT = -10049
 _MISSING_PSKEY_WARNED = False  # 每进程告警一次
 
@@ -79,7 +79,7 @@ class CookieManager:
         self._invalidated = False
 
     def invalidate(self) -> None:
-        """登录态失效标记(联调缺陷#7):清内存态并置失效——下次 get() 跳过
+        """登录态失效标记:清内存态并置失效——下次 get() 跳过
         节流与持久化快照,强制经 adapter 重取;重取失败不回退旧值。"""
         self._cookies = {}
         self._fetched_at = 0.0
@@ -97,7 +97,7 @@ class CookieManager:
                     self._fetched_at = now
                     return self._cookies
         try:
-            # 联调修正(2026-08-30):adapter API 形态为单 params 关键字(dict 透传给 NapCat 动作)
+            # 联调实证(2026-08-30):adapter API 形态为单 params 关键字(dict 透传给 NapCat 动作)
             result = await self.api_call("adapter.napcat.account.get_cookies", params={"domain": COOKIE_DOMAIN})
         except Exception:
             logger.exception("空间 cookie 获取失败(adapter.napcat.account.get_cookies),本轮跳过")
@@ -114,7 +114,7 @@ class CookieManager:
         self._invalidated = False
         # saved_at 存 epoch 秒(time.time)而非 now(monotonic):monotonic 钟只在
         # 进程内可比,跨重启归零,持久化快照里无意义;epoch 秒跨进程可读
-        # (2026-09-03 复审小修;节流用的 _fetched_at 仍是 monotonic,不受影响)
+        # (节流用的 _fetched_at 仍是 monotonic,不受影响)
         self.snapshot.save({"cookies": cookies, "saved_at": time.time()})
         return cookies
 
@@ -138,7 +138,7 @@ def _extract_cookies(result: Any) -> dict[str, str]:
     / {"data": "k=v; ..."} / 裸 dict。
 
     具体形态优先于裸 dict 兜底:裸 dict 无 "cookies"/"data" 键,只作最后候选,
-    避免把 {"cookies": {...}} 整体误当 cookie 表(内部不一致最小修复)。
+    避免把 {"cookies": {...}} 整体误当 cookie 表。
     """
 
     if not isinstance(result, dict):
@@ -161,7 +161,7 @@ def _extract_cookies(result: Any) -> dict[str, str]:
 
 
 def _is_qq_image_host(host: str) -> bool:
-    """QQ 空间图片 CDN 域名判定(深度审查 E-1):*.qpic.cn / *.qq.com。
+    """QQ 空间图片 CDN 域名判定:*.qpic.cn / *.qq.com。
 
     动态载荷里的图片 URL 来自远端数据,不可信——非白名单域名可能把登录 Cookie
     带去任意站(或被引去探测内网),一律拒绝下载。
@@ -171,7 +171,7 @@ def _is_qq_image_host(host: str) -> bool:
 
 
 class QzoneClient:
-    """空间接口客户端——按 API 分层组织(M3 重构):
+    """空间接口客户端——按 API 分层组织:
 
     - 发现层:get_unified_timeline(feeds3_html_more 统一时间线,1 次调用
       覆盖全好友动态,返回轻量索引 FeedDiscovery)
@@ -211,12 +211,12 @@ class QzoneClient:
             "Referer": referer,
         }
         if binary and not _is_qq_image_host(urlparse(url).hostname or ""):
-            # 深度防御(深度审查 E-1):白名单已在 download_image 入口拦截,此处兜底
+            # 深度防御:白名单已在 download_image 入口拦截,此处兜底
             # ——非 QQ 系域名的二进制请求一律不带登录 Cookie
             headers["Cookie"] = ""
         params = dict(params)
         if not binary:
-            # g_tk 只用于空间 cgi 接口;图片 CDN 是签名 URL,附加查询参数会破坏签名致 404(联调缺陷#8)
+            # g_tk 只用于空间 cgi 接口;图片 CDN 是签名 URL,附加查询参数会破坏签名致 404
             params.setdefault("g_tk", generate_gtk(cookies.get("p_skey", "")))
         status, body = await self.fetch(method, url, params=params, headers=headers, timeout_ms=self.timeout_ms)
         return status, body
@@ -235,10 +235,10 @@ class QzoneClient:
         )
         if status != 200:
             raise RuntimeError(f"空间说说列表请求失败(uin={target_uin}): HTTP {status}")
-        # fetch 契约统一返回 bytes(联调缺陷#13);jsonp 响应为 UTF-8 文本,严格解码
+        # fetch 契约统一返回 bytes;jsonp 响应为 UTF-8 文本,严格解码
         text = raw.decode("utf-8") if isinstance(raw, (bytes, bytearray)) else str(raw)
         payload = extract_callback_json(text)
-        # 注意不可用 `code or -1`:code=0 是成功码,or 短路会误判(内部不一致最小修复)
+        # 注意不可用 `code or -1`:code=0 是成功码,or 短路会误判
         code = payload.get("code")
         if code is not None and int(code) in AUTH_ERROR_CODES:
             raise QzoneAuthError(f"空间登录态失效(uin={target_uin}): code={code}")
@@ -276,7 +276,7 @@ class QzoneClient:
     async def get_user_feeds_raw(self, *, target_uin: str, num: int = 5) -> dict:
         """返回 msglist 原始 payload(含 commentlist/list_3),供 parse_feed_replies 消费。
 
-        统一通知通道源B(T11):楼中楼解析需要原始载荷(parse_msglist 会丢
+        统一通知通道源B:楼中楼解析需要原始载荷(parse_msglist 会丢
         commentlist),薄封装 _fetch_msglist 不重复实现请求与校验。
         """
         return await self._fetch_msglist(target_uin=target_uin, num=num)
@@ -309,7 +309,7 @@ class QzoneClient:
             raise RuntimeError(f"空间统一时间线请求失败(uin={self.bot_uin}): HTTP {status}")
         text = raw.decode("utf-8") if isinstance(raw, (bytes, bytearray)) else str(raw)
         # 外层 JSON 壳以 "code":0 起头,首个匹配即外层业务码(内层 JS 数据在其后);
-        # 键与冒号间容忍空白(审查顺手:兼容壳层格式微差)
+        # 键与冒号间容忍空白(兼容壳层格式微差)
         code_match = re.search(r'"code"\s*:\s*(-?\d+)', text)
         if code_match is None:
             raise RuntimeError(f"空间统一时间线响应不可解析: {text[:120]}")
@@ -379,10 +379,10 @@ class QzoneClient:
         if status != 200:
             raise RuntimeError(f"空间写请求失败: HTTP {status}")
         text = raw.decode("utf-8") if isinstance(raw, (bytes, bytearray)) else str(raw)
-        # 批①遗留加固:畸形 200 响应(网关错误页/截断或非对象 JSON)统一 RuntimeError,
+        # 畸形 200 响应(网关错误页/截断或非对象 JSON)统一 RuntimeError,
         # 不让原始解析异常类型(JSONDecodeError/AttributeError)泄漏到调用方。
         # format=fs 响应为 HTML 包裹 frameElement.callback({...}),前缀超 60 字符——
-        # 联调缺陷#16:找 callback( 而非首 60 字符判定
+        # 找 callback( 而非首 60 字符判定
         try:
             marker = "frameElement.callback("
             if marker in text:
@@ -462,9 +462,9 @@ class QzoneClient:
     async def download_image(self, url: str) -> bytes | None:
         """下载原图,失败返回 None(调用方以占位注入)。防盗链头带上 Referer。
 
-        域名白名单(深度审查 E-1):仅 *.qpic.cn/*.qq.com——动态载荷的 URL 不可信,
-        非白名单域拒绝下载(防 Cookie 外带与内网探测)。体积不加插件侧上限
-        (用户裁定 2026-08-31):主程序入站链路对过大图片自有压缩/丢弃处理。
+        域名白名单:仅 *.qpic.cn/*.qq.com——动态载荷的 URL 不可信,
+        非白名单域拒绝下载(防 Cookie 外带与内网探测)。体积不加插件侧上限:
+        主程序入站链路对过大图片自有压缩/丢弃处理。
         读路径例外:CDN 偶发瞬态失败(联调实证 404),单次重试;动作 API 的
         「失败不重试」纪律不适用于此。次数固定 1,与动作 API 无关。
         """
@@ -479,7 +479,7 @@ class QzoneClient:
         for attempt in (1, 2):
             status, body = await self._request("GET", url, params={}, binary=True)
             if status == 200:
-                # fetch 契约统一 bytes(联调缺陷#13);防御分支容忍旧 str 形态(仅限 latin-1 安全字节)
+                # fetch 契约统一 bytes;防御分支容忍旧 str 形态(仅限 latin-1 安全字节)
                 return body if isinstance(body, (bytes, bytearray)) else str(body).encode("latin-1", errors="ignore")
             if attempt == 1:
                 await _asyncio.sleep(1.0)

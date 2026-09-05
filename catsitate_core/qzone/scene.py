@@ -87,7 +87,7 @@ def filter_tool_definitions(defs: list[dict], whitelist: list[str]) -> list[dict
 
 
 def filter_qzone_tools_for_stream(defs: list[dict], *, is_qzone: bool, whitelist: list[str]) -> list[dict]:
-    """qzone_* 工具全域默认可用(2026-09-02 用户裁定:不可剔除,不受白名单管理);
+    """qzone_* 工具全域默认可用(不可剔除,不受白名单管理);
     其余工具仅在 qzone 流走白名单过滤,非 qzone 流原样放行(主程序自选)。
 
     view_friend_feeds 为真实流提供说说ID/图片hash,是 qzone 动作工具在真实

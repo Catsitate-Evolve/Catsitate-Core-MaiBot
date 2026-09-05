@@ -1,4 +1,4 @@
-"""说说图片出口公共管线 + 多图拼图合成(2026-09-03,用户裁定 C 方案)。
+"""说说图片出口公共管线 + 多图拼图合成(2026-09-03)。
 
 三个图片出口(浏览注入 plugin._qzone_inject_one / 工具 view_friend_feeds /
 view_friend_feed_detail)此前各持一份「下载→压缩→打包」拷贝,本模块统一:
@@ -6,7 +6,7 @@ run_feed_image_pipeline = 逐张下载(失败跳过+告警)→ 单图直返 / �
 (compose_numbered_grid:3 列网格、白底 letterbox、左上角序号角标)→
 to_thread 压缩到 RPC 帧预算(messages.fit_images_to_rpc_budget)。
 
-多图合成动机(用户裁定):拼图后恒单图,省 VLM token 与注入上下文;序号角标
+多图合成动机:拼图后恒单图,省 VLM token 与注入上下文;序号角标
 保住「图3是什么」的可问性——模型经 inspect_image 对拼图提问,单图细看不再
 需要懒取层。[:3] 截断随之删除(合成后无 media 项爆炸面,QQ 上限 9 图封顶)。
 
@@ -41,7 +41,7 @@ except ImportError:  # pragma: no cover - 环境异常路径
     _PILImageFont = None
     _HAS_PIL = False
 
-# 3 列网格(需求 1):QQ 上限 9 图封顶时恰 3 行
+# 3 列网格:QQ 上限 9 图封顶时恰 3 行
 GRID_COLUMNS = 3
 
 # 下载器契约:client.download_image 失败可返回 None 或抛错,两种形态都按失败处理
@@ -60,7 +60,7 @@ def _badge_font(px: int):
     try:
         return _PILImageFont.load_default(size=px)
     except TypeError:
-        # 旧版 Pillow 无 size 参数(终审 c-3,2026-09-03):字体降级必须可见,
+        # 旧版 Pillow 无 size 参数:字体降级必须可见,
         # 一次性告警防多图逐格刷屏
         if not _BADGE_FONT_FALLBACK_WARNED:
             _BADGE_FONT_FALLBACK_WARNED = True
@@ -133,9 +133,9 @@ class FeedImagePack:
     segments:压缩预算后的图片段(注入消息形态 (url, bytes|None));多图合成后
     恒单项 [(原图任一 url, 合成 JPEG)],极端超预算丢弃置 None 交占位逻辑。
     anchor:工具侧图标注文案——单图「图N(hash)」(N=该图原始序号:部分失败至
-    恰剩一张时与实际送出图一致,终审 M1;单图直返不画角标,序号由锚承担)/
+    恰剩一张时与实际送出图一致;单图直返不画角标,序号由锚承担)/
     多图「图1-图N(拼接,hash=…)」单条;hash=**拟合后实际送出字节**的 sha256
-    前 8(与 content_items/注入段一致,修复环 I1:压缩阶梯重编码后不得用压缩前
+    前 8(与 content_items/注入段一致:压缩阶梯重编码后不得用压缩前
     hash,inspect_image 前缀反查口径);全失败或丢弃=空串(摘要行只列实际可反查的图)。
     composed:合成图标记(工具侧 mime 恒 image/jpeg;单图原图直发才需魔数探测)。
     """
@@ -177,7 +177,7 @@ async def run_feed_image_pipeline(
     if len(downloaded) == 1:
         ordinal, url, data = downloaded[0]
         segments: list[tuple[str, bytes]] = [(url, data)]
-        # 锚文案的图号=幸存图的原始序号(终审 M1,2026-09-03):部分失败至恰剩
+        # 锚文案的图号=幸存图的原始序号:部分失败至恰剩
         # 一张时送出的可能是原始第 N 图,恒写「图1」会让序号与实际字节错位
         span = ordinal
         composed = False
@@ -196,7 +196,7 @@ async def run_feed_image_pipeline(
         fit_images_to_rpc_budget, segments,
         on_drop=lambda u: log.warning("%s图片压缩后仍超 RPC 帧预算,丢弃保帧: %s", prefix, u),
     )
-    # 锚 hash 取**拟合后实际送出**的字节(修复环 I1,2026-09-03):压缩阶梯会
+    # 锚 hash 取**拟合后实际送出**的字节:压缩阶梯会
     # 重编码(字节已变),取压缩前 hash 会让 inspect_image 的 hash 前缀反查对
     # 不上 content_items/注入段送出的字节(反查契约回归)。丢弃(None)则清空锚。
     sent = fitted[0][1]
@@ -205,6 +205,6 @@ async def run_feed_image_pipeline(
     elif composed:
         anchor = f"图1-图{span}(拼接,hash={hashlib.sha256(sent).hexdigest()[:8]})"
     else:
-        # 单图直返不画角标不变——原始序号由锚承担(终审 M1)
+        # 单图直返不画角标不变——原始序号由锚承担
         anchor = f"图{span}({hashlib.sha256(sent).hexdigest()[:8]})"
     return FeedImagePack(segments=list(fitted), anchor=anchor, composed=composed)

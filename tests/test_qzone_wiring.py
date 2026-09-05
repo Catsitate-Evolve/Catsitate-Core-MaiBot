@@ -3721,6 +3721,67 @@ def test_shared_discovery_pagination_passes_through(tmp_path, monkeypatch):
     assert [c[1]["message_id"] for c in p._ctx.gateway.calls] == ["qzone_newtid_1"]  # 注入照常
 
 
+def test_shared_discovery_returns_cursor_bound_to_list(tmp_path):
+    """TOCTOU 修复锁定:续页游标随首页列表同源绑定返回(三元组),消费方不再锁外
+    读全局态——列表与游标不同源的竞态窗口消除。返回的 cursor 与缓存 home_cursor
+    一致,且缓存命中时仍返回绑定的同一游标。"""
+
+    p = _make_plugin(tmp_path)
+    now_s = str(int(datetime.now().timestamp()))
+
+    class _CursorClient(_StubUnifiedClient):
+        def __init__(self):
+            super().__init__([FeedDiscovery(tid="t1", uin="10001", nickname="小明", abstime=now_s, appid=311)])
+            self.cursor_seq = ["curA", "curB"]
+
+        async def get_unified_timeline(self, *, count=20, begintime=None):
+            del count
+            self.discovery_calls += 1
+            if begintime is None:
+                return list(self._discoveries), self.cursor_seq.pop(0)
+            return [], ""
+
+    p.qzone_client = _CursorClient()
+    # 首次拉取:游标 curA 随列表返回
+    state, batch, cursor = asyncio.run(p._qzone_shared_discovery(20))
+    assert state == "ok" and cursor == "curA"
+    assert p._qzone_discovery_home_cursor == "curA"  # 缓存同源
+    # 缓存命中:返回绑定的同一游标(不锁外读,一致性由三元组保证)
+    state2, batch2, cursor2 = asyncio.run(p._qzone_shared_discovery(20))
+    assert state2 == "ok" and cursor2 == "curA"
+    assert p.qzone_client.discovery_calls == 1  # 命中缓存零端点调用
+
+
+def test_poll_feeds_note_send_deferred_on_rate_limit(tmp_path):
+    """同窗 read+send 形态下发现层限流 → browsed 发布触发不派发(留白),但须有
+    debug 留痕说明「发布触发延迟」——否则整个窗口持续限流时 bot 静默不发说说
+    且无可观测信号。"""
+
+    from catsitate_core.qzone.client import QzoneRateLimitError
+
+    p = _make_plugin(tmp_path)
+    now = datetime.now()
+    p._schedule_data = {"date": now.strftime("%Y-%m-%d"), "windows": [{
+        "kind": "daily", "start": (now - timedelta(minutes=1)).strftime("%Y-%m-%dT%H:%M"),
+        "end": (now + timedelta(hours=1)).strftime("%Y-%m-%dT%H:%M"),
+        "activity": "刷空间+发说说", "plan_speak": False, "topic": "",
+        "read_qzone": True, "send_qzone": True,
+    }]}
+
+    class _RateLimitedClient(_StubUnifiedClient):
+        async def get_unified_timeline(self, *, count=20, begintime=None):
+            del count, begintime
+            raise QzoneRateLimitError("空间服务限流(统一时间线): code=-10001")
+
+    p.qzone_client = _RateLimitedClient([])
+    asyncio.run(p._qzone_poll_feeds())
+    assert any(
+        level == "debug" and "发布触发延迟" in str(a[0]) for level, a in p.logs
+    )
+    # browsed 发布触发未派发(分享无上下文)
+    assert p._qzone_send_first_poll_done is False
+
+
 def test_poll_feeds_enrichment_rate_limit_stops_round(tmp_path):
     """充实层撞限流 → 终止本轮(不再逐作者重试加重风控);先前已入队作者保留,
     后续作者零调用(区分「终止本轮」与「单好友跳过 continue」)。"""

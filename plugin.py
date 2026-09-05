@@ -1683,27 +1683,29 @@ class CatsitatePlugin(MaiBotPlugin):
                 "(浏览与通知源B 共享,期间零请求),期满自动恢复"
             )
 
-    async def _qzone_shared_discovery(self, count: int) -> tuple[str, list]:
+    async def _qzone_shared_discovery(self, count: int) -> tuple[str, list, str]:
         """发现层统一入口:单飞+共享缓存+限流退避(浏览层与通知源B 共用一次请求源)。
 
         浏览层(15 分钟/次)与通知源B(120 秒/次)原本各自直调统一时间线端点
         (同端点同口径、首页均无游标),合计约 860 次/天持续触发服务端限流
         (-10001);两处消费合并为一次请求源后,共享缓存命中即免请求,限流则共享
-        同一退避窗口。返回 ("ok", 列表) 或 ("rate_limited", []);QzoneAuthError
-        与其他异常原样上抛(浏览层/源B 各自显式告警后跳过本轮,发现层任何失败
-        均不回退——逐好友 1→N+1 放大是风控帮凶,该路径已移除)。
-        带游标的翻页调用不经过本层(浏览层积压补全穿透直发)。锁内只做 client
-        IO,不触泵与注入器。
+        同一退避窗口。返回 (state, 首页列表, 续页游标) 或 ("rate_limited", [], "")。
+        续页游标与首页列表**同源绑定返回**(而非另存全局态锁外读)——否则
+        锁内返列表到锁外读游标的间隙若被源B 新拉取打断,翻页游标会与首页列表
+        错位(竞态)。QzoneAuthError 与其他异常原样上抛(浏览层/源B 各自显式
+        告警后跳过本轮,发现层任何失败均不回退——逐好友 1→N+1 放大是风控帮凶,
+        该路径已移除)。带游标的翻页调用不经过本层(浏览层积压补全穿透直发)。
+        锁内只做 client IO,不触泵与注入器。
         """
 
         now = time.monotonic()
         if now < self._qzone_discovery_backoff_until:
-            return "rate_limited", []  # 退避期内静默(进入退避时已告警过一次)
+            return "rate_limited", [], ""  # 退避期内静默(进入退避时已告警过一次)
         if (
             self._qzone_discovery_cache is not None
             and now - self._qzone_discovery_cache[0] < DISCOVERY_CACHE_TTL_SECONDS
         ):
-            return "ok", self._qzone_discovery_cache[1]
+            return "ok", self._qzone_discovery_cache[1], self._qzone_discovery_home_cursor
         # 单飞锁按契约由 on_load 创建;离线装配等未跑 on_load 的场景就地补建
         # (容错一行,防 None 解引用)
         if self._qzone_discovery_fetch_lock is None:
@@ -1711,14 +1713,13 @@ class CatsitatePlugin(MaiBotPlugin):
         async with self._qzone_discovery_fetch_lock:
             # 双检:等锁期间 winner 可能已完成拉取或进入退避,等待者直接共享其结果,
             # 不再重复打端点
-            now = time.monotonic()
-            if now < self._qzone_discovery_backoff_until:
-                return "rate_limited", []
+            if time.monotonic() < self._qzone_discovery_backoff_until:
+                return "rate_limited", [], ""
             if (
                 self._qzone_discovery_cache is not None
-                and now - self._qzone_discovery_cache[0] < DISCOVERY_CACHE_TTL_SECONDS
+                and time.monotonic() - self._qzone_discovery_cache[0] < DISCOVERY_CACHE_TTL_SECONDS
             ):
-                return "ok", self._qzone_discovery_cache[1]
+                return "ok", self._qzone_discovery_cache[1], self._qzone_discovery_home_cursor
             try:
                 # 首页只传 count(与两消费方同口径,首页均无游标);带游标的翻页
                 # 由消费方自行直发,不经本层
@@ -1728,16 +1729,21 @@ class CatsitatePlugin(MaiBotPlugin):
                 # 即持续撞墙——退避期内零请求,期满自动恢复探测;告警单次化
                 # (退避期内静默返态,不重复刷 warning)
                 self._qzone_enter_rate_limit_backoff()
-                return "rate_limited", []
-            # 首页列表与续页游标同源缓存:浏览层积压补全穿透翻页时取游标直发
-            self._qzone_discovery_cache = (now, discoveries)
-            self._qzone_discovery_home_cursor = str(_cursor or "")
+                return "rate_limited", [], ""
+            # 缓存时间戳取请求返回后的此刻(而非锁内双检采样):请求耗时不得被
+            # 白送进新鲜期,否则 TTL 被高估、缓存偏「年轻」多打端点
+            fetched_at = time.monotonic()
+            home_cursor = str(_cursor or "")
+            # 首页列表与续页游标同源缓存(原子同写);游标随列表绑定返回,消费方
+            # 不锁外读全局态,消除「列表与游标不同源」的 TOCTOU 竞态
+            self._qzone_discovery_cache = (fetched_at, discoveries)
+            self._qzone_discovery_home_cursor = home_cursor
             if self._qzone_discovery_backoff_until > 0:
                 # 退避到期后首次成功真实拉取:复位退避与告警标记(再遇限流重新告警)
                 self._qzone_discovery_backoff_until = 0.0
                 self._qzone_discovery_backoff_warned = False
                 self.ctx.logger.info("QQ空间发现层限流退避结束,恢复拉取")
-            return "ok", discoveries
+            return "ok", discoveries, home_cursor
 
     async def _qzone_poll_feeds(self) -> None:
         """空间窗口内周期拉取(统一时间线架构);窗口切换时收泵并回退未读。
@@ -1817,20 +1823,25 @@ class CatsitatePlugin(MaiBotPlugin):
             try:
                 # 首页经发现层统一入口(单飞+共享缓存+限流退避;与通知源B 共用
                 # 一次请求源,缓存新鲜期浏览零端点调用);限流态按原文案告警后
-                # 跳过本轮,不回退 legacy——限流期间逐好友 1→N+1 放大恰是火上浇油
-                state, first_batch = await self._qzone_shared_discovery(page_size)
+                # 跳过本轮,不回退——限流期间逐好友 1→N+1 放大恰是火上浇油。
+                # 续页游标随首页列表同源绑定返回(非锁外读全局态,消除 TOCTOU)
+                state, first_batch, home_cursor = await self._qzone_shared_discovery(page_size)
                 if state == "rate_limited":
                     self.ctx.logger.warning("QQ空间服务限流(network busy),本轮浏览跳过,下轮再试")
+                    # 限流≠完成浏览:同窗 read+send 形态下 browsed 发布触发不派发
+                    # (分享无上下文),留白合理但须留痕——否则整个窗口持续限流时
+                    # bot 静默不发说说且无任何可观测信号
+                    self._qzone_note_send_deferred(win, "服务限流")
                     return
                 discoveries.extend(first_batch)
                 has_new = any(
                     d.appid == FEED_APPID_SHUOSHUO and self.qzone_seen.is_new_candidate(d.tid)
                     for d in first_batch
                 )
-                # 积压补全穿透直发:续页游标与首页列表同源(统一入口随缓存保存),
+                # 积压补全穿透直发:续页游标与首页列表同源(随共享层返回值绑定),
                 # 后续页仍直调 client 带游标逐页回溯,不经共享层;页间 2s 间隔与
                 # 空页/无新 tid/游标耗尽/页数上限四重终止不变
-                cursor: str | None = self._qzone_discovery_home_cursor or None
+                cursor: str | None = home_cursor or None
                 if has_new and cursor:
                     for _page_idx in range(1, max_pages):
                         # 页间请求间隔:与充实层/通知源B 好友间隔同款 2 秒防风控口径
@@ -1859,6 +1870,7 @@ class CatsitatePlugin(MaiBotPlugin):
                 # 本轮零登记),已发现列表作废,下轮重拉
                 self._qzone_enter_rate_limit_backoff()
                 self.ctx.logger.warning("QQ空间服务限流(翻页),本轮浏览终止,下轮再试")
+                self._qzone_note_send_deferred(win, "翻页限流")
                 return
             except Exception:
                 # 未知失败(超时/HTTP 5xx/响应畸形):告警后跳过本轮,等下轮拉取
@@ -1866,6 +1878,7 @@ class CatsitatePlugin(MaiBotPlugin):
                 # 恰是火上浇油(2026-09-05 上午实证:未分类 -10001 落此分支连发
                 # 逐好友回退,加重风控持续数小时;限流/登录态分支同口径)
                 self.ctx.logger.exception("QQ空间统一时间线拉取失败,本轮跳过(不回退逐好友路径)")
+                self._qzone_note_send_deferred(win, "发现层失败")
                 return
             if not discoveries:
                 await self._qzone_pump()  # 空发现也泵——超时推进兜底(旧路径每轮必泵语义)
@@ -2133,6 +2146,18 @@ class CatsitatePlugin(MaiBotPlugin):
             return  # 上一轮后台扫描还在跑,跳过(防重入)
         self._qzone_notify_running = True
         self._spawn_background_task(self._qzone_notify_scan())
+
+    def _qzone_note_send_deferred(self, win: dict, reason: str) -> None:
+        """发现层失败/限流路径的可观测留痕:同窗 read+send 形态下,browsed 发布
+        触发不会派发(分享无上下文),留白合理但须有信号——否则整个窗口持续限流
+        时 bot 静默不发说说。仅记录一条 debug(不重复、不打断),定位「为什么这
+        个 send 时段没发说说」时可见。仅 send 窗口(无 read)不受影响,不发。"""
+
+        if not (win.get("read_qzone") and win.get("send_qzone")):
+            return
+        self.ctx.logger.debug(
+            "QQ空间同窗发布触发延迟:发现层%s,本轮未派发 browsed 发布(下轮或下一窗口再试)", reason
+        )
 
     def _qzone_send_first_poll_finish(self, win: dict) -> None:
         """首轮浏览收尾派发:零新动态轮同样算完成浏览——置位一次性
@@ -2457,7 +2482,7 @@ class CatsitatePlugin(MaiBotPlugin):
                         # 页大小取 discovery_count 与浏览流同口径);经发现层
                         # 统一入口与浏览层共用一次请求源(单飞+共享缓存+限流
                         # 退避),限流态源B 静默跳过(浏览侧已告警过,不重复)
-                        state_b, discoveries_b = await self._qzone_shared_discovery(
+                        state_b, discoveries_b, _b_cursor = await self._qzone_shared_discovery(
                             max(self.config.qzone.discovery_count, 1)
                         )
                         if state_b == "rate_limited":

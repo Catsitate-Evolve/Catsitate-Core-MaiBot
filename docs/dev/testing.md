@@ -1,6 +1,6 @@
 # 测试体系
 
-> 对应代码:`tests/`(34 个文件,613 个用例,全量离线运行约 6 秒)。
+> 对应代码:`tests/`(34 个文件,617 个用例,全量离线运行约 6 秒)。
 
 ## 测试哲学
 
@@ -31,7 +31,7 @@ assert text.startswith("(今天") and text.endswith("今天天气好\n〔说说I
 
 ```bash
 cd <本仓库根> && python3 -m pytest tests/ -q
-# 613 passed in ~6s(无需网络、无需主程序、无需 QQ 登录态)
+# 617 passed in ~6s(无需网络、无需主程序、无需 QQ 登录态)
 ```
 
 跑单个模块:

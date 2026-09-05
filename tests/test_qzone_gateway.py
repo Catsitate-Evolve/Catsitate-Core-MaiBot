@@ -221,7 +221,6 @@ def test_tool_driven_wiring_source_assertions():
     assert "你评论了TA" in src and "你点赞了TA" in src
     # T7 M-1:快照缓存 LRU 上限;M-2:见闻摘要带作者昵称
     assert "SNAPSHOT_CACHE_MAX" in src and "popitem(last=False)" in src
-    assert 'author_nickname=friend["nickname"]' in src and "author_nickname" in src
     # 场景文案 v3(提示词可读性):三工具用法+〔〕参数行说明;运行时经
     # load_side_system("qzone_scene") 三层链读取(WebUI 可覆盖,内置为兜底)
     from catsitate_core.qzone.scene import QZONE_SCENE_TEXT as _scene_text

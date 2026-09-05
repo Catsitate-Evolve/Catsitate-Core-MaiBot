@@ -15,7 +15,7 @@ _WEBP_MAGIC = b"WEBP"
 def _mime_from_bytes(head: bytes) -> str:
     """按字节魔数嗅探图片 MIME 类型;无法识别时兜底 png。
 
-    最终审查 Important#3:硬编码 data:image/png 会让 jpeg/gif/webp 图片被错误声明为 png,
+    硬编码 data:image/png 会让 jpeg/gif/webp 图片被错误声明为 png,
     改为按头部魔数选择:PNG/JPEG/GIF(87a/89a)/WEBP(RIFF....WEBP),兜底 png。
     """
 
@@ -62,7 +62,7 @@ def find_image_segment(
 ) -> tuple[dict | None, str]:
     """定位图片段:指定 message_id 按 id 找,否则取倒数第 image_index 条含图消息。
 
-    spike ④:段在 raw_message 键。
+    实测:段在 raw_message 键。
     """
 
     if target_message_id is not None:
@@ -100,7 +100,7 @@ def build_relook_prompt(question: str, image_segment: dict) -> tuple[list[dict],
     messages, cache_key = build_side_prompt("image_relook", [], tail)
     if data:
         # 图片块追加到 user 消息内容之后(图片 token 无前缀缓存意义)
-        # MIME 按字节魔数嗅探,不再硬编码 png(最终审查 Important#3)
+        # MIME 按字节魔数嗅探,不再硬编码 png
         messages[-1]["content"] = [
             {"type": "text", "text": tail[0]},
             {"type": "image_url", "image_url": {"url": f"data:image/{_mime_from_data(data)};base64,{data}"}},

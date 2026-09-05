@@ -234,7 +234,7 @@ class QzoneSection(PluginConfigBase):
     )
     comment_poll_enabled: bool = _f(True, "统一通知轮询开关(双源:自己说说新评论+他人说说楼中楼新回复,始终运行醒着即可)", label="通知轮询开关")
     notification_interval_seconds: int = _f(120, "统一通知轮询间隔(秒,模拟推送通知的检查频率;最小30)", label="通知间隔(秒)")
-    # 虚拟流会话身份不配置(2026-09-02 用户裁定):QZONE_VIRTUAL_GROUP_ID/NAME
+    # 虚拟流会话身份不配置(2026-09-02):QZONE_VIRTUAL_GROUP_ID/NAME
     # 常量固化于 catsitate_core.qzone——伪群号可配置会被改成与真实群号相同的
     # 值,会话路由与 person 折叠随之漂移;旧配置残留键由加载侧告警提示可移除
     summary_count: int = _f(5, "真实聊天注入的近期已见动态条数", label="见闻摘要条数")

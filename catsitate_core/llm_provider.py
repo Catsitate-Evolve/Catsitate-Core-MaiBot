@@ -84,7 +84,7 @@ SIDE_TEMPLATES: dict[str, dict] = {
     # 空间虚拟流场景文案(可读性优化 2026-09-01):注入消息〔〕参数行与工具
     # 参数名的映射在此解释;scene.py 运行时经 load_side_system 读取(WebUI 可覆盖)
     # v5:对齐润色架构——工具 content 由 planner 直写,发出前自动按口吻顺一遍
-    # (v4:两段式参数;更早:点赞通知源C 与 feed_id 归属扩至 qzone_like)
+    # (v4:两段式参数;更早:点赞通知与 feed_id 归属扩至 qzone_like)
     "qzone_scene": {
         "version": 5,
         "system": (
@@ -98,10 +98,10 @@ SIDE_TEMPLATES: dict[str, dict] = {
             "不感兴趣就保持沉默,什么都不用做。在这里直接打字是发不出去的,动作只能通过工具完成。"
         ),
     },
-    # 睡前日记生成(M3 表达):素材=蓝本形态(我的名字是/人设/今天是{日期},
+    # 睡前日记生成:素材=蓝本形态(我的名字是/人设/今天是{日期},
     # 回顾聊天记录:{时间线}+当日其余素材,「日记内容:」收尾引导);
     # v7:长度口径改配置区间指导(素材行给 diary_word_count_min~max 区间,
-    # 去目标字数随机化——2026-09-04 用户裁定:违反设计哲学,对齐 diary_plugin
+    # 去目标字数随机化——2026-09-04:违反设计哲学,对齐 diary_plugin
     # qzone_min/max_word_count 的配置指导形态);
     # v6:指令块照搬 diary_plugin prompts.py 原文(仅占位符适配两段式布局——
     # {target_length}→素材目标行/{date_with_weather}→素材括注/{style_desc}→
@@ -160,12 +160,12 @@ SIDE_TEMPLATES: dict[str, dict] = {
 
 
 def rpc_error_brief(exc: Exception) -> str:
-    """RPC 异常简报(2026-09-02 用户裁定:E_TIMEOUT 要作为明显的超时警告输出)。
+    """RPC 异常简报(2026-09-02:E_TIMEOUT 要作为明显的超时警告输出)。
 
     RPCError 的 code 与 message 由主程序框架生成(方法名+毫秒数,如
     「请求 cap.llm.generate 超时 (30000ms)」),不含请求体/PII,可安全输出;
     E_TIMEOUT 命中时以「RPC 超时」开头显式标出。非 RPC 异常只回类型名
-    (维持既有安全复审纪律:异常文本可能夹带请求体)。鸭子类型取 code,
+    (维持既有纪律:异常文本可能夹带请求体)。鸭子类型取 code,
     不 import 主程序内部模块(只依赖 SDK 表面)。"""
 
     code = getattr(exc, "code", None)
@@ -204,7 +204,7 @@ def load_side_system(template_id: str) -> tuple[str, str]:
         try:
             stat = path.stat()
         except OSError:
-            # 文件不存在 → 尝试下一层;全部缺失时告警一次(审查 M3,禁止静默回退)
+            # 文件不存在 → 尝试下一层;全部缺失时告警一次(禁止静默回退)
             if path == candidates[-1] and not _missing_warned.get(template_id):
                 _missing_warned[template_id] = True
                 logger.warning("旁路模板 %s 未部署(已尝试 %s),使用内置默认模板;部署后自动恢复", name, candidates)

@@ -36,7 +36,7 @@ class BatchEngine:
         self.config = config
 
     def ensure_schema(self) -> None:
-        # 开发期裁定:检测旧形状直接重建,不做数据迁移
+        # 开发期:检测旧形状直接重建,不做数据迁移
         #   favorability/favorability_log 旧形状 = 含 stream_id 列(按流存储时代);
         #   batch_counter 旧形状 = 含 window_start 死列(按人重构前遗留,结算窗口已改用人级 favorability.window_start)
         cols = {r[1] for r in self.store.query("PRAGMA table_info(favorability)")}
@@ -46,7 +46,7 @@ class BatchEngine:
             self.store.execute("DROP TABLE IF EXISTS favorability_log")
             self.store.execute("DROP TABLE IF EXISTS batch_counter")
         elif "window_start" in counter_cols:
-            # 活跃账本旧形状(死列残留):开发期接受清零重建(最终审查 M1),
+            # 活跃账本旧形状(死列残留):开发期接受清零重建,
             # 结算窗口按人走 favorability.window_start,不受账本重建影响
             self.store.execute("DROP TABLE IF EXISTS batch_counter")
         self.store.execute(
@@ -138,7 +138,7 @@ class BatchEngine:
         )
 
     def is_exclusive_holder(self, user_id: str) -> bool:
-        """「特别」之位是否被他人占据(全表最多 1 人,规格全局决策 #8)。"""
+        """「特别」之位是否被他人占据(全表最多 1 人)。"""
 
         rows = self.store.query(
             "SELECT 1 FROM favorability WHERE level >= ? AND user_id != ? LIMIT 1",
@@ -220,7 +220,7 @@ class BatchEngine:
         }
 
     def build_material(self, user_id: str, history: list[dict]) -> list[str]:
-        """结算素材(按人跨流聚合;规格全局决策 #7)。"""
+        """结算素材(按人跨流聚合)。"""
 
         row = self.get_level(user_id)
         window_start = (row or {}).get("window_start") or ""
@@ -344,11 +344,11 @@ class SettleExecutor:
         """
 
         material = self.engine.build_material(user_id, history)
-        # 素材为空(取不到消息/窗口过滤后无目标用户消息):不调 LLM,不落库(审查 M2)
+        # 素材为空(取不到消息/窗口过滤后无目标用户消息):不调 LLM,不落库
         if not material:
-            # 未触达 apply_delta,独占钳制状态恒 False(最终审查 M3 统一字段)
+            # 未触达 apply_delta,独占钳制状态恒 False(统一字段口径)
             return {"status": "failed", "error": "素材为空,跳过结算", "exclusive_clamped": False}
-        # 顺延口径 = 素材中目标用户本人的消息条数(审查 Minor#8,群聊邻居不计入)
+        # 顺延口径 = 素材中目标用户本人的消息条数(群聊邻居不计入)
         target_count = sum(1 for m in material if f"[{user_id}]" in m)
         if kind == "daily" and target_count < self.engine.config.daily_settle_min:
             return {"status": "carried_over", "reason": f"用户消息不足 {self.engine.config.daily_settle_min} 条,顺延",
@@ -366,11 +366,11 @@ class SettleExecutor:
         try:
             result = await self.llm_call(messages, model)
         except Exception as exc:  # noqa: BLE001
-            # 仅记异常类型,不插值 exc 本体:LLM API 错误可能含请求体/PII(安全复审,同 decay.py)
-            # 未触达 apply_delta,独占钳制状态恒 False(最终审查 M3 统一字段)
+            # 仅记异常类型,不插值 exc 本体:LLM API 错误可能含请求体/PII(同 decay.py)
+            # 未触达 apply_delta,独占钳制状态恒 False(统一字段口径)
             return {"status": "failed", "error": f"LLM 调用异常: {rpc_error_brief(exc)}", "exclusive_clamped": False}
         if not isinstance(result, dict) or not result.get("success"):
-            # 不落响应原文(LLM 响应可能含用户内容/PII,安全复审):仅记失败形态
+            # 不落响应原文(LLM 响应可能含用户内容/PII):仅记失败形态
             if isinstance(result, dict):
                 reason = f"success={result.get('success')}"
             else:
@@ -382,7 +382,7 @@ class SettleExecutor:
         delta_limit = max(1, self.engine.config.delta_max)
         delta = max(-delta_limit, min(delta_limit, parsed["delta"]))
         judged_at = datetime.now().strftime("%Y-%m-%dT%H:%M:%S")
-        judge_id = f"{kind}-{judged_at}-{user_id}"  # 用户后缀:同秒多人结算不撞幂等键(复核 Important)
+        judge_id = f"{kind}-{judged_at}-{user_id}"  # 用户后缀:同秒多人结算不撞幂等键
         status = self.engine.apply_delta(
             user_id, delta, parsed["note"], judged_at=judged_at, judge_id=judge_id
         )
@@ -401,8 +401,8 @@ def build_favorability_block(
 ) -> str:
     """渲染好感度块文本(无记录=陌生,无注记)。
 
-    include_rule=True 时按当前等级注入对应一条规则,置于块最前(联调决定:
-    5 级全量注入改为按等级单条注入,保证缓存命中率与 token 经济性)。
+    include_rule=True 时按当前等级注入对应一条规则,置于块最前
+    (5 级全量注入改为按等级单条注入,保证缓存命中率与 token 经济性)。
     """
 
     row = engine.get_level(user_id)

@@ -2931,6 +2931,32 @@ def test_poll_tick_reentrancy_guard(tmp_path):
     assert p._qzone_poll_running is False  # 后台 feeds 完成后标记复位
 
 
+def test_update_schedule_add_qzone_window(tmp_path):
+    """update_schedule 工具适配 QQ空间窗口字段:add 传 read_qzone/send_qzone
+    落进新窗口,view 文本带「(刷空间)/(发说说)」标注。"""
+
+    p = _make_plugin(tmp_path)
+    p.config.plugin.enabled = True  # 工具首行门控(离线装配默认关)
+    p._schedule_edit_history = []  # on_load 装配的编辑历史(离线补)
+    p._ctx.paths = type("_Paths", (), {"data_dir": tmp_path})()  # 成功路径落盘 schedule.json 用
+    p._schedule_generated = False  # on_load 装配的生成标记(落盘字段,离线补)
+    now = datetime.now()
+    day, nxt = now.strftime("%Y-%m-%d"), (now + timedelta(days=1)).strftime("%Y-%m-%d")
+    p._schedule_data = {"date": day, "windows": [
+        {"kind": "daily", "start": f"{day}T08:00", "end": f"{day}T09:00",
+         "activity": "闲逛", "plan_speak": False, "topic": ""},
+        {"kind": "sleep", "start": f"{day}T23:00", "end": f"{nxt}T07:30", "activity": ""},
+    ]}
+    res = asyncio.run(p.update_schedule(action="add", start="20:00", end="21:00",
+                                         activity="刷刷空间", read_qzone=True, send_qzone=True,
+                                         stream_id="s1", user_id="10001"))
+    assert "日程已更新" in res
+    w = next(w for w in p._schedule_data["windows"] if w.get("activity") == "刷刷空间")
+    assert w.get("read_qzone") is True and w.get("send_qzone") is True
+    view = asyncio.run(p.update_schedule(action="view"))
+    assert "(刷空间)" in view and "(发说说)" in view
+
+
 def test_poll_feeds_spacing_governs_fetch_rhythm(tmp_path):
     """拉取间距语义(窗口开始即首拉,间隔=两次拉取的间距而非与窗口无关的
     固定节奏):距上次拉取不足 poll_interval_minutes 的轮次跳过发现/充实

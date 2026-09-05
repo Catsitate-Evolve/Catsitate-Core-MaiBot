@@ -428,8 +428,12 @@ def apply_schedule_move(
 def apply_schedule_add(
     data: dict, start_hm: str, end_hm: str, activity: str, day: str, *,
     min_sleep: int, max_sleep: int, history: list[dict],
+    read_qzone: bool = False, send_qzone: bool = False,
 ) -> tuple[dict, str, list[dict], list[str]]:
-    """add:新增活动窗口;重叠时新窗口挤旧窗口(压缩),返回调整明细。"""
+    """add:新增活动窗口;重叠时新窗口挤旧窗口(压缩),返回调整明细。
+
+    read_qzone/send_qzone:QQ空间窗口标记(浏览/发布),仅在 True 时写入键——
+    与日程生成器输出形态一致,消费方全部 .get() 判定,缺省即 False。"""
 
     windows = [dict(w) for w in (data.get("windows") or [])]
     if sum(1 for w in windows if w.get("kind") != "sleep") >= ACTIVITY_WINDOW_LIMIT:
@@ -440,8 +444,13 @@ def apply_schedule_add(
     if end <= start:
         end = (datetime.strptime(end, _ISO) + timedelta(days=1)).strftime(_ISO)
     before = json.dumps(data, ensure_ascii=False)
-    windows.append({"kind": "daily", "start": start, "end": end,
-                    "activity": (activity or "自由时间").strip()[:40], "plan_speak": False, "topic": ""})
+    new_window = {"kind": "daily", "start": start, "end": end,
+                  "activity": (activity or "自由时间").strip()[:40], "plan_speak": False, "topic": ""}
+    if read_qzone:
+        new_window["read_qzone"] = True
+    if send_qzone:
+        new_window["send_qzone"] = True
+    windows.append(new_window)
     anchor_index = len(windows) - 1
     windows, cerr, adjustments = compress_with_anchor(windows, anchor_index)
     if cerr:

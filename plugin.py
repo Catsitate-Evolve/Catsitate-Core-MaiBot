@@ -574,15 +574,19 @@ class CatsitatePlugin(MaiBotPlugin):
         description="增/删/改 bot 自己今天的日程安排(活动窗口)。活动最多 8 个;睡眠窗口不可删除、时间修改受最短/最长睡眠约束。",
         brief_description="修改今日日程",
         parameters=[
-            ToolParameterInfo(name="action", param_type="string", description="view(查看当前日程)/move(把某窗口挪到新时段)/add(新增活动)/delete(删除活动窗口)。日程按时间顺序排列,窗口序号以 view 输出为准。建议流程:编辑前先 view 看当前日程与窗口序号,编辑后再次 view 确认结果。常用示例:把睡眠窗口改成11:45到16:00 → action=move, window_index=view 中睡眠窗口的序号, start=11:45, end=16:00;新增下午听歌 → action=add, start=16:00, end=18:00, activity=和Hesitate_P一起听歌", required=True),
+            ToolParameterInfo(name="action", param_type="string", description="view(查看当前日程)/move(把某窗口挪到新时段)/add(新增活动)/delete(删除活动窗口)。日程按时间顺序排列,窗口序号以 view 输出为准。建议流程:编辑前先 view 看当前日程与窗口序号,编辑后再次 view 确认结果。常用示例:把睡眠窗口改成11:45到16:00 → action=move, window_index=view 中睡眠窗口的序号, start=11:45, end=16:00;新增下午听歌 → action=add, start=16:00, end=18:00, activity=和Hesitate_P一起听歌;新增刷空间时段 → action=add, start=20:00, end=21:00, activity=刷刷空间, read_qzone=true", required=True),
             ToolParameterInfo(name="window_index", param_type="integer", description="move/delete 时的窗口序号(view 结果每行开头数字)", required=False),
             ToolParameterInfo(name="start", param_type="string", description="move/add 的新开始时刻,HH:MM 格式如 11:45(自动按当天日期)", required=False),
             ToolParameterInfo(name="end", param_type="string", description="move/add 的新结束时刻,HH:MM 格式如 16:00(跨午夜自动次日)", required=False),
             ToolParameterInfo(name="activity", param_type="string", description="add 时的活动描述(如 和Hesitate_P一起听歌);move 时留空保持原活动", required=False),
+            ToolParameterInfo(name="read_qzone", param_type="boolean", description="add 时可选:该窗口是否刷空间看好友动态(浏览 QQ空间);move 自动保留原窗口标记,无需传", required=False),
+            ToolParameterInfo(name="send_qzone", param_type="boolean", description="add 时可选:该窗口是否发说说(分享 QQ空间);可与 read_qzone 同开;move 自动保留原窗口标记", required=False),
         ],
         visibility="visible",
     )
-    async def update_schedule(self, action: str = "", window_index: int = 0, start: str = "", end: str = "", activity: str = "", **kwargs: Any) -> str:
+    async def update_schedule(self, action: str = "", window_index: int = 0, start: str = "", end: str = "",
+                              activity: str = "", read_qzone: bool = False, send_qzone: bool = False,
+                              **kwargs: Any) -> str:
         del kwargs
         if not self.config.plugin.enabled or not self.config.schedule.enabled:
             return "日程模块未启用。"
@@ -602,6 +606,7 @@ class CatsitatePlugin(MaiBotPlugin):
             data, err, history, adjustments = apply_schedule_add(
                 self._schedule_data, start, end, activity, day,
                 min_sleep=min_sleep, max_sleep=max_sleep, history=self._schedule_edit_history,
+                read_qzone=bool(read_qzone), send_qzone=bool(send_qzone),
             )
         elif action == "delete":
             data, err, history = apply_schedule_delete(

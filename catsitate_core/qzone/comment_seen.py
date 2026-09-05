@@ -33,11 +33,11 @@ class CommentSeenStore:
             )
             """
         )
-        # 幂等迁移(T9):旧表无 friend_uin 列则补列(存量行取默认空串)
+        # 幂等迁移:旧表无 friend_uin 列则补列(存量行取默认空串)
         cols = {r[1] for r in self.store.query("PRAGMA table_info(qzone_comments)")}
         if "friend_uin" not in cols:
             self.store.execute("ALTER TABLE qzone_comments ADD COLUMN friend_uin TEXT NOT NULL DEFAULT ''")
-        # 幂等迁移(深度审查 A-N1):旧表无重试计数/待重试标记则补列(存量行取默认 0)
+        # 幂等迁移:旧表无重试计数/待重试标记则补列(存量行取默认 0)
         if "retry_count" not in cols:
             self.store.execute("ALTER TABLE qzone_comments ADD COLUMN retry_count INTEGER NOT NULL DEFAULT 0")
         if "pending_retry" not in cols:
@@ -59,7 +59,7 @@ class CommentSeenStore:
         """新评论登记;comment_key=f"{feed_tid}:{comment_tid}:{uin}" 已存在返回
         False=重复,由轮询侧跳过(键缺省同样 False=跳过,与 SeenStore 一致)。
 
-        待重试标记(深度审查 A-N1):被泵回退(注入被拒)的键重见时重新激活并
+        待重试标记:被泵回退(注入被拒)的键重见时重新激活并
         返回 True——软回退保留行,retry_count 不随重发现归零。
         """
 
@@ -82,10 +82,10 @@ class CommentSeenStore:
         return True
 
     def revert(self, comment_key: str) -> None:
-        """回退 is_new 登记的键(深度审查 B-4;软回退形态 A-N1):注入被宿主拒绝/
+        """回退 is_new 登记的键(软回退形态):注入被宿主拒绝/
         异常时置待重试标记,令下轮通知轮询重新发现——通知不因一次拒绝永久丢失。
 
-        不删行(A-N1):删行会让下次 is_new 重新 INSERT、retry_count 归零,重试
+        不删行:删行会让下次 is_new 重新 INSERT、retry_count 归零,重试
         上限永不生效(每轮 0→1 无限循环);软回退保留计数,note_retry 达上限后
         调用方不再 revert,登记留存 → is_new 恒 False 跳过。幂等:无该行不报错。
         """
@@ -97,7 +97,7 @@ class CommentSeenStore:
         )
 
     def note_retry(self, comment_key: str) -> int:
-        """记录一次注入失败重试,返回累计次数(深度审查 A-N1)。
+        """记录一次注入失败重试,返回累计次数。
 
         计数与登记同表存活(软回退不删行),跨「回退→重发现」循环累计;超过
         上限由调用方放弃(保留登记不再 revert)。键无登记返回 0(防御,不改状态)。
@@ -119,9 +119,9 @@ class CommentSeenStore:
 
         键用独立命名空间 "{feed_tid}:bot:{text}",不与好友评论键
         ({feed}:{tid}:{uin})冲突——bot 评论的服务端 tid 发出时不可知,防回环
-        消费自己的评论由轮询侧 uin==bot_uin 前置判定承担(T6),本登记留存
+        消费自己的评论由轮询侧 uin==bot_uin 前置判定承担,本登记留存
         供核查与保留期清理。重复登记刷新时间戳(轮询每轮都会重见仍在
-        commentlist 里的自评,幂等)。friend_uin=说说主人(T9):楼中楼轮询
+        commentlist 里的自评,幂等)。friend_uin=说说主人:楼中楼轮询
         据此圈定该去哪些好友的说说下找 bot 评论的回复。
         """
 
@@ -131,11 +131,11 @@ class CommentSeenStore:
         )
 
     def bot_commented_friends(self, *, days: int = 30) -> list[str]:
-        """bot 近 N 天评论过的说说主人去重列表(楼中楼轮询的目标圈定,T9)。
+        """bot 近 N 天评论过的说说主人去重列表(楼中楼轮询的目标圈定)。
 
         只认 bot 评论键({feed}:bot:{text});is_new 登记的好友评论行
-        friend_uin 恒为默认空串,被 friend_uin != '' 排除。时间下界(深度审查
-        D-1):只返回近 N 天(默认 30,与 prune 保留期对齐)的登记——超期旧
+        friend_uin 恒为默认空串,被 friend_uin != '' 排除。时间下界:
+        只返回近 N 天(默认 30,与 prune 保留期对齐)的登记——超期旧
         登记不得永远圈定源B轮询范围,好友列表随时间无界增长会拖慢每轮通知轮询。
         """
 
@@ -151,7 +151,7 @@ class CommentSeenStore:
         """评论登记保留期清理(默认 30 天),返回删除条数。
 
         只清 qzone_comments;qzone_fav_events 不清——last_fav_interaction 是
-        衰减计时基准(T8),清历史事件会把基准误回退到 batch 计时。
+        衰减计时基准,清历史事件会把基准误回退到 batch 计时。
         """
 
         now = now or datetime.now()
@@ -166,7 +166,7 @@ class CommentSeenStore:
         """好感度显式事件:评论/点赞/出站互动统一入表,日终结算
         素材与衰减计时基准的数据源;day=当天。
 
-        同日去重(深度审查 A-N1):同 user+kind+text+day 只记一条——通知被拒
+        同日去重:同 user+kind+text+day 只记一条——通知被拒
         回退后重发现时发现侧会重复调用本方法,不去重会重复放大结算素材。
         dedup=False 跳过查重直接入库:出站工具路径(qzone_like/qzone_comment/
         qzone_reply 成功后的记账)每次调用对应一次真实远端动作,事件文本不含
@@ -189,7 +189,7 @@ class CommentSeenStore:
 
     def fav_events_since(self, user_id: str, since_iso: str) -> list[dict]:
         """某人自 since_iso(含排他下界,ISO 字符串比较)以来的全部事件,
-        按 created_at 升序(H-2,2026-09-03:滚动窗,不限自然日)。
+        按 created_at 升序(滚动窗,不限自然日)。
 
         结算素材取数入口:窗口起点用 favorability.window_start(与聊天消息
         同源同口径),跨零点结算时昨晚事件不丢。"""
@@ -206,7 +206,7 @@ class CommentSeenStore:
 
     def fav_events_window(self, since_iso: str) -> list[dict]:
         """全部用户自 since_iso(含等于,ISO 字符串比较)以来的事件,按
-        created_at 升序(H-2/C-N1:日终候选并集的数据源;2026-09-04 起亦作
+        created_at 升序(日终候选并集的数据源;2026-09-04 起亦作
         见闻素材取数,近 24h 滚动窗)。
 
         纯空间互动好友(无 batch 行)经回看窗(now - window_hours)进入日终

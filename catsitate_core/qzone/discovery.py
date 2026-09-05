@@ -90,7 +90,7 @@ def parse_unified_timeline(text: str) -> list[FeedDiscovery]:
     text = str(text or "")
     out: list[FeedDiscovery] = []
     for match in _KEY_RE.finditer(text):
-        # 窗口上界=下一 key 锚点位置(审查修复:畸形中间条目不得越过锚点向
+        # 窗口上界=下一 key 锚点位置:畸形中间条目不得越过锚点向
         # 邻条目借用 abstime/appid 等同名字段误组装);无后续锚点回退固定跨度
         next_key = text.find("key:'", match.end())
         window_end = next_key if next_key != -1 else match.end() + WINDOW_CHARS
@@ -153,9 +153,9 @@ def _relative_time_to_epoch(day: str, hm: str, now: datetime) -> int:
     """相对时间(今天/昨天/前天/N月N日 + HH:MM)折算 epoch 秒,天级精度。
 
     跨年边界按「折算结果晚于当前则回退一年」处理;HH:MM 缺失按 00:00。
-    审查修复(2026-09-03):非闰年「2月29日」使 N月N日 折算构造出历史上不
+    非闰年「2月29日」使 N月N日 折算构造出历史上不
     存在的日期,replace 抛 ValueError 且无捕获——异常沿 get_like_events
-    上抛会中止通知扫描整轮。终审 M2 补全防护半套:时分构造的 replace 原在
+    上抛会中止通知扫描整轮。时分构造的 replace 亦同理:它若在
     try 之外,LIKE_TIME_RE 容忍「99:99」时同样抛 ValueError 无人捕获。
     现整个折算(时分构造+日期构造+跨年回退)统一纳入一处 try:告警后
     返回 0(与「create_time 缺失不编造时间」口径一致;调用侧 like_epoch=0

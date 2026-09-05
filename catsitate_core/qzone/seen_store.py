@@ -36,7 +36,7 @@ class SeenStore:
             )
             """
         )
-        # 旧库迁移(M-2/通知 reply 段):CREATE IF NOT EXISTS 不更新既有表,PRAGMA 查列缺则 ALTER 补
+        # 旧库迁移(通知 reply 段):CREATE IF NOT EXISTS 不更新既有表,PRAGMA 查列缺则 ALTER 补
         columns = {r[1] for r in self.store.query("PRAGMA table_info(qzone_feeds)")}
         if "author_nickname" not in columns:
             self.store.execute("ALTER TABLE qzone_feeds ADD COLUMN author_nickname TEXT NOT NULL DEFAULT ''")
@@ -74,7 +74,7 @@ class SeenStore:
     def mark_seen(self, tid: str, injected_at_iso: str, message_id: str | None = None) -> None:
         """标记已见;message_id 记录注入时的消息 id(通知 reply 段关联原说说用)。
 
-        三态(2026-09-03 复审修复):真实 id=覆写注入锚;None(缺省)=只置 seen,
+        三态:真实 id=覆写注入锚;None(缺省)=只置 seen,
         经 COALESCE 保留旧锚(detail 查看路径——不该抹掉浏览注入落的引用锚);
         空串=显式清除覆写。
         """

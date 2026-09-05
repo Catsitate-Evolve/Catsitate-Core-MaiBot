@@ -7,6 +7,15 @@
   - _manifest.json 的 version 与本文件最新正式版保持一致。
 -->
 
+## v1.0.6(2026-09-06) qzone_next 主动刷动态 + 共享层逻辑修复与日记表达
+
+- **`qzone_next` 工具**:bot 在浏览窗口内主动翻看下一条说说(「看完了,继续刷」)——复用注入链释放当前 awaiting 再 pump 推下一条,破解「wait 空等、注入在 planner 轮结束前不进来」的结构性错配;非 qzone 流从 tool_definitions 剔除(唯一流限定 qzone 工具);场景模板 v5→v6 指引「继续刷调 qzone_next,别用 wait 干等」。
+- **发现层共享层三处逻辑修复**:续页游标随首页列表同源绑定返回(消除锁内返列表到锁外读全局态的 TOCTOU 竞态);缓存时间戳取请求返回后而非锁内双检采样(TTL 精确);发现层失败/限流路径补 debug 留痕(同窗 read+send 形态下 browsed 发布触发延迟,不再静默)。
+- **code-review 整改(v1.0.2 至今范围)**:curl_cffi 回退 httpx 时补显式告警(指纹防护失效不得静默);彻底删除逐好友 legacy 死代码(`_qzone_poll_feeds_legacy`/`_qzone_friend_list`/`parse_friend_list`);qzone-sense/philosophy/architecture 的「回退 legacy」陈旧措辞勘正。
+- **日记表达**:素材日期行补星期几(「20XX年X月X日,星期X」);天气码转中文文字(WMO→`WEATHER_CODE_MAP`,与环境块同源,日程「明天天气」与日记「当前天气」两处同时受益,不再向 LLM 暴露机器格式「天气码 N」)。
+- 本版无数据格式变更,无需迁移(版本表维持 v1 基线)。
+- 测试基线:626 用例全绿(全离线)。
+
 ## v1.0.5(2026-09-05) 空间风控指纹专项修复
 
 - 风控根因确证(浏览器抓包 + 容器内同刻对照实验):腾讯按**客户端 TLS/HTTP 指纹**歧视——同 cookie 同参数下,Python httpx 在滚动窗口内零星请求即被判 `-10001`「network busy」,同刻 Chrome 指纹(真浏览器与 curl_cffi)恒过;且 **count=50 大单页**即使 Chrome 指纹也被单独封锁(count≤20 稳定过,官方页面恒用 10)。此前 v1.0.2~v1.0.4 的限流处置都只是"少挨打",本版直接换掉挨打的指纹。

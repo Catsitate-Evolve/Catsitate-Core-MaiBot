@@ -3618,6 +3618,64 @@ def test_poll_feeds_uses_fresh_cache_without_refetch(tmp_path):
     assert p.qzone_injector.window_active is True  # 窗口照常激活
 
 
+def test_poll_feeds_pagination_rate_limit_enters_backoff_without_legacy(tmp_path, monkeypatch):
+    """回归(v1.0.3 引入):翻页穿透路径撞限流必须进入共享退避并终止本轮,
+    绝不能落进 legacy 回退(1→N+1 请求放大);首页正常、第二页限流——
+    发现层终止早于充实阶段(零登记),退避期内后续发现层消费零请求。"""
+
+    from catsitate_core.qzone.client import QzoneRateLimitError
+    from time import monotonic as _monotonic
+
+    sleeps: list = []
+    _patch_sleep(monkeypatch, sleeps)
+    p = _make_plugin(tmp_path)
+    p._schedule_data = _active_qzone_schedule()
+    now_s = str(int(_monotonic()))
+    prev_s = str(int(_monotonic()) - 10)
+
+    class _SecondPageRateLimitedClient(_StubUnifiedClient):
+        def __init__(self):
+            super().__init__([
+                FeedDiscovery(tid="p1", uin="10001", nickname="小明", abstime=now_s, appid=311),
+                FeedDiscovery(tid="p2", uin="10002", nickname="小红", abstime=prev_s, appid=311),
+            ])
+            self.calls: list = []
+
+        async def get_unified_timeline(self, *, count=20, begintime=None):
+            self.calls.append(begintime)
+            if begintime is None:
+                return list(self._discoveries), "cur1"
+            raise QzoneRateLimitError("空间服务限流(统一时间线): code=-10001")
+
+        async def get_user_feeds(self, *, target_uin, nickname, num=5):
+            if target_uin == "10001":
+                return [FeedItem(tid="p1", abstime=now_s, uin="10001", nickname=nickname, content="新动态A")]
+            return []
+
+    client = _SecondPageRateLimitedClient()
+    p.qzone_client = client
+    asyncio.run(p._qzone_poll_feeds())
+
+    assert any(
+        level == "warning" and "服务限流" in str(a[0]) and "翻页" in str(a[0])
+        for level, a in p.logs
+    )
+    assert not any(
+        level == "exception" and "回退逐好友旧路径" in str(a[0]) for level, a in p.logs
+    )
+    # 终止发生在发现层阶段(充实层未运行):两页动态均未登记,下轮缓存过期后重拉
+    assert p.qzone_seen.is_new_candidate("p1") is True
+    assert p.qzone_seen.is_new_candidate("p2") is True
+    assert p._qzone_discovery_backoff_until > _monotonic()  # 已进入共享退避
+    assert any(
+        level == "warning" and "进入 30 分钟退避" in str(a[0]) for level, a in p.logs
+    )
+    # 退避期内源B 与浏览的发现层消费零请求
+    calls_after = len(client.calls)
+    asyncio.run(p._qzone_poll_feeds())
+    assert len(client.calls) == calls_after  # 浏览层零新调用(退避静默)
+
+
 def test_shared_discovery_pagination_passes_through(tmp_path, monkeypatch):
     """缓存新鲜时浏览层积压补全仍穿透直发:通知源B 扫描先写共享缓存(首页含
     新说说),浏览轮吃缓存发现新动态 → 带游标的第二页调用真实发生(直调

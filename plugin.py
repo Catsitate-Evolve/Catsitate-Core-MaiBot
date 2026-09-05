@@ -1581,7 +1581,7 @@ class CatsitatePlugin(MaiBotPlugin):
             if not self.qzone_injector.window_active:
                 self.qzone_injector.window_started()
                 # 回收跨窗口/跨启动的 queued 残留:注入泵队列在内存,重启即丢,
-                # 而 seen 的 queued 行会让新轮拉取全部判重跳过(联调缺陷#12)
+                # 而 seen 的 queued 行会让新轮拉取全部判重跳过
                 stale = self.qzone_seen.revert_pending()
                 if stale:
                     self.ctx.logger.info("QQ空间窗口开始,注入泵激活;回收跨启动 queued 残留 %d 条(重新拉取)", stale)
@@ -1623,7 +1623,7 @@ class CatsitatePlugin(MaiBotPlugin):
                     if not batch or not has_new or not cursor:
                         break  # 空页/本页无新/游标耗尽:翻页止步
             except QzoneAuthError:
-                # 登录态失效自愈链(联调缺陷#7):作废 cookie 下轮重取;不回退
+                # 登录态失效自愈链:作废 cookie 下轮重取;不回退
                 # legacy——cookie 失效对两路径同源,回退只会重复失败多打一轮 API
                 self.qzone_cookie.invalidate()
                 self.ctx.logger.warning("QQ空间登录态失效(统一时间线),cookie 已作废,下轮重取")
@@ -1635,11 +1635,11 @@ class CatsitatePlugin(MaiBotPlugin):
                 return
             if not discoveries:
                 await self._qzone_pump()  # 空发现也泵——超时推进兜底(旧路径每轮必泵语义)
-                self._qzone_send_first_poll_finish(win)  # 零新动态轮同样完成了浏览(审查修正)
+                self._qzone_send_first_poll_finish(win)  # 零新动态轮同样完成了浏览
                 return
             # ② 过滤:说说(appid=311)且 seen 未登记——is_new_candidate 纯查不登记
             # (发现≠注入,登记留给充实层 mark_queued,防预占主键判重跳过);排除 bot
-            # 自己(自己发的说说不当新动态围观,终审 I1 与源B侧交叉同款语义)
+            # 自己(自己发的说说不当新动态围观,与源B侧交叉排除同款语义)
             bot_uin = str(self.config.favorability.bot_user_id or "").strip()
             new_items = [
                 d for d in discoveries
@@ -1647,7 +1647,7 @@ class CatsitatePlugin(MaiBotPlugin):
             ]
             if not new_items:
                 await self._qzone_pump()  # 无新动态也泵——超时推进兜底(旧路径每轮必泵语义)
-                self._qzone_send_first_poll_finish(win)  # 零新动态轮同样完成了浏览(审查修正)
+                self._qzone_send_first_poll_finish(win)  # 零新动态轮同样完成了浏览
                 return
             # ③ 充实层:按作者分组(保发现顺序),每组 1 次 get_user_feeds 拉完整实体
             by_uin: dict[str, list[FeedDiscovery]] = {}
@@ -1660,7 +1660,7 @@ class CatsitatePlugin(MaiBotPlugin):
                         target_uin=uin, nickname=group[0].nickname, num=len(group) + 2
                     )
                 except QzoneAuthError:
-                    # 登录态失效:立即作废 cookie 缓存(下轮重取),本轮终止(联调缺陷#7 自愈链)
+                    # 登录态失效:立即作废 cookie 缓存(下轮重取),本轮终止(自愈链)
                     self.qzone_cookie.invalidate()
                     self.ctx.logger.warning("QQ空间登录态失效(充实层 uin=%s),cookie 已作废,本轮终止", uin)
                     return
@@ -1697,13 +1697,13 @@ class CatsitatePlugin(MaiBotPlugin):
             self._qzone_poll_running = False
 
     async def _qzone_poll_feeds_legacy(self) -> None:
-        """旧逐好友浏览路径(M3 前架构):好友列表→每人 get_user_feeds(num=3)。
+        """旧逐好友浏览路径(统一时间线重构前架构):好友列表→每人 get_user_feeds(num=3)。
 
         仅作发现层失败的回退路径(窗口守卫已由 _qzone_poll_feeds 完成);保留
         OneBot 好友列表通道——统一时间线端点不可用时仍可逛空间。
         """
 
-        # 拉取架构(联调修正 2026-08-30):好友列表走 adapter OneBot API,
+        # 拉取架构:好友列表走 adapter OneBot API,
         # 逐好友拉最近说说(msglist_v6 为指定用户接口);好友间固定间隔防风控
         friends = await self._qzone_friend_list()
         if not friends:
@@ -1716,7 +1716,7 @@ class CatsitatePlugin(MaiBotPlugin):
                     target_uin=friend["user_id"], nickname=friend["nickname"], num=3
                 )
             except QzoneAuthError:
-                # 登录态失效:立即作废 cookie 缓存(下轮重取),本轮终止(联调缺陷#7 自愈链)
+                # 登录态失效:立即作废 cookie 缓存(下轮重取),本轮终止(自愈链)
                 self.qzone_cookie.invalidate()
                 self.ctx.logger.warning("QQ空间登录态失效(code=-3000/-10005),cookie 已作废,下轮重取")
                 return
@@ -1750,7 +1750,7 @@ class CatsitatePlugin(MaiBotPlugin):
         return parse_friend_list(result)
 
     async def _qzone_data_prune(self) -> None:
-        """qzone 数据保留期清理(深度审查 D-1):comment_seen/like_seen 30 天+seen 表 7 天。
+        """qzone 数据保留期清理:comment_seen/like_seen 30 天+seen 表 7 天。
 
         qzone_comments/qzone_likes/qzone_feeds 无限增长会拖慢每轮判重与通知
         轮询反查;seen 保留 7 天(recent_seen 只需 summary_days≤3,7 天留余量);
@@ -1784,12 +1784,12 @@ class CatsitatePlugin(MaiBotPlugin):
         """
 
         async with self._qzone_pump_lock:
-            # 泵门控不卡浏览窗口(M3-r2):通知(P1)推送语义任何时刻可注入,
+            # 泵门控不卡浏览窗口:通知(P1)推送语义任何时刻可注入,
             # 窗口外浏览动态由 next_to_inject 的窗口判定拦截
             if not self._qzone_available:
                 return
             if self.config.sleep.enabled and self.sleep.is_sleeping():
-                return  # 深度审查 C-1:入睡后在途泵静默退出——注入的消息会被睡眠拦截链拦进回顾缓冲(白注入)
+                return  # 入睡后在途泵静默退出——注入的消息会被睡眠拦截链拦进回顾缓冲(白注入)
             now = time.monotonic()
             if self.qzone_injector.awaiting_timed_out(now):
                 self.ctx.logger.warning("QQ空间注入等待轮完成超时(tid=%s),强制推进", self.qzone_injector.awaiting_tid)
@@ -1800,7 +1800,7 @@ class CatsitatePlugin(MaiBotPlugin):
             try:
                 await self._qzone_inject_one(feed)
             except asyncio.CancelledError:
-                # 取消落点在弹出之后(热重载/任务回收,2026-09-02 终审修复):
+                # 取消落点在弹出之后(热重载/任务回收):
                 # to_thread 等真实挂起点使「弹出→标记」间隙可被取消命中——
                 # 在途项回队首,防 P1 通知静默丢失
                 self.qzone_injector.requeue_popped()
@@ -1812,7 +1812,7 @@ class CatsitatePlugin(MaiBotPlugin):
         route → mark_seen → registry 登记。异常分支内各自处理;取消由泵层
         统一回队。"""
         if feed.source == "notify":
-            # 通知走专用构造(联调修正):带 reply 段引用**原说说**的注入消息
+            # 通知走专用构造:带 reply 段引用**原说说**的注入消息
             # (napcat quote 式上下文关联)——引用目标经 seen_store.get_message_id
             # 查原说说注入时记录的 message_id;原说说未注入过(窗口外通知/已被
             # 7 天清理/旧库未记录)时查无 id → reply 段省略,回退纯文本不静默臆造
@@ -1827,7 +1827,7 @@ class CatsitatePlugin(MaiBotPlugin):
                 reply_target_id=reply_target_id, reply_target_sender=feed.origin_sender,
             )
         else:
-            # 图片公共管线(C 方案,2026-09-03 用户裁定):下载(失败跳过+
+            # 图片公共管线:下载(失败跳过+
             # 告警)→多图角标合成→压缩预算,统一走 imaging.run_feed_image_pipeline;
             # 多图恒单图注入(省 VLM token 与上下文,角标空位天然示诚实),全失败
             # 交 build_feed_message 既有 [图片] 占位;[:3] 截断已删除(QQ 上限 9 图封顶)
@@ -1859,7 +1859,7 @@ class CatsitatePlugin(MaiBotPlugin):
             accepted = await self.ctx.gateway.route_message(QZONE_GATEWAY_NAME, msg)
         except Exception:
             self.ctx.logger.exception("QQ空间动态注入失败(tid=%s),本轮跳过", feed.tid)
-            # 深度审查 B-4+A-N1:通知项注入未成功不永久丢失,但重试有上限(见
+            # 通知项注入未成功不永久丢失,但重试有上限(见
             # _qzone_notify_retry_backoff);浏览动态无此问题(queued 行由窗口
             # 尾 revert_pending 回退未读)
             self._qzone_notify_retry_backoff(feed)
@@ -1868,7 +1868,7 @@ class CatsitatePlugin(MaiBotPlugin):
             # 拒绝时不 mark_injected/mark_seen:feed 已从内存队列弹出,但 DB 仍
             # queued,窗口尾 revert_pending 会回退未读——不丢数据,下窗口可重试
             self.ctx.logger.warning("QQ空间动态注入被宿主拒绝(tid=%s,adapter policy 或网关状态),跳过且不标记已见", feed.tid)
-            # 深度审查 B-4+A-N1:通知项被拒不永久丢失,重试上限内回退待重检
+            # 通知项被拒不永久丢失,重试上限内回退待重检
             self._qzone_notify_retry_backoff(feed)
             return
         self.qzone_injector.mark_injected(feed.tid, time.monotonic())
@@ -1885,8 +1885,8 @@ class CatsitatePlugin(MaiBotPlugin):
             tid=feed.origin_tid or feed.tid,
             owner_uin=(feed.friend_uin or bot_uin) if feed.source == "notify" else feed.uin,
             # notify 分支 feed.nickname 实为评论者/点赞者昵称,与 owner_uin(说说
-            # 主人)语义错位——原样登记会让 qzone_like 回执张冠李戴(2026-09-03
-            # 复审小修),置空串交消费方回退 owner_uin;registry 字段级合并保留
+            # 主人)语义错位——原样登记会让 qzone_like 回执张冠李戴,置空串交
+            # 消费方回退 owner_uin;registry 字段级合并保留
             # 浏览/detail 登记过的正确主人昵称(新值空不清旧值)
             owner_nickname="" if feed.source == "notify" else feed.nickname,
             commenter_uin=feed.uin if feed.source == "notify" else "",
@@ -1906,16 +1906,16 @@ class CatsitatePlugin(MaiBotPlugin):
         self.ctx.logger.info("QQ空间动态已注入(tid=%s,作者=%s)", feed.tid, feed.nickname)
 
     def _qzone_notify_retry_backoff(self, feed: FeedItem) -> None:
-        """通知项注入失败(被拒/异常)的回退决策(深度审查 B-4 + A-N1)。
+        """通知项注入失败(被拒/异常)的回退决策。
 
-        B-4:回退去重键令下轮通知轮询重新发现,通知不因一次拒绝永久丢失。
-        A-N1:重试有上限——revert 为软回退(qzone_comments 行保留),note_retry
+        回退去重键令下轮通知轮询重新发现,通知不因一次拒绝永久丢失;
+        重试有上限——revert 为软回退(qzone_comments 行保留),note_retry
         的累计跨「回退→重发现」循环存活;满 QZONE_NOTIFY_MAX_RETRIES 次仍失败
         则保留登记放弃(is_new 恒 False 跳过),防宿主持续拒绝时同一通知每
         轮询周期(120s)无限重注入。浏览动态(source=feed)不走本路径。
-        源C 赞事件(M3 修正 I-4)例外:去重在 qzone_likes 表(无 pending_retry/
+        源C 赞事件例外:去重在 qzone_likes 表(无 pending_retry/
         revert 通道),note_retry/revert 作用于 qzone_comments 为空转——注入被拒
-        即显式告警放弃,不误报「待下轮重试」(软回退通道属后续批次)。"""
+        即显式告警放弃,不误报「待下轮重试」(软回退通道待后续实现)。"""
 
         if feed.source != "notify" or not feed.dedup_key:
             return
@@ -1934,7 +1934,7 @@ class CatsitatePlugin(MaiBotPlugin):
         self.qzone_comment_seen.revert(feed.dedup_key)
 
     async def _qzone_notify_poll_tick(self) -> None:
-        """统一通知轮询触发器(深度审查 A-2):防重入后派发后台扫描,立即返回。
+        """统一通知轮询触发器:防重入后派发后台扫描,立即返回。
 
         源A/B 逐好友 2s sleep+HTTP 与泵注入都是长 IO,移入 _qzone_notify_scan
         后台任务执行,不阻塞调度器 60s tick;守卫随迁(单一事实源)。
@@ -1946,7 +1946,7 @@ class CatsitatePlugin(MaiBotPlugin):
         self._spawn_background_task(self._qzone_notify_scan())
 
     def _qzone_send_first_poll_finish(self, win: dict) -> None:
-        """首轮浏览收尾派发(审查修正):零新动态轮同样算完成浏览——置位一次性
+        """首轮浏览收尾派发:零新动态轮同样算完成浏览——置位一次性
         标记并派发 browsed=True 发布触发(其内部等泵空闲,时序安全);未武装/
         已触发过的窗口为 no-op;仅 send 窗口不经浏览主路径,不在此派发。"""
 
@@ -2027,8 +2027,8 @@ class CatsitatePlugin(MaiBotPlugin):
         """冷启动种子:注入一条无 is_mentioned 的 self 消息,仅让主程序创建
         虚拟流会话(不触发 planner 决策轮),供 proactive.trigger 使用。"""
 
-        # 构造纳入 try(2026-09-03 复审修复):取昵称失败直接抛错(#33 裁定不
-        # 兜底),若留在 try 外会沿日程窗口触发链上抛——纳入后按注入失败处理
+        # 构造纳入 try:取昵称失败直接抛错不兜底,若留在 try 外会沿日程窗口
+        # 触发链上抛——纳入后按注入失败处理
         # (告警+返回 False),本窗口跳过自举重试,异常不外泄。
         try:
             self._qzone_seq += 1
@@ -2053,7 +2053,7 @@ class CatsitatePlugin(MaiBotPlugin):
             return False
 
     async def _qzone_notify_scan(self) -> None:
-        """统一通知扫描(原 _qzone_notify_poll_tick 主体,始终运行,醒着即可;M2.1 替代旧评论轮询)。
+        """统一通知扫描(原 _qzone_notify_poll_tick 主体,始终运行,醒着即可;替代旧评论轮询)。
 
         三源检测:源A=自己说说下的新评论(含 bot 评论下的楼中楼回复 list_3,
         同载荷三视图补跑解析);源B=自己在他人说说下的评论收到的
@@ -2084,7 +2084,7 @@ class CatsitatePlugin(MaiBotPlugin):
             if self.config.sleep.enabled and self.sleep.is_sleeping():
                 self.ctx.logger.debug("通知轮询跳过:睡眠中(绝对静默)")
                 return
-            # awaiting 占用时先驱动泵(2026-09-02 联调缺陷修复):超时兜底与下一条
+            # awaiting 占用时先驱动泵:超时兜底与下一条
             # P1 注入只在泵里做,而泵的两个常规入口是浏览窗口 tick 与轮完成信号——
             # 窗口结束后自然概率下 planner 可能长期不跑轮,awaiting 会无限卡住,
             # 「awaiting 占用→跳过扫描」随之死锁(实机:20:22 注入后卡 18 分钟,
@@ -2099,7 +2099,7 @@ class CatsitatePlugin(MaiBotPlugin):
             if not bot_uin:
                 return  # 写路径身份缺失(on_load 自检已停用模块,防御性再判)
             now_epoch = time.time()
-            # 新鲜度截断(终审 I2 同款语义):早于 summary_days 的过旧通知不注入;
+            # 新鲜度截断:早于 summary_days 的过旧通知不注入;
             # create_time 为 epoch 秒字符串按数值比较,不可解析不截断(保守注入)
             stale_before = now_epoch - max(self.config.qzone.summary_days, 1) * 86400
             notifications: list[FeedItem] = []
@@ -2108,7 +2108,7 @@ class CatsitatePlugin(MaiBotPlugin):
 
             # ---- 源A:自己说说下的新评论 ----
             try:
-                # 同轮自愈(用户裁定 #7):AuthError 作废并重取 cookie 后原地重试一次
+                # 同轮自愈:AuthError 作废并重取 cookie 后原地重试一次
                 scanned_a, auth_err = await self._qzone_auth_retry(
                     lambda: self.qzone_client.get_own_feed_comments(
                         bot_uin=bot_uin, num=max(self.config.qzone.own_feed_scan_count, 1)),
@@ -2123,7 +2123,7 @@ class CatsitatePlugin(MaiBotPlugin):
             for feed_tid, items in comments.items():
                 for c in items:
                     if not c.comment_tid:
-                        continue  # 空 comment_tid 的畸形条目:跳过(防空 tid 畸形请求,T11 审查遗留)
+                        continue  # 空 comment_tid 的畸形条目:跳过(防空 tid 畸形请求)
                     if str(c.uin) == bot_uin:
                         # 自己说说(含楼中楼)由源A 覆盖:顶层评论+bot 评论下的
                         # list_3 回复(下方楼中楼段);friend_uin 记 bot_uin 使源B
@@ -2138,7 +2138,7 @@ class CatsitatePlugin(MaiBotPlugin):
                     dedup_key = f"{feed_tid}:{c.comment_tid}:{c.uin}"
                     if not self.qzone_comment_seen.is_new(dedup_key):
                         continue
-                    registered_keys.append(dedup_key)  # 原子性:入队前异常时回退(终审 H-1)
+                    registered_keys.append(dedup_key)  # 原子性:入队前异常时回退
                     try:
                         comment_epoch = float(str(c.create_time or "").strip())
                     except ValueError:
@@ -2165,7 +2165,7 @@ class CatsitatePlugin(MaiBotPlugin):
                             )
                         ),
                         source="notify", dedup_key=dedup_key,
-                        # reply 段关联原说说(联调修正):origin_* 供泵构造引用段,
+                        # reply 段关联原说说:origin_* 供泵构造引用段,
                         # 引用内容=原说说正文前 60 字(截断统一在 messages 构造层,
                         # 源A:原说说作者=bot 自己)
                         origin_tid=feed_tid, origin_content=ctx.get(feed_tid) or "(无文字)",
@@ -2199,7 +2199,7 @@ class CatsitatePlugin(MaiBotPlugin):
                 key = f"{r.feed_tid}:{r.parent_comment_tid}:reply:{r.reply_tid}"
                 if not self.qzone_comment_seen.is_new(key):
                     continue
-                registered_keys.append(key)  # 原子性:入队前异常时回退(终审 H-1)
+                registered_keys.append(key)  # 原子性:入队前异常时回退
                 try:
                     reply_epoch = float(str(r.create_time or "").strip())
                 except ValueError:
@@ -2245,10 +2245,10 @@ class CatsitatePlugin(MaiBotPlugin):
                     self.ctx.logger.exception("QQ空间楼中楼事件好感度记账失败(仅告警)")
 
             # ---- 源B:自己在他人说说下的评论收到的新回复(list_3) ----
-            # M3 重构:搭统一时间线便车——只对「发现层显示有新活动+bot 评论过该好友」
+            # 统一时间线重构:搭时间线便车——只对「发现层显示有新活动+bot 评论过该好友」
             # 的说说拉评论,不再逐好友全量轮询(发现层无交集时零源B拉取)
             if len(notifications) < 3:
-                # 名单先行(M3 终审优化):本地反查零 HTTP,名单空则跳过发现层调用省 API
+                # 名单先行:本地反查零 HTTP,名单空则跳过发现层调用省 API
                 try:
                     commented_friends = set(self.qzone_comment_seen.bot_commented_friends(days=30))
                 except Exception:
@@ -2280,9 +2280,9 @@ class CatsitatePlugin(MaiBotPlugin):
                 for friend_uin in active_commented:
                     if len(notifications) >= 3:
                         break
-                    await asyncio.sleep(2.0)  # 好友前固定间隔(终审 I2 防风控,与浏览流同款 2 秒)
+                    await asyncio.sleep(2.0)  # 好友前固定间隔(防风控,与浏览流同款 2 秒)
                     try:
-                        # 同轮自愈(用户裁定 #7):AuthError 作废并重取 cookie 后原地重试一次
+                        # 同轮自愈:AuthError 作废并重取 cookie 后原地重试一次
                         scanned_b, auth_err = await self._qzone_auth_retry(
                             lambda uin=friend_uin: self.qzone_client.get_user_feeds_raw(target_uin=uin, num=10),
                             f"通知源B(好友 {friend_uin})",
@@ -2295,13 +2295,13 @@ class CatsitatePlugin(MaiBotPlugin):
                     raw = scanned_b
                     for r in parse_feed_replies(raw, bot_uin=bot_uin):
                         if not r.feed_tid:
-                            continue  # 批①遗留:空 feed_tid 的 ReplyItem 过滤
+                            continue  # 空 feed_tid 的 ReplyItem 过滤
                         if not r.reply_tid:
-                            continue  # 空 reply_tid 的畸形回复:跳过(防空 tid 畸形请求,T11 审查遗留)
+                            continue  # 空 reply_tid 的畸形回复:跳过(防空 tid 畸形请求)
                         key = f"{r.feed_tid}:{r.parent_comment_tid}:reply:{r.reply_tid}"
                         if not self.qzone_comment_seen.is_new(key):
                             continue
-                        registered_keys.append(key)  # 原子性:入队前异常时回退(终审 H-1)
+                        registered_keys.append(key)  # 原子性:入队前异常时回退
                         try:
                             reply_epoch = float(str(r.create_time or "").strip())
                         except ValueError:
@@ -2358,9 +2358,9 @@ class CatsitatePlugin(MaiBotPlugin):
             # 通知);自愈链同源B 纪律——QzoneAuthError 作废 cookie 但不 return,
             # 源A/B 已得通知不能丢,仅本轮源C 按空处理
             if len(notifications) < 3:
-                # 同轮自愈(用户裁定 #7):AuthError 作废并重取 cookie 后原地重试一次;
+                # 同轮自愈:AuthError 作废并重取 cookie 后原地重试一次;
                 # 自愈失败按空处理(源A/B 已得通知不丢);非 Auth 异常同样在调用点
-                # 独立隔离(审查修复 2026-09-03,源B 同款纪律):告警后按空继续不上抛
+                # 独立隔离(源B 同款纪律):告警后按空继续不上抛
                 # ——上抛会触发扫描级原子性兜底,回退本轮源A/B 已登记的全部去重键,
                 # 通知未入队即中止且每 120 秒重复崩溃(实机:源C 相对时间折算遇
                 # 非闰年 2月29日 ValueError 无捕获沿 get_like_events 上抛)
@@ -2373,7 +2373,7 @@ class CatsitatePlugin(MaiBotPlugin):
                     scanned_c = None
                 likes = scanned_c or []
                 parsed_ok = scanned_c is not None  # 取数成功(自愈失败不参与漂移观测)
-                # 解析观测线(2026-09-02 收敛):常规轮次不打解析条数日志(信息噪音),
+                # 解析观测线:常规轮次不打解析条数日志(信息噪音),
                 # 仅保留异常信号——解析失败走上方 except 告警;连续 3 轮取数成功但
                 # 零事件 → 锚点漂移告警(warn-once,恢复有事件即复位)
                 if parsed_ok:
@@ -2452,7 +2452,7 @@ class CatsitatePlugin(MaiBotPlugin):
                 # 泵优先取 P1(推送语义,任何时刻可注入);浏览动态仅窗口内注入
                 await self._qzone_pump()
         except BaseException:
-            # 原子性兜底(终审 H-1 修复,2026-09-02):发现侧「登记即消费」与队尾
+            # 原子性兜底:发现侧「登记即消费」与队尾
             # 入队非原子——登记后入队前异常/热重载取消,已登记键的通知会永久
             # 静默丢失(is_new 恒 False)。回退本轮已登记且未入队的键,下轮重新
             # 发现(fav_events 同日去重,重发现不重复入库);CancelledError 回退后
@@ -2522,7 +2522,7 @@ class CatsitatePlugin(MaiBotPlugin):
             if not rendered:
                 self.ctx.logger.debug("注入跳过: render 结果为空(blocks=%d)", len(blocks))
                 return {"action": "continue", "modified_kwargs": kwargs}
-            # spike ② 实测:items 须为合法快照格式,朴素 dict 会被主程序拒绝——render 输出转快照后插入
+            # 实测:items 须为合法快照格式,朴素 dict 会被主程序拒绝——render 输出转快照后插入
             rendered = [self._to_snapshot_item(m["content"]) for m in rendered]
             insert_at = self._system_tail_index(messages)
             new_messages = messages[:insert_at] + rendered + messages[insert_at:]
@@ -2538,23 +2538,23 @@ class CatsitatePlugin(MaiBotPlugin):
     @HookHandler("chat.receive.after_process", name="catsitate_fav_count", mode=HookMode.OBSERVE)
     async def fav_count(self, **kwargs: Any) -> None:
         if self.config.sleep.enabled and self.sleep.is_sleeping():
-            return  # 睡眠期消息不得计数(绝对静默;睡眠模块关闭时计数不暂停,审查 M14)
+            return  # 睡眠期消息不得计数(绝对静默;睡眠模块关闭时计数不暂停)
         if not self.config.plugin.enabled or not self.config.favorability.enabled:
             return
         msg = kwargs.get("message")
         if not isinstance(msg, dict):
             return
-        # 通知类消息(戳一戳等)不参与好感度计数(审查 Minor#7)
+        # 通知类消息(戳一戳等)不参与好感度计数
         if msg.get("is_notify"):
             return
-        # 三期豁免:虚拟流注入消息不计好感度(好友发说说≠与 bot 互动;
-        # 空间互动走 M2 显式事件路径);顺带收集虚拟流 session 供晚安/白名单豁免
+        # QQ空间虚拟流豁免:虚拟流注入消息不计好感度(好友发说说≠与 bot 互动;
+        # 空间互动走显式事件路径);顺带收集虚拟流 session 供晚安/白名单豁免
         if is_qzone_message(msg):
             sid = str(msg.get("session_id") or "")
             if sid:
                 self._qzone_session_ids.add(sid)
             return
-        # spike ③ 实测:user/stream 在 message 内(user_info 与 session_id;user_id 字段名以实机联调为准)
+        # 实测:user/stream 在 message 内(user_info 与 session_id;user_id 字段名以实机联调为准)
         msg_info = msg.get("message_info") or {}
         user_info = msg_info.get("user_info") or {}
         user_id = str(user_info.get("user_id") or user_info.get("sender_id") or "")
@@ -2564,7 +2564,7 @@ class CatsitatePlugin(MaiBotPlugin):
         # 取数点:记录流→最近真实说话人(群聊 memo_write 工具 user_id 空时兜底;
         # 纯内存映射,重启丢失可接受——_resolve_speaker 的 get_recent 回退仍在)
         self._last_speaker_map[stream_id] = user_id
-        # 计数与触发判定按人:先 bump 活跃账本,再判定(check_trigger 不再内部计数,审查 ⚠️ 裁决)
+        # 计数与触发判定按人:先 bump 活跃账本,再判定(check_trigger 不再内部计数)
         self.fav_engine.count_message(user_id, stream_id)
         trigger = self.fav_engine.check_trigger(user_id)
         if trigger == "early":
@@ -2603,32 +2603,32 @@ class CatsitatePlugin(MaiBotPlugin):
 
         if not self.config.plugin.enabled or not self.config.sleep.enabled:
             return {"action": "continue", "modified_kwargs": kwargs}
-        self._last_activity_ts = datetime.now().timestamp()  # 任何出站回复都算活动(含空间评论,与一二期语义一致)
-        # 三期豁免:虚拟流的评论文本不进晚安判定(防深夜短评论触发全局入睡)
-        # 注意:活动计时刷新在豁免之前——空间活动同样延迟静默入睡(用户裁定 2026-08-31)
+        self._last_activity_ts = datetime.now().timestamp()  # 任何出站回复都算活动(含空间评论,与既有路径语义一致)
+        # QQ空间虚拟流豁免:虚拟流的评论文本不进晚安判定(防深夜短评论触发全局入睡)
+        # 注意:活动计时刷新在豁免之前——空间活动同样延迟静默入睡
         if str(kwargs.get("session_id") or "") in self._qzone_session_id_set():
             return {"action": "continue", "modified_kwargs": kwargs}
         if self.sleep.is_sleeping():
             return {"action": "continue", "modified_kwargs": kwargs}
-        # 晚安判定仅在睡眠窗口内有效(可入睡时间,联调裁定 Q2),与静默开关无关
+        # 晚安判定仅在睡眠窗口内有效(可入睡时间),与静默开关无关
         _win = current_window(self._schedule_data, datetime.now().strftime("%Y-%m-%dT%H:%M"))
         if not _win or _win.get("kind") != "sleep":
             return {"action": "continue", "modified_kwargs": kwargs}
         text = str(kwargs.get("response") or "")
         if not is_goodnight_utterance(text):
             return {"action": "continue", "modified_kwargs": kwargs}
-        # 短句为变量尾(stable_ctx 纪律);判定器为轻量任务,固定 memory(与一期 msg_react 默认一致)
+        # 短句为变量尾(stable_ctx 纪律);判定器为轻量任务,固定 memory
         messages, _ = build_side_prompt(
             "sleep_confirm", [], [f"待判定晚安短句:{text}"]
         )
         try:
             result = await self._side_llm_call(messages, "memory", "sleep_confirm")
         except Exception as exc:  # noqa: BLE001
-            # 失败显式日志并跳过本轮(与哨兵层同款纪律,审查 M9);仅记异常类型防 PII
+            # 失败显式日志并跳过本轮(与哨兵层同款纪律);仅记异常类型防 PII
             self.ctx.logger.warning("晚安判定 LLM 调用异常(%s),本轮不入睡", rpc_error_brief(exc))
             return {"action": "continue", "modified_kwargs": kwargs}
         if not isinstance(result, dict) or not result.get("success"):
-            # 不落响应原文(安全复审):仅记失败形态
+            # 不落响应原文,仅记失败形态
             detail = f"success={result.get('success')}" if isinstance(result, dict) else f"结果类型={type(result).__name__}"
             self.ctx.logger.warning("晚安判定 LLM 失败,本轮不入睡:%s", detail)
             return {"action": "continue", "modified_kwargs": kwargs}
@@ -2641,7 +2641,7 @@ class CatsitatePlugin(MaiBotPlugin):
         """入睡:计算 clamp 醒来时刻,状态落盘,触发入睡任务(醒来日日程生成+日记生成)。"""
 
         if self.sleep.is_sleeping():
-            return  # 已睡幂等:晚安判定 await 交错期间不得二次入睡/二次生成(审查 I-3)
+            return  # 已睡幂等:晚安判定 await 交错期间不得二次入睡/二次生成
         now = datetime.now()
         # 计划醒来时刻 = 日程中睡眠窗口的 end(与当前所处窗口无关)
         sleep_win = next(
@@ -2652,7 +2652,7 @@ class CatsitatePlugin(MaiBotPlugin):
             planned_wake += ":00"  # SleepManager 统一秒格式 %Y-%m-%dT%H:%M:%S
         wake_at = self.sleep.clamp_wake_time(now.strftime("%Y-%m-%dT%H:%M:%S"), planned_wake)
         self.sleep.enter_sleep(now=lambda: now, wake_at=wake_at)
-        self._sleep_window_settled = str(sleep_win.get("end") or "") if sleep_win else ""  # 入睡已执行入睡任务,窗口终点不再补执行(Q1)
+        self._sleep_window_settled = str(sleep_win.get("end") or "") if sleep_win else ""  # 入睡已执行入睡任务,窗口终点不再补执行
         self.ctx.logger.info("已入睡:醒来 %s", wake_at)
         # 日程目标日 = 醒来日(wake_at 前 10 位):午夜后入睡时 now+1 会错成
         # 醒来日的次日(见 _generate_tomorrow_schedule 说明)
@@ -2668,7 +2668,7 @@ class CatsitatePlugin(MaiBotPlugin):
     async def content_guard_replyer(self, **kwargs: Any) -> dict[str, Any]:
         """v1.0.0 内容护栏 replyer 拦截(EARLY,先于哨兵 LATE):response 投影命中
         护栏正则 → 改写为空串——主程序 reply 工具拿空文本走 build_failure_result,
-        planner 看到 [失败] 即 bot 真沉默(Q8 调查实证:不自纠不重试;模型自主重调
+        planner 看到 [失败] 即 bot 真沉默(调查实证:不自纠不重试;模型自主重调
         reply 时每次生成再过本钩子,拦截可重复生效,不漏发)。全部会话生效
         (内容级护栏,不区分流)。"""
 
@@ -2709,7 +2709,7 @@ class CatsitatePlugin(MaiBotPlugin):
             logger.debug("reply 补传跳过:三条件不齐(reasoning 非空=%s)", bool(reasoning.strip()))
             return {"action": "continue", "modified_kwargs": kwargs}
         new_kwargs = {**kwargs, self._OUTPUT_ITEMS_KEY: new_items}
-        # 日志侧同样按宿主快照形态取工具名(H-1:func_name 在 tool_call 内)
+        # 日志侧同样按宿主快照形态取工具名(func_name 在 tool_call 内)
         self.ctx.logger.info(
             "reply 补传:%s",
             [
@@ -2723,7 +2723,7 @@ class CatsitatePlugin(MaiBotPlugin):
 
     @HookHandler("maisaka.replyer.after_response", name="catsitate_sentinel", mode=HookMode.BLOCKING, order=HookOrder.LATE)
     async def sentinel_check(self, **kwargs: Any) -> dict[str, Any]:
-        """LLM 哨兵层(默认关);撤回能力以 spike ④ 结论为准,不能则仅日志。"""
+        """LLM 哨兵层(默认关);撤回能力以实机验证结论为准,不能则仅日志。"""
 
         cfg = self.config.reply_guard
         if not self.config.plugin.enabled or not cfg.enabled or not cfg.sentinel_enabled:
@@ -2752,7 +2752,7 @@ class CatsitatePlugin(MaiBotPlugin):
             self.ctx.logger.info("哨兵判定:放行回复")
             return {"action": "continue", "modified_kwargs": kwargs}
         self.ctx.logger.warning("哨兵判定:撤回回复:%s", reason)
-        # 撤回动作(spike ④ 验证后实现:删除待发送项或调用撤回 API);当前先日志
+        # 撤回动作(待撤回能力验证后实现:删除待发送项或调用撤回 API);当前先日志
         return {"action": "continue", "modified_kwargs": kwargs}
 
     @HookHandler("maisaka.replyer.before_model_request", name="catsitate_qzone_replyer_scene", mode=HookMode.BLOCKING, order=HookOrder.LATE)
@@ -2786,27 +2786,27 @@ class CatsitatePlugin(MaiBotPlugin):
                 self.qzone_injector.on_wait_state(time.monotonic())
             return
         if self.config.sleep.enabled and self.sleep.is_sleeping():
-            return  # 深度审查 C-1:睡眠期不推进泵——在途消息已被拦,推进会注入下一条进拦截链
+            return  # 睡眠期不推进泵——在途消息已被拦,推进会注入下一条进拦截链
         self.qzone_injector.on_turn_complete(time.monotonic())
         self._spawn_background_task(self._qzone_pump())
 
     # ---------- 内部辅助 ----------
 
-    # spike ②/③/④ 结论的字段名集中于此,不符仅改此处
-    _MESSAGES_KEY = "items"  # 主程序 planner.before_request payload 键(spike ② 快照格式)
+    # 实测确认的字段名集中于此,不符仅改此处
+    _MESSAGES_KEY = "items"  # 主程序 planner.before_request payload 键(快照格式)
     _OUTPUT_ITEMS_KEY = "output_items"
 
     def _messages_from_kwargs(self, kwargs: dict[str, Any]) -> list[dict] | None:
         return kwargs.get(self._MESSAGES_KEY)
 
     def _system_tail_index(self, messages: list[dict]) -> int:
-        """注入点 = system 消息之后(spike ②:快照 item 无 role 字段,按 item_type 定位)。"""
+        """注入点 = system 消息之后(快照 item 无 role 字段,按 item_type 定位)。"""
 
         for i, m in enumerate(messages):
             if m.get("item_type") == "SystemMessageItem" or m.get("role") == "system":
                 return i + 1
         self.ctx.logger.warning("注入定位失败:items 中无 SystemMessageItem,已回退追加尾部(缓存纪律受损)")
-        return len(messages)  # 无 system 时追加尾部(spike ② 回退语义)
+        return len(messages)  # 无 system 时追加尾部(回退语义)
 
     def _spawn_background_task(self, coro: Any) -> asyncio.Task:
         """启动后台任务并持有引用:done 回调里 discard;异常时经 ctx.logger.exception 上报。"""
@@ -2823,11 +2823,11 @@ class CatsitatePlugin(MaiBotPlugin):
         exc = task.exception()
         if exc is not None:
             # exc_info 显式传异常对象:done 回调不在 except 上下文,裸 exception()
-            # 不会附栈回溯,只有一行类型名(深度审查 F5 可观测性)
+            # 不会附栈回溯,只有一行类型名
             self.ctx.logger.exception("后台任务异常:%s", exc, exc_info=exc)
 
     def _to_snapshot_item(self, text: str) -> dict:
-        """渲染块 → 合法快照 UserMessageItem(spike ②:朴素 dict 被主程序拒绝)。
+        """渲染块 → 合法快照 UserMessageItem(朴素 dict 被主程序拒绝)。
 
         同文本返回同一对象(前缀缓存纪律,缓存键=文本);item_id 用 sha256 前缀,
         勿用内置 hash()(进程内哈希随机化);timestamp 随对象绑定(创建时确定)。
@@ -2835,7 +2835,7 @@ class CatsitatePlugin(MaiBotPlugin):
 
         cached = self._snapshot_cache.get(text)
         if cached is not None:
-            self._snapshot_cache.move_to_end(text)  # 命中刷新新近度(LRU,背包 M-1)
+            self._snapshot_cache.move_to_end(text)  # 命中刷新新近度(LRU)
             return cached
         item_id = "catsitate-inject-" + hashlib.sha256(text.encode("utf-8")).hexdigest()[:16]
         item = {
@@ -2849,7 +2849,7 @@ class CatsitatePlugin(MaiBotPlugin):
         }
         self._snapshot_cache[text] = item
         if len(self._snapshot_cache) > SNAPSHOT_CACHE_MAX:
-            self._snapshot_cache.popitem(last=False)  # 逐最旧(背包 M-1:文本键无界增长)
+            self._snapshot_cache.popitem(last=False)  # 逐最旧(防文本键无界增长)
         return item
 
     async def _build_inject_blocks(self, kwargs: dict[str, Any]) -> list[InjectionBlock]:
@@ -2857,7 +2857,7 @@ class CatsitatePlugin(MaiBotPlugin):
         # planner.before_request payload 无 user_id/stream_id 键(实机确认):
         # 流 = session_id;说话人 = 私聊流对端 / 群聊最近非 bot 消息发送者
         stream_id = str(kwargs.get("session_id") or "")
-        # 虚拟流说话人 = 注入泵当前动态作者——注入 timestamp=阅读时刻(方案 B),
+        # 虚拟流说话人 = 注入泵当前动态作者——注入 timestamp=阅读时刻,
         # 宿主 24h 窗天然可靠;说话人仍取注入泵当前作者(交叉校验)
         if stream_id and stream_id in self._qzone_session_id_set() and self._qzone_available:
             speaker = self.qzone_injector.awaiting_author
@@ -2900,7 +2900,7 @@ class CatsitatePlugin(MaiBotPlugin):
                 blocks.append(InjectionBlock("qzone", qz[0], qz[1]))
         if cfg.inject.memo_enabled and cfg.memo.enabled:
             # read 为 OR 语义(流 ∪ 主QQ ∪ 附带QQ),一次查询即含原「流+说话人」两维度;
-            # 单查询无重复,按 id 去重保留为防御;取数与截断均按 inject_max(批③遗留修正)
+            # 单查询无重复,按 id 去重保留为防御;取数与截断均按 inject_max
             merged = self.memo.read(stream_id, speaker, limit=cfg.memo.inject_max)
             seen: set[int] = set()
             entries = []
@@ -2920,7 +2920,7 @@ class CatsitatePlugin(MaiBotPlugin):
                     InjectionBlock(
                         "favorability",
                         f"fav:{target}",
-                        # 联调决定:5 级规则全量注入改为按等级单条注入(等级规则块并入好感度块)
+                        # 5 级规则全量注入改为按等级单条注入(等级规则块并入好感度块)
                         build_favorability_block(
                             self.fav_engine, target,
                             include_rule=cfg.inject.level_rule_enabled,
@@ -3001,7 +3001,7 @@ class CatsitatePlugin(MaiBotPlugin):
         if stream_id in self._qzone_session_id_set():
             state = self.qzone_injector.describe_current()
             return f"qzone:v:{state}", f"[空间] {state}"
-        # 当日空间见闻优先(M3):窗口结束旁路 LLM 摘要的空间印象,比逐条
+        # 当日空间见闻优先:窗口结束旁路 LLM 摘要的空间印象,比逐条
         # 「近期刷到」更像人转述见过的事;无当日见闻回退下方既有路径
         digest = self._qzone_digest_snapshot.load()
         today = datetime.now().strftime("%Y-%m-%d")
@@ -3013,7 +3013,7 @@ class CatsitatePlugin(MaiBotPlugin):
         if not entries:
             return None
         # 叙事格式(与浏览动态的自然文本一致):「昵称发了「摘要」」比键值对
-        # 「昵称:摘要」更像转述见闻;摘要截 100 字(2026-09-02 用户裁定,原 20),
+        # 「昵称:摘要」更像转述见闻;摘要截 100 字(原 20),
         # 纯图说说以「图片」占位
         lines = [
             f"{e['author_nickname'] or e['author_uin']}发了「{clip_text(e['summary'] or '图片', 100)}」"
@@ -3045,7 +3045,7 @@ class CatsitatePlugin(MaiBotPlugin):
         ]
         try:
             # 素材锚点统一为近 24h 滚动窗(浏览 recent_seen days=1 与互动 fav_events_window
-            # 同窗),跨零点会话昨晚素材自然衔接,不按自然日切割(2026-09-04 翻案 H-2 旧保留裁定)
+            # 同窗),跨零点会话昨晚素材自然衔接,不按自然日切割
             events = self.qzone_comment_seen.fav_events_window(
                 (now - timedelta(days=1)).strftime("%Y-%m-%dT%H:%M:%S")
             )

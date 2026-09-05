@@ -50,7 +50,7 @@ Catsitate 的 MaiBot 核心人格行为插件(独立 git repo;运行宿主为 Ma
 
 ```bash
 # 必须在本仓库根目录下运行(不在宿主主程序目录,否则 pytest 会收集主程序测试并报 ImportError)
-python3 -m pytest tests/ -q        # 全量(当前 618 用例)
+python3 -m pytest tests/ -q        # 全量(当前 626 用例)
 python3 -m pytest tests/test_integration.py -v   # 集成冒烟
 ```
 

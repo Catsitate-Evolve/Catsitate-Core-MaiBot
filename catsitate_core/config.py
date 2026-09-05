@@ -221,7 +221,7 @@ class QzoneSection(PluginConfigBase):
     __ui_order__ = 11
 
     enabled: bool = _f(True, "QQ空间模块开关(M2 起含评论/点赞等写动作)", label="QQ空间模块开关")
-    poll_interval_minutes: int = _f(15, "空间窗口内动态拉取间隔(分钟)", label="拉取间隔(分钟)")
+    poll_interval_minutes: int = _f(15, "空间窗口内两次拉取的间距(分钟);窗口开始即首拉", label="拉取间隔(分钟)")
     decision_window_seconds: int = _f(150, "注入后等待 planner 轮完成的超时兜底(秒;须大于最坏轮延迟,慢模型实测 53s,150 留余量)", label="决策窗口超时(秒)")
     tool_whitelist: list[str] = _f(
         ["wait", "query_memory", "query_person_profile", "memo_write", "memo_read", "inspect_image",

@@ -2931,6 +2931,70 @@ def test_poll_tick_reentrancy_guard(tmp_path):
     assert p._qzone_poll_running is False  # 后台 feeds 完成后标记复位
 
 
+def test_poll_feeds_spacing_governs_fetch_rhythm(tmp_path):
+    """拉取间距语义(窗口开始即首拉,间隔=两次拉取的间距而非与窗口无关的
+    固定节奏):距上次拉取不足 poll_interval_minutes 的轮次跳过发现/充实
+    (窗口激活与收窗判定照常);足距后恢复拉取。"""
+
+    from time import monotonic
+
+    p = _make_plugin(tmp_path)
+    now = datetime.now()
+    p._schedule_data = {"date": now.strftime("%Y-%m-%d"), "windows": [{
+        "kind": "daily", "start": (now - timedelta(minutes=1)).strftime("%Y-%m-%dT%H:%M"),
+        "end": (now + timedelta(hours=1)).strftime("%Y-%m-%dT%H:%M"),
+        "activity": "逛空间", "plan_speak": False, "topic": "", "read_qzone": True,
+    }]}
+    asyncio.run(p._qzone_poll_feeds())  # 首轮(时间戳默认 0=无距可判):实际拉取
+    assert p.qzone_client.discovery_calls == 1
+    asyncio.run(p._qzone_poll_feeds())  # 距上次不足间隔:跳过拉取段
+    assert p.qzone_client.discovery_calls == 1
+    assert p.qzone_injector.window_active is True  # 窗口激活不受间距影响
+    p._qzone_last_fetch_at = monotonic() - 16 * 60  # 足距(默认间隔 15 分钟)
+    asyncio.run(p._qzone_poll_feeds())
+    assert p.qzone_client.discovery_calls == 2
+
+
+def test_schedule_tick_dispatches_poll_on_qzone_window_entry(tmp_path):
+    """qzone 窗口开始即首拉:_schedule_tick 检出进入 read/send 窗口时立即
+    派发一轮拉取(经 _qzone_poll_tick),同窗口只派发一次;非 qzone 窗口
+    不派发。"""
+
+    p = _make_plugin(tmp_path)
+    p.config.plugin.enabled = True  # 离线装配默认关:schedule_tick 首行门控
+    p.sleep = _SleepStub(False)  # schedule_tick 无条件查睡眠状态(on_load 装配,离线补)
+    p._schedule_tick_fired = {}  # on_load 装配的窗口触发/计数标记(离线补)
+    p._speak_counts = {}
+    p._remind_fired = {}
+    now = datetime.now()
+    qzone_win = {"kind": "daily",
+                 "start": (now - timedelta(minutes=1)).strftime("%Y-%m-%dT%H:%M"),
+                 "end": (now + timedelta(hours=1)).strftime("%Y-%m-%dT%H:%M"),
+                 "activity": "闲逛", "plan_speak": False, "topic": "", "read_qzone": True}
+    plain_win = {**qzone_win, "read_qzone": False}
+    p._schedule_data = {"date": now.strftime("%Y-%m-%d"), "windows": [qzone_win]}
+
+    calls: list = []
+
+    async def _tick():
+        calls.append(1)
+
+    async def _noop_trigger(*a, **k):
+        return None
+
+    p._qzone_poll_tick = _tick
+    p._window_trigger = _noop_trigger  # 隔离:窗口主动发言路径与拉取派发无关
+    asyncio.run(p._schedule_tick())
+    assert calls == [1]
+    asyncio.run(p._schedule_tick())  # 同窗口已触发过:不重复派发
+    assert calls == [1]
+    # 非 qzone 窗口:不派发
+    p._schedule_data = {"date": now.strftime("%Y-%m-%d"), "windows": [plain_win]}
+    p._schedule_tick_fired = {}  # 换窗场景:重置触发标记让 tick 真正评估新窗口
+    asyncio.run(p._schedule_tick())
+    assert calls == [1]
+
+
 def test_poll_tick_closes_ended_window_while_previous_poll_running(tmp_path):
     """窗口收尾不被上一轮拉取拖住(2026-09-04):窗口已结束且上一轮后台拉取
     仍在跑(_qzone_poll_running=True)时,tick 防重入分支先行收窗——

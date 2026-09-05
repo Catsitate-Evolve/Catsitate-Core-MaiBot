@@ -18,7 +18,7 @@ class PluginSection(PluginConfigBase):
     __ui_order__ = 0
 
     enabled: bool = _f(False, "插件总开关", label="插件总开关")
-    config_version: str = _f("1.0.0", "配置版本", label="配置版本")
+    config_version: str = _f("1.0.1", "配置版本", label="配置版本")
     llm_daily_call_warning_threshold: int = _f(50, "旁路 LLM 每日调用告警阈值", label="旁路 LLM 每日告警阈值")
 
 
@@ -220,7 +220,7 @@ class QzoneSection(PluginConfigBase):
     __ui_label__ = "QQ空间"
     __ui_order__ = 11
 
-    enabled: bool = _f(True, "QQ空间模块开关(M2 起含评论/点赞等写动作)", label="QQ空间模块开关")
+    enabled: bool = _f(True, "QQ空间模块开关(含评论/点赞等写动作)", label="QQ空间模块开关")
     poll_interval_minutes: int = _f(15, "空间窗口内两次拉取的间距(分钟);窗口开始即首拉", label="拉取间隔(分钟)")
     decision_window_seconds: int = _f(150, "注入后等待 planner 轮完成的超时兜底(秒;须大于最坏轮延迟,慢模型实测 53s,150 留余量)", label="决策窗口超时(秒)")
     tool_whitelist: list[str] = _f(
@@ -286,7 +286,7 @@ class DebugSection(PluginConfigBase):
 
     enabled: bool = _f(
         False,
-        "debug 日志开关:开启后 debug 级日志写入插件数据目录 logs/ 下的当日文件(供公测复审)",
+        "debug 日志开关:开启后 debug 级日志写入插件数据目录 logs/ 下的当日文件(供人工复核)",
         label="debug 日志开关",
     )
 

@@ -1012,7 +1012,7 @@ def test_diary_weather_line_and_word_count_guidance(tmp_path):
     p.llm_calls.clear()
     asyncio.run(p._generate_and_publish_diary())
     stable = p.llm_calls[0]["messages"][1]["content"]
-    assert "当前天气:温度 26.5°C(天气码 1)" in stable
+    assert "当前天气:基本晴朗,26°C" in stable  # 天气码 1→「基本晴朗」,温度 round() 银行家舍入 26.5→26
     assert "(目标篇幅120~350字)" in stable
     assert not _re.search(r"目标 \d+ 字左右", stable)  # 旧随机目标行不复存在
 
@@ -4693,7 +4693,7 @@ def test_weather_text_staleness_ceiling(tmp_path):
     assert any(level == "debug" and "天气快照过期" in str(a[0]) for level, a in p.logs)
 
     _insert((datetime.now() - timedelta(hours=1)).strftime("%Y-%m-%dT%H:%M:%S"))
-    assert p._weather_text() == "温度 26.5°C(天气码 1)"  # 1 小时前:正常
+    assert p._weather_text() == "基本晴朗,26°C"  # 天气码 1→「基本晴朗」,温度 round() 银行家舍入 26.5→26
 
     _insert("not-a-timestamp")
     assert p._weather_text() == "无数据"  # 时刻不可解析:按过期,不抛出

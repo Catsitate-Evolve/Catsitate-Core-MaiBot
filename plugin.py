@@ -106,6 +106,7 @@ from catsitate_core.services.scheduler import Scheduler
 from catsitate_core.sleep import is_goodnight_utterance, parse_sleep_confirm_response
 from catsitate_core.storage import JsonSnapshot, SQLiteStore
 from catsitate_core.time_aware import (
+    WEATHER_CODE_MAP,
     build_environment_text,
     dedup_festival_names,
     holiday_chain,
@@ -3971,10 +3972,11 @@ class CatsitatePlugin(MaiBotPlugin):
         # 篇幅指导(去目标字数随机化,对齐 diary_plugin
         # qzone_min/max_word_count 形态):配置区间直接进素材行作软指导,
         # 模板指令句的长度口径引用这一行
+        weekday = ("周一", "周二", "周三", "周四", "周五", "周六", "周日")[day_dt.weekday()]
         material = (
             f"我的名字是{nickname}\n"
             f"{persona}\n\n"
-            f"今天是{day_dt.year}年{day_dt.month}月{day_dt.day}日,回顾一下到现在为止的聊天记录:\n"
+            f"今天是{day_dt.year}年{day_dt.month}月{day_dt.day}日,星期{weekday},回顾一下到现在为止的聊天记录:\n"
             f"{chat_timeline or '(今天没和人聊天)'}\n\n"
             f"今天的日程:{schedule_summary or '自由活动'}\n"
             f"备忘:{memos or '无'}\n看到的好友动态:{seen_summary or '无'}\n"
@@ -4310,8 +4312,13 @@ class CatsitatePlugin(MaiBotPlugin):
             return "无数据"
         try:
             data = json.loads(rows[0][0])
-            return f"温度 {data.get('temperature_2m')}°C(天气码 {data.get('weather_code')})"
-        except (json.JSONDecodeError, TypeError):
+            code = int(data.get("weather_code") or 0)
+            desc = WEATHER_CODE_MAP.get(code, "天气不明")
+            temp = data.get("temperature_2m")
+            if temp is not None:
+                desc = f"{desc},{round(float(temp))}°C"
+            return desc
+        except (json.JSONDecodeError, TypeError, ValueError):
             return "无数据"
 
     def _fav_summary_text(self) -> str:

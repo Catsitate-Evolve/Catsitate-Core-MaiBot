@@ -18,7 +18,7 @@ class PluginSection(PluginConfigBase):
     __ui_order__ = 0
 
     enabled: bool = _f(False, "插件总开关", label="插件总开关")
-    config_version: str = _f("1.0.2", "配置版本", label="配置版本")
+    config_version: str = _f("1.0.3", "配置版本", label="配置版本")
     llm_daily_call_warning_threshold: int = _f(50, "旁路 LLM 每日调用告警阈值", label="旁路 LLM 每日告警阈值")
 
 
@@ -221,7 +221,7 @@ class QzoneSection(PluginConfigBase):
     __ui_order__ = 11
 
     enabled: bool = _f(True, "QQ空间模块开关(含评论/点赞等写动作)", label="QQ空间模块开关")
-    poll_interval_minutes: int = _f(15, "空间窗口内两次拉取的间距(分钟);窗口开始即首拉", label="拉取间隔(分钟)")
+    poll_interval_minutes: int = _f(15, "空间窗口内两次拉取的间距(分钟);窗口开始即首拉。设小于 10 分钟时,发现层共享缓存(10 分钟)成为实际浏览节奏的下限", label="拉取间隔(分钟)")
     decision_window_seconds: int = _f(150, "注入后等待 planner 轮完成的超时兜底(秒;须大于最坏轮延迟,慢模型实测 53s,150 留余量)", label="决策窗口超时(秒)")
     tool_whitelist: list[str] = _f(
         ["wait", "query_memory", "query_person_profile", "memo_write", "memo_read", "inspect_image",
@@ -240,7 +240,7 @@ class QzoneSection(PluginConfigBase):
     summary_count: int = _f(5, "真实聊天注入的近期已见动态条数", label="见闻摘要条数")
     summary_days: int = _f(3, "见闻摘要回溯天数", label="见闻回溯天数")
     discovery_count: int = _f(50, "发现层单页拉取条数(统一时间线)", label="发现页大小")
-    discovery_max_pages: int = _f(3, "发现层翻页上限(长时间离线后的积压补全;稳态恒 1 次调用)", label="发现翻页上限")
+    discovery_max_pages: int = _f(3, "发现层翻页上限(长时间离线后的积压补全;稳态至多 1 次真实调用,共享缓存命中时为 0 次)", label="发现翻页上限")
     own_feed_scan_count: int = _f(20, "通知源A扫描自己最近 N 条说说的评论(单次请求条数,不增加调用次数)", label="自扫说说数")
     diary_enabled: bool = _f(True, "日记功能开关(入睡时生成并发布空间日记说说)", label="日记开关")
     diary_llm_model: str = _f("memory", "日记生成模型:填主程序 task 名", label="日记模型(task 名)")

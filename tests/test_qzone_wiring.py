@@ -160,6 +160,9 @@ def _make_plugin(tmp_path):
     p._qzone_registry = FeedContextRegistry()  # 实例级(类属性共享,防测试间泄漏)
     p._qzone_seq = 0
     p._qzone_pump_lock = asyncio.Lock()  # 泵互斥锁(on_load 装配,离线测试手工补)
+    # 发现层单飞锁(on_load 装配,离线测试手工补):浏览层与通知源B 共用的
+    # 统一入口单飞+共享缓存+限流退避依赖此锁
+    p._qzone_discovery_fetch_lock = asyncio.Lock()
     p._background_tasks = set()  # 后台任务引用集(tick 派发 feeds/scan 用,on_load 装配)
     # 与生产同构:seen/comment_seen 共用一个 SQLiteStore(_qzone_data_prune 走 self.store)
     store = SQLiteStore(tmp_path / "catsitate.db")
@@ -2997,7 +3000,8 @@ def test_update_schedule_add_qzone_window(tmp_path):
 def test_poll_feeds_spacing_governs_fetch_rhythm(tmp_path):
     """拉取间距语义(窗口开始即首拉,间隔=两次拉取的间距而非与窗口无关的
     固定节奏):距上次拉取不足 poll_interval_minutes 的轮次跳过发现/充实
-    (窗口激活与收窗判定照常);足距后恢复拉取。"""
+    (窗口激活与收窗判定照常);足距后恢复拉取。缓存新鲜时足距轮同样零
+    端点调用(发现层统一入口共享缓存语义),缓存失效后足距轮真实重拉。"""
 
     from time import monotonic
 
@@ -3014,6 +3018,11 @@ def test_poll_feeds_spacing_governs_fetch_rhythm(tmp_path):
     assert p.qzone_client.discovery_calls == 1
     assert p.qzone_injector.window_active is True  # 窗口激活不受间距影响
     p._qzone_last_fetch_at = monotonic() - 16 * 60  # 足距(默认间隔 15 分钟)
+    p._qzone_discovery_cache = None  # 共享缓存失效:足距轮必须真实重拉(命中会免请求)
+    asyncio.run(p._qzone_poll_feeds())
+    assert p.qzone_client.discovery_calls == 2
+    # 缓存新鲜(600 秒内,上一轮重拉已写入):足距轮吃共享缓存,零端点调用
+    p._qzone_last_fetch_at = monotonic() - 16 * 60
     asyncio.run(p._qzone_poll_feeds())
     assert p.qzone_client.discovery_calls == 2
 
@@ -3442,6 +3451,223 @@ def test_poll_feeds_rate_limit_skips_round_without_legacy_fallback(tmp_path):
         for level, a in p.logs
     )
     assert p.qzone_injector.window_active is True  # 窗口保持(非收窗)
+
+
+def test_shared_discovery_rate_limit_backoff(tmp_path):
+    """发现层限流退避(浏览与通知源B 共享):首页撞 -10001 → 浏览层原文案告警
+    跳过本轮、源B 扫描零异常零调用;退避期内(30 分钟)再跑浏览与源B 零端点
+    请求且退避告警只一条;退避过期后恢复真实拉取,info「退避结束」且退避态
+    复位(再遇限流会重新告警)。"""
+
+    from time import monotonic
+
+    from catsitate_core.qzone.client import QzoneRateLimitError
+
+    p = _make_plugin(tmp_path)
+    p._schedule_data = _active_qzone_schedule()
+    # 源B 名单非空(名单先行判定通过,会走到发现层统一入口)
+    fresh = (datetime.now() - timedelta(minutes=1)).strftime("%Y-%m-%dT%H:%M:%S")
+    p.qzone_comment_seen.note_bot_comment("ffeed1", "30000", "我的评论", fresh)
+
+    class _RecoverableRateLimitClient(_StubUnifiedClient):
+        """首页可切换限流/恢复的桩:limited=True 恒抛限流,False 返回正常空列表。"""
+
+        def __init__(self):
+            super().__init__([])
+            self.limited = True
+
+        async def get_own_feed_comments(self, *, bot_uin, num=10):
+            del bot_uin, num
+            return {}, {}, []
+
+        async def get_unified_timeline(self, *, count=20, begintime=None):
+            del count, begintime
+            self.discovery_calls += 1
+            if self.limited:
+                raise QzoneRateLimitError("空间服务限流(统一时间线): code=-10001")
+            return [], ""
+
+    client = _RecoverableRateLimitClient()
+    p.qzone_client = client
+
+    from time import monotonic as _mono
+
+    # 第 1 轮浏览:撞限流 → 浏览层原文案告警(不回退 legacy),退避进入告警 1 条
+    asyncio.run(p._qzone_poll_feeds())
+    assert any(
+        level == "warning" and "服务限流" in str(a[0]) and "本轮浏览跳过" in str(a[0])
+        for level, a in p.logs
+    )
+    assert any(
+        level == "warning" and "30 分钟退避" in str(a[0]) and "期间零请求" in str(a[0])
+        for level, a in p.logs
+    )
+    assert client.discovery_calls == 1
+
+    # 第 1 轮源B:退避期内静默跳过,零异常零端点调用,源C 照常
+    asyncio.run(p._qzone_notify_scan())
+    assert client.discovery_calls == 1
+    assert not any(level == "exception" for level, a in p.logs)
+    assert any(
+        level == "debug" and "通知源B发现层限流退避中" in str(a[0]) for level, a in p.logs
+    )
+
+    # 退避期内再跑一轮浏览+源B:零端点请求,退避告警仍只 1 条(warn-once)
+    p._qzone_last_fetch_at = _mono() - 16 * 60
+    asyncio.run(p._qzone_poll_feeds())
+    asyncio.run(p._qzone_notify_scan())
+    assert client.discovery_calls == 1  # 退避期内零请求
+    assert sum(
+        1 for level, a in p.logs
+        if level == "warning" and "30 分钟退避" in str(a[0])
+    ) == 1
+
+    # 退避过期+桩恢复:恢复真实拉取,info「退避结束」且退避态复位
+    p._qzone_last_fetch_at = _mono() - 16 * 60
+    p._qzone_discovery_backoff_until = monotonic() - 1
+    client.limited = False
+    asyncio.run(p._qzone_poll_feeds())
+    assert client.discovery_calls == 2
+    assert any(
+        level == "info" and "限流退避结束,恢复拉取" in str(a[0]) for level, a in p.logs
+    )
+    assert p._qzone_discovery_backoff_until == 0.0
+    assert p._qzone_discovery_backoff_warned is False
+
+    # 恢复后源B:吃共享缓存,零端点调用
+    asyncio.run(p._qzone_notify_scan())
+    assert client.discovery_calls == 2
+
+
+def test_notify_scan_source_b_uses_shared_discovery_cache(tmp_path, monkeypatch):
+    """通知源B 经发现层统一入口:连续两轮通知扫描共用一次首页请求——第二轮
+    吃共享缓存(600 秒内)零端点调用,逐好友拉取两轮照常(缓存共享不改变
+    源B 的交叉与拉取语义)。"""
+
+    import time as _time
+
+    sleeps: list = []
+    _patch_sleep(monkeypatch, sleeps)
+    p = _make_plugin(tmp_path)
+    p.qzone_injector.window_started()
+    # bot 曾在好友 30000 说说下评论:名单非空,源B 走发现层交叉
+    fresh = (datetime.now() - timedelta(minutes=1)).strftime("%Y-%m-%dT%H:%M:%S")
+    p.qzone_comment_seen.note_bot_comment("ffeed1", "30000", "评论一", fresh)
+
+    pulls: list = []
+    now_s = str(int(_time.time()))
+
+    class _CacheShareClient(_StubUnifiedClient):
+        """源A 空;发现层含被评论好友 30000(有新活动);源B 逐好友拉取记录。"""
+
+        def __init__(self):
+            super().__init__([
+                FeedDiscovery(tid="fa1", uin="30000", nickname="好友甲", abstime=now_s, appid=311),
+            ])
+
+        async def get_own_feed_comments(self, *, bot_uin, num=10):
+            del bot_uin, num
+            return {}, {}, []
+
+        async def get_user_feeds_raw(self, *, target_uin, num=5):
+            del num
+            pulls.append(target_uin)
+            return {"usrinfo": {"uin": target_uin}, "msglist": []}
+
+    p.qzone_client = _CacheShareClient()
+    asyncio.run(p._qzone_notify_scan())
+    asyncio.run(p._qzone_notify_scan())  # 第二轮:缓存新鲜,首页零端点调用
+    assert p.qzone_client.discovery_calls == 1
+    assert pulls == ["30000", "30000"]  # 逐好友拉取两轮照常
+    assert sleeps == [2.0, 2.0]  # 每轮活跃好友前各 2 秒
+
+
+def test_poll_feeds_uses_fresh_cache_without_refetch(tmp_path):
+    """浏览层吃共享缓存:通知源B 扫描先经统一入口拉首页写缓存(600 秒内),
+    随后浏览轮(足距)零端点调用——首页列表来自缓存,旧动态与非说说条目
+    过滤照常(不误注入),窗口与泵链路照常。"""
+
+    p = _make_plugin(tmp_path)
+    p._schedule_data = _active_qzone_schedule()
+    # 源B 名单(30000)与发现层作者(10001)无交集:源B 零逐好友拉取
+    fresh = (datetime.now() - timedelta(minutes=1)).strftime("%Y-%m-%dT%H:%M:%S")
+    p.qzone_comment_seen.note_bot_comment("ffeed1", "30000", "评论一", fresh)
+    # 旧说说预登记为已见(queued 会被窗口开始的回收影响,seen 才是判重基准)
+    p.qzone_seen.mark_queued("oldtid", abstime="1750000000", author_uin="10001", summary="旧动态")
+    p.qzone_seen.mark_seen("oldtid", "2026-08-31T10:00:00")
+
+    class _CacheFirstClient(_StubUnifiedClient):
+        """源A 空;首页含旧说说+非说说(浏览流只认 appid=311 的新 tid)。"""
+
+        def __init__(self):
+            super().__init__([
+                FeedDiscovery(tid="oldtid", uin="10001", nickname="小明", abstime="1750000000", appid=311),
+                FeedDiscovery(tid="shareid", uin="10001", nickname="小明", abstime="1750000100", appid=2023106),
+            ])
+
+        async def get_own_feed_comments(self, *, bot_uin, num=10):
+            del bot_uin, num
+            return {}, {}, []
+
+    p.qzone_client = _CacheFirstClient()
+    asyncio.run(p._qzone_notify_scan())  # 源B 扫描:经统一入口拉首页写缓存
+    assert p.qzone_client.discovery_calls == 1
+    asyncio.run(p._qzone_poll_feeds())  # 浏览轮:缓存新鲜,首页零端点调用
+    assert p.qzone_client.discovery_calls == 1  # 未重拉(吃共享缓存)
+    assert p._ctx.gateway.calls == []  # 旧动态/非说说过滤照常,零注入
+    assert p.qzone_injector.window_active is True  # 窗口照常激活
+
+
+def test_shared_discovery_pagination_passes_through(tmp_path, monkeypatch):
+    """缓存新鲜时浏览层积压补全仍穿透直发:通知源B 扫描先写共享缓存(首页含
+    新说说),浏览轮吃缓存发现新动态 → 带游标的第二页调用真实发生(直调
+    client,不经共享层),新动态充实注入照常。"""
+
+    import time as _time
+
+    sleeps: list = []
+    _patch_sleep(monkeypatch, sleeps)
+    p = _make_plugin(tmp_path)
+    p._schedule_data = _active_qzone_schedule()
+    p.qzone_injector.window_started()
+    fresh = (datetime.now() - timedelta(minutes=1)).strftime("%Y-%m-%dT%H:%M:%S")
+    p.qzone_comment_seen.note_bot_comment("ffeed1", "30000", "评论一", fresh)  # 与作者 10001 无交集
+
+    enrich_calls: list = []
+    now_s = str(int(_time.time()))
+
+    class _PassThroughClient(_StubUnifiedClient):
+        """首页(begintime=None)含新说说并记录每次调用的游标;第二页起空页。"""
+
+        def __init__(self):
+            super().__init__([
+                FeedDiscovery(tid="newtid", uin="10001", nickname="小明", abstime=now_s, appid=311),
+            ])
+            self.timeline_begintimes: list = []
+
+        async def get_own_feed_comments(self, *, bot_uin, num=10):
+            del bot_uin, num
+            return {}, {}, []
+
+        async def get_unified_timeline(self, *, count=20, begintime=None):
+            del count
+            self.discovery_calls += 1
+            self.timeline_begintimes.append(begintime)
+            return (list(self._discoveries), "cur1") if begintime is None else ([], "")
+
+        async def get_user_feeds(self, *, target_uin, nickname, num=5):
+            enrich_calls.append(target_uin)
+            return [FeedItem(tid="newtid", abstime=now_s, uin=target_uin, nickname=nickname, content="新动态正文")]
+
+    p.qzone_client = _PassThroughClient()
+    asyncio.run(p._qzone_notify_scan())  # 源B 扫描:首页调用(无游标)写缓存
+    assert p.qzone_client.discovery_calls == 1
+    asyncio.run(p._qzone_poll_feeds())  # 浏览轮:吃缓存发现新动态 → 穿透翻页
+    assert p.qzone_client.discovery_calls == 2
+    assert p.qzone_client.timeline_begintimes == [None, "cur1"]  # 第二页带游标直发(穿透)
+    assert sleeps == [2.0]  # 页间防风控间隔(首页吃缓存前无间隔)
+    assert enrich_calls == ["10001"]  # 充实层照常
+    assert [c[1]["message_id"] for c in p._ctx.gateway.calls] == ["qzone_newtid_1"]  # 注入照常
 
 
 def test_poll_feeds_enrichment_rate_limit_stops_round(tmp_path):

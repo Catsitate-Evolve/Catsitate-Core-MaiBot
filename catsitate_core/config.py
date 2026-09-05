@@ -18,7 +18,7 @@ class PluginSection(PluginConfigBase):
     __ui_order__ = 0
 
     enabled: bool = _f(False, "插件总开关", label="插件总开关")
-    config_version: str = _f("1.0.1", "配置版本", label="配置版本")
+    config_version: str = _f("1.0.2", "配置版本", label="配置版本")
     llm_daily_call_warning_threshold: int = _f(50, "旁路 LLM 每日调用告警阈值", label="旁路 LLM 每日告警阈值")
 
 

@@ -1696,7 +1696,8 @@ class CatsitatePlugin(MaiBotPlugin):
                     self.ctx.logger.warning("QQ空间登录态失效(充实层 uin=%s),cookie 已作废,本轮终止", uin)
                     return
                 except QzoneRateLimitError:
-                    # 服务端限流:逐人重试只会加重,终止本轮充实,下轮间距后再拉
+                    # 服务端限流:逐人重试只会加重,终止本轮充实,下轮间距后再拉;
+                    # 本轮已入队条目留待下轮浏览泵(通知队列不受影响,通知 tick 自泵)
                     self.ctx.logger.warning("QQ空间服务限流(充实层 uin=%s),本轮充实终止,下轮再试", uin)
                     return
                 except Exception:

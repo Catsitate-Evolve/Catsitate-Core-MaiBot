@@ -33,7 +33,7 @@ Catsitate 是 MaiBot(QQ 机器人)的拟人化人格插件——让 bot 像真�
 ## 快速上手
 
 ```bash
-# 跑全量测试(608 用例,离线 stub,不触网)
+# 跑全量测试(613 用例,离线 stub,不触网)
 cd <本仓库根> && python3 -m pytest tests/ -q
 
 # 查看当前版本

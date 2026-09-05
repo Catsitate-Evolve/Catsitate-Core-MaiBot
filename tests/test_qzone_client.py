@@ -660,6 +660,7 @@ def test_extract_timeline_cursor_basetime_fallback():
 
     assert QzoneClient.extract_timeline_cursor("{main:{begintime:'1788164300'}}") == "1788164300"
     assert QzoneClient.extract_timeline_cursor("externparam:'basetime=1785058947&pagenum=3'") == "1785058947"
+    assert QzoneClient.extract_timeline_cursor("{}") == ""
 
 
 def test_rate_limit_code_classified_on_unified_and_msglist():
@@ -683,4 +684,3 @@ def test_rate_limit_code_classified_on_unified_and_msglist():
     except QzoneRateLimitError as e:
         raised = str(e)
     assert "限流" in raised
-    assert QzoneClient.extract_timeline_cursor("{}") == ""

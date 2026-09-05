@@ -8,7 +8,7 @@
 
 生命周期:
 
-1. **启动**:`on_load` 里 `_qzone_selfcheck()` 自检(开关 → person 别名折叠 → focus_mode/talk_value 前置检测),通过后 `_qzone_gateway_ready()` 向宿主上报虚拟网关就绪;随后注册 `qzone_poll` 调度任务(间隔 `qzone.poll_interval_minutes`,默认 15 分钟)。
+1. **启动**:`on_load` 里 `_qzone_selfcheck()` 自检(开关 → person 别名折叠 → focus_mode/talk_value 前置检测),通过后 `_qzone_gateway_ready()` 向宿主上报虚拟网关就绪;随后注册 `qzone_poll` 调度任务(间隔 `qzone.poll_interval_minutes`,默认 15 分钟,语义=窗口内**两次拉取的间距**而非与窗口无关的固定节奏:进入 read/send 窗口时由 `_schedule_tick` 立即派发首轮拉取,之后的刷新由定间隔任务承担;`_qzone_poll_feeds` 的间距判定保证距上次实际拉取不足间隔时跳过拉取段,防两路相邻撞车)。
 2. **运行**:调度器每 tick 触发 `_qzone_poll_tick`——防重入后把长 IO 派发为后台任务 `_qzone_poll_feeds`(不阻塞调度器 60s tick 里的其它任务)。
 3. **窗口守卫**:只有当日程窗口标记了 `read_qzone`(kind=daily)时才拉取;窗口开始时激活注入泵,窗口结束时收泵并把未读浏览动态回退(`revert_pending`),同时触发见闻生成。
 4. **睡眠静默**:睡眠中绝对静默,窗口守卫与泵都跳过。

@@ -175,6 +175,7 @@ class CatsitatePlugin(MaiBotPlugin):
     _qzone_registry: FeedContextRegistry = FeedContextRegistry()  # 注入上下文追踪(工具目标解析;on_load 实例级重置)
     _qzone_notify_task_armed: bool = False  # 统一通知轮询调度任务已注册标记(热重载重注册防重)
     _qzone_poll_running: bool = False  # 浏览轮询后台拉取进行中(深度审查 A-2:tick 防重入标记)
+    _qzone_last_fetch_at: float = 0.0  # 上次实际拉取的 monotonic 时刻(on_load 重置:monotonic 跨进程不可比)
     _qzone_notify_running: bool = False  # 通知轮询后台扫描进行中(同上,通知 tick 独立标记)
     _decaying: bool = False  # 自然衰减进行中(2026-09-03 复审:醒后 spawn 与调度 tick 并发防重入,防 delta 双计)
     _daily_settle_running: bool = False  # 日终结算后台任务进行中(L-1,v1 清理:tick 防重入标记)
@@ -323,6 +324,8 @@ class CatsitatePlugin(MaiBotPlugin):
         self._qzone_registry = FeedContextRegistry()
         # 轮询后台任务防重入标记实例级重置(类属性共享可变态,卸载取消任务后不得残留 True)
         self._qzone_poll_running = False
+        # 拉取间距时间戳重置:monotonic 基准随进程启动,残留旧值会错判「刚拉过」
+        self._qzone_last_fetch_at = 0.0
         self._qzone_notify_running = False
         # 衰减防重入标记实例级重置(同上;残留 True 会令醒后补跑衰减被永久跳过)
         self._decaying = False
@@ -1584,6 +1587,16 @@ class CatsitatePlugin(MaiBotPlugin):
                     self.ctx.logger.info("QQ空间窗口开始,注入泵激活;回收跨启动 queued 残留 %d 条(重新拉取)", stale)
                 else:
                     self.ctx.logger.info("QQ空间窗口开始,注入泵激活")
+            # 拉取间距:间隔的语义是「两次拉取的间距」,不是与窗口无关的固定节奏
+            # ——窗口开始的首轮由 _schedule_tick 进入窗口时立即派发,窗口内的
+            # 后续刷新由定间隔任务承担;距上次实际拉取不足间隔时本轮跳过发现/
+            # 充实(收窗判定与窗口激活在上方已照常执行),防进入拉取与节奏拉取
+            # 相邻撞车。时刻在拉取尝试前打点:失败轮同样占距(防失败后连续重击)
+            interval_s = max(self.config.qzone.poll_interval_minutes, 1) * 60
+            now_mono = time.monotonic()
+            if now_mono - self._qzone_last_fetch_at < interval_s:
+                return
+            self._qzone_last_fetch_at = now_mono
             # ① 发现层:统一时间线好友动态流(scope=2,7 天窗口)游标翻页
             # (2026-09-03 双路逆向+实机改造):续页游标=上页响应 main.begintime,
             # 仅此一参(refresh/pagenum/g_tk 均非必需);稳态第 1 页全旧即止步恒
@@ -3892,6 +3905,12 @@ class CatsitatePlugin(MaiBotPlugin):
             logger.debug("schedule_tick 跳过:已达每日发言上限 %s", self.config.schedule.daily_speak_limit)
             return
         logger.debug("schedule_tick 进入窗口 kind=%s 活动=%s", win.get("kind"), win.get("activity"))
+        if win.get("read_qzone") or win.get("send_qzone"):
+            # qzone 窗口开始即首拉:拉取间隔=两次拉取的间距而非独立节奏,进入
+            # 窗口立即派发一轮拉取(60 秒粒度检出),窗口内后续刷新仍由定间隔
+            # 任务承担;poll_feeds 的间距判定防两路相邻撞车。发不发言与刷不刷
+            # 空间互不牵连,故置于发言上限判定之前
+            await self._qzone_poll_tick()
         if win.get("kind") == "greeting":
             await self._greet_exclusive(day, win)  # 主动问候:仅特别者+私聊通道,无 2.1 群流路径
             self._schedule_tick_fired[day] = mark

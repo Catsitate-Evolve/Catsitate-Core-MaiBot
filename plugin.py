@@ -886,6 +886,44 @@ class CatsitatePlugin(MaiBotPlugin):
         return "", "", None
 
     @Tool(
+        "qzone_next",
+        description="刷QQ空间时,主动翻开浏览队列的下一条说说(「看完了,继续刷」)。",
+        brief_description="刷下一条",
+        parameters=[],
+        visibility="visible",
+    )
+    async def qzone_next(self, **kwargs: Any) -> str:
+        """浏览窗口内主动刷下一条:释放当前 awaiting(这条已看完)再复用
+        _qzone_pump 注入下一条(P1 通知优先)。不新造注入路径。
+
+        门控顺序:流门控(防御非 qzone 流直调,正常经工具过滤已不可见)→
+        窗口判定(不在浏览窗口直接拒)→ 队列判定(无积压即「见底」,省 pump)。
+        见底时仍释放 awaiting:正在看一条但下面没了,「这条看完没下一条」也归
+        见底,释放让泵状态干净——否则陈旧 awaiting 会卡住后续通知注入。"""
+        stream_id = str(kwargs.get("stream_id") or kwargs.get("session_id") or "")
+        if (
+            str(kwargs.get("platform") or "") != QZONE_PLATFORM
+            and (not stream_id or stream_id not in self._qzone_session_id_set())
+        ):
+            # 防御:qzone_next 已由工具过滤在非 qzone 流剔除,此处兜底直接调用
+            return "这个工具只在刷QQ空间时有用。"
+        if not self._qzone_available:
+            return "QQ空间模块未启用。"
+        if not self.qzone_injector.window_active:
+            return "现在不在浏览窗口。"
+        if self.qzone_injector.queue_size() == 0:
+            # 无积压(P1/P2 都空):已看完当前且没有下一条,或正在看这条但下面
+            # 没了——都归「见底」。有 awaiting 时一并释放,让泵状态干净
+            # (on_turn_complete 对无 awaiting 是 no-op,统一调用最简洁)。
+            self.qzone_injector.on_turn_complete(time.monotonic())
+            return "队列见底了,没有更多动态。"
+        # 有积压:先释放当前 awaiting 再 pump——next_to_inject 在 awaiting
+        # 未释放时返回 None,顺序不可颠倒。
+        self.qzone_injector.on_turn_complete(time.monotonic())
+        await self._qzone_pump()
+        return "已翻开下一条。"
+
+    @Tool(
         "qzone_like",
         description="给好友说说点赞(QQ空间)。传 feed_id 精确指定(浏览消息尾部〔〕里或 view_friend_feeds 结果里都有说说ID);正在浏览动态时不传,默认对当前说说点赞。",
         brief_description="给说说点赞",

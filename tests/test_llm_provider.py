@@ -71,18 +71,29 @@ def test_gbk_custom_prompts_candidate_warns_and_falls_back(
 
 
 def test_qzone_scene_template_declared():
-    """空间场景文案入 SIDE_TEMPLATES(WebUI 可覆盖),version=5——说明〔〕参数行、
+    """空间场景文案入 SIDE_TEMPLATES(WebUI 可覆盖),version=6——说明〔〕参数行、
     工具参数名(feed_id/comment_id/at_user_id/content)映射;润色架构(content
     由 planner 直写,发出前自动按口吻顺一遍);互动通知含点赞(「赞了你」,
     feed_id 归属含 qzone_like)。"""
     t = SIDE_TEMPLATES["qzone_scene"]
-    assert t["version"] == 5
+    assert t["version"] == 6
     assert "刷QQ空间" in t["system"]
     assert "〔〕括号里的是工具参数" in t["system"]
     assert "feed_id" in t["system"] and "comment_id" in t["system"] and "at_user_id" in t["system"]
     assert "qzone_comment" in t["system"] and "qzone_reply" in t["system"] and "qzone_like" in t["system"]
     assert "qzone_post" in t["system"]  # M3 表达:分享心情发自己的说说
     assert "content 直接写" in t["system"]  # 润色架构:planner 直写,自动顺口吻
+
+
+def test_qzone_scene_template_v6_mentions_qzone_next():
+    """v6:空间场景模板补「主动刷下一条」指引——想继续刷就调 qzone_next,别用
+    wait 干等(新动态要等本轮结束才进来),队列见底再转他事(发说说或做别的)。"""
+    t = SIDE_TEMPLATES["qzone_scene"]
+    assert t["version"] == 6
+    s = t["system"]
+    assert "qzone_next" in s  # 主动翻下一条的动作入口
+    assert "wait" in s and "干等" in s  # 明确劝阻 wait 空等
+    assert "队列见底" in s  # 见底后转他事的边界信号
 
 
 def test_qzone_expression_template_preserves_facts():

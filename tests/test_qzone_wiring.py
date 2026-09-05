@@ -4686,3 +4686,90 @@ def test_diary_chat_timeline_success_without_messages_key_warns_and_falls_back(t
     assert any(
         level == "warning" and "get_by_time 返回形态异常" in str(a[0]) for level, a in p.logs
     )
+
+
+# ---- qzone_next:浏览窗口内主动刷下一条(复用既有注入链,不新造消费路径) ----
+
+
+def test_qzone_next_pumps_next_and_releases_awaiting(tmp_path):
+    """qzone_next 成功路径:窗口内已有 awaiting(正在看一条)+ P2 队列积压一条——
+    先释放 awaiting 再泵(顺序不可倒,next_to_inject 在 awaiting 未释放时返回
+    None),下一条经 route_message 注入、seen 标记、队列缩短。"""
+
+    import time
+
+    p = _make_tool_plugin(tmp_path)
+    p.qzone_injector.window_started()
+    # 当前这条:入队后泵注入 → 进入 awaiting(正在看)
+    p.qzone_injector.enqueue([FeedItem(
+        tid="curfeed0001", abstime="1750000000", uin="10001", nickname="小明",
+        content="当前这条",
+    )])
+    asyncio.run(p._qzone_pump())
+    assert p.qzone_injector.awaiting_tid == "curfeed0001"  # 前置:正在看一条
+    # 下一条:预登记 queued(生产由发现层落 queued 行,mark_seen 才有的更新)+ 入队
+    p.qzone_seen.mark_queued("nextfeed0002", abstime="1750000100", author_uin="10002", summary="下一条")
+    p.qzone_injector.enqueue([FeedItem(
+        tid="nextfeed0002", abstime="1750000100", uin="10002", nickname="小红",
+        content="下一条",
+    )])
+
+    res = asyncio.run(p.qzone_next(stream_id="s1"))
+    assert res == "已翻开下一条。"
+    assert p.qzone_injector.awaiting_tid == "nextfeed0002"  # awaiting 释放后新动态占用
+    assert p.qzone_injector.queue_size() == 0  # 队列缩短
+    assert len(p._ctx.gateway.calls) == 2  # 第一条(泵)+ 第二条(qzone_next 泵)
+    assert p._ctx.gateway.calls[1][1]["message_info"]["user_info"]["user_id"] == "10002"
+    assert p.qzone_seen.get_message_id("nextfeed0002")  # seen 已标记(注入消息 id 落库)
+
+
+def test_qzone_next_empty_queue_message(tmp_path):
+    """qzone_next 队列见底:窗口内但 P1/P2 全空且无 awaiting → 「见底」文案,
+    零 route 零 pump(前置判定省 pump)。"""
+
+    p = _make_tool_plugin(tmp_path)
+    p.qzone_injector.window_started()
+    res = asyncio.run(p.qzone_next(stream_id="s1"))
+    assert res == "队列见底了,没有更多动态。"
+    assert p._ctx.gateway.calls == []  # 零注入
+
+
+def test_qzone_next_awaiting_but_empty_queue_releases(tmp_path):
+    """有 awaiting 但队列空:调 next = 「这条看完没下一条」,归「见底」,
+    但 awaiting 释放照常做——陈旧 awaiting 卡住后续通知注入(串行信号)。"""
+
+    import time
+
+    p = _make_tool_plugin(tmp_path)
+    p.qzone_injector.window_started()
+    p.qzone_injector.enqueue([FeedItem(
+        tid="curfeed0003", abstime="1750000000", uin="10001", nickname="小明",
+        content="正在看",
+    )])
+    asyncio.run(p._qzone_pump())
+    assert p.qzone_injector.awaiting_tid == "curfeed0003"
+
+    res = asyncio.run(p.qzone_next(stream_id="s1"))
+    assert res == "队列见底了,没有更多动态。"
+    assert p.qzone_injector.awaiting_feed is None  # awaiting 已释放(泵状态干净)
+    assert len(p._ctx.gateway.calls) == 1  # 只注入过当前这条,无新增
+
+
+def test_qzone_next_outside_window_message(tmp_path):
+    """qzone_next 窗口外:window_active=False → 「不在浏览窗口」,零 route 零 pump。"""
+
+    p = _make_tool_plugin(tmp_path)
+    res = asyncio.run(p.qzone_next(stream_id="s1"))
+    assert res == "现在不在浏览窗口。"
+    assert p._ctx.gateway.calls == []
+
+
+def test_qzone_next_non_qzone_stream_rejected(tmp_path):
+    """qzone_next 非 qzone 流:流门控防御(正常经工具过滤已不可见)→ 拒绝文案,
+    零 route 零 pump。"""
+
+    p = _make_tool_plugin(tmp_path)
+    p.qzone_injector.window_started()
+    res = asyncio.run(p.qzone_next(stream_id="real-chat"))
+    assert res == "这个工具只在刷QQ空间时有用。"
+    assert p._ctx.gateway.calls == []

@@ -86,7 +86,7 @@ SIDE_TEMPLATES: dict[str, dict] = {
     # v5:对齐润色架构——工具 content 由 planner 直写,发出前自动按口吻顺一遍
     # (v4:两段式参数;更早:点赞通知与 feed_id 归属扩至 qzone_like)
     "qzone_scene": {
-        "version": 5,
+        "version": 6,
         "system": (
             "你正在用手机刷QQ空间。消息流里有好友的说说动态和互动通知"
             "(有人评论/回复/赞了你,引用的那条就是被评论的说说)。\n"
@@ -95,7 +95,9 @@ SIDE_TEMPLATES: dict[str, dict] = {
             "想互动就调工具:评论调 qzone_comment(feed_id 填说说ID,content 直接写你想说的);"
             "回复评论调 qzone_reply(填说说ID、评论ID和 content);点赞调 qzone_like;"
             "想分享自己的心情就调 qzone_post(content 直接写)——发出的内容会自动按你的口吻顺一遍。\n"
-            "不感兴趣就保持沉默,什么都不用做。在这里直接打字是发不出去的,动作只能通过工具完成。"
+            "不感兴趣就保持沉默,什么都不用做。在这里直接打字是发不出去的,动作只能通过工具完成。\n"
+            "想继续往下刷动态,就调 qzone_next 主动翻开下一条;不要用 wait 干等——"
+            "新动态要等你这一轮结束才会进来。队列见底了再去发说说或做别的。"
         ),
     },
     # 睡前日记生成:素材=蓝本形态(我的名字是/人设/今天是{日期},

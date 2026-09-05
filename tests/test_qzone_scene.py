@@ -145,6 +145,26 @@ def test_filter_qzone_tools_for_stream_non_qzone_strips_qzone_tools():
     assert out[0] is defs[0]
 
 
+def test_filter_qzone_tools_for_stream_qzone_next_only_qzone():
+    """qzone_next 是唯一流限定 qzone 工具:非 qzone 流剔除、qzone 流保留;
+    其余 qzone_* 工具非 qzone 流仍全域放行(不变)。"""
+
+    defs = [
+        {"type": "function", "function": {"name": "qzone_next", "description": "d", "parameters": {}}},
+        {"type": "function", "function": {"name": "qzone_like", "description": "d", "parameters": {}}},
+        {"type": "function", "function": {"name": "wait", "description": "d", "parameters": {}}},
+    ]
+    out_non = filter_qzone_tools_for_stream(defs, is_qzone=False, whitelist=["wait"])
+    names_non = [d.get("function", {}).get("name") or d.get("name") for d in out_non]
+    assert "qzone_next" not in names_non  # 流限定工具:非 qzone 流剔除
+    assert "qzone_like" in names_non  # 其余 qzone_* 仍全域放行
+    assert "wait" in names_non
+
+    out_qzone = filter_qzone_tools_for_stream(defs, is_qzone=True, whitelist=["wait"])
+    names_qzone = [d.get("function", {}).get("name") or d.get("name") for d in out_qzone]
+    assert "qzone_next" in names_qzone  # qzone 流保留
+
+
 def test_strip_deferred_reminder_only_removes_standalone_reminder():
     items = [
         _sys_item("system"),

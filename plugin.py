@@ -3123,10 +3123,10 @@ class CatsitatePlugin(MaiBotPlugin):
         return None  # 数据未就绪时跳过(首次由后台任务填充后自动出现)
 
     async def _refresh_environment_tick(self) -> None:
-        """环境刷新调度入口(L-1,v1 清理 2026-09-03):tick 内防重入标记+后台派发。
+        """环境刷新调度入口:tick 内防重入标记+后台派发。
 
         节日(双源各 15s 超时)与天气拉取是外网 HTTP 长 IO,tick 内直接 await 会
-        拖住同 tick 串行的全部任务(比照 qzone_poll 模式,深度审查 A-2 同源)。"""
+        拖住同 tick 串行的全部任务(与 qzone_poll 模式同源问题)。"""
 
         if self._env_refresh_running:
             self.ctx.logger.info("环境刷新后台仍在进行,跳过本 tick 派发(L-1 防重入)")
@@ -3135,7 +3135,7 @@ class CatsitatePlugin(MaiBotPlugin):
         self._spawn_background_task(self._refresh_environment_bg())
 
     async def _refresh_environment_bg(self) -> None:
-        """环境刷新后台壳(L-1):防重入标记在 finally 复位(异常/取消一致,防永久卡死)。"""
+        """环境刷新后台壳:防重入标记在 finally 复位(异常/取消一致,防永久卡死)。"""
 
         try:
             await self._refresh_environment()
@@ -3189,7 +3189,7 @@ class CatsitatePlugin(MaiBotPlugin):
                 weather = {"temperature_2m": data["current"]["temperature_2m"], "weather_code": data["current"]["weather_code"]}
         except Exception:
             self.ctx.logger.warning("天气获取失败,本轮环境块省略天气", exc_info=True)
-        # 天气快照落库供二期 2.1 联动
+        # 天气快照落库供日程生成联动
         if weather is not None:
             self.store.execute(
                 """
@@ -3226,7 +3226,7 @@ class CatsitatePlugin(MaiBotPlugin):
             self.ctx.logger.info("备忘清理:%s 条过期", removed)
 
     def _dispatch_daily_settle(self) -> None:
-        """日终结算统一后台派发(L-1,v1 清理 2026-09-03):醒后补跑与调度 tick
+        """日终结算统一后台派发:醒后补跑与调度 tick
         共享防重入守卫——在飞则跳过本轮(间隔小时级,跳过后下个周期自然重试)。"""
 
         if self._daily_settle_running:
@@ -3236,7 +3236,7 @@ class CatsitatePlugin(MaiBotPlugin):
         self._spawn_background_task(self._daily_settle_bg())
 
     async def _daily_settle_tick(self) -> None:
-        """日终结算调度入口(L-1):tick 内只做防重入派发,长 IO 全在后台任务。
+        """日终结算调度入口:tick 内只做防重入派发,长 IO 全在后台任务。
 
         结算含逐流取消息(RPC)与逐人 LLM 判定的分钟级 IO,tick 内直接 await
         会拖住同 tick 串行的 sleep_tick/schedule_tick 等全部任务。"""
@@ -3244,7 +3244,7 @@ class CatsitatePlugin(MaiBotPlugin):
         self._dispatch_daily_settle()
 
     async def _daily_settle_bg(self) -> None:
-        """日终结算后台壳(L-1):防重入标记在 finally 复位(异常/取消一致,防永久卡死)。"""
+        """日终结算后台壳:防重入标记在 finally 复位(异常/取消一致,防永久卡死)。"""
 
         try:
             await self._daily_settle()
@@ -3259,14 +3259,14 @@ class CatsitatePlugin(MaiBotPlugin):
         await self._daily_decay()  # 先衰减后结算(同一 tick 调用顺序)
         if not self.config.plugin.enabled or not self.config.favorability.enabled:
             return
-        # 按人语义:多流用户日终只结一次,结算聚合该人全部流素材(规格全局决策 #7)
+        # 按人语义:多流用户日终只结一次,结算聚合该人全部流素材(规格全局决策)
         candidates = set(self.fav_engine.iter_today_active())
-        # 深度审查 C-N1:纯空间互动好友并集——只有空间事件(评论/点赞/出站)而无
+        # 纯空间互动好友并集——只有空间事件(评论/点赞/出站)而无
         # 当日聊天的人没有 batch 行,iter_today_active 只扫 batch_counter 扫不到,
         # 原实现下纯空间互动者永不结算;并集回看窗内 qzone_fav_events 的 user_id
         # 令其进入日终兜底(空间事件本身即结算素材)。bot 自身排除:源A自评回复
         # 的 OUT_COMMENT 以 bot 为 target 落事件,但 bot 不是好感度结算对象。
-        # H-2(2026-09-03):并集改 window_hours 回看窗(fav_events_window,与结算
+        # 并集改 window_hours 回看窗(fav_events_window,与结算
         # 窗口同口径)——旧自然日(day=今天)在跨零点结算时漏掉昨晚互动的纯空间
         # 好友(其事件 day=昨日),同样不进日终兜底。
         since = (
@@ -3287,7 +3287,7 @@ class CatsitatePlugin(MaiBotPlugin):
             try:
                 await self._settle_and_log(user_id, kind="daily")
             except Exception:
-                # 单用户结算失败隔离,不拖垮整轮(与衰减逐流隔离对齐,审查 I4)
+                # 单用户结算失败隔离,不拖垮整轮(与衰减逐流隔离对齐)
                 self.ctx.logger.exception("日终结算失败(user=%s),跳过该用户", user_id)
                 continue
 
@@ -3297,7 +3297,7 @@ class CatsitatePlugin(MaiBotPlugin):
         now = datetime.now()
         now_iso = now.strftime("%Y-%m-%dT%H:%M")
         # 注意:不能经 is_sleeping() 判断睡眠中——其语义含 now < wake_at,
-        # wake_at 过后直接返回 False 落入 else 分支,自然醒分支会成死代码(审查 Critical #1)
+        # wake_at 过后直接返回 False 落入 else 分支,自然醒分支会成死代码
         if self.sleep.state.state == "sleep":
             if now.strftime("%Y-%m-%dT%H:%M:%S") >= (self.sleep.state.wake_at or "9999"):
                 self.ctx.logger.info("自然醒来: %s", now.strftime("%Y-%m-%dT%H:%M:%S"))
@@ -3310,10 +3310,10 @@ class CatsitatePlugin(MaiBotPlugin):
         await self._echo_pending_diary()
         win = current_window(self._schedule_data, now_iso)
         if not win or win.get("kind") != "sleep":
-            # 睡眠窗口已过而未入睡(Q1 裁定):不入睡,但补执行入睡时会做的任务(醒来日日程生成)
+            # 睡眠窗口已过而未入睡:不入睡,但补执行入睡时会做的任务(醒来日日程生成)
             await self._maybe_settle_passed_sleep_window(now)
             return
-        # 可入睡时间(睡眠窗口语义,联调裁定 2026-08-17):
+        # 可入睡时间(睡眠窗口语义):
         # 静默睡眠关 = 窗口起点直接入睡;静默睡眠开 = 安静满 N 分钟入睡
         if not self.config.sleep.silent_sleep_enabled:
             self.ctx.logger.info("睡眠窗口起点已到(静默睡眠关闭),直接入睡")
@@ -3333,7 +3333,7 @@ class CatsitatePlugin(MaiBotPlugin):
         return max(self._last_activity_ts or win_start, win_start)
 
     async def _maybe_settle_passed_sleep_window(self, now: datetime) -> None:
-        """睡眠窗口已过而未入睡(Q1 裁定):不入睡,但执行入睡时会做的任务(醒来日日程生成+日记生成);每窗口一次。
+        """睡眠窗口已过而未入睡:不入睡,但执行入睡时会做的任务(醒来日日程生成+日记生成);每窗口一次。
 
         入睡过(入睡时已执行)则跳过;窗口结束前不触发。
         """
@@ -3368,12 +3368,12 @@ class CatsitatePlugin(MaiBotPlugin):
             self._sleep_review_buffer = []
             self._sleep_review_buffer_snapshot.save({"messages": []})
             self.ctx.logger.info("睡醒回顾未启用,回顾缓冲已清空")
-        # 醒来补跑当日结算(内部已先衰减后结算;勿再单独 spawn 衰减,防并发双计,审查 Important #2);
-        # 经 _dispatch_daily_settle 与调度 tick 共享 L-1 防重入守卫(在飞则跳过)
+        # 醒来补跑当日结算(内部已先衰减后结算;勿再单独 spawn 衰减,防并发双计);
+        # 经 _dispatch_daily_settle 与调度 tick 共享防重入守卫(在飞则跳过)
         self._dispatch_daily_settle()
 
     async def _daily_decay_tick(self) -> None:
-        """衰减调度入口(L-1,v1 清理 2026-09-03):tick 内防重入标记+后台派发。
+        """衰减调度入口:tick 内防重入标记+后台派发。
 
         衰减含逐流取消息与逐人 LLM 判定的分钟级 IO,tick 内直接 await 会拖住
         同 tick 串行的全部任务。与日终结算内部的先衰减后结算为顺序调用,
@@ -3386,7 +3386,7 @@ class CatsitatePlugin(MaiBotPlugin):
         self._spawn_background_task(self._daily_decay_bg())
 
     async def _daily_decay_bg(self) -> None:
-        """衰减后台壳(L-1):防重入标记在 finally 复位(异常/取消一致,防永久卡死)。"""
+        """衰减后台壳:防重入标记在 finally 复位(异常/取消一致,防永久卡死)。"""
 
         try:
             await self._daily_decay()
@@ -3406,7 +3406,7 @@ class CatsitatePlugin(MaiBotPlugin):
             return
         if not self.config.plugin.enabled or not self.config.favorability.decay_enabled:
             return
-        # 并发防护(2026-09-03 复审):醒后 _wake_up spawn 的 _daily_settle 与调度 tick
+        # 并发防护:醒后 _wake_up spawn 的 _daily_settle 与调度 tick
         # 的 daily_decay/daily_settle 可并发(后台任务不与调度器串行),衰减会跑两次,
         # 而 judge_id 幂等键只同秒去重——delta 双计。实例级在飞标记:在飞则跳过本轮。
         if self._decaying:
@@ -3438,7 +3438,7 @@ class CatsitatePlugin(MaiBotPlugin):
                         # 单流取消息失败(如 RPC 超时)只跳过该流,其余流继续
                         self.ctx.logger.warning("衰减候选取消息失败(user=%s,stream=%s),跳过该流", user_id, stream_id)
                         continue
-                    # quote 语义(最终审查 I2 恢复):群聊 bot 消息 reply 段为纯消息 id,
+                    # quote 语义:群聊 bot 消息 reply 段为纯消息 id,
                     # 经 message.get_by_id 解析原发送者后注入 resolved_quote_user_id
                     # (逐条浅拷贝,不就地修改 get_recent 返回值);解析失败不注入该字段,
                     # 该条按 at 判定,每轮至多一条告警
@@ -3548,7 +3548,7 @@ class CatsitatePlugin(MaiBotPlugin):
             sections.append("## 睡眠期到期的备忘提醒\n" + "\n".join(f"- {e['content']}({e['remind_at']})" for e in sleep_day_due))
         path = report_dir / f"sleep_review_{datetime.now().strftime('%Y%m%d_%H%M%S')}.md"
         path.write_text("\n\n".join(sections) or "(无内容)", encoding="utf-8")
-        os.chmod(path, 0o600)  # 报告含消息文本/用户标识,仅属主可读(安全复审,审查 M15)
+        os.chmod(path, 0o600)  # 报告含消息文本/用户标识,仅属主可读(安全纪律)
         self.ctx.logger.info("睡醒回顾已生成: %s", path)
 
     async def _generate_tomorrow_schedule(self, target_date: str) -> None:
@@ -3575,7 +3575,7 @@ class CatsitatePlugin(MaiBotPlugin):
         if err:
             self.ctx.logger.warning("醒来日日程生成:%s(模板兜底)", err)
         self._schedule_data = data
-        self._schedule_generated = (not err)  # 模板兜底日不视为生成日程,备忘提醒兜底保持开启(审查 I-2)
+        self._schedule_generated = (not err)  # 模板兜底日不视为生成日程,备忘提醒兜底保持开启
         self._schedule_edit_history = []
         self._persist_schedule()
         self.ctx.logger.info("醒来日日程已生成(target=%s):%s", target, json.dumps(data, ensure_ascii=False)[:200])
@@ -3733,7 +3733,7 @@ class CatsitatePlugin(MaiBotPlugin):
         memos = ";".join(e["content"] for e in self.memo.due_on(today)[:3])
         seen_feeds = self.qzone_seen.recent_seen(limit=3, days=1, now=datetime.now())
         seen_summary = ";".join(clip_text(e["summary"], 20) for e in seen_feeds)
-        # M3 修正:补聊天时间线与真实天气两素材(可省略行,见各构建器)
+        # 补聊天时间线与真实天气两素材(可省略行,见各构建器)
         chat_timeline = await self._diary_chat_timeline(day=today)
         weather_line = self._diary_weather_line()
         # 素材蓝本形态(diary_plugin prompts.py,2026-09-02):「我的名字是…/人设/
@@ -3743,7 +3743,7 @@ class CatsitatePlugin(MaiBotPlugin):
         # (「你是…」),不套蓝本的「我{personality_desc}」前缀以免读破
         nickname = await self._bot_echo_nickname()
         persona, _ = await self._persona_context()
-        # 篇幅指导(2026-09-04 用户裁定:去目标字数随机化,对齐 diary_plugin
+        # 篇幅指导(去目标字数随机化,对齐 diary_plugin
         # qzone_min/max_word_count 形态):配置区间直接进素材行作软指导,
         # 模板指令句的长度口径引用这一行
         material = (
@@ -3774,12 +3774,12 @@ class CatsitatePlugin(MaiBotPlugin):
             self.ctx.logger.exception("QQ空间日记 LLM 生成失败,跳过本轮")
             return
         if not isinstance(result, dict) or not result.get("success"):
-            # 不落响应原文(安全复审纪律):仅记失败形态
+            # 不落响应原文(安全纪律):仅记失败形态
             detail = f"success={result.get('success')}" if isinstance(result, dict) else f"结果类型={type(result).__name__}"
             self.ctx.logger.warning("QQ空间日记 LLM 失败(%s),跳过", detail)
             return
         diary_text = str(result.get("response") or "").strip()
-        # 不设硬上限截断/拦截(2026-09-02 用户裁定,对齐 diary_plugin:长度完全由
+        # 不设硬上限截断/拦截(对齐 diary_plugin:长度完全由
         # 素材行的篇幅区间软约束;蓝本也无上限)。仅拦空文本——空日记没有发布意义
         if not diary_text:
             self.ctx.logger.warning("QQ空间日记内容为空,跳过发布")
@@ -3792,7 +3792,7 @@ class CatsitatePlugin(MaiBotPlugin):
             )
             return
         try:
-            # 同轮自愈(2026-09-03 复审修复,用户裁定 #7 语义,与 qzone_post 同款):
+            # 同轮自愈(与 qzone_post 同款):
             # AuthError 作废并重取 cookie 后原地重试一次——未接入前登录态失效当晚
             # 日记会静默丢失(入睡任务无用户回执,失败只有日志可见)。
             tid, auth_err = await self._qzone_auth_retry(
@@ -3819,7 +3819,7 @@ class CatsitatePlugin(MaiBotPlugin):
         """醒来后补注昨晚发布的日记(self 消息,仅入历史)。
 
         回注是上下文锚:好友次日评论日记说说时,bot 需要这段历史才知道自己
-        昨晚写过什么;回注正文带全文(2026-09-02 用户裁定:截断删除)。快照带 tid 时尾部加〔说说ID=前12位〕锚并锚定 seen/registry
+        昨晚写过什么;回注正文带全文(不做截断)。快照带 tid 时尾部加〔说说ID=前12位〕锚并锚定 seen/registry
         (与 qzone_post 同款;旧快照无 tid 则无锚)。不设 is_mentioned——
         bot 自己的旧说说不需要触发决策轮。route_message 失败保留快照,
         醒态 sleep_tick 下轮重试。
@@ -3831,8 +3831,8 @@ class CatsitatePlugin(MaiBotPlugin):
             return
         tid = str(data.get("tid") or "")
         bot_uin = str(self.config.favorability.bot_user_id or "").strip()
-        # 构造纳入 route try(2026-09-03 复审修复):取昵称失败直接抛错(#33 裁定
-        # 不兜底),若留在 try 外,sleep_tick 每 60s 的补注会持续抛错——入睡判定
+        # 构造纳入 route try:取昵称失败直接抛错(不兜底),若留在 try 外,
+        # sleep_tick 每 60s 的补注会持续抛错——入睡判定
         # 链被瘫痪且快照永不清空;纳入后按补注失败处理(告警+保留快照),
         # 下个 tick 重试。
         try:
@@ -3853,7 +3853,7 @@ class CatsitatePlugin(MaiBotPlugin):
             }
             await self.ctx.gateway.route_message(QZONE_GATEWAY_NAME, msg)
             # 本地锚定三连(seen + registry,与 qzone_post 同款;summary/摘要存
-            # 全文,2026-09-02 用户裁定)。内层独立兜底:锚定失败不拦快照清空——远端已成功,
+            # 全文,不做截断)。内层独立兜底:锚定失败不拦快照清空——远端已成功,
             # 补注只做一次,失败仅告警(浏览发现层后续自行补登记)。
             if tid:
                 try:
@@ -3912,14 +3912,14 @@ class CatsitatePlugin(MaiBotPlugin):
             # 空间互不牵连,故置于发言上限判定之前
             await self._qzone_poll_tick()
         if win.get("kind") == "greeting":
-            await self._greet_exclusive(day, win)  # 主动问候:仅特别者+私聊通道,无 2.1 群流路径
+            await self._greet_exclusive(day, win)  # 主动问候:仅特别者+私聊通道,无日程窗口的群流路径
             self._schedule_tick_fired[day] = mark
             return
         await self._window_trigger(day, win)
         self._schedule_tick_fired[day] = mark
 
     async def _window_trigger(self, day: str, win: dict) -> None:
-        """2.1 窗口 trigger:门槛过滤 → 活跃流排序取前 n → 每流 trigger(计 1)。"""
+        """日程窗口 trigger:门槛过滤 → 活跃流排序取前 n → 每流 trigger(计 1)。"""
 
         threshold = self.config.schedule.speak_threshold_level
         candidates = await self._active_streams_over(day)
@@ -3943,7 +3943,7 @@ class CatsitatePlugin(MaiBotPlugin):
             self.ctx.logger.info("主动触发[%s] -> %s:%s", day, target["stream_id"], (win.get("activity") or "")[:40])
 
     async def _active_streams_over(self, day: str) -> list[dict]:
-        """候选流(2.1 日常发言):近 24h 活跃流按人取等级,门槛固定 speak_threshold_level,
+        """候选流(日程窗口日常发言):近 24h 活跃流按人取等级,门槛固定 speak_threshold_level,
         按(等级,最近活动)降序(daily 窗口专用)。
 
         私聊流 user_id 取流信息 user_id,群聊流取最近非 bot 说话人(复用 _resolve_speaker 近似);
@@ -4023,7 +4023,7 @@ class CatsitatePlugin(MaiBotPlugin):
         """备忘提醒独立兜底:无生成日程(模板撑场)时到点注入备忘归属流;睡眠中不执行。"""
 
         # 日键清理(schedule 关闭时 _schedule_tick 早退,兜底 tick 仍须清理,
-        # 防 remind_fired.json 跨天无限增长,审查 M13)
+        # 防 remind_fired.json 跨天无限增长)
         self._prune_day_keys(datetime.now().strftime("%Y-%m-%d"))
         if not self.config.plugin.enabled or self.config.memo.enabled is False:
             return
@@ -4045,7 +4045,7 @@ class CatsitatePlugin(MaiBotPlugin):
                 self.ctx.logger.info("备忘提醒兜底注入(stream=%s):%s", entry["stream_id"], entry["content"])
             except Exception:
                 self.ctx.logger.exception("备忘提醒注入失败(stream=%s)", entry["stream_id"])
-                continue  # 失败不标记:留重试机会(审查 M-9)
+                continue  # 失败不标记:留重试机会
             self._remind_fired[key] = now
             self._remind_fired_snapshot.save(self._remind_fired)
 
@@ -4129,7 +4129,7 @@ class CatsitatePlugin(MaiBotPlugin):
             self.ctx.logger.exception("日程落盘失败")
 
     def _restore_schedule(self) -> None:
-        """重启恢复:schedule.json 的 date 为今天或明天时恢复日程/编辑历史/生成标记(审查 I2)。
+        """重启恢复:schedule.json 的 date 为今天或明天时恢复日程/编辑历史/生成标记。
 
         入睡生成的日程日期=醒来日(午夜前入睡时即「明天」,午夜后入睡时即「今天」),
         夜间重启不得误删——date ∈ {今天, 明天} 均恢复;
@@ -4193,9 +4193,9 @@ class CatsitatePlugin(MaiBotPlugin):
                 del self._remind_fired[key]
 
     async def _settle_and_log(self, user_id: str, kind: str) -> None:
-        """按人结算(规格全局决策 #7):聚合该人所有流的消息,一次 LLM 判定。
+        """按人结算(规格全局决策):聚合该人所有流的消息,一次 LLM 判定。
 
-        并发防护保留(最终审查 Important#1):fav_count 与 _daily_settle 可能并发发起
+        并发防护保留:fav_count 与 _daily_settle 可能并发发起
         同一用户结算(LLM 秒级延迟窗口内),该用户任一结算(kind 不限)已在飞即跳过,
         防 delta 双计。
         """
@@ -4221,8 +4221,8 @@ class CatsitatePlugin(MaiBotPlugin):
             # stream_id 用合成流隔离邻居,seq 取大且逐条唯一(build_material 以
             # (stream,seq) 去重)。ts 用事件原始时刻——同日多次结算(early→daily)时
             # 首次结算已把 window_start 前移,已判事件被窗口过滤排除(真实消息同机制),
-            # 防同一事件反复并入素材重判(审查必修)
-            # H-2(2026-09-03):取数改 window_start 滚动窗(fav_events_since),与
+            # 防同一事件反复并入素材重判
+            # 取数改 window_start 滚动窗(fav_events_since),与
             # 聊天消息同窗口口径——旧自然日取数在跨零点结算(如 00:30
             # 日终)时昨夜事件 day=昨日恒取空,空间互动素材整窗漏判。窗口起点空串
             # (该人尚无结算记录)= 全量事件,与 build_material 空窗口语义一致。
@@ -4308,16 +4308,16 @@ class CatsitatePlugin(MaiBotPlugin):
         )
         total = int(rows[0][0] or 0)
         if total >= self.config.plugin.llm_daily_call_warning_threshold and self._llm_warned_day != day:
-            self._llm_warned_day = day  # 跨越阈值当天只告警一次(复核 Minor:防每次调用刷屏)
+            self._llm_warned_day = day  # 跨越阈值当天只告警一次(防每次调用刷屏)
             self.ctx.logger.warning("旁路 LLM 当日调用次数已达或超过阈值 %s,请注意用量", total)
 
     async def _fetch_recent(self, stream_id: str, limit: int) -> list[dict]:
-        """取近期消息。spike ④ 实测:返回 list;image 段仅 hash。
+        """取近期消息。实测:返回 list;image 段仅 hash。
 
         公测发现:include_binary_data=True 时,含大附件(数十 MB)的消息会把 RPC
         响应帧撑爆(主机 16MB 上限,E_UNKNOWN)——插件消费方(衰减互动判定/说话人
         解析/结算素材)只用文本与元数据,二进制一律不取。
-        方案 B(2026-08-31)后注入消息 timestamp=阅读时刻,宿主默认 24h 窗天然适用。
+        注入消息 timestamp=阅读时刻,宿主默认 24h 窗天然适用。
         """
 
         result = await self.ctx.call_capability("message.get_recent", chat_id=stream_id, limit=limit)
@@ -4336,7 +4336,7 @@ class CatsitatePlugin(MaiBotPlugin):
                 "message.get_by_id", message_id=reply_to_id, chat_id=stream_id
             )
         except Exception as exc:  # noqa: BLE001
-            # 仅记异常类型,不插值 exc 本体(安全复审纪律,同 decay.py)
+            # 仅记异常类型,不插值 exc 本体(安全纪律,同 decay.py)
             return None, f"能力调用异常({rpc_error_brief(exc)})"
         if result is None:
             return None, f"消息 {reply_to_id} 解析返回 None"
@@ -4379,7 +4379,7 @@ class CatsitatePlugin(MaiBotPlugin):
             senders[rid] = sender
             if err and not first_err:
                 first_err = err
-        if reply_ids:  # 解析观测日志(每次调用一条,低频:结算/衰减路径;仅计数,不落明文 QQ 号——安全复审)
+        if reply_ids:  # 解析观测日志(每次调用一条,低频:结算/衰减路径;仅计数,不落明文 QQ 号——安全纪律)
             resolved = sum(1 for v in senders.values() if v)
             self.ctx.logger.info("quote 发送者解析: 成功 %d/%d(stream=%s)", resolved, len(senders), stream_id)
         return senders, first_err
@@ -4388,7 +4388,7 @@ class CatsitatePlugin(MaiBotPlugin):
         """取近期消息并归一化为 build_material 所需形状
         {role, user_id, stream_id, text, seq, ts, is_group, addressed}。
 
-        spike ④ 实测:消息 dict 键含 message_id/timestamp/platform/message_info/raw_message/
+        实测:消息 dict 键含 message_id/timestamp/platform/message_info/raw_message/
         is_*/session_id/processed_plain_text;user 在 message_info.user_info。
         role:message_info.user_info.user_id == bot_user_id 判为 bot(配置留空则一律 user)。
         addressed 仅群聊 bot 消息有意义,两类命中(互动定义):
@@ -4405,7 +4405,7 @@ class CatsitatePlugin(MaiBotPlugin):
         is_group = self._stream_is_group(stream_id)
         raw = await self._fetch_recent(stream_id, limit)
         bot_id = str(self.config.favorability.bot_user_id or "").strip()
-        # quote 语义(最终审查 I2 恢复):群聊 bot 消息 reply 段先批量收集、再逐条解析原发送者
+        # quote 语义:群聊 bot 消息 reply 段先批量收集、再逐条解析原发送者
         senders: dict[str, str | None] = {}
         if is_group and target_user_id:
             senders, first_err = await self._resolve_quote_senders(raw, stream_id)
@@ -4419,7 +4419,7 @@ class CatsitatePlugin(MaiBotPlugin):
                 continue
             text = str(m.get("processed_plain_text") or "")
             if not text:
-                # 兜底:从 raw_message 段拼文本(text 段 data 直接是字符串,spike ③)
+                # 兜底:从 raw_message 段拼文本(text 段 data 直接是字符串)
                 text = "".join(s.get("data", "") for s in (m.get("raw_message") or []) if isinstance(s, dict) and s.get("type") == "text")
             msg_info = m.get("message_info") or {}
             user_info = msg_info.get("user_info") or {}
@@ -4456,7 +4456,7 @@ class CatsitatePlugin(MaiBotPlugin):
 
         实机实测:主程序序列化的 timestamp 为 epoch 浮点(字符串);直接与 ISO window_start
         字符串比较恒 False,导致批次素材恒空(联调发现)。
-        实例方法(2026-09-03 复审修复):原 staticmethod 的 except 分支引用 self,
+        实例方法:原 staticmethod 的 except 分支引用 self,
         坏时间戳触发即 NameError;调用点 self._normalize_ts(...) 不受影响。
         """
 
@@ -4528,9 +4528,9 @@ class CatsitatePlugin(MaiBotPlugin):
         return "".join(parts)
 
     def _setup_debug_logging(self) -> None:
-        """debug 日志开关(公测复审):开启时把 catsitate.core 的 debug 级日志落盘到数据目录 logs/ 当日文件。
+        """debug 日志开关:开启时把 catsitate.core 的 debug 级日志落盘到数据目录 logs/ 当日文件。
 
-        文件权限 0600(日志含 user_id/stream_id,仅属主可读——安全复审);关闭时移除并
+        文件权限 0600(日志含 user_id/stream_id,仅属主可读——安全纪律);关闭时移除并
         关闭 handler、恢复 logger 原级别;文件创建失败显式告警,不静默。
         """
 
@@ -4546,7 +4546,7 @@ class CatsitatePlugin(MaiBotPlugin):
             path = logs_dir / f"catsitate-{datetime.now().strftime('%Y%m%d')}.log"
             self._debug_prev_level = plugin_logger.level
             handler = logging.FileHandler(path, encoding="utf-8")
-            os.chmod(path, 0o600)  # 仅属主可读(安全复审:日志含用户标识)
+            os.chmod(path, 0o600)  # 仅属主可读(安全纪律:日志含用户标识)
             handler.setLevel(logging.DEBUG)
             handler.setFormatter(logging.Formatter("%(asctime)s %(levelname)s %(name)s %(message)s"))
             plugin_logger.addHandler(handler)
@@ -4559,7 +4559,7 @@ class CatsitatePlugin(MaiBotPlugin):
     def _teardown_debug_logging(self) -> None:
         """关闭 debug 日志:移除并 close handler、恢复 logger 原级别。
 
-        on_unload 卸载与 debug 开关关闭共用(关闭分支语义抽离,审查 I5);
+        on_unload 卸载与 debug 开关关闭共用(关闭分支语义抽离);
         on_unload 阶段配置对象仍可读,但直接按已挂载的 _debug_handler 清理即可。
         """
 
@@ -4622,9 +4622,9 @@ class CatsitatePlugin(MaiBotPlugin):
         发送者若标「我」会被当普通用户(污染回复必要性与间隔统计)。
         """
 
-        # 直接抛错不兜底(用户裁定 2026-09-02 #33:除非主程序有 bug 才会空,
-        # 静默回退「我」反而掩盖——曾把 bot 当普通用户污染统计)。调用方纪律
-        # (2026-09-03 复审修复+终审 b-1):qzone_post 在润色与发布 try 之前读取
+        # 直接抛错不兜底:昵称只有主程序有 bug 才会为空,
+        # 静默回退「我」反而掩盖——曾把 bot 当普通用户污染统计。调用方纪律:
+        # qzone_post 在润色与发布 try 之前读取
         # (异常原样上抛,零润色/零发布调用);日记补注/种子自举在各自 try 内
         # 构造(异常被捕获告警,不沿 tick 链外泄)
         value = await self.ctx.config.get("bot.nickname", "")
@@ -4639,16 +4639,16 @@ class CatsitatePlugin(MaiBotPlugin):
         for m in raw:
             text = str(m.get("processed_plain_text") or "")
             if not text:
-                # 兜底:raw_message 段(data 键,spike ③/④)
+                # 兜底:raw_message 段(data 键)
                 text = "".join(s.get("data", "") for s in (m.get("raw_message") or []) if isinstance(s, dict) and s.get("type") == "text")
             lines.append(f"[{m.get('message_id')}] {text}")
         return "\n".join(lines)
 
 
 def _pack_image_content_items(pack: FeedImagePack) -> list[dict]:
-    """工具出口打包差异(C 方案,2026-09-03):管线 segments →
+    """工具出口打包差异:管线 segments →
     content_items(宿主 tool result media 入库形态)。合成图恒 JPEG
-    (mime 不再探测);单图原图直发保留魔数探测(终审 L-3 语义)。"""
+    (mime 不再探测);单图原图直发保留魔数探测。"""
 
     items: list[dict] = []
     for _url, data in pack.segments:
@@ -4664,7 +4664,7 @@ def _pack_image_content_items(pack: FeedImagePack) -> list[dict]:
 
 def _sniff_image_mime(data: bytes) -> str:
     """图片魔数探测(PNG/GIF/WebP,其余按 jpeg)——content_items 的 mime 按
-    真实字节标注,未压缩原图不再被硬标 jpeg(终审 L-3 修复)。"""
+    真实字节标注,未压缩原图不再被硬标 jpeg。"""
 
     head = bytes(data[:12])
     if head.startswith(b"\x89PNG\r\n\x1a\n"):

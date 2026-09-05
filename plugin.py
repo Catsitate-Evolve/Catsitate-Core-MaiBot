@@ -44,11 +44,13 @@ from catsitate_core.qzone import (
 )
 from catsitate_core.qzone.protocol import FEED_APPID_SHUOSHUO, FeedItem, parse_friend_list
 from catsitate_core.qzone.client import (
+    BIZ_CODE_SERVER_BUSY,
     BIZ_CODE_TOO_FREQUENT,
     CookieManager,
     QzoneAuthError,
     QzoneBizError,
     QzoneClient,
+    QzoneRateLimitError,
 )
 from catsitate_core.qzone.comment_seen import CommentSeenStore
 from catsitate_core.qzone.discovery import FeedDiscovery
@@ -866,6 +868,8 @@ class CatsitatePlugin(MaiBotPlugin):
             self.ctx.logger.warning("QQ空间点赞业务错误(code=%s)", exc.code)
             if exc.code == BIZ_CODE_TOO_FREQUENT:
                 return "点赞失败:QQ空间说操作太频繁——今天点赞够多了,先歇一歇别重试。"
+            if exc.code == BIZ_CODE_SERVER_BUSY:
+                return "点赞失败:QQ空间这会儿有点忙,稍后再试,不要立刻重试。"
             return f"点赞失败:QQ空间拒绝了这次点赞(code={exc.code}),先不要立刻重试。"
         except Exception:
             self.ctx.logger.exception("QQ空间点赞失败(tid=%s)", fid)
@@ -1003,6 +1007,8 @@ class CatsitatePlugin(MaiBotPlugin):
             self.ctx.logger.warning("QQ空间评论业务错误(code=%s)", exc.code)
             if exc.code == BIZ_CODE_TOO_FREQUENT:
                 return "评论失败:QQ空间说操作太频繁——短时间内评论得够多了,先歇一歇别重试,等下次浏览时再互动。"
+            if exc.code == BIZ_CODE_SERVER_BUSY:
+                return "评论失败:QQ空间这会儿有点忙,稍后再试,不要立刻重试。"
             return f"评论失败:QQ空间拒绝了这次评论(code={exc.code}),先不要立刻重试。"
         except Exception:
             self.ctx.logger.exception("QQ空间评论失败(feed_id=%s)", fid[:16])
@@ -1106,6 +1112,8 @@ class CatsitatePlugin(MaiBotPlugin):
             self.ctx.logger.warning("QQ空间楼中楼回复业务错误(code=%s)", exc.code)
             if exc.code == BIZ_CODE_TOO_FREQUENT:
                 return "回复失败:QQ空间说操作太频繁——这条评论今天回得够多了,别再重试这条,想说话等下次浏览时再说。"
+            if exc.code == BIZ_CODE_SERVER_BUSY:
+                return "回复失败:QQ空间这会儿有点忙,稍后再试,不要立刻重试。"
             return f"回复失败:QQ空间拒绝了这次回复(code={exc.code}),先不要立刻重试。"
         except Exception:
             self.ctx.logger.exception("QQ空间楼中楼回复失败(feed=%s,comment=%s)", fid[:12], comment_id)
@@ -1165,6 +1173,8 @@ class CatsitatePlugin(MaiBotPlugin):
             self.ctx.logger.warning("QQ空间说说发布业务错误(code=%s)", exc.code)
             if exc.code == BIZ_CODE_TOO_FREQUENT:
                 return "发布失败:QQ空间说操作太频繁——今天发得够多了,先歇一歇,想发等下次窗口。"
+            if exc.code == BIZ_CODE_SERVER_BUSY:
+                return "发布失败:QQ空间这会儿有点忙,稍后再试,不要立刻重试。"
             return f"发布失败:QQ空间拒绝了这次发布(code={exc.code}),先不要立刻重试。"
         except Exception:
             self.ctx.logger.exception("QQ空间说说发布失败")
@@ -1639,6 +1649,12 @@ class CatsitatePlugin(MaiBotPlugin):
                 self.qzone_cookie.invalidate()
                 self.ctx.logger.warning("QQ空间登录态失效(统一时间线),cookie 已作废,下轮重取")
                 return
+            except QzoneRateLimitError:
+                # 服务端限流(network busy):重试只会加重,更不能回退 legacy——
+                # 那是 1→N+1 次请求的放大,恰在风控期间火上浇油;拉取间距+失败
+                # 占距(时刻已在尝试前打点)是天然退避,下轮再试
+                self.ctx.logger.warning("QQ空间服务限流(network busy),本轮浏览跳过,下轮再试")
+                return
             except Exception:
                 self.ctx.logger.exception("QQ空间统一时间线拉取失败,回退逐好友旧路径")
                 await self._qzone_poll_feeds_legacy()
@@ -1665,7 +1681,11 @@ class CatsitatePlugin(MaiBotPlugin):
             for d in new_items:
                 by_uin.setdefault(d.uin, []).append(d)
             added_total = 0
-            for uin, group in by_uin.items():
+            for _author_idx, (uin, group) in enumerate(by_uin.items()):
+                if _author_idx:
+                    # 好友间请求间隔在循环开头(首作者前不多睡):continue/终止
+                    # 路径也覆盖间距,防失败后零间隔连击下一作者加重风控
+                    await asyncio.sleep(2.0)
                 try:
                     feeds = await self.qzone_client.get_user_feeds(
                         target_uin=uin, nickname=group[0].nickname, num=len(group) + 2
@@ -1674,6 +1694,10 @@ class CatsitatePlugin(MaiBotPlugin):
                     # 登录态失效:立即作废 cookie 缓存(下轮重取),本轮终止(自愈链)
                     self.qzone_cookie.invalidate()
                     self.ctx.logger.warning("QQ空间登录态失效(充实层 uin=%s),cookie 已作废,本轮终止", uin)
+                    return
+                except QzoneRateLimitError:
+                    # 服务端限流:逐人重试只会加重,终止本轮充实,下轮间距后再拉
+                    self.ctx.logger.warning("QQ空间服务限流(充实层 uin=%s),本轮充实终止,下轮再试", uin)
                     return
                 except Exception:
                     # 单个好友失败不中止整轮(逐人隔离,显式告警)
@@ -1699,7 +1723,6 @@ class CatsitatePlugin(MaiBotPlugin):
                         "QQ空间充实层 tid 未匹配(uin=%s,tid=%s),该条本轮跳过",
                         uin, ",".join(sorted(unmatched_tids)),
                     )
-                await asyncio.sleep(2.0)  # 好友间请求间隔(防风控,Maizone 保守默认同款)
             if added_total:
                 self.ctx.logger.info("QQ空间新动态入队 %d 条(统一时间线发现 %d 条)", added_total, len(new_items))
             await self._qzone_pump()
@@ -1721,7 +1744,11 @@ class CatsitatePlugin(MaiBotPlugin):
             self.ctx.logger.warning("QQ空间好友列表为空或获取失败,本轮跳过")
             return
         added_total = 0
-        for friend in friends:
+        for _friend_idx, friend in enumerate(friends):
+            if _friend_idx:
+                # 好友间请求间隔在循环开头(首好友前不多睡):continue/终止路径
+                # 也覆盖间距,防失败后零间隔连击下一好友加重风控
+                await asyncio.sleep(2.0)
             try:
                 feeds = await self.qzone_client.get_user_feeds(
                     target_uin=friend["user_id"], nickname=friend["nickname"], num=3
@@ -1731,6 +1758,10 @@ class CatsitatePlugin(MaiBotPlugin):
                 self.qzone_cookie.invalidate()
                 self.ctx.logger.warning("QQ空间登录态失效(code=-3000/-10005),cookie 已作废,下轮重取")
                 return
+            except QzoneRateLimitError:
+                # 服务端限流:逐好友重试只会加重,终止本轮回退,已入队部分保留
+                self.ctx.logger.warning("QQ空间服务限流(逐好友回退 uin=%s),本轮终止,下轮再试", friend["user_id"])
+                break
             except Exception:
                 # 单个好友失败不中止整轮(逐人隔离,显式告警)
                 self.ctx.logger.exception("QQ空间说说拉取失败(uin=%s),该好友本轮跳过", friend["user_id"])
@@ -1745,7 +1776,6 @@ class CatsitatePlugin(MaiBotPlugin):
             if added:
                 self.qzone_injector.enqueue(added)
                 added_total += len(added)
-            await asyncio.sleep(2.0)  # 好友间请求间隔(防风控,Maizone 保守默认同款)
         if added_total:
             self.ctx.logger.info("QQ空间新动态入队 %d 条(好友 %d 人)", added_total, len(friends))
         await self._qzone_pump()
@@ -2125,6 +2155,12 @@ class CatsitatePlugin(MaiBotPlugin):
                         bot_uin=bot_uin, num=max(self.config.qzone.own_feed_scan_count, 1)),
                     "通知源A",
                 )
+            except QzoneRateLimitError:
+                # 服务端限流:源A本轮空,但不得阻断源B/C——它们各自有隔离的
+                # 取数与处置,连带丢弃只会在限流期间持续放大通知缺口
+                self.ctx.logger.warning("QQ空间通知源A限流(network busy),本轮源A跳过,源B/C 照常")
+                scanned_a = ({}, {}, [])
+                auth_err = ""
             except Exception:
                 self.ctx.logger.exception("QQ空间通知轮询源A失败,本轮跳过")
                 return

@@ -51,11 +51,20 @@ AUTH_ERROR_CODES = {-3000, -10005}
 # 连续写动作触发——不是登录态问题,重试只会更频;调用方据此给出带限制说明的
 # 工具回执,让模型自行收敛(不做硬频控,限制写进工具返回)
 BIZ_CODE_TOO_FREQUENT = -10049
+# 服务端限流业务码(实机实证 -10001,subcode=-30「network busy」):读路径瞬态
+# 限流——重试只会加重,处置是跳过本轮等下个拉取间距自然退避,绝不回退逐好友
+# 路径放大请求;写路径同样可能出现,回执提示稍后再试
+BIZ_CODE_SERVER_BUSY = -10001
 _MISSING_PSKEY_WARNED = False  # 每进程告警一次
 
 
 class QzoneAuthError(RuntimeError):
     """空间登录态失效(p_skey/g_tk 过期)——调用方应使 cookie 缓存失效并重取。"""
+
+
+class QzoneRateLimitError(RuntimeError):
+    """空间服务端限流(network busy)——瞬态,调用方跳过本轮即可,禁止回退
+    逐好友等放大请求的路径;拉取间距+失败占距是天然退避。"""
 
 
 class QzoneBizError(RuntimeError):
@@ -242,6 +251,8 @@ class QzoneClient:
         code = payload.get("code")
         if code is not None and int(code) in AUTH_ERROR_CODES:
             raise QzoneAuthError(f"空间登录态失效(uin={target_uin}): code={code}")
+        if code is not None and int(code) == BIZ_CODE_SERVER_BUSY:
+            raise QzoneRateLimitError(f"空间服务限流(uin={target_uin}): code={code}")
         if code is None or int(code) != 0:
             raise RuntimeError(f"空间说说列表返回业务错误(uin={target_uin}): code={payload.get('code')}")
         return payload
@@ -316,6 +327,8 @@ class QzoneClient:
         code = int(code_match.group(1))
         if code in AUTH_ERROR_CODES:
             raise QzoneAuthError(f"空间登录态失效(统一时间线): code={code}")
+        if code == BIZ_CODE_SERVER_BUSY:
+            raise QzoneRateLimitError(f"空间服务限流(统一时间线): code={code} 响应={text[:120]}")
         if code != 0:
             raise RuntimeError(f"空间统一时间线返回业务错误: code={code} 响应={text[:120]}")
         return text

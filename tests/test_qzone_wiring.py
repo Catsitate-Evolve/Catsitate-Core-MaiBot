@@ -3413,6 +3413,121 @@ def test_poll_feeds_falls_back_to_legacy_on_discovery_failure(tmp_path, monkeypa
     assert p.qzone_seen.is_new_candidate("lt1") is False  # 已登记
 
 
+def test_poll_feeds_rate_limit_skips_round_without_legacy_fallback(tmp_path):
+    """发现层 -10001(服务端限流)→ 告警跳过本轮,不回退 legacy 逐好友路径
+    (限流期间 1→N+1 请求放大等于火上浇油);窗口状态保持,下轮再试。"""
+
+    from catsitate_core.qzone.client import QzoneRateLimitError
+
+    p = _make_plugin(tmp_path)
+    p._schedule_data = _active_qzone_schedule()
+
+    class _RateLimitedDiscoveryClient:
+        def __init__(self):
+            self.feeds_calls = 0
+
+        async def get_unified_timeline(self, *, count=20, begintime=None):
+            raise QzoneRateLimitError("空间服务限流(统一时间线): code=-10001")
+
+        async def get_user_feeds(self, *, target_uin, nickname, num=5):
+            self.feeds_calls += 1
+            return []
+
+    client = _RateLimitedDiscoveryClient()
+    p.qzone_client = client
+    asyncio.run(p._qzone_poll_feeds())
+    assert client.feeds_calls == 0  # 未回退 legacy(零放大)
+    assert any(
+        level == "warning" and "服务限流" in str(a[0]) and "本轮浏览跳过" in str(a[0])
+        for level, a in p.logs
+    )
+    assert p.qzone_injector.window_active is True  # 窗口保持(非收窗)
+
+
+def test_poll_feeds_enrichment_rate_limit_stops_round(tmp_path):
+    """充实层撞限流 → 终止本轮(不再逐作者重试加重风控);先前已入队作者保留。"""
+
+    from catsitate_core.qzone.client import QzoneRateLimitError
+
+    p = _make_plugin(tmp_path)
+    p._schedule_data = _active_qzone_schedule()
+
+    class _EnrichRateLimitedClient:
+        def __init__(self):
+            self.enrich_calls: list[str] = []
+
+        async def get_unified_timeline(self, *, count=20, begintime=None):
+            return (
+                [FeedDiscovery(tid="d1", uin="10001", nickname="小明", abstime="300", appid=311),
+                 FeedDiscovery(tid="d2", uin="10002", nickname="小红", abstime="200", appid=311)],
+                "",
+            )
+
+        async def get_user_feeds(self, *, target_uin, nickname, num=5):
+            self.enrich_calls.append(target_uin)
+            if target_uin == "10001":
+                return [FeedItem(tid="d1", abstime="300", uin="10001", nickname=nickname, content="新动态A")]
+            raise QzoneRateLimitError("空间服务限流(uin=10002): code=-10001")
+
+    client = _EnrichRateLimitedClient()
+    p.qzone_client = client
+    asyncio.run(p._qzone_poll_feeds())
+    assert client.enrich_calls == ["10001", "10002"]  # 第二作者撞限流
+    assert any(
+        level == "warning" and "服务限流" in str(a[0]) and "充实终止" in str(a[0])
+        for level, a in p.logs
+    )
+    assert p.qzone_seen.is_new_candidate("d2") is True  # 第二作者未被充实(本轮终止)
+
+
+def test_notify_scan_source_a_rate_limit_keeps_source_b_c(tmp_path):
+    """通知源A限流 → 源A本轮空,但源B/C 照常执行(限流不得阻断后续源)。"""
+
+    from catsitate_core.qzone.client import QzoneRateLimitError
+
+    p = _make_plugin(tmp_path)
+
+    class _RateLimitedSourceAClient(_StubUnifiedClient):
+        async def get_own_feed_comments(self, *, bot_uin, num=10):
+            raise QzoneRateLimitError("空间服务限流(uin=x): code=-10001")
+
+    p.qzone_client = _RateLimitedSourceAClient([])
+    like_events: list = []
+
+    async def _likes(*, count=30):
+        like_events.append(count)
+        return []
+
+    p.qzone_client.get_like_events = _likes
+    asyncio.run(p._qzone_notify_scan())
+    assert like_events  # 源C 照常执行(未被源A阻断)
+    assert any(
+        level == "warning" and "源A限流" in str(a[0]) and "源B/C 照常" in str(a[0])
+        for level, a in p.logs
+    )
+
+
+def test_qzone_like_rate_limit_receipt(tmp_path):
+    """写路径 -10001:回执明示「稍后再试」(对齐 -10049 的限制语义风格)。"""
+
+    from catsitate_core.qzone.client import BIZ_CODE_SERVER_BUSY, QzoneBizError
+
+    p = _make_plugin(tmp_path)
+    _register_feed(p, tid="busytid01", owner="10001")
+
+    class _BusyBizError(QzoneBizError):
+        def __init__(self):
+            super().__init__(-10001, "network busy")
+
+    async def _busy(*, fid, target_qq):
+        raise _BusyBizError()
+
+    p.qzone_client.do_like = _busy
+    res = asyncio.run(p.qzone_like(feed_id="busytid01", stream_id="s1", user_id="10001"))
+    assert "有点忙" in res and "稍后再试" in res
+    assert BIZ_CODE_SERVER_BUSY == -10001
+
+
 # ---- M3 终审修复波:I1(浏览流bot自我排除)+ I2(发现层登录态失效行为) ----
 
 
@@ -3671,9 +3786,9 @@ def test_discovery_pagination_stops_when_second_page_all_seen(tmp_path, monkeypa
     p.qzone_client = _PagedClient([])
     asyncio.run(p._qzone_poll_feeds())
     assert calls == [None, "cur1"]  # 第 2 页无新说说即止步
-    # 首个 2.0=翻第 2 页的页间间隔(首页前无);第二个=充实层该好友拉取后的
-    # 好友间隔(t1 为新 tid 走充实层)——页间隔与充实层同款防风控口径
-    assert sleeps == [2.0, 2.0]
+    # 单一新动态作者:仅页间 1 次 2.0(翻第 2 页的页间隔,首页前无);充实层
+    # 好友间隔在循环开头(首作者前不多睡),单作者场景不产生
+    assert sleeps == [2.0]
 
 
 def test_discovery_pagination_fetches_backlog_until_max_pages(tmp_path, monkeypatch):

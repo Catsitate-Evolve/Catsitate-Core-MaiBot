@@ -660,4 +660,27 @@ def test_extract_timeline_cursor_basetime_fallback():
 
     assert QzoneClient.extract_timeline_cursor("{main:{begintime:'1788164300'}}") == "1788164300"
     assert QzoneClient.extract_timeline_cursor("externparam:'basetime=1785058947&pagenum=3'") == "1785058947"
+
+
+def test_rate_limit_code_classified_on_unified_and_msglist():
+    """-10001(服务端限流 network busy)→ QzoneRateLimitError,与普通业务
+    错误(RuntimeError)分流——调用方据此跳过本轮,禁止回退放大请求的路径。"""
+
+    from catsitate_core.qzone.client import QzoneRateLimitError
+
+    client, _ = _unified_client([(200, b'{"code":-10001,"subcode":-30,"message":"network busy"}')])
+    try:
+        asyncio.run(client.get_unified_timeline())
+        raised = ""
+    except QzoneRateLimitError as e:
+        raised = str(e)
+    assert "限流" in raised and "-10001" in raised
+
+    client2, _ = _make_client([(200, '_preloadCallback({"code":-10001,"message":"network busy"});'.encode("utf-8"))])
+    try:
+        asyncio.run(client2.get_user_feeds(target_uin="100", nickname="小明", num=3))
+        raised = ""
+    except QzoneRateLimitError as e:
+        raised = str(e)
+    assert "限流" in raised
     assert QzoneClient.extract_timeline_cursor("{}") == ""

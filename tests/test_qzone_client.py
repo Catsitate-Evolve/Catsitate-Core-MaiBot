@@ -1,11 +1,10 @@
-"""qzone 协议层测试:g_tk/callback 截取/说说解析/好友列表解析(纯函数,无网络)。
+"""qzone 协议层测试:g_tk/callback 截取/说说解析(纯函数,无网络)。
 
 联调修正(2026-08-30):emotion_cgi_msglist_v6 实为「指定用户说说列表」(uin=目标,
-响应顶层 msglist,条目含 tid/created_time/content/pic[].url1/commentlist);
-好友列表走 adapter OneBot API(vFeeds 形态不存在,Maizone 调查摘要有误)。
+响应顶层 msglist,条目含 tid/created_time/content/pic[].url1/commentlist)。
 """
 from catsitate_core.qzone.protocol import (
-    FeedItem, extract_callback_json, generate_gtk, parse_friend_list, parse_msglist,
+    FeedItem, extract_callback_json, generate_gtk, parse_msglist,
 )
 
 # 响应样本结构对照 Maizone qzone_api.py get_list 的解析路径(实测 2026-08-30)
@@ -78,18 +77,6 @@ def test_parse_msglist_forward_and_video_fallback( ):
     payload2 = {"code": 0, "msglist": [{"tid": "v1", "created_time": 1, "content": "", "video": [{"url": "u"}]}]}
     items2 = parse_msglist(payload2, target_uin="9", nickname="n")
     assert items2[0].content == "[视频]"
-
-
-def test_parse_friend_list_shapes():
-    # OneBot get_friend_list 形态:裸 list / {"data": [...]}(信封容忍)
-    raw = [{"user_id": 10001, "nickname": "小明", "remark": "明仔"}, {"user_id": 10002, "nickname": "小红", "remark": ""}]
-    assert parse_friend_list(raw) == [
-        {"user_id": "10001", "nickname": "明仔"},  # remark 优先(好友备注=用户对TA的称呼)
-        {"user_id": "10002", "nickname": "小红"},
-    ]
-    assert parse_friend_list({"data": raw}) == parse_friend_list(raw)
-    assert parse_friend_list({"success": False}) == []
-    assert parse_friend_list("bad") == []
 
 
 

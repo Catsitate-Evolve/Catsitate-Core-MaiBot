@@ -1,6 +1,6 @@
 # QQ空间·感知(浏览好友动态 → 注入虚拟流)
 
-> 对应代码:`plugin.py` 的 `_qzone_poll_tick` / `_qzone_poll_feeds` / `_qzone_poll_feeds_legacy` / `_qzone_inject_one` / `_qzone_pump` 段,`catsitate_core/qzone/` 的 `client.py`(读路径)、`discovery.py`、`messages.py`、`imaging.py`、`protocol.py`。
+> 对应代码:`plugin.py` 的 `_qzone_poll_tick` / `_qzone_poll_feeds` / `_qzone_shared_discovery` / `_qzone_inject_one` / `_qzone_pump` / `qzone_next` 段,`catsitate_core/qzone/` 的 `client.py`(读路径)、`discovery.py`、`messages.py`、`imaging.py`、`protocol.py`。
 
 ## 一、职责与生命周期
 
@@ -9,7 +9,7 @@
 生命周期:
 
 1. **启动**:`on_load` 里 `_qzone_selfcheck()` 自检(开关 → person 别名折叠 → focus_mode/talk_value 前置检测),通过后 `_qzone_gateway_ready()` 向宿主上报虚拟网关就绪;随后注册 `qzone_poll` 调度任务(间隔 `qzone.poll_interval_minutes`,默认 15 分钟,语义=窗口内**两次拉取的间距**而非与窗口无关的固定节奏:进入 read/send 窗口时由 `_schedule_tick` 立即派发首轮拉取,之后的刷新由定间隔任务承担;`_qzone_poll_feeds` 的间距判定保证距上次实际拉取不足间隔时跳过拉取段,防两路相邻撞车)。
-2. **运行**:调度器每 tick 触发 `_qzone_poll_tick`——防重入后把长 IO 派发为后台任务 `_qzone_poll_feeds`(不阻塞调度器 60s tick 里的其它任务)。发现层取数统一走 `_qzone_shared_discovery` 入口(**单飞+共享缓存+限流退避**):浏览层与通知源B(120 秒/次的楼中楼检测)原本各自直调同一端点(同口径、首页均无游标),合计约 860 次/天持续触发服务端限流(-10001 network busy);合并为一次请求源后,并发调用经单飞锁只放行一次真实拉取(等待者共享结果),首页列表进实例级共享缓存 600 秒(`DISCOVERY_CACHE_TTL_SECONDS`,命中即免请求,端点调用降到约 144 次/天),撞限流则进入 30 分钟共享退避(`DISCOVERY_RATE_LIMIT_BACKOFF_SECONDS`,进入时打单条 warning,期间两消费方零请求静默返态,退避过期后首次成功真实拉取打 info「限流退避结束,恢复拉取」并复位退避与告警标记)。`QzoneAuthError` 与其他异常原样上抛(浏览层 legacy 回退/源B 跳过的既有处置依赖透传);带游标的翻页不经过本层——浏览层积压补全时持与首页列表同源的续页游标直发。配置热重载会失效共享缓存(discovery_count 口径变更)但**不清退避态**(限流是服务端状态,清退避会在风控窗口内重新打 API)。
+2. **运行**:调度器每 tick 触发 `_qzone_poll_tick`——防重入后把长 IO 派发为后台任务 `_qzone_poll_feeds`(不阻塞调度器 60s tick 里的其它任务)。发现层取数统一走 `_qzone_shared_discovery` 入口(**单飞+共享缓存+限流退避**):浏览层与通知源B(120 秒/次的楼中楼检测)原本各自直调同一端点(同口径、首页均无游标),合计约 860 次/天持续触发服务端限流(-10001 network busy);合并为一次请求源后,并发调用经单飞锁只放行一次真实拉取(等待者共享结果),首页列表进实例级共享缓存 600 秒(`DISCOVERY_CACHE_TTL_SECONDS`,命中即免请求,端点调用降到约 144 次/天),撞限流则进入 30 分钟共享退避(`DISCOVERY_RATE_LIMIT_BACKOFF_SECONDS`,进入时打单条 warning,期间两消费方零请求静默返态,退避过期后首次成功真实拉取打 info「限流退避结束,恢复拉取」并复位退避与告警标记)。`QzoneAuthError` 与其他异常原样上抛(浏览层/源B 各自显式告警后跳过本轮);带游标的翻页不经过本层——浏览层积压补全时持与首页列表同源的续页游标直发。配置热重载会失效共享缓存(discovery_count 口径变更)但**不清退避态**(限流是服务端状态,清退避会在风控窗口内重新打 API)。
 3. **窗口守卫**:只有当日程窗口标记了 `read_qzone`(kind=daily)时才拉取;窗口开始时激活注入泵,窗口结束时收泵并把未读浏览动态回退(`revert_pending`),同时触发见闻生成。
 4. **睡眠静默**:睡眠中绝对静默,窗口守卫与泵都跳过。
 
@@ -73,11 +73,10 @@
 
 | 场景 | 行为 |
 |---|---|
-| 发现层调用失败(非登录态) | 告警「统一时间线拉取失败」,回退 `_qzone_poll_feeds_legacy` 旧逐好友路径(OneBot 好友列表 → 每人 get_user_feeds(num=3),2 秒间隔);legacy 跑完同样算首轮浏览完成 |
-| 发现层服务限流(-10001,QzoneRateLimitError) | 进入 30 分钟共享退避(单条告警),期间浏览与源B 零请求,期满自动恢复探测;浏览侧另打原文案告警跳过本轮,**不**回退 legacy——限流期间 1→N+1 请求放大等于火上浇油 |
-| 充实层服务限流 | 告警后**终止本轮充实**(逐作者重试只会加重),已入队作者保留,下轮再拉 |
-| 逐好友回退途中撞限流 | 告警后终止本轮回退,已入队部分保留 |
-| 发现层登录态失效(QzoneAuthError) | 作废 cookie 下轮重取,**不**回退 legacy——cookie 失效对两路径同源,回退只会重复失败多打一轮 API |
+| 发现层调用失败(非登录态,如超时/HTTP 5xx/响应畸形) | 告警「统一时间线拉取失败」,跳过本轮,下轮拉取间距后自然重试——发现层任何失败都不回退(逐好友 1→N+1 放大是风控帮凶,该路径已移除) |
+| 发现层服务限流(-10001,QzoneRateLimitError) | 进入 30 分钟共享退避(单条告警),期间浏览与源B 零请求,期满自动恢复探测;浏览侧另打原文案告警跳过本轮 |
+| 发现层登录态失效(QzoneAuthError) | 作废 cookie 下轮重取,本轮终止 |
+| 充实层服务限流 | 告警后**终止本轮充实**(逐作者重试只会加重),下轮再拉 |
 | 充实层单好友失败 | 逐人隔离:告警后该好友本轮跳过,不中止整轮 |
 | 充实层 tid 未匹配(说说已删/超出窗口) | debug 留痕,该条跳过(不臆造) |
 | 图片下载失败 | 该图跳过+告警,其余图继续;全失败按图数 `[图片×N]` 占位 |

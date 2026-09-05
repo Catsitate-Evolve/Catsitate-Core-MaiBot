@@ -51,7 +51,7 @@ from catsitate_core.qzone import (
     QZONE_VIRTUAL_GROUP_ID,
     QZONE_VIRTUAL_GROUP_NAME,
 )
-from catsitate_core.qzone.protocol import FEED_APPID_SHUOSHUO, FeedItem, parse_friend_list
+from catsitate_core.qzone.protocol import FEED_APPID_SHUOSHUO, FeedItem
 from catsitate_core.qzone.client import (
     BIZ_CODE_SERVER_BUSY,
     BIZ_CODE_TOO_FREQUENT,
@@ -370,6 +370,13 @@ class CatsitatePlugin(MaiBotPlugin):
         # 时保持 None,fetch 走 httpx 回退)。会话复用连接贴近真实浏览器,跨请求
         # 不再每轮新建 TLS 握手
         self._qzone_curl_session = _CurlAsyncSession(impersonate="chrome") if _CurlAsyncSession is not None else None
+        if _CurlAsyncSession is None:
+            # 错误显式暴露:httpx 回退即「Chrome 指纹防护失效」,空间读路径实机
+            # 可能被 -10001 限流——缺依赖不阻断加载,但必须告警而非静默降级
+            self.ctx.logger.warning(
+                "curl-cffi 未安装,空间请求回退 httpx 指纹(Chrome 指纹防护失效),"
+                "实机可能遇 -10001 限流;请在生产容器安装 curl-cffi"
+            )
         # 衰减防重入标记实例级重置(同上;残留 True 会令醒后补跑衰减被永久跳过)
         self._decaying = False
         # 日终结算/衰减/环境刷新后台派发防重入标记实例级重置(同上;残留 True 永久跳过派发)
@@ -884,6 +891,44 @@ class CatsitatePlugin(MaiBotPlugin):
                 owner = (awaiting.friend_uin or bot_uin) if awaiting.source == "notify" else awaiting.uin
                 return real, owner, None
         return "", "", None
+
+    @Tool(
+        "qzone_next",
+        description="刷QQ空间时,主动翻开浏览队列的下一条说说(「看完了,继续刷」)。",
+        brief_description="刷下一条",
+        parameters=[],
+        visibility="visible",
+    )
+    async def qzone_next(self, **kwargs: Any) -> str:
+        """浏览窗口内主动刷下一条:释放当前 awaiting(这条已看完)再复用
+        _qzone_pump 注入下一条(P1 通知优先)。不新造注入路径。
+
+        门控顺序:流门控(防御非 qzone 流直调,正常经工具过滤已不可见)→
+        窗口判定(不在浏览窗口直接拒)→ 队列判定(无积压即「见底」,省 pump)。
+        见底时仍释放 awaiting:正在看一条但下面没了,「这条看完没下一条」也归
+        见底,释放让泵状态干净——否则陈旧 awaiting 会卡住后续通知注入。"""
+        stream_id = str(kwargs.get("stream_id") or kwargs.get("session_id") or "")
+        if (
+            str(kwargs.get("platform") or "") != QZONE_PLATFORM
+            and (not stream_id or stream_id not in self._qzone_session_id_set())
+        ):
+            # 防御:qzone_next 已由工具过滤在非 qzone 流剔除,此处兜底直接调用
+            return "这个工具只在刷QQ空间时有用。"
+        if not self._qzone_available:
+            return "QQ空间模块未启用。"
+        if not self.qzone_injector.window_active:
+            return "现在不在浏览窗口。"
+        if self.qzone_injector.queue_size() == 0:
+            # 无积压(P1/P2 都空):已看完当前且没有下一条,或正在看这条但下面
+            # 没了——都归「见底」。有 awaiting 时一并释放,让泵状态干净
+            # (on_turn_complete 对无 awaiting 是 no-op,统一调用最简洁)。
+            self.qzone_injector.on_turn_complete(time.monotonic())
+            return "队列见底了,没有更多动态。"
+        # 有积压:先释放当前 awaiting 再 pump——next_to_inject 在 awaiting
+        # 未释放时返回 None,顺序不可颠倒。
+        self.qzone_injector.on_turn_complete(time.monotonic())
+        await self._qzone_pump()
+        return "已翻开下一条。"
 
     @Tool(
         "qzone_like",
@@ -1645,7 +1690,8 @@ class CatsitatePlugin(MaiBotPlugin):
         (同端点同口径、首页均无游标),合计约 860 次/天持续触发服务端限流
         (-10001);两处消费合并为一次请求源后,共享缓存命中即免请求,限流则共享
         同一退避窗口。返回 ("ok", 列表) 或 ("rate_limited", []);QzoneAuthError
-        与其他异常原样上抛(浏览层 legacy 回退/源B 跳过的既有处置依赖透传)。
+        与其他异常原样上抛(浏览层/源B 各自显式告警后跳过本轮,发现层任何失败
+        均不回退——逐好友 1→N+1 放大是风控帮凶,该路径已移除)。
         带游标的翻页调用不经过本层(浏览层积压补全穿透直发)。锁内只做 client
         IO,不触泵与注入器。
         """
@@ -1808,17 +1854,17 @@ class CatsitatePlugin(MaiBotPlugin):
                 return
             except QzoneRateLimitError:
                 # 翻页穿透路径撞限流(首页已由共享层转换,此分支只接续页):
-                # 进入共享退避并终止本轮——绝不能落进下方 legacy 回退,那是
-                # 1→N+1 次请求的放大,恰在风控期间火上浇油;终止发生在发现层
-                # 阶段(充实未运行,本轮零登记),已发现列表作废,下轮重拉
+                # 进入共享退避并终止本轮——绝不继续翻页或回退,那是放大请求
+                # 恰在风控期间火上浇油;终止发生在发现层阶段(充实未运行,
+                # 本轮零登记),已发现列表作废,下轮重拉
                 self._qzone_enter_rate_limit_backoff()
                 self.ctx.logger.warning("QQ空间服务限流(翻页),本轮浏览终止,下轮再试")
                 return
             except Exception:
                 # 未知失败(超时/HTTP 5xx/响应畸形):告警后跳过本轮,等下轮拉取
-                # 间距自然重试。绝不回退 legacy 逐好友路径——风控/服务端故障期
-                # 1→N+1 放大恰是火上浇油(2026-09-05 上午实证:未分类 -10001 落
-                # 此分支连发逐好友回退,加重风控持续数小时;限流/登录态分支同口径)
+                # 间距自然重试。绝不逐好友回退——风控/服务端故障期 1→N+1 放大
+                # 恰是火上浇油(2026-09-05 上午实证:未分类 -10001 落此分支连发
+                # 逐好友回退,加重风控持续数小时;限流/登录态分支同口径)
                 self.ctx.logger.exception("QQ空间统一时间线拉取失败,本轮跳过(不回退逐好友路径)")
                 return
             if not discoveries:
@@ -1891,67 +1937,6 @@ class CatsitatePlugin(MaiBotPlugin):
             self._qzone_send_first_poll_finish(win)
         finally:
             self._qzone_poll_running = False
-
-    async def _qzone_poll_feeds_legacy(self) -> None:
-        """旧逐好友浏览路径(统一时间线重构前架构):好友列表→每人 get_user_feeds(num=3)。
-
-        已不再被自动回退(2026-09-05:发现层任何失败均跳过本轮,逐好友 1→N+1
-        放大是风控帮凶);方法保留供手工调用/调试(窗口守卫已由
-        _qzone_poll_feeds 完成)。保留 OneBot 好友列表通道。
-        """
-
-        # 拉取架构:好友列表走 adapter OneBot API,
-        # 逐好友拉最近说说(msglist_v6 为指定用户接口);好友间固定间隔防风控
-        friends = await self._qzone_friend_list()
-        if not friends:
-            self.ctx.logger.warning("QQ空间好友列表为空或获取失败,本轮跳过")
-            return
-        added_total = 0
-        for _friend_idx, friend in enumerate(friends):
-            if _friend_idx:
-                # 好友间请求间隔在循环开头(首好友前不多睡):continue/终止路径
-                # 也覆盖间距,防失败后零间隔连击下一好友加重风控
-                await asyncio.sleep(2.0)
-            try:
-                feeds = await self.qzone_client.get_user_feeds(
-                    target_uin=friend["user_id"], nickname=friend["nickname"], num=3
-                )
-            except QzoneAuthError:
-                # 登录态失效:立即作废 cookie 缓存(下轮重取),本轮终止(自愈链)
-                self.qzone_cookie.invalidate()
-                self.ctx.logger.warning("QQ空间登录态失效(code=-3000/-10005),cookie 已作废,下轮重取")
-                return
-            except QzoneRateLimitError:
-                # 服务端限流:逐好友重试只会加重,终止本轮回退,已入队部分保留
-                self.ctx.logger.warning("QQ空间服务限流(逐好友回退 uin=%s),本轮终止,下轮再试", friend["user_id"])
-                break
-            except Exception:
-                # 单个好友失败不中止整轮(逐人隔离,显式告警)
-                self.ctx.logger.exception("QQ空间说说拉取失败(uin=%s),该好友本轮跳过", friend["user_id"])
-                continue
-            added = [
-                f for f in feeds
-                if self.qzone_seen.mark_queued(
-                    f.tid, abstime=f.abstime, author_uin=f.uin, summary=f.content or "",
-                    author_nickname=friend["nickname"],
-                )
-            ]
-            if added:
-                self.qzone_injector.enqueue(added)
-                added_total += len(added)
-        if added_total:
-            self.ctx.logger.info("QQ空间新动态入队 %d 条(好友 %d 人)", added_total, len(friends))
-        await self._qzone_pump()
-
-    async def _qzone_friend_list(self) -> list[dict]:
-        """好友列表(adapter OneBot 通道,信封容忍解析;失败告警返回空)。"""
-
-        try:
-            result = await self.ctx.api.call("adapter.napcat.account.get_friend_list", no_cache=False)
-        except Exception:
-            self.ctx.logger.exception("QQ空间好友列表获取失败(adapter.napcat.account.get_friend_list)")
-            return []
-        return parse_friend_list(result)
 
     async def _qzone_data_prune(self) -> None:
         """qzone 数据保留期清理:comment_seen/like_seen 30 天+seen 表 7 天。

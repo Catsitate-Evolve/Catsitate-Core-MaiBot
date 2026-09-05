@@ -3386,14 +3386,14 @@ def test_poll_feeds_unified_timeline_enriches_new_only_and_injects(tmp_path, mon
 
 def test_poll_feeds_discovery_failure_skips_round_without_legacy(tmp_path, monkeypatch):
     """风控实证 2026-09-05:发现层未知失败(超时/HTTP 5xx/响应畸形)→显式告警+
-    跳过本轮,绝不回退 legacy 逐好友路径——1→N+1 放大是风控帮凶,与限流/登录态
-    分支同口径。"""
+    跳过本轮,绝不回退逐好友路径——1→N+1 放大是风控帮凶,与限流/登录态
+    分支同口径(逐好友路径已彻底移除,此处只断言零注入零放大)。"""
 
     sleeps: list = []
     _patch_sleep(monkeypatch, sleeps)
     p = _make_plugin(tmp_path)
     p._schedule_data = _active_qzone_schedule()
-    legacy_pulls: list = []
+    enrich_pulls: list = []
 
     class _ExplodingDiscoveryClient:
         async def get_unified_timeline(self, *, count=20, begintime=None):
@@ -3401,23 +3401,17 @@ def test_poll_feeds_discovery_failure_skips_round_without_legacy(tmp_path, monke
             raise RuntimeError("空间统一时间线请求失败: HTTP 502")
 
         async def get_user_feeds(self, *, target_uin, nickname, num=5):
-            legacy_pulls.append((target_uin, num))
-            return [FeedItem(tid="lt1", abstime="1750000000", uin=target_uin,
-                             nickname=nickname, content="旧路径动态")]
+            enrich_pulls.append((target_uin, num))
+            return []
 
     p.qzone_client = _ExplodingDiscoveryClient()
-
-    async def _friends():
-        return [{"user_id": "10001", "nickname": "小明"}]
-
-    p._qzone_friend_list = _friends
     asyncio.run(p._qzone_poll_feeds())
 
     assert any(
         level == "exception" and "统一时间线拉取失败" in str(a[0]) and "本轮跳过" in str(a[0])
         for level, a in p.logs
     )
-    assert legacy_pulls == []  # 不回退 legacy 逐好友路径(零放大)
+    assert enrich_pulls == []  # 发现层失败即终止,零充实层放大
     assert p._ctx.gateway.calls == []  # 本轮零注入,下轮拉取间距后自然重试
 
 
@@ -3869,10 +3863,9 @@ def test_poll_feeds_excludes_bot_own_feed_from_enrichment(tmp_path, monkeypatch)
     assert states == {"friendtid": "seen"}
 
 
-def test_poll_feeds_auth_error_invalidates_cookie_and_skips_legacy(tmp_path, monkeypatch):
-    """终审 I2-①:发现层抛 QzoneAuthError → cookie invalidate 被调 + 不回退
-    legacy(cookie 失效对两路径同源,回退只会重复失败多打一轮 API)——
-    _qzone_poll_feeds_legacy 零调用,显式告警。"""
+def test_poll_feeds_auth_error_invalidates_cookie_and_skips_round(tmp_path):
+    """发现层抛 QzoneAuthError → cookie invalidate 被调 + 本轮终止(不继续充实
+    与注入,零放大)——cookie 失效对逐好友路径同源,回退只会重复失败多打一轮。"""
 
     p = _make_plugin(tmp_path)
     p._schedule_data = _active_qzone_schedule()
@@ -3885,17 +3878,9 @@ def test_poll_feeds_auth_error_invalidates_cookie_and_skips_legacy(tmp_path, mon
             raise QzoneAuthError("登录态失效(code=-3000)")
 
     p.qzone_client = _AuthFailClient()
-
-    legacy_calls: list = []
-
-    async def _legacy_probe():
-        legacy_calls.append(1)
-
-    monkeypatch.setattr(p, "_qzone_poll_feeds_legacy", _legacy_probe)
     asyncio.run(p._qzone_poll_feeds())
 
     assert cookie.invalidate_calls == 1  # cookie 已作废(下轮重取)
-    assert legacy_calls == []  # 不回退 legacy 旧路径
     assert p._ctx.gateway.calls == []  # 本轮零注入
     assert any(
         level == "warning" and "登录态失效" in str(a[0]) and "cookie 已作废" in str(a[0])
@@ -4686,3 +4671,90 @@ def test_diary_chat_timeline_success_without_messages_key_warns_and_falls_back(t
     assert any(
         level == "warning" and "get_by_time 返回形态异常" in str(a[0]) for level, a in p.logs
     )
+
+
+# ---- qzone_next:浏览窗口内主动刷下一条(复用既有注入链,不新造消费路径) ----
+
+
+def test_qzone_next_pumps_next_and_releases_awaiting(tmp_path):
+    """qzone_next 成功路径:窗口内已有 awaiting(正在看一条)+ P2 队列积压一条——
+    先释放 awaiting 再泵(顺序不可倒,next_to_inject 在 awaiting 未释放时返回
+    None),下一条经 route_message 注入、seen 标记、队列缩短。"""
+
+    import time
+
+    p = _make_tool_plugin(tmp_path)
+    p.qzone_injector.window_started()
+    # 当前这条:入队后泵注入 → 进入 awaiting(正在看)
+    p.qzone_injector.enqueue([FeedItem(
+        tid="curfeed0001", abstime="1750000000", uin="10001", nickname="小明",
+        content="当前这条",
+    )])
+    asyncio.run(p._qzone_pump())
+    assert p.qzone_injector.awaiting_tid == "curfeed0001"  # 前置:正在看一条
+    # 下一条:预登记 queued(生产由发现层落 queued 行,mark_seen 才有的更新)+ 入队
+    p.qzone_seen.mark_queued("nextfeed0002", abstime="1750000100", author_uin="10002", summary="下一条")
+    p.qzone_injector.enqueue([FeedItem(
+        tid="nextfeed0002", abstime="1750000100", uin="10002", nickname="小红",
+        content="下一条",
+    )])
+
+    res = asyncio.run(p.qzone_next(stream_id="s1"))
+    assert res == "已翻开下一条。"
+    assert p.qzone_injector.awaiting_tid == "nextfeed0002"  # awaiting 释放后新动态占用
+    assert p.qzone_injector.queue_size() == 0  # 队列缩短
+    assert len(p._ctx.gateway.calls) == 2  # 第一条(泵)+ 第二条(qzone_next 泵)
+    assert p._ctx.gateway.calls[1][1]["message_info"]["user_info"]["user_id"] == "10002"
+    assert p.qzone_seen.get_message_id("nextfeed0002")  # seen 已标记(注入消息 id 落库)
+
+
+def test_qzone_next_empty_queue_message(tmp_path):
+    """qzone_next 队列见底:窗口内但 P1/P2 全空且无 awaiting → 「见底」文案,
+    零 route 零 pump(前置判定省 pump)。"""
+
+    p = _make_tool_plugin(tmp_path)
+    p.qzone_injector.window_started()
+    res = asyncio.run(p.qzone_next(stream_id="s1"))
+    assert res == "队列见底了,没有更多动态。"
+    assert p._ctx.gateway.calls == []  # 零注入
+
+
+def test_qzone_next_awaiting_but_empty_queue_releases(tmp_path):
+    """有 awaiting 但队列空:调 next = 「这条看完没下一条」,归「见底」,
+    但 awaiting 释放照常做——陈旧 awaiting 卡住后续通知注入(串行信号)。"""
+
+    import time
+
+    p = _make_tool_plugin(tmp_path)
+    p.qzone_injector.window_started()
+    p.qzone_injector.enqueue([FeedItem(
+        tid="curfeed0003", abstime="1750000000", uin="10001", nickname="小明",
+        content="正在看",
+    )])
+    asyncio.run(p._qzone_pump())
+    assert p.qzone_injector.awaiting_tid == "curfeed0003"
+
+    res = asyncio.run(p.qzone_next(stream_id="s1"))
+    assert res == "队列见底了,没有更多动态。"
+    assert p.qzone_injector.awaiting_feed is None  # awaiting 已释放(泵状态干净)
+    assert len(p._ctx.gateway.calls) == 1  # 只注入过当前这条,无新增
+
+
+def test_qzone_next_outside_window_message(tmp_path):
+    """qzone_next 窗口外:window_active=False → 「不在浏览窗口」,零 route 零 pump。"""
+
+    p = _make_tool_plugin(tmp_path)
+    res = asyncio.run(p.qzone_next(stream_id="s1"))
+    assert res == "现在不在浏览窗口。"
+    assert p._ctx.gateway.calls == []
+
+
+def test_qzone_next_non_qzone_stream_rejected(tmp_path):
+    """qzone_next 非 qzone 流:流门控防御(正常经工具过滤已不可见)→ 拒绝文案,
+    零 route 零 pump。"""
+
+    p = _make_tool_plugin(tmp_path)
+    p.qzone_injector.window_started()
+    res = asyncio.run(p.qzone_next(stream_id="real-chat"))
+    assert res == "这个工具只在刷QQ空间时有用。"
+    assert p._ctx.gateway.calls == []

@@ -28,11 +28,18 @@ QZONE_SCENE_TEXT = (
     "想互动就调工具:评论调 qzone_comment(feed_id 填说说ID,content 直接写你想说的);"
     "回复评论调 qzone_reply(填说说ID、评论ID和 content);点赞调 qzone_like;"
     "想分享自己的心情就调 qzone_post(content 直接写)——发出的内容会自动按你的口吻顺一遍。\n"
-    "不感兴趣就保持沉默,什么都不用做。在这里直接打字是发不出去的,动作只能通过工具完成。"
+    "不感兴趣就保持沉默,什么都不用做。在这里直接打字是发不出去的,动作只能通过工具完成。\n"
+    "想继续往下刷动态,就调 qzone_next 主动翻开下一条;不要用 wait 干等——"
+    "新动态要等你这一轮结束才会进来。队列见底了再去发说说或做别的。"
 )
 
 SCENE_EMPTY_CONFIG_WARNING = "群聊场景提示词配置为空(chat.reply_style.group_chat_prompt),本轮无空间场景说明(注入块已去重只留动态状态,工具仍可用)"
 SCENE_MISS_WARNING = "群聊场景提示词替换未命中(主程序模板可能已改版),本轮无空间场景说明(注入块已去重只留动态状态,工具仍可用)"
+
+# 仅 qzone 流可见的 qzone_* 工具(其余 qzone_* 全域放行)。qzone_next 是「主动
+# 刷下一条」的浏览窗口内动作,语义只在空间流成立,放行到真实流只会诱导误用;
+# 故作为 qzone_* 里唯一的流限定工具,在工具过滤层对非 qzone 流剔除。
+QZONE_ONLY_TOOLS = {"qzone_next"}
 
 
 def current_scene_text() -> str:
@@ -92,7 +99,11 @@ def filter_qzone_tools_for_stream(defs: list[dict], *, is_qzone: bool, whitelist
 
     view_friend_feeds 为真实流提供说说ID/图片hash,是 qzone 动作工具在真实
     聊天里的参数来源(全域化前提);qzone_reply 虽同在放行之列,但其自身
-    流门控仍在(comment_id 锚只存在于空间流通知)。"""
+    流门控仍在(comment_id 锚只存在于空间流通知)。
+
+    特例:QZONE_ONLY_TOOLS(当前仅 qzone_next)是仅 qzone 流可见的 qzone_* 工具
+    ——主动翻下一条只对「正在刷空间」成立,非 qzone 流须剔除(其余 qzone_* 保持
+    全域放行)。"""
 
     out: list[dict] = []
     for d in defs:
@@ -100,6 +111,8 @@ def filter_qzone_tools_for_stream(defs: list[dict], *, is_qzone: bool, whitelist
             continue
         name = _tool_name(d)
         if name.startswith("qzone_"):
+            if name in QZONE_ONLY_TOOLS and not is_qzone:
+                continue  # 流限定工具:仅 qzone 流可见
             out.append(d)
         elif is_qzone and name and name in {str(w) for w in whitelist}:
             out.append(d)

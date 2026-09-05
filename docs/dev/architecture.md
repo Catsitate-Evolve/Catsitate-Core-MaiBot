@@ -13,7 +13,7 @@ Catsitate 是 MaiBot(QQ 猫娘机器人)的拟人化人格插件。它在 MaiBot
 | `id` | `catsitate.core` | 决定数据目录(`ctx.paths.data_dir`,生产容器为 `/data/plugins/catsitate.core/`)与能力归属 |
 | `host_application` / `sdk` | 宿主与 SDK 版本范围 | Runner 据此拒绝不兼容的组合 |
 | `capabilities` | 11 项能力白名单 | 插件可 `call_capability` 的全部能力(见下文) |
-| `dependencies` | holiday-calendar、lunar-python、Pillow | 自动安装的 Python 依赖 |
+| `dependencies` | holiday-calendar、lunar-python、Pillow、curl-cffi | 自动安装的 Python 依赖 |
 
 与宿主共存的几个既定事实(均以插件侧适配解决,不改主程序):
 

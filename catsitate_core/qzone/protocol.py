@@ -133,27 +133,3 @@ def _feed_display_text(feed: dict) -> str:
     if not content and (feed.get("video") or []):
         content = "[视频]"
     return content
-
-
-def parse_friend_list(result: object) -> list[dict]:
-    """解析 adapter OneBot get_friend_list 的返回(信封容忍)。
-
-    Returns:
-        [{"user_id": str, "nickname": str}]——remark 优先于 nickname(好友备注
-        是用户对该好友的称呼,注入时更拟人);解析失败/空返回 []。
-    """
-
-    if isinstance(result, dict):
-        result = result.get("data") if isinstance(result.get("data"), list) else result.get("friends")
-    if not isinstance(result, list):
-        return []
-    out: list[dict] = []
-    for item in result:
-        if not isinstance(item, dict):
-            continue
-        uid = str(item.get("user_id") or item.get("uin") or "").strip()
-        if not uid:
-            continue
-        name = str(item.get("remark") or item.get("nickname") or "").strip() or uid
-        out.append({"user_id": uid, "nickname": name})
-    return out

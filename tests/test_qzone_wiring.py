@@ -3445,7 +3445,8 @@ def test_poll_feeds_rate_limit_skips_round_without_legacy_fallback(tmp_path):
 
 
 def test_poll_feeds_enrichment_rate_limit_stops_round(tmp_path):
-    """充实层撞限流 → 终止本轮(不再逐作者重试加重风控);先前已入队作者保留。"""
+    """充实层撞限流 → 终止本轮(不再逐作者重试加重风控);先前已入队作者保留,
+    后续作者零调用(区分「终止本轮」与「单好友跳过 continue」)。"""
 
     from catsitate_core.qzone.client import QzoneRateLimitError
 
@@ -3459,7 +3460,8 @@ def test_poll_feeds_enrichment_rate_limit_stops_round(tmp_path):
         async def get_unified_timeline(self, *, count=20, begintime=None):
             return (
                 [FeedDiscovery(tid="d1", uin="10001", nickname="小明", abstime="300", appid=311),
-                 FeedDiscovery(tid="d2", uin="10002", nickname="小红", abstime="200", appid=311)],
+                 FeedDiscovery(tid="d2", uin="10002", nickname="小红", abstime="200", appid=311),
+                 FeedDiscovery(tid="d3", uin="10003", nickname="小蓝", abstime="100", appid=311)],
                 "",
             )
 
@@ -3472,12 +3474,14 @@ def test_poll_feeds_enrichment_rate_limit_stops_round(tmp_path):
     client = _EnrichRateLimitedClient()
     p.qzone_client = client
     asyncio.run(p._qzone_poll_feeds())
-    assert client.enrich_calls == ["10001", "10002"]  # 第二作者撞限流
+    assert client.enrich_calls == ["10001", "10002"]  # 第二作者撞限流,第三作者零调用(终止而非跳过)
     assert any(
         level == "warning" and "服务限流" in str(a[0]) and "充实终止" in str(a[0])
         for level, a in p.logs
     )
     assert p.qzone_seen.is_new_candidate("d2") is True  # 第二作者未被充实(本轮终止)
+    assert p.qzone_seen.is_new_candidate("d3") is True
+    assert p.qzone_seen.is_new_candidate("d1") is False  # 已入队作者保留
 
 
 def test_notify_scan_source_a_rate_limit_keeps_source_b_c(tmp_path):

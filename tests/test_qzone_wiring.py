@@ -2809,16 +2809,18 @@ def test_qzone_data_prune_registered_in_on_load():
 
 
 def test_send_trigger_intent_text_no_stray_paren():
-    """2026-09-03 复审小修:发布触发 intent 文案两处删多余右括号
-    (「…直接写你想发的内容);」→「…直接写你想发的内容;」,browsed/非 browsed
-    各一处,轻量源码断言)。"""
+    """发布触发 intent 文案:两处(browsed/非 browsed)均无多余右括号,且都含
+    qzone_post 引导 + 「分享此刻正在做的事/现在的状态」正面语义(不强写禁止,
+    靠强化「分享当下」引导模型,轻量源码断言)。"""
     import inspect
 
     import plugin as plugin_mod
 
     src = inspect.getsource(plugin_mod)
     assert "内容);" not in src  # 残留右括号已删
-    assert src.count("直接写你想发的内容;") == 2  # 两处文案齐全
+    assert "qzone_post 工具写你想发的内容;" in src  # browsed 分支
+    assert "qzone_post 工具直接写你想发的内容;" in src  # 非 browsed 分支
+    assert "分享自己正在做的事" in src and "分享你此刻正在做的事" in src  # 正面语义
 
 
 def test_on_load_whitelist_warning_covers_view_friend_feeds(tmp_path):

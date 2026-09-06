@@ -63,7 +63,7 @@ SIDE_TEMPLATES: dict[str, dict] = {
             "要求:恰好 1 个睡眠窗口;活动窗口 1~8 个;窗口不重叠;时间可留空隙;睡眠时长符合给定约束;时间精确到分钟(格式 HH:MM,不含秒);\n"
             "kind=greeting 为问候/陪伴类活动(早安/晚安问候等,窗口起点触发主动问候);kind=daily 为日常活动;活动描述贴合素材中给定的人设(独处/休闲类活动为主)。\n"
             "read_qzone=true 标记该窗口会刷QQ空间(浏览好友动态):仅 kind=daily 窗口可标,通常一天 1~2 个,适合搭配轻松的独处活动(如「窝着刷手机」)。\n"
-            "send_qzone=true 标记该窗口会有感而发写说说(可与 read_qzone 同窗:刷完想分享;也可独立:忙里偷闲发一条):仅 kind=daily 窗口可标,通常一天 0~2 个。\n"
+            "send_qzone=true 标记该窗口会发条说说,分享此刻正在做的事、现在的状态或心情(可与 read_qzone 同窗:刷完想分享;也可独立:忙里偷闲发一条):仅 kind=daily 窗口可标,通常一天 0~2 个。\n"
             "不要输出其它内容。"
         ),
     },
@@ -94,7 +94,7 @@ SIDE_TEMPLATES: dict[str, dict] = {
             "评论ID填 qzone_reply 的 comment_id,评论者QQ填 qzone_comment 的 at_user_id。\n"
             "想互动就调工具:评论调 qzone_comment(feed_id 填说说ID,content 直接写你想说的);"
             "回复评论调 qzone_reply(填说说ID、评论ID和 content);点赞调 qzone_like;"
-            "想分享自己的心情就调 qzone_post(content 直接写)——发出的内容会自动按你的口吻顺一遍。\n"
+            "想分享自己此刻正在做的事、现在的状态或心情就调 qzone_post(content 直接写)——发出的内容会自动按你的口吻顺一遍。\n"
             "不感兴趣就保持沉默,什么都不用做。在这里直接打字是发不出去的,动作只能通过工具完成。\n"
             "想继续往下刷动态,就调 qzone_next 主动翻开下一条;不要用 wait 干等——"
             "新动态要等你这一轮结束才会进来。队列见底了再去发说说或做别的。"

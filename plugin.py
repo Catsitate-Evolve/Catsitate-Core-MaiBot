@@ -1228,10 +1228,10 @@ class CatsitatePlugin(MaiBotPlugin):
 
     @Tool(
         "qzone_post",
-        description="发布一条自己的说说(QQ空间)。想说点什么、分享心情或见闻时使用。内容自然即可,不要刻意。",
+        description="发布一条自己的说说(QQ空间)。分享你此刻正在做的事、现在的状态或心情时使用。内容自然即可,不要刻意。",
         brief_description="发说说",
         parameters=[
-            ToolParameterInfo(name="content", param_type="string", description="说说内容(≤500字,自然表达)", required=True),
+            ToolParameterInfo(name="content", param_type="string", description="说说内容(≤500字,写你此刻正在做的事或现在的状态,自然表达)", required=True),
         ],
         visibility="visible",
     )
@@ -2190,13 +2190,13 @@ class CatsitatePlugin(MaiBotPlugin):
         activity = str(win.get("activity") or "")
         if browsed:
             intent = (
-                "你刚刷完QQ空间,现在有点想分享点什么。"
-                "如果确实想发,用 qzone_post 工具直接写你想发的内容;"
+                "你刚刷完QQ空间。如果此刻想分享自己正在做的事、现在的状态或心情,"
+                "就用 qzone_post 工具写你想发的内容;"
                 f"不想发就保持沉默,什么都不用做。当前活动:{activity}"
             )
         else:
             intent = (
-                f"你在忙{activity},忙里偷闲想上QQ空间发条说说。"
+                f"你正在{activity}。可以上QQ空间发条说说,分享你此刻正在做的事或现在的状态。"
                 "如果确实想发,用 qzone_post 工具直接写你想发的内容;"
                 "不想发就保持沉默,什么都不用做。"
             )

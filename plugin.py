@@ -2879,6 +2879,9 @@ class CatsitatePlugin(MaiBotPlugin):
         wake_at = self.sleep.clamp_wake_time(now.strftime("%Y-%m-%dT%H:%M:%S"), planned_wake)
         self.sleep.enter_sleep(now=lambda: now, wake_at=wake_at)
         self._sleep_window_settled = str(sleep_win.get("end") or "") if sleep_win else ""  # 入睡已执行入睡任务,窗口终点不再补执行
+        # 标记载入即落盘:否则「标记已设、生成任务未及落盘」间隙崩溃重启,会重复补执行
+        # (再发日记);与下方日程/日记后台任务并行不冲突——settled 已先持久化
+        self._persist_schedule()
         self.ctx.logger.info("已入睡:醒来 %s", wake_at)
         # 日程目标日 = 醒来日(wake_at 前 10 位):午夜后入睡时 now+1 会错成
         # 醒来日的次日(见 _generate_tomorrow_schedule 说明)
@@ -3575,6 +3578,9 @@ class CatsitatePlugin(MaiBotPlugin):
         if self._sleep_window_settled == end:
             return  # 本窗口已入睡(入睡时已生成)或已补执行过
         self._sleep_window_settled = end
+        # 标记载入即落盘(与 _enter_sleep 同款):防「标记已设、生成任务未及落盘」
+        # 间隙崩溃重启导致重复补执行
+        self._persist_schedule()
         self.ctx.logger.info("睡眠窗口已过未入睡:补执行入睡任务(不入睡)")
         # 目标日 = 窗口 end 所在自然日(将要醒来的日),日记素材日 = 窗口起始日
         # ——与 _enter_sleep 同源语义,午夜后补执行不再错日
@@ -4347,7 +4353,11 @@ class CatsitatePlugin(MaiBotPlugin):
             return "无"
 
     def _persist_schedule(self) -> None:
-        """日程落盘:data_dir/schedule.json(含修改历史与生成标记)。"""
+        """日程落盘:data_dir/schedule.json(含修改历史与生成标记)。
+
+        settled 一并持久化:该字段是「睡眠窗口 end 已入睡处理」的幂等标记,若仅存
+        内存,跨重启丢失后 _maybe_settle_passed_sleep_window 会误判「整夜未入睡」
+        而重复补执行入睡任务(再发一篇日记)——见 _restore_schedule。"""
 
         path = self.ctx.paths.data_dir / "schedule.json"
         try:
@@ -4355,6 +4365,7 @@ class CatsitatePlugin(MaiBotPlugin):
                 "data": self._schedule_data,
                 "edit_history": self._schedule_edit_history,
                 "generated": self._schedule_generated,
+                "settled": self._sleep_window_settled,
                 "saved_at": datetime.now().strftime("%Y-%m-%dT%H:%M:%S"),
             }, ensure_ascii=False, indent=2), encoding="utf-8")
         except OSError:
@@ -4409,6 +4420,9 @@ class CatsitatePlugin(MaiBotPlugin):
             self._schedule_data["windows"] = sort_windows(self._schedule_data["windows"])  # 旧数据按时间顺序重排
         self._schedule_edit_history = data["edit_history"] if isinstance(data.get("edit_history"), list) else []
         self._schedule_generated = bool(data.get("generated"))
+        # 恢复「睡眠窗口已入睡处理」幂等标记:跨重启丢失会使补执行误判「整夜
+        # 未入睡」而重复发布日记(生产实机复现);旧 schedule.json 无此字段,缺省空
+        self._sleep_window_settled = str(data.get("settled") or "")
         self.ctx.logger.info("已从 schedule.json 恢复日程(%s)", saved_date)
 
     def _prune_day_keys(self, day: str) -> None:

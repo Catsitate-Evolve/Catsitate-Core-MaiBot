@@ -160,6 +160,9 @@ def _make_plugin(tmp_path):
     p._qzone_registry = FeedContextRegistry()  # 实例级(类属性共享,防测试间泄漏)
     p._qzone_seq = 0
     p._qzone_pump_lock = asyncio.Lock()  # 泵互斥锁(on_load 装配,离线测试手工补)
+    # 睡眠窗口已入睡处理幂等标记(on_load 装配,离线测试手工补):_persist_schedule
+    # 会读写它,缺属性则落盘失败
+    p._sleep_window_settled = ""
     # 发现层单飞锁(on_load 装配,离线测试手工补):浏览层与通知源B 共用的
     # 统一入口单飞+共享缓存+限流退避依赖此锁
     p._qzone_discovery_fetch_lock = asyncio.Lock()

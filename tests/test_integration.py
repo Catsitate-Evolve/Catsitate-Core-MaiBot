@@ -393,6 +393,7 @@ def test_generate_tomorrow_schedule_sets_generated_flag(tmp_path):
     p._schedule_data = {}
     p._schedule_edit_history = []
     p._schedule_generated = False
+    p._sleep_window_settled = ""  # on_load 装配的睡眠窗已处理标记(_persist_schedule 读写)
 
     class _FailingGen:
         async def generate(self, **kw):
@@ -761,6 +762,70 @@ def test_sleep_window_passed_awake_settles_once(tmp_path):
     p._sleep_window_settled = (now - timedelta(hours=1)).strftime("%Y-%m-%dT%H:%M")
     asyncio.run(p._sleep_tick())
     assert calls["gen"] == 0
+
+
+def test_sleep_window_settled_persists_across_restart(tmp_path):
+    """回归:settled 幂等标记须随 schedule.json 持久化——纯内存态跨重启丢失后,
+    _maybe_settle_passed_sleep_window 会把「已入睡处理过的窗口」误判为「整夜
+    未入睡」而重复补执行(再发一篇日记,生产 2026-09-06 实机复现)。"""
+
+    import asyncio
+    from datetime import datetime, timedelta
+
+    import plugin as plugin_mod
+    from catsitate_core.config import CatsitateConfig
+
+    p = plugin_mod.CatsitatePlugin()
+    p._ctx = _StubCtx(tmp_path)
+    p._plugin_config_instance = CatsitateConfig()
+    p.config.plugin.enabled = True
+    p.config.sleep.enabled = True
+    from catsitate_core.sleep import SleepManager
+    from catsitate_core.storage import JsonSnapshot
+    p.sleep = SleepManager(JsonSnapshot(tmp_path / "sleep_state.json"), p.config.sleep)
+    p._background_tasks = set()
+    p._pending_diary_snapshot = JsonSnapshot(tmp_path / "qzone_pending_diary.json")
+    p._sleep_window_settled = ""
+
+    now = datetime.now()
+    today = now.strftime("%Y-%m-%d")
+    # 真实场景:昨晚入睡生成「醒来日(今天)」日程,睡眠窗 end 是今天早晨已过时刻
+    p._schedule_data = {"date": today, "windows": [{
+        "kind": "sleep",
+        "start": (now - timedelta(hours=10)).strftime("%Y-%m-%dT%H:%M"),
+        "end": (now - timedelta(hours=1)).strftime("%Y-%m-%dT%H:%M"),
+        "activity": "",
+    }]}
+    p._schedule_edit_history = []
+    p._schedule_generated = True
+    # 模拟已入睡处理:settled 记为睡眠窗 end
+    p._sleep_window_settled = p._schedule_data["windows"][0]["end"]
+    p._persist_schedule()
+
+    # 模拟重启:新实例从 schedule.json 恢复(settled 应被恢复,而非重置为空)
+    p2 = plugin_mod.CatsitatePlugin()
+    p2._ctx = _StubCtx(tmp_path)
+    p2._plugin_config_instance = CatsitateConfig()
+    p2.config.plugin.enabled = True
+    p2.config.sleep.enabled = True
+    p2.sleep = SleepManager(JsonSnapshot(tmp_path / "sleep_state.json"), p2.config.sleep)
+    p2._background_tasks = set()
+    p2._pending_diary_snapshot = JsonSnapshot(tmp_path / "qzone_pending_diary.json")
+    p2._sleep_window_settled = ""
+
+    gen_calls: list = []
+
+    async def _fake_gen(target_date):
+        del target_date
+        gen_calls.append(1)
+    p2._generate_tomorrow_schedule = _fake_gen
+
+    p2._restore_schedule()
+    # 恢复后 settled 必须等于睡眠窗 end(非空)
+    assert p2._sleep_window_settled == p._schedule_data["windows"][0]["end"]
+
+    asyncio.run(p2._sleep_tick())
+    assert gen_calls == []  # 已入睡处理过:重启后不得重复补执行(再发日记)
 
 
 class _CollectLogger:
@@ -1494,6 +1559,7 @@ def test_generate_tomorrow_schedule_target_date_drives_output(tmp_path):
     p._schedule_data = {}
     p._schedule_edit_history = []
     p._schedule_generated = False
+    p._sleep_window_settled = ""  # on_load 装配的睡眠窗已处理标记(_persist_schedule 读写)
 
     async def _boom_llm(messages, model=""):
         raise RuntimeError("boom")

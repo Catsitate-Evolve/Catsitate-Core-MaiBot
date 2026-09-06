@@ -644,6 +644,8 @@ def test_schedule_tick_cross_midnight_sleep_window_enters_sleep(tmp_path):
     p._schedule_tick_fired = {}
     p._speak_counts = {}
     p._remind_fired = {}
+    p._schedule_edit_history = []  # on_load 装配(_persist_schedule 读写,离线补)
+    p._schedule_generated = False
 
     async def _fake_gen(target_date):
         del target_date
@@ -689,6 +691,8 @@ def test_sleep_tick_silent_on_quiet_elapsed_enters_sleep(tmp_path):
     p._background_tasks = set()
     p._pending_diary_snapshot = JsonSnapshot(tmp_path / "qzone_pending_diary.json")  # 醒态 sleep_tick 补注日记读取(on_load 装配,离线手工补)
     p._sleep_window_settled = ""
+    p._schedule_edit_history = []  # on_load 装配(_persist_schedule 读写,离线补)
+    p._schedule_generated = False
 
     async def _fake_gen(target_date):
         del target_date
@@ -733,6 +737,8 @@ def test_sleep_window_passed_awake_settles_once(tmp_path):
     p._background_tasks = set()
     p._pending_diary_snapshot = JsonSnapshot(tmp_path / "qzone_pending_diary.json")  # 醒态 sleep_tick 补注日记读取(on_load 装配,离线手工补)
     p._sleep_window_settled = ""
+    p._schedule_edit_history = []  # on_load 装配(_persist_schedule 读写,离线补)
+    p._schedule_generated = False
 
     calls = {"gen": 0}
 
@@ -1510,6 +1516,9 @@ def test_enter_sleep_after_midnight_targets_wake_day(tmp_path):
     p._plugin_config_instance = CatsitateConfig()
     p._background_tasks = set()
     p._pending_diary_snapshot = JsonSnapshot(tmp_path / "qzone_pending_diary.json")
+    p._schedule_edit_history = []  # on_load 装配(_persist_schedule 读写,离线补)
+    p._schedule_generated = False
+    p._sleep_window_settled = ""  # on_load 装配的睡眠窗已处理标记
     # 09-04 的日程:睡眠窗 09-04T23:00 → 09-05T07:30(跨午夜)
     p._schedule_data = {"date": "2026-09-04", "windows": [
         {"kind": "sleep", "start": "2026-09-04T23:00", "end": "2026-09-05T07:30"},

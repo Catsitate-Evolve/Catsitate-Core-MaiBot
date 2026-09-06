@@ -2879,6 +2879,9 @@ class CatsitatePlugin(MaiBotPlugin):
         wake_at = self.sleep.clamp_wake_time(now.strftime("%Y-%m-%dT%H:%M:%S"), planned_wake)
         self.sleep.enter_sleep(now=lambda: now, wake_at=wake_at)
         self._sleep_window_settled = str(sleep_win.get("end") or "") if sleep_win else ""  # 入睡已执行入睡任务,窗口终点不再补执行
+        # 标记载入即落盘:否则「标记已设、生成任务未及落盘」间隙崩溃重启,会重复补执行
+        # (再发日记);与下方日程/日记后台任务并行不冲突——settled 已先持久化
+        self._persist_schedule()
         self.ctx.logger.info("已入睡:醒来 %s", wake_at)
         # 日程目标日 = 醒来日(wake_at 前 10 位):午夜后入睡时 now+1 会错成
         # 醒来日的次日(见 _generate_tomorrow_schedule 说明)
@@ -3575,6 +3578,9 @@ class CatsitatePlugin(MaiBotPlugin):
         if self._sleep_window_settled == end:
             return  # 本窗口已入睡(入睡时已生成)或已补执行过
         self._sleep_window_settled = end
+        # 标记载入即落盘(与 _enter_sleep 同款):防「标记已设、生成任务未及落盘」
+        # 间隙崩溃重启导致重复补执行
+        self._persist_schedule()
         self.ctx.logger.info("睡眠窗口已过未入睡:补执行入睡任务(不入睡)")
         # 目标日 = 窗口 end 所在自然日(将要醒来的日),日记素材日 = 窗口起始日
         # ——与 _enter_sleep 同源语义,午夜后补执行不再错日

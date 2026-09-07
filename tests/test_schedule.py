@@ -606,9 +606,12 @@ def test_fix_schedule_strips_attributes_on_nondaily():
 
 def test_schedule_generate_template_splits_qzone_attributes():
     """日程模板含 read_qzone/send_qzone 独立属性说明(v4 引入拆分;v1.0.0 清理
-    升 v5——同步 prompt_templates/ 权威源,补防注入语与分钟精度要求)。"""
+    升 v5;v1.0.9 升 v6——睡眠窗口 start/end 日期基准讲死:start=目标日当晚、
+    end=目标日次日早上,修复 LLM 把睡眠窗 start 错填成入睡当日的歧义)。"""
     from catsitate_core.llm_provider import SIDE_TEMPLATES
 
-    assert SIDE_TEMPLATES["schedule_generate"]["version"] == 5
+    assert SIDE_TEMPLATES["schedule_generate"]["version"] == 6
+    assert "start 是目标日当天晚上入睡的时刻" in SIDE_TEMPLATES["schedule_generate"]["system"]
+    assert "end 是次日早上醒来的时刻" in SIDE_TEMPLATES["schedule_generate"]["system"]
     assert "read_qzone" in SIDE_TEMPLATES["schedule_generate"]["system"]
     assert "send_qzone" in SIDE_TEMPLATES["schedule_generate"]["system"]

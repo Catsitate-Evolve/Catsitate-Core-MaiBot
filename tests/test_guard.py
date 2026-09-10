@@ -84,3 +84,51 @@ def test_plugin_on_load_assembles_guard_compiled():
     assert "self.config.guard.enabled" in guard_src  # 未 enabled 零编译
     on_load_src = inspect.getsource(plugin_mod.CatsitatePlugin.on_load)
     assert "self._assemble_guard()" in on_load_src  # on_load 接线装配方法
+
+
+def test_content_guard_send_intercepts_final_text():
+    """send_service.before_send 最终防线:对后处理产出的最终文本(processed_plain_text)
+    匹配护栏,命中 abort;不命中/空文本/护栏关原样 continue。
+
+    实证背景(2026-09-10):replyer 输出「[表情包: ...]」被核心后处理剥空后走硬编码
+    兜底「呃呃」,该文案只有本钩子点可见。config 为 SDK 基类只读 property,
+    经子类覆盖注入。"""
+
+    import asyncio
+    import inspect
+
+    import plugin as plugin_mod
+    from catsitate_core.config import CatsitateConfig
+
+    def _run(cfg_enabled: bool, text: str) -> str:
+        cfg = CatsitateConfig()
+        cfg.plugin.enabled = True
+        cfg.guard.enabled = cfg_enabled
+        cfg.guard.patterns = ["^呃呃$"]
+
+        class _P(plugin_mod.CatsitatePlugin):
+            @property
+            def config(self):  # noqa: N802 - 覆盖基类只读 property
+                return cfg
+
+            @property
+            def ctx(self):  # noqa: N802 - 裸实例无 SDK 上下文,拦截日志走标准 logging
+                import logging
+                import types
+
+                return types.SimpleNamespace(logger=logging.getLogger("test"))
+
+        p = _P.__new__(_P)
+        p._assemble_guard()
+        r = asyncio.run(p.content_guard_send(message={"processed_plain_text": text}))
+        return str(r["action"])
+
+    assert _run(True, "呃呃") == "abort"  # 兜底文案命中即中止发送
+    assert _run(False, "呃呃") == "continue"  # 护栏关不拦截
+    assert _run(True, "今天天气不错") == "continue"  # 正常文本放行
+    assert _run(True, "") == "continue"  # 空文本(如纯表情包消息)放行
+
+    # 装配断言:钩子挂在 send_service.before_send,读取 processed_plain_text 并 match_guard
+    src = inspect.getsource(plugin_mod.CatsitatePlugin.content_guard_send)
+    assert "processed_plain_text" in src
+    assert "match_guard" in src

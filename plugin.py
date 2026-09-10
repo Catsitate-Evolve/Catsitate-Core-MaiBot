@@ -2915,6 +2915,35 @@ class CatsitatePlugin(MaiBotPlugin):
         # 处理正文投影,勿手工改 items 以免形态错误
         return {"action": "continue", "modified_kwargs": {**kwargs, "response": "", "output_items": kwargs.get("output_items")}}
 
+    # ---------- Hook:内容护栏(最终发送文本拦截) ----------
+
+    @HookHandler("send_service.before_send", name="catsitate_content_guard_send", mode=HookMode.BLOCKING, order=HookOrder.EARLY)
+    async def content_guard_send(self, **kwargs: Any) -> dict[str, Any]:
+        """内容护栏最终防线:在 send_service 真正发往平台前,对消息的
+        processed_plain_text(后处理后的最终可见文本)做护栏匹配,命中即中止发送。
+
+        必要性实证(2026-09-10):replyer 原始输出「[表情包: ...]」经核心
+        process_llm_response_segments 剥掉含中文的方括号内容后为空,走硬编码
+        兜底返回「呃呃」发送——该文案产生于 replyer 钩子与 before_post_process
+        之后,唯有本钩子点可见最终文本。abort 语义由 send_service 支持
+        (allow_abort=True),中止后消息不进入 Platform IO。"""
+
+        if not self.config.plugin.enabled:
+            return {"action": "continue", "modified_kwargs": kwargs}
+        msg = kwargs.get("message")
+        if not isinstance(msg, dict):
+            return {"action": "continue", "modified_kwargs": kwargs}
+        final_text = str(msg.get("processed_plain_text") or "").strip()
+        if not final_text:
+            return {"action": "continue", "modified_kwargs": kwargs}
+        hit = match_guard(self._guard_compiled, final_text)
+        if not hit:
+            return {"action": "continue", "modified_kwargs": kwargs}
+        self.ctx.logger.warning(
+            "内容护栏拦截:最终发送 命中规则%d,中止发送(文本:%s...)", hit, final_text[:60]
+        )
+        return {"action": "abort", "modified_kwargs": kwargs}
+
     # ---------- Hook:reply 补传与哨兵 ----------
 
     @HookHandler("maisaka.planner.after_response", name="catsitate_reply_backfill", mode=HookMode.BLOCKING, order=HookOrder.LATE)

@@ -314,7 +314,7 @@ def threshold_met(level_name: str, threshold_level: str) -> bool:
 def build_proactive_intent(window: dict, stream: dict, day_overview: str) -> str:
     """主动发言指示 prompt(trigger 的 intent):日程事实 + 目标流好感度,话术交主程序。
 
-    调度层仅对 plan_speak=true 的窗口拉起任务(硬门控),故意图中计划发言恒为「是」。"""
+    调度层仅对 plan_speak=true 的窗口拉起任务(硬门控),故 intent 文本中计划发言恒为「是」。"""
 
     topic = f",主题:{window.get('topic')}" if window.get("topic") else ""
     return (

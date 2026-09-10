@@ -74,6 +74,12 @@
 
 ---
 
+## v1.0.10(2026-09-10) 内容护栏最终防线
+
+replyer 原始输出(如「[表情包: ...]」)被核心后处理剥掉含中文方括号内容后为空时,核心改走硬编码兜底文案「呃呃」发送——该文案产生于 replyer 钩子与 before_post_process 之后,原三拦截点(空间动作工具/日记/replyer)均不可见,`guard.patterns` 对其永不生效。新增第四拦截点 `content_guard_send`(`send_service.before_send`,BLOCKING/EARLY):对最终可见文本 `processed_plain_text` 匹配,命中即 abort 中止发送(消息不进 Platform IO);空文本放行不误伤纯表情包消息;原 replyer 层拦截保留,两层互补。随双轴 code-review 整改:载荷形态异常放行补告警、注释日期戳清理、文档四处口径同步。628 用例全绿。
+
+---
+
 ## v1.0.9(2026-09-07) 睡眠窗口日期基准澄清
 
 修复入睡生成日程的睡眠窗 start 错落「入睡当日」:prompt 未讲清「睡眠窗口 start 是目标日当晚、end 是次日早上」,模型把「7:30 起床那次睡眠」误当睡眠窗。模板 v5→v6 直白澄清,纯 prompt 改动。627 用例全绿。

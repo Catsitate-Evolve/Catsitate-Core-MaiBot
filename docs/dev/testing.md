@@ -1,6 +1,6 @@
 # 测试体系
 
-> 对应代码:`tests/`(34 个文件,627 个用例,全量离线运行约 6 秒)。
+> 对应代码:`tests/`(34 个文件,628 个用例,全量离线运行约 6 秒)。
 
 ## 测试哲学
 
@@ -31,7 +31,7 @@ assert text.startswith("(今天") and text.endswith("今天天气好\n〔说说I
 
 ```bash
 cd <本仓库根> && python3 -m pytest tests/ -q
-# 627 passed in ~6s(无需网络、无需主程序、无需 QQ 登录态)
+# 628 passed in ~8s(无需网络、无需主程序、无需 QQ 登录态)
 ```
 
 跑单个模块:
@@ -54,7 +54,7 @@ python3 -m pytest tests/test_qzone_wiring.py -k auth_retry -q   # 按关键字�
 | QQ空间·纯函数层 | `test_qzone_client.py` / `test_qzone_discovery.py` / `test_qzone_wire.py` / `test_qzone_gateway.py` | HTTP 客户端(cookie/g_tk/读写通道/错误分类)/ 统一时间线与赞事件解析 / 写路径表单与评论解析 / 注入消息构造(时间前缀/图片段/占位/评论区) |
 | QQ空间·状态层 | `test_qzone_seen.py` / `test_qzone_comment_seen.py` / `test_qzone_like_seen.py` / `test_qzone_injector.py` / `test_qzone_registry.py` / `test_qzone_scene.py` | 三张去重表 / 串行注入泵(P1/P2/wait/超时)/ FeedContext 注册表(合并语义/前缀解析)/ 场景替换与白名单 |
 | QQ空间·表达与图片 | `test_qzone_expression.py` / `test_qzone_imaging.py` | 润色层(失败回退/超长重润/卫生)/ 图片管线(拼图角标/压缩预算/丢弃占位/锚 hash) |
-| QQ空间·组合层 | `test_qzone_wiring.py` / `test_guard.py` / `test_integration.py` | plugin 接线全量行为(最大的一个文件,浏览轮询/六工具/通知三源/日记见闻/回退路径)/ 护栏三拦截点/ 全引擎离线冒烟 |
+| QQ空间·组合层 | `test_qzone_wiring.py` / `test_guard.py` / `test_integration.py` | plugin 接线全量行为(最大的一个文件,浏览轮询/六工具/通知三源/日记见闻/回退路径)/ 护栏四拦截点/ 全引擎离线冒烟 |
 
 ## 关键 stub(组合层 `_make_plugin` 装配)
 

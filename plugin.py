@@ -2922,7 +2922,7 @@ class CatsitatePlugin(MaiBotPlugin):
         """内容护栏最终防线:在 send_service 真正发往平台前,对消息的
         processed_plain_text(后处理后的最终可见文本)做护栏匹配,命中即中止发送。
 
-        必要性实证(2026-09-10):replyer 原始输出「[表情包: ...]」经核心
+        必要性实证:replyer 原始输出「[表情包: ...]」经核心
         process_llm_response_segments 剥掉含中文的方括号内容后为空,走硬编码
         兜底返回「呃呃」发送——该文案产生于 replyer 钩子与 before_post_process
         之后,唯有本钩子点可见最终文本。abort 语义由 send_service 支持
@@ -2932,7 +2932,12 @@ class CatsitatePlugin(MaiBotPlugin):
             return {"action": "continue", "modified_kwargs": kwargs}
         msg = kwargs.get("message")
         if not isinstance(msg, dict):
+            # 载荷形态异常=最终防线无法工作,显式告警后放行(不静默失效)
+            self.ctx.logger.warning(
+                "内容护栏拦截:最终发送 载荷非 dict(类型:%s),无法匹配,放行", type(msg).__name__
+            )
             return {"action": "continue", "modified_kwargs": kwargs}
+        # 护栏关→_guard_compiled 空列表,match_guard 恒 0,原样 continue(零行为变化)
         final_text = str(msg.get("processed_plain_text") or "").strip()
         if not final_text:
             return {"action": "continue", "modified_kwargs": kwargs}

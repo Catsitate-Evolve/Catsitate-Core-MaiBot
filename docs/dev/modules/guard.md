@@ -1,6 +1,6 @@
 # 内容护栏(可配置正则拦截)
 
-> 对应代码:`catsitate_core/guard.py`(纯匹配器),`plugin.py` 的 `GuardSection` 配置(`catsitate_core/config.py`)、`_assemble_guard` / `_guard_compiled`、三个空间动作工具与日记里的拦截点、`content_guard_replyer` 钩子。
+> 对应代码:`catsitate_core/guard.py`(纯匹配器),`plugin.py` 的 `GuardSection` 配置(`catsitate_core/config.py`)、`_assemble_guard` / `_guard_compiled`、三个空间动作工具与日记里的拦截点、`content_guard_replyer` 与 `content_guard_send` 钩子。
 
 ## 一、职责与生命周期
 
@@ -8,7 +8,7 @@
 
 关键设计取舍:
 
-- **全局单列表**:不区分模块/场景——同一份 `guard.patterns` 对三个空间动作工具、日记、全部聊天的 replyer 回复生效(内容级护栏,不分流)。
+- **全局单列表**:不区分模块/场景——同一份 `guard.patterns` 对三个空间动作工具、日记、全部聊天的 replyer 回复与最终发送文本生效(内容级护栏,不分流)。
 - **默认关闭**:`guard.enabled` 默认 `false`——未启用时零编译、零匹配、零行为变化。
 - **纯函数无 IO**:`guard.py` 只做编译与命中判定,拦截决策(取消什么、回执怎么写)在消费方。
 
@@ -30,7 +30,7 @@ patterns = ["正则1", "正则2"]   # 拦截正则列表(全局单列表)
 - `match_guard(compiled, text) -> int`:按序 `re.search`,返回**首个命中规则的 1 基编号**,无命中返回 0。`re.search` 语义=部分命中即中;**无 flags,大小写敏感**(要拦 `Word` 与 `word` 需显式写 `(?i)` 或两条)。
 - 未启用时 `_guard_compiled` 为空列表,`match_guard` 恒 0——所有拦截点自然短路,零行为变化。
 
-### 2.3 三个拦截点
+### 2.3 四个拦截点
 
 拦截点选取原则:**在文本最终形态上、且在真实副作用发生之前**匹配。
 
@@ -39,8 +39,11 @@ patterns = ["正则1", "正则2"]   # 拦截正则列表(全局单列表)
 | **三个空间动作工具**(`qzone_comment` / `qzone_reply` / `qzone_post`) | 表达润色**之后**(润色改写可能引入命中;草稿直发形态同样覆盖)、写 API 调用**之前** | 取消发布:零 API 调用零记账零 seen,回执 `内容被拦截(命中规则N),未发布。` |
 | **日记**(`_generate_and_publish_diary`) | LLM 生成文本落定后、发布 API **之前** | 取消发布:不发布不落快照,告警即止(入睡任务无用户回执) |
 | **replyer 回复**(`content_guard_replyer` 钩子) | `maisaka.replyer.after_response`,HookMode.BLOCKING + HookOrder.EARLY(先于哨兵等 LATE 钩子) | `response` 改写为空串——主程序 reply 工具拿空文本走失败结果,planner 看到 [失败] 即真沉默;`output_items` 原样保留(主程序自行处理正文投影,手工改 items 会形态错误)。全部会话生效 |
+| **最终发送**(`content_guard_send` 钩子,v1.0.10) | `send_service.before_send`,HookMode.BLOCKING + HookOrder.EARLY——后处理完成、真正发往平台之前 | `action=abort` 中止发送,消息不进入 Platform IO |
 
 replyer 侧的重复拦截天然成立:模型若自主重调 reply,每次生成的新文本都会再过本钩子,不漏发。
+
+最终发送层是前三点拦不住的场景兜底:核心后处理(`process_llm_response_segments`)可能把 replyer 原始输出剥空(如「[表情包: ...]」被剥掉含中文的方括号内容后为空),此时核心改走硬编码兜底文案(「呃呃」)——该文案产生于 replyer 钩子与 before_post_process 之后,前三点均不可见,唯有本钩子点能对 `processed_plain_text`(最终可见文本)匹配。空文本放行,不误伤纯表情包消息;载荷形态异常(非 dict)告警后放行(最终防线失效可见,不静默)。
 
 ### 2.4 热重载
 
@@ -48,17 +51,18 @@ replyer 侧的重复拦截天然成立:模型若自主重调 reply,每次生成�
 
 ### 2.5 可观测性
 
-每次命中都打 warning 日志:`内容护栏拦截:{拦截点} 命中规则{N},{未发布/置空未发送}(文本:{前60字}...)`——拦截动作可见、可审计,与「错误显式暴露」原则一致。
+每次命中都打 warning 日志:`内容护栏拦截:{拦截点} 命中规则{N},{未发布/置空未发送/中止发送}(文本:{前60字}...)`——拦截动作可见、可审计,与「错误显式暴露」原则一致。最终发送层的载荷形态异常(非 dict)放行同样告警。
 
 ## 三、限制与回退清单
 
 | 场景 | 行为 |
 |---|---|
-| `guard.enabled=false` | `_guard_compiled` 空列表,匹配恒 0,三拦截点原样放行(零行为变化) |
+| `guard.enabled=false` | `_guard_compiled` 空列表,匹配恒 0,四拦截点原样放行(零行为变化) |
 | 任一正则非法 | **整组护栏拒绝加载**:warning(含坏规则序号/原文/原因)后 `_guard_compiled` 置空——护栏失效但**不阻断插件加载**(修正配置即恢复);不做部分可用兜底 |
 | 工具拦截命中 | 取消发布+回执明示规则编号(模型知道哪里出了问题) |
 | 日记拦截命中 | 取消发布,告警(无回执通道) |
 | replyer 拦截命中 | response 置空(真沉默),不改 output_items;模型重调 reply 时逐次再拦 |
+| 最终发送拦截命中 | abort 中止发送,消息不进 Platform IO;空文本(纯表情包消息)放行;载荷非 dict 告警后放行 |
 | 配置热更新 | 立即重编译生效(enabled/patterns 任一变更) |
 
 **已知边界**:`re.search` 无 flags(大小写敏感);命中即整条取消,不支持「替换/改写命中片段」的软化处置;回执只报规则编号,不回显命中片段细节(前 60 字仅进日志)。

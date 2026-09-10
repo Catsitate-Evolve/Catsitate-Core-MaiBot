@@ -88,9 +88,9 @@ def test_plugin_on_load_assembles_guard_compiled():
 
 def test_content_guard_send_intercepts_final_text():
     """send_service.before_send 最终防线:对后处理产出的最终文本(processed_plain_text)
-    匹配护栏,命中 abort;不命中/空文本/护栏关原样 continue。
+    匹配护栏,命中 abort;不命中/空文本/护栏关/载荷非 dict 原样 continue。
 
-    实证背景(2026-09-10):replyer 输出「[表情包: ...]」被核心后处理剥空后走硬编码
+    实证背景:replyer 输出「[表情包: ...]」被核心后处理剥空后走硬编码
     兜底「呃呃」,该文案只有本钩子点可见。config 为 SDK 基类只读 property,
     经子类覆盖注入。"""
 
@@ -100,7 +100,7 @@ def test_content_guard_send_intercepts_final_text():
     import plugin as plugin_mod
     from catsitate_core.config import CatsitateConfig
 
-    def _run(cfg_enabled: bool, text: str) -> str:
+    def _run(cfg_enabled: bool, message: object) -> str:
         cfg = CatsitateConfig()
         cfg.plugin.enabled = True
         cfg.guard.enabled = cfg_enabled
@@ -120,13 +120,14 @@ def test_content_guard_send_intercepts_final_text():
 
         p = _P.__new__(_P)
         p._assemble_guard()
-        r = asyncio.run(p.content_guard_send(message={"processed_plain_text": text}))
+        r = asyncio.run(p.content_guard_send(message=message))
         return str(r["action"])
 
-    assert _run(True, "呃呃") == "abort"  # 兜底文案命中即中止发送
-    assert _run(False, "呃呃") == "continue"  # 护栏关不拦截
-    assert _run(True, "今天天气不错") == "continue"  # 正常文本放行
-    assert _run(True, "") == "continue"  # 空文本(如纯表情包消息)放行
+    assert _run(True, {"processed_plain_text": "呃呃"}) == "abort"  # 兜底文案命中即中止发送
+    assert _run(False, {"processed_plain_text": "呃呃"}) == "continue"  # 护栏关不拦截
+    assert _run(True, {"processed_plain_text": "今天天气不错"}) == "continue"  # 正常文本放行
+    assert _run(True, {"processed_plain_text": ""}) == "continue"  # 空文本(如纯表情包消息)放行
+    assert _run(True, None) == "continue"  # 载荷形态异常(非 dict)告警后放行,不抛错
 
     # 装配断言:钩子挂在 send_service.before_send,读取 processed_plain_text 并 match_guard
     src = inspect.getsource(plugin_mod.CatsitatePlugin.content_guard_send)

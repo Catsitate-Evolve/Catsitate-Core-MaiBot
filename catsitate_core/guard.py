@@ -1,6 +1,6 @@
 """内容护栏纯匹配器(v1.0.0):拦截正则编译与命中判定,纯函数无 IO。
 
-消费方是 plugin.py 的三个拦截点(经 self._guard_compiled + match_guard);
+消费方是 plugin.py 的四个拦截点(经 self._guard_compiled + match_guard);
 编译失败整组拒绝加载(错误显式暴露,不做部分可用兜底)。
 """
 

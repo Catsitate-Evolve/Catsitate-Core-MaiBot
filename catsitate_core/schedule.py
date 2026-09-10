@@ -18,7 +18,7 @@ DEFAULT_TEMPLATE_SCHEDULE: dict = {
         {"kind": "sleep", "start": "23:00", "end": "07:30", "activity": "", "plan_speak": False, "topic": ""},
         {"kind": "daily", "start": "09:00", "end": "12:00", "activity": "发呆", "plan_speak": False, "topic": ""},
         {"kind": "daily", "start": "15:00", "end": "18:00", "activity": "随便做点什么", "plan_speak": False, "topic": ""},
-        {"kind": "greeting", "start": "22:00", "end": "23:00", "activity": "洗漱准备睡", "plan_speak": False, "topic": ""},
+        {"kind": "greeting", "start": "22:00", "end": "23:00", "activity": "洗漱准备睡", "plan_speak": True, "topic": "晚安"},
     ],
 }
 
@@ -310,12 +310,13 @@ def threshold_met(level_name: str, threshold_level: str) -> bool:
 
 
 def build_proactive_intent(window: dict, stream: dict, day_overview: str) -> str:
-    """主动发言指示 prompt(trigger 的 intent):日程事实 + 目标流好感度,话术交主程序。"""
+    """主动发言指示 prompt(trigger 的 intent):日程事实 + 目标流好感度,话术交主程序。
 
-    plan = "是" if window.get("plan_speak") else "否"
+    调度层仅对 plan_speak=true 的窗口拉起任务(硬门控),故意图中计划发言恒为「是」。"""
+
     topic = f",主题:{window.get('topic')}" if window.get("topic") else ""
     return (
-        f"现在是你的日程「{window.get('activity') or '自由时间'}」时间(计划发言:{plan}{topic})。"
+        f"现在是你的日程「{window.get('activity') or '自由时间'}」时间(计划发言:是{topic})。"
         f"全天概览:{day_overview}。"
         f"对方(流 {stream.get('stream_id')},用户 {stream.get('user_id')})与你的关系:等级「{stream.get('level_name', '陌生')}」"
         f",注记:{stream.get('note') or '无'}。"

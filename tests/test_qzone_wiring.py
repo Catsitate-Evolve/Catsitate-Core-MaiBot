@@ -3072,6 +3072,58 @@ def test_schedule_tick_dispatches_poll_on_qzone_window_entry(tmp_path):
     assert calls == [1]
 
 
+def test_schedule_tick_plan_speak_gates_proactive_trigger(tmp_path):
+    """plan_speak 硬门控:仅计划发言的窗口起点拉主动任务;false 窗口不拉
+    (read_qzone 拉取不受影响),greeting 主动问候同样受门控。"""
+
+    p = _make_plugin(tmp_path)
+    p.config.plugin.enabled = True  # 离线装配默认关:schedule_tick 首行门控
+    p.sleep = _SleepStub(False)  # schedule_tick 无条件查睡眠状态(on_load 装配,离线补)
+    p._schedule_tick_fired = {}
+    p._speak_counts = {}
+    p._remind_fired = {}
+    now = datetime.now()
+    start = (now - timedelta(minutes=1)).strftime("%Y-%m-%dT%H:%M")
+    end = (now + timedelta(hours=1)).strftime("%Y-%m-%dT%H:%M")
+    planned = {"kind": "daily", "start": start, "end": end,
+               "activity": "唠嗑", "plan_speak": True, "topic": "近况"}
+    unplanned = {"kind": "daily", "start": start, "end": end,
+                 "activity": "发呆", "plan_speak": False, "topic": "", "read_qzone": True}
+    unplanned_greet = {"kind": "greeting", "start": start, "end": end,
+                       "activity": "早安", "plan_speak": False}
+
+    triggered: list = []
+    greeted: list = []
+    polls: list = []
+
+    async def _spy_trigger(day, win):
+        triggered.append(win["activity"])
+
+    async def _spy_greet(day, win):
+        greeted.append(win["activity"])
+
+    async def _poll():
+        polls.append(1)
+
+    p._window_trigger = _spy_trigger
+    p._greet_exclusive = _spy_greet
+    p._qzone_poll_tick = _poll
+
+    p._schedule_data = {"date": now.strftime("%Y-%m-%d"), "windows": [planned]}
+    asyncio.run(p._schedule_tick())
+    assert triggered == ["唠嗑"]  # 计划发言窗口:拉主动任务
+
+    p._schedule_data = {"date": now.strftime("%Y-%m-%d"), "windows": [unplanned]}
+    p._schedule_tick_fired = {}  # 换窗评估
+    asyncio.run(p._schedule_tick())
+    assert polls == [1] and triggered == ["唠嗑"]  # 刷空间拉取照常,不新增主动任务
+
+    p._schedule_data = {"date": now.strftime("%Y-%m-%d"), "windows": [unplanned_greet]}
+    p._schedule_tick_fired = {}  # 换窗评估
+    asyncio.run(p._schedule_tick())
+    assert greeted == []  # greeting 窗口同样受门控:未计划不发问候
+
+
 def test_poll_tick_closes_ended_window_while_previous_poll_running(tmp_path):
     """窗口收尾不被上一轮拉取拖住(2026-09-04):窗口已结束且上一轮后台拉取
     仍在跑(_qzone_poll_running=True)时,tick 防重入分支先行收窗——

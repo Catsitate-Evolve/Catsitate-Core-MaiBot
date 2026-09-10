@@ -4178,6 +4178,12 @@ class CatsitatePlugin(MaiBotPlugin):
         if self._speak_counts.get(day, 0) >= self.config.schedule.daily_speak_limit:
             logger.debug("schedule_tick 跳过:已达每日发言上限 %s", self.config.schedule.daily_speak_limit)
             return
+        if not win.get("plan_speak"):
+            # plan_speak 硬门控:计划发言的窗口起点才拉主动任务(greeting 主动问候
+            # 与 daily 主动发言共用);刷空间拉取已在上方派发,不受本门控影响
+            logger.debug("schedule_tick 跳过:窗口未计划发言(plan_speak=false)")
+            self._schedule_tick_fired[day] = mark
+            return
         if win.get("kind") == "greeting":
             await self._greet_exclusive(day, win)  # 主动问候:仅特别者+私聊通道,无日程窗口的群流路径
             self._schedule_tick_fired[day] = mark

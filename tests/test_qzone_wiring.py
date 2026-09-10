@@ -2958,17 +2958,21 @@ def test_update_schedule_coerces_string_params(tmp_path):
     # 字符串 "false":不落标记(裸 bool() 会误判 True)
     res = asyncio.run(p.update_schedule(action="add", start="10:00", end="11:00",
                                          activity="看看书", read_qzone="false", send_qzone="false",
+                                         plan_speak="false",
                                          stream_id="s1", user_id="10001"))
     assert "日程已更新" in res
     w = next(w for w in p._schedule_data["windows"] if w.get("activity") == "看看书")
     assert "read_qzone" not in w and "send_qzone" not in w
+    assert w["plan_speak"] is False
     # 字符串 "true"/"1":按真落标记
     res = asyncio.run(p.update_schedule(action="add", start="20:00", end="21:00",
                                          activity="刷刷空间", read_qzone="true", send_qzone="1",
+                                         plan_speak="true", topic="分享见闻",
                                          stream_id="s1", user_id="10001"))
     assert "日程已更新" in res
     w = next(w for w in p._schedule_data["windows"] if w.get("activity") == "刷刷空间")
     assert w.get("read_qzone") is True and w.get("send_qzone") is True
+    assert w["plan_speak"] is True and w["topic"] == "分享见闻"
     # 字符串序号:delete 走 int 矫正
     res = asyncio.run(p.update_schedule(action="delete", window_index="1",
                                          stream_id="s1", user_id="10001"))
@@ -2978,7 +2982,7 @@ def test_update_schedule_coerces_string_params(tmp_path):
 
 def test_update_schedule_add_qzone_window(tmp_path):
     """update_schedule 工具适配 QQ空间窗口字段:add 传 read_qzone/send_qzone
-    落进新窗口,view 文本带「(刷空间)/(发说说)」标注。"""
+    落进新窗口,view 文本带「(刷空间)/(发说说)/(计划发言)」标注。"""
 
     p = _make_plugin(tmp_path)
     p.config.plugin.enabled = True  # 工具首行门控(离线装配默认关)
@@ -2994,12 +2998,14 @@ def test_update_schedule_add_qzone_window(tmp_path):
     ]}
     res = asyncio.run(p.update_schedule(action="add", start="20:00", end="21:00",
                                          activity="刷刷空间", read_qzone=True, send_qzone=True,
+                                         plan_speak=True, topic="分享此刻",
                                          stream_id="s1", user_id="10001"))
     assert "日程已更新" in res
     w = next(w for w in p._schedule_data["windows"] if w.get("activity") == "刷刷空间")
     assert w.get("read_qzone") is True and w.get("send_qzone") is True
+    assert w["plan_speak"] is True and w["topic"] == "分享此刻"
     view = asyncio.run(p.update_schedule(action="view"))
-    assert "(刷空间)" in view and "(发说说)" in view
+    assert "(刷空间)" in view and "(发说说)" in view and "(计划发言)" in view
 
 
 def test_poll_feeds_spacing_governs_fetch_rhythm(tmp_path):
@@ -3070,6 +3076,58 @@ def test_schedule_tick_dispatches_poll_on_qzone_window_entry(tmp_path):
     p._schedule_tick_fired = {}  # 换窗场景:重置触发标记让 tick 真正评估新窗口
     asyncio.run(p._schedule_tick())
     assert calls == [1]
+
+
+def test_schedule_tick_plan_speak_gates_proactive_trigger(tmp_path):
+    """plan_speak 硬门控:仅计划发言的窗口起点拉主动任务;false 窗口不拉
+    (read_qzone 拉取不受影响),greeting 主动问候同样受门控。"""
+
+    p = _make_plugin(tmp_path)
+    p.config.plugin.enabled = True  # 离线装配默认关:schedule_tick 首行门控
+    p.sleep = _SleepStub(False)  # schedule_tick 无条件查睡眠状态(on_load 装配,离线补)
+    p._schedule_tick_fired = {}
+    p._speak_counts = {}
+    p._remind_fired = {}
+    now = datetime.now()
+    start = (now - timedelta(minutes=1)).strftime("%Y-%m-%dT%H:%M")
+    end = (now + timedelta(hours=1)).strftime("%Y-%m-%dT%H:%M")
+    planned = {"kind": "daily", "start": start, "end": end,
+               "activity": "唠嗑", "plan_speak": True, "topic": "近况"}
+    unplanned = {"kind": "daily", "start": start, "end": end,
+                 "activity": "发呆", "plan_speak": False, "topic": "", "read_qzone": True}
+    unplanned_greet = {"kind": "greeting", "start": start, "end": end,
+                       "activity": "早安", "plan_speak": False}
+
+    triggered: list = []
+    greeted: list = []
+    polls: list = []
+
+    async def _spy_trigger(day, win):
+        triggered.append(win["activity"])
+
+    async def _spy_greet(day, win):
+        greeted.append(win["activity"])
+
+    async def _poll():
+        polls.append(1)
+
+    p._window_trigger = _spy_trigger
+    p._greet_exclusive = _spy_greet
+    p._qzone_poll_tick = _poll
+
+    p._schedule_data = {"date": now.strftime("%Y-%m-%d"), "windows": [planned]}
+    asyncio.run(p._schedule_tick())
+    assert triggered == ["唠嗑"]  # 计划发言窗口:拉主动任务
+
+    p._schedule_data = {"date": now.strftime("%Y-%m-%d"), "windows": [unplanned]}
+    p._schedule_tick_fired = {}  # 换窗评估
+    asyncio.run(p._schedule_tick())
+    assert polls == [1] and triggered == ["唠嗑"]  # 刷空间拉取照常,不新增主动任务
+
+    p._schedule_data = {"date": now.strftime("%Y-%m-%d"), "windows": [unplanned_greet]}
+    p._schedule_tick_fired = {}  # 换窗评估
+    asyncio.run(p._schedule_tick())
+    assert greeted == []  # greeting 窗口同样受门控:未计划不发问候
 
 
 def test_poll_tick_closes_ended_window_while_previous_poll_running(tmp_path):

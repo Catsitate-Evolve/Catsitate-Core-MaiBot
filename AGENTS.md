@@ -50,7 +50,7 @@ Catsitate 的 MaiBot 核心人格行为插件(独立 git repo;运行宿主为 Ma
 
 ```bash
 # 必须在本仓库根目录下运行(不在宿主主程序目录,否则 pytest 会收集主程序测试并报 ImportError)
-python3 -m pytest tests/ -q        # 全量(当前 628 用例)
+python3 -m pytest tests/ -q        # 全量(当前 630 用例)
 python3 -m pytest tests/test_integration.py -v   # 集成冒烟
 ```
 
@@ -60,7 +60,7 @@ python3 -m pytest tests/test_integration.py -v   # 集成冒烟
 
 - **好感度按人**:唯一标识 = 用户 QQ(`user_id`),单行按人存储;`batch_counter` 仅作 (user, stream) 活跃账本;结算素材跨流聚合,空间互动走显式事件表;结算/衰减取数按滚动窗(不按自然日,跨零点不丢昨晚事件)。「特别」全表独占。
 - **睡眠窗口 = 可入睡时间**(窗口起点~终点,到点自然醒):晚安判定入睡(仅窗口内,与静默开关无关);静默关 = 窗口起点直接入睡;静默开 = 窗口起点后安静满 `silent_sleep_minutes` 分钟(基准 = max(窗口起点, 最后活动));窗口终点未入睡 → 不入睡但补执行入睡任务(生成次日日程,每窗口一次,`_sleep_window_settled`)。睡眠期间绝对静默拦截(唯一例外:次日日程生成)。跨午夜保留旧日程活跃睡眠窗口。
-- **日程**:1 睡眠 + 1~8 活动窗口;`kind=greeting`(问候/陪伴类,窗口起点触发主动问候)/ `kind=daily`(日常);入睡生成 + 窗口终点补生成是仅有的两条生成路径。
+- **日程**:1 睡眠 + 1~8 活动窗口(greeting=问候陪伴/daily=日常);仅 plan_speak=true 的活动窗口起点拉起主动任务(greeting→特别者私聊问候,daily→按门槛选流),false 窗口不拉;入睡生成 + 窗口终点补生成是仅有的两条生成路径。
 - **QQ空间虚拟流**:`qzone-qq` 伪群流,receive 网关(只进不出);动作一律经工具(评论/楼中楼回复/点赞/发说说),注入消息带 ID 锚,工具目标三级解析(registry→seen→awaiting);通知走 P1 优先级、推送语义不依赖浏览窗口;浏览窗口(read_qzone)结束收 P2 队列并生成「空间见闻」(素材=近 24h 滚动窗,截断保留最新)。
 - **内容护栏**:`guard.patterns` 全局正则单列表,四拦截点(空间动作工具/日记/replyer/最终发送);命中即取消发布、置空或中止发送,warning 可审计;非法正则整组拒绝。
 - **prompt 模板版本化**:模板须带 `version` 字段,变更时升版本号(`SIDE_TEMPLATES` 与 `prompt_templates/*.prompt` 同步,镜像测试锁定一致)。

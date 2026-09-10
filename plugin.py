@@ -637,18 +637,21 @@ class CatsitatePlugin(MaiBotPlugin):
         description="增/删/改 bot 自己今天的日程安排(活动窗口)。活动最多 8 个;睡眠窗口不可删除、时间修改受最短/最长睡眠约束。",
         brief_description="修改今日日程",
         parameters=[
-            ToolParameterInfo(name="action", param_type="string", description="view(查看当前日程)/move(把某窗口挪到新时段)/add(新增活动)/delete(删除活动窗口)。日程按时间顺序排列,窗口序号以 view 输出为准。建议流程:编辑前先 view 看当前日程与窗口序号,编辑后再次 view 确认结果。常用示例:把睡眠窗口改成11:45到16:00 → action=move, window_index=view 中睡眠窗口的序号, start=11:45, end=16:00;新增下午听歌 → action=add, start=16:00, end=18:00, activity=和Hesitate_P一起听歌;新增刷空间时段 → action=add, start=20:00, end=21:00, activity=刷刷空间, read_qzone=true", required=True),
+            ToolParameterInfo(name="action", param_type="string", description="view(查看当前日程)/move(把某窗口挪到新时段)/add(新增活动)/delete(删除活动窗口)。日程按时间顺序排列,窗口序号以 view 输出为准。建议流程:编辑前先 view 看当前日程与窗口序号,编辑后再次 view 确认结果。常用示例:把睡眠窗口改成11:45到16:00 → action=move, window_index=view 中睡眠窗口的序号, start=11:45, end=16:00;新增下午听歌 → action=add, start=16:00, end=18:00, activity=和Hesitate_P一起听歌;新增刷空间时段 → action=add, start=20:00, end=21:00, activity=刷刷空间, read_qzone=true;新增想主动找人说话的时段 → action=add, start=21:00, end=21:30, activity=想着找人聊聊, plan_speak=true, topic=最近怎么样", required=True),
             ToolParameterInfo(name="window_index", param_type="integer", description="move/delete 时的窗口序号(view 结果每行开头数字)", required=False),
             ToolParameterInfo(name="start", param_type="string", description="move/add 的新开始时刻,HH:MM 格式如 11:45(自动按当天日期)", required=False),
             ToolParameterInfo(name="end", param_type="string", description="move/add 的新结束时刻,HH:MM 格式如 16:00(跨午夜自动次日)", required=False),
             ToolParameterInfo(name="activity", param_type="string", description="add 时的活动描述(如 和Hesitate_P一起听歌);move 时留空保持原活动", required=False),
             ToolParameterInfo(name="read_qzone", param_type="boolean", description="add 时可选:该窗口是否刷空间看好友动态(浏览 QQ空间);move 自动保留原窗口标记,无需传", required=False),
             ToolParameterInfo(name="send_qzone", param_type="boolean", description="add 时可选:该窗口是否发说说(分享 QQ空间);可与 read_qzone 同开;move 自动保留原窗口标记", required=False),
+            ToolParameterInfo(name="plan_speak", param_type="boolean", description="add 时可选:该窗口是否计划主动找人说话(窗口开始时按关系挑聊天流主动开话头,到时不想说也可以沉默);move 自动保留原窗口标记", required=False),
+            ToolParameterInfo(name="topic", param_type="string", description="add 时可选:计划发言的主题,配合 plan_speak=true(如 关心一下最近怎么样)", required=False),
         ],
         visibility="visible",
     )
     async def update_schedule(self, action: str = "", window_index: int = 0, start: str = "", end: str = "",
                               activity: str = "", read_qzone: bool = False, send_qzone: bool = False,
+                              plan_speak: bool = False, topic: str = "",
                               **kwargs: Any) -> str:
         del kwargs
         if not self.config.plugin.enabled or not self.config.schedule.enabled:
@@ -663,6 +666,7 @@ class CatsitatePlugin(MaiBotPlugin):
         except (TypeError, ValueError):
             return "window_index 需为窗口序号整数(view 结果每行开头的数字)。"
         rq_flag, sq_flag = _tool_bool(read_qzone), _tool_bool(send_qzone)
+        ps_flag = _tool_bool(plan_speak)
         day = self._schedule_data.get("date") or datetime.now().strftime("%Y-%m-%d")
         min_sleep, max_sleep = self.config.sleep.min_sleep_minutes, self.config.sleep.max_sleep_minutes
         adjustments: list[str] = []
@@ -676,6 +680,7 @@ class CatsitatePlugin(MaiBotPlugin):
                 self._schedule_data, start, end, activity, day,
                 min_sleep=min_sleep, max_sleep=max_sleep, history=self._schedule_edit_history,
                 read_qzone=rq_flag, send_qzone=sq_flag,
+                plan_speak=ps_flag, topic=topic,
             )
         elif action == "delete":
             data, err, history = apply_schedule_delete(
@@ -4177,6 +4182,12 @@ class CatsitatePlugin(MaiBotPlugin):
             await self._qzone_poll_tick()
         if self._speak_counts.get(day, 0) >= self.config.schedule.daily_speak_limit:
             logger.debug("schedule_tick 跳过:已达每日发言上限 %s", self.config.schedule.daily_speak_limit)
+            return
+        if not win.get("plan_speak"):
+            # plan_speak 硬门控:计划发言的窗口起点才拉主动任务(greeting 主动问候
+            # 与 daily 主动发言共用);刷空间拉取已在上方派发,不受本门控影响
+            logger.debug("schedule_tick 跳过:窗口未计划发言(plan_speak=false)")
+            self._schedule_tick_fired[day] = mark
             return
         if win.get("kind") == "greeting":
             await self._greet_exclusive(day, win)  # 主动问候:仅特别者+私聊通道,无日程窗口的群流路径

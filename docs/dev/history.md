@@ -74,6 +74,12 @@
 
 ---
 
+## v1.0.11(2026-09-10) 日程主动发言计划硬门控
+
+修复:plan_speak 此前只是 intent 提示词素材,活动窗口起点无条件对达门槛(默认「熟悉」)的活跃流拉主动任务——实机发现「计划发言=false 仍在对应等级的人的聊天流拉起任务」。改为 `_schedule_tick` 调度层硬门控(仅 plan_speak=true 窗口起点拉起;daily 主动发言与 greeting 特别者问候共用;false 窗口只做刷空间拉取等非发言行为,窗口标记照记;QQ空间发布触发由 send_qzone 自行门控不受影响)。`update_schedule` 工具新增 plan_speak/topic 参数供模型手动排「计划发言」窗(view 内联「(计划发言)」标注、move 自动保留);默认模板 22:00 问候窗标 true+晚安(撑场日保留晚安问候)。经双轴 code-review(标准/规格),630 用例全绿。
+
+---
+
 ## v1.0.10(2026-09-10) 内容护栏最终防线
 
 replyer 原始输出(如「[表情包: ...]」)被核心后处理剥掉含中文方括号内容后为空时,核心改走硬编码兜底文案「呃呃」发送——该文案产生于 replyer 钩子与 before_post_process 之后,原三拦截点(空间动作工具/日记/replyer)均不可见,`guard.patterns` 对其永不生效。新增第四拦截点 `content_guard_send`(`send_service.before_send`,BLOCKING/EARLY):对最终可见文本 `processed_plain_text` 匹配,命中即 abort 中止发送(消息不进 Platform IO);空文本放行不误伤纯表情包消息;原 replyer 层拦截保留,两层互补。随双轴 code-review 整改:载荷形态异常放行补告警、注释日期戳清理、文档四处口径同步。628 用例全绿。

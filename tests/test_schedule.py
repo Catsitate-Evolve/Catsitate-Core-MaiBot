@@ -142,6 +142,38 @@ def test_add_window_qzone_flags(tmp_path):
     assert w3.get("read_qzone") is True and w3["start"] == "2026-09-05T19:00"
 
 
+def test_add_window_plan_speak(tmp_path):
+    """add 携带计划发言标记:plan_speak=true 的窗口起点才拉主动任务
+    (调度层硬门控);topic 清洗截断;缺省 false;move 展开保留。"""
+
+    from catsitate_core.schedule import apply_schedule_add, apply_schedule_move
+    data = {"date": "2026-09-10", "windows": [
+        {"kind": "sleep", "start": "2026-09-10T23:00", "end": "2026-09-11T07:30", "activity": ""},
+    ]}
+    out, err, _, _ = apply_schedule_add(
+        data, "21:00", "21:30", "想着找人聊聊", "2026-09-10",
+        min_sleep=240, max_sleep=660, history=[], plan_speak=True, topic="  最近怎么样  ",
+    )
+    assert err == ""
+    w = next(w for w in out["windows"] if w.get("activity") == "想着找人聊聊")
+    assert w["plan_speak"] is True and w["topic"] == "最近怎么样"
+    # 缺省:false 不触发主动任务
+    out2, err2, _, _ = apply_schedule_add(
+        out, "21:30", "22:00", "闲逛", "2026-09-10", min_sleep=240, max_sleep=660, history=[],
+    )
+    assert err2 == ""
+    w2 = next(w for w in out2["windows"] if w.get("activity") == "闲逛")
+    assert w2["plan_speak"] is False and w2["topic"] == ""
+    # move 保留标记(展开原窗口字典)
+    idx = next(i for i, w in enumerate(out2["windows"]) if w.get("activity") == "想着找人聊聊")
+    out3, err3, _, _ = apply_schedule_move(
+        out2, idx, "20:00", "20:30", "2026-09-10", min_sleep=240, max_sleep=660, history=[],
+    )
+    assert err3 == ""
+    w3 = next(w for w in out3["windows"] if w.get("activity") == "想着找人聊聊")
+    assert w3.get("plan_speak") is True and w3.get("topic") == "最近怎么样"
+
+
 def test_add_anchor_squeezes_earlier_window_tail(tmp_path):
     from catsitate_core.schedule import apply_schedule_add
     data = {"date": "2026-08-16", "windows": [

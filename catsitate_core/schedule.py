@@ -18,7 +18,7 @@ DEFAULT_TEMPLATE_SCHEDULE: dict = {
         {"kind": "sleep", "start": "23:00", "end": "07:30", "activity": "", "plan_speak": False, "topic": ""},
         {"kind": "daily", "start": "09:00", "end": "12:00", "activity": "发呆", "plan_speak": False, "topic": ""},
         {"kind": "daily", "start": "15:00", "end": "18:00", "activity": "随便做点什么", "plan_speak": False, "topic": ""},
-        {"kind": "greeting", "start": "22:00", "end": "23:00", "activity": "洗漱准备睡", "plan_speak": False, "topic": ""},
+        {"kind": "greeting", "start": "22:00", "end": "23:00", "activity": "洗漱准备睡", "plan_speak": True, "topic": "晚安"},
     ],
 }
 
@@ -170,6 +170,8 @@ def schedule_overview_text(data: dict) -> str:
         kind_label = "睡眠" if w.get("kind") == "sleep" else ("问候" if w.get("kind") == "greeting" else "活动")
         time_range = f"{w.get('start', '?')[11:16]}-{w.get('end', '?')[11:16]}"
         activity = w.get("activity") or ("睡觉" if w.get("kind") == "sleep" else "自由时间")
+        if w.get("plan_speak"):
+            activity += "(计划发言)"
         if w.get("read_qzone"):
             activity += "(刷空间)"
         if w.get("send_qzone"):
@@ -310,12 +312,13 @@ def threshold_met(level_name: str, threshold_level: str) -> bool:
 
 
 def build_proactive_intent(window: dict, stream: dict, day_overview: str) -> str:
-    """主动发言指示 prompt(trigger 的 intent):日程事实 + 目标流好感度,话术交主程序。"""
+    """主动发言指示 prompt(trigger 的 intent):日程事实 + 目标流好感度,话术交主程序。
 
-    plan = "是" if window.get("plan_speak") else "否"
+    调度层仅对 plan_speak=true 的窗口拉起任务(硬门控),故 intent 文本中计划发言恒为「是」。"""
+
     topic = f",主题:{window.get('topic')}" if window.get("topic") else ""
     return (
-        f"现在是你的日程「{window.get('activity') or '自由时间'}」时间(计划发言:{plan}{topic})。"
+        f"现在是你的日程「{window.get('activity') or '自由时间'}」时间(计划发言:是{topic})。"
         f"全天概览:{day_overview}。"
         f"对方(流 {stream.get('stream_id')},用户 {stream.get('user_id')})与你的关系:等级「{stream.get('level_name', '陌生')}」"
         f",注记:{stream.get('note') or '无'}。"
@@ -429,11 +432,14 @@ def apply_schedule_add(
     data: dict, start_hm: str, end_hm: str, activity: str, day: str, *,
     min_sleep: int, max_sleep: int, history: list[dict],
     read_qzone: bool = False, send_qzone: bool = False,
+    plan_speak: bool = False, topic: str = "",
 ) -> tuple[dict, str, list[dict], list[str]]:
     """add:新增活动窗口;重叠时新窗口挤旧窗口(压缩),返回调整明细。
 
     read_qzone/send_qzone:QQ空间窗口标记(浏览/发布),仅在 True 时写入键——
-    与日程生成器输出形态一致,消费方全部 .get() 判定,缺省即 False。"""
+    与日程生成器输出形态一致,消费方全部 .get() 判定,缺省即 False。
+    plan_speak/topic:计划主动发言标记与主题——true 的窗口起点才拉主动任务
+    (调度层硬门控),直接落键值(与默认模板形态一致)。"""
 
     windows = [dict(w) for w in (data.get("windows") or [])]
     if sum(1 for w in windows if w.get("kind") != "sleep") >= ACTIVITY_WINDOW_LIMIT:
@@ -445,7 +451,8 @@ def apply_schedule_add(
         end = (datetime.strptime(end, _ISO) + timedelta(days=1)).strftime(_ISO)
     before = json.dumps(data, ensure_ascii=False)
     new_window = {"kind": "daily", "start": start, "end": end,
-                  "activity": (activity or "自由时间").strip()[:40], "plan_speak": False, "topic": ""}
+                  "activity": (activity or "自由时间").strip()[:40],
+                  "plan_speak": bool(plan_speak), "topic": (topic or "").strip()[:40]}
     if read_qzone:
         new_window["read_qzone"] = True
     if send_qzone:

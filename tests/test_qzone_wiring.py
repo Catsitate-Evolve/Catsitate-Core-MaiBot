@@ -2958,17 +2958,21 @@ def test_update_schedule_coerces_string_params(tmp_path):
     # 字符串 "false":不落标记(裸 bool() 会误判 True)
     res = asyncio.run(p.update_schedule(action="add", start="10:00", end="11:00",
                                          activity="看看书", read_qzone="false", send_qzone="false",
+                                         plan_speak="false",
                                          stream_id="s1", user_id="10001"))
     assert "日程已更新" in res
     w = next(w for w in p._schedule_data["windows"] if w.get("activity") == "看看书")
     assert "read_qzone" not in w and "send_qzone" not in w
+    assert w["plan_speak"] is False
     # 字符串 "true"/"1":按真落标记
     res = asyncio.run(p.update_schedule(action="add", start="20:00", end="21:00",
                                          activity="刷刷空间", read_qzone="true", send_qzone="1",
+                                         plan_speak="true", topic="分享见闻",
                                          stream_id="s1", user_id="10001"))
     assert "日程已更新" in res
     w = next(w for w in p._schedule_data["windows"] if w.get("activity") == "刷刷空间")
     assert w.get("read_qzone") is True and w.get("send_qzone") is True
+    assert w["plan_speak"] is True and w["topic"] == "分享见闻"
     # 字符串序号:delete 走 int 矫正
     res = asyncio.run(p.update_schedule(action="delete", window_index="1",
                                          stream_id="s1", user_id="10001"))
@@ -2978,7 +2982,7 @@ def test_update_schedule_coerces_string_params(tmp_path):
 
 def test_update_schedule_add_qzone_window(tmp_path):
     """update_schedule 工具适配 QQ空间窗口字段:add 传 read_qzone/send_qzone
-    落进新窗口,view 文本带「(刷空间)/(发说说)」标注。"""
+    落进新窗口,view 文本带「(刷空间)/(发说说)/(计划发言)」标注。"""
 
     p = _make_plugin(tmp_path)
     p.config.plugin.enabled = True  # 工具首行门控(离线装配默认关)
@@ -2994,12 +2998,14 @@ def test_update_schedule_add_qzone_window(tmp_path):
     ]}
     res = asyncio.run(p.update_schedule(action="add", start="20:00", end="21:00",
                                          activity="刷刷空间", read_qzone=True, send_qzone=True,
+                                         plan_speak=True, topic="分享此刻",
                                          stream_id="s1", user_id="10001"))
     assert "日程已更新" in res
     w = next(w for w in p._schedule_data["windows"] if w.get("activity") == "刷刷空间")
     assert w.get("read_qzone") is True and w.get("send_qzone") is True
+    assert w["plan_speak"] is True and w["topic"] == "分享此刻"
     view = asyncio.run(p.update_schedule(action="view"))
-    assert "(刷空间)" in view and "(发说说)" in view
+    assert "(刷空间)" in view and "(发说说)" in view and "(计划发言)" in view
 
 
 def test_poll_feeds_spacing_governs_fetch_rhythm(tmp_path):

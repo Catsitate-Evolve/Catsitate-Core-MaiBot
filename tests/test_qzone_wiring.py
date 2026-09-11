@@ -1945,7 +1945,7 @@ def test_notify_scan_source_c_runtime_error_keeps_source_a_notifications(tmp_pat
     """审查修复(2026-09-03):源C 取数抛非 Auth 异常(如相对时间折算遇非闰年
     2月29日的 ValueError)——调用点独立隔离(源B 同款纪律):告警后按空处理
     继续不上抛;上抛会触发扫描级原子性兜底,回退本轮源A/B 已登记的全部去重键,
-    通知未入队即中止且每 120 秒重复崩溃。源A 通知照常入队注入、键不回退。"""
+    通知未入队即中止且按通知轮询节奏重复崩溃。源A 通知照常入队注入、键不回退。"""
 
     import time as _time
 

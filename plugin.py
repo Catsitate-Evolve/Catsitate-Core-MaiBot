@@ -411,9 +411,9 @@ class CatsitatePlugin(MaiBotPlugin):
             jitter_ratio=self.config.qzone.request_jitter_ratio,
         )
         # 统一通知轮询(替代旧评论轮询):高频短间隔模拟推送通知,始终运行醒着即可;
-        # 注册下限 30s 防风控,tick 内自检开关/睡眠/awaiting 占用/可用性
+        # 间隔下限 30 秒由配置校验器承担(防风控),tick 内自检开关/睡眠/awaiting 占用/可用性
         self._scheduler.register(
-            "qzone_notify_poll", max(self.config.qzone.notification_interval_seconds, 30), self._qzone_notify_poll_tick,
+            "qzone_notify_poll", self.config.qzone.notification_interval_seconds, self._qzone_notify_poll_tick,
             jitter_ratio=self.config.qzone.request_jitter_ratio,
         )
         self._qzone_notify_task_armed = True
@@ -537,11 +537,12 @@ class CatsitatePlugin(MaiBotPlugin):
                     "qzone_poll", max(self.config.qzone.poll_interval_minutes, 1) * 60, self._qzone_poll_tick,
                     jitter_ratio=self.config.qzone.request_jitter_ratio,
                 )
-                # 统一通知轮询间隔热重载(比照 qzone_poll;开关热生效由 tick 首行自检承担)
+                # 统一通知轮询间隔热重载(比照 qzone_poll;开关热生效由 tick 首行自检承担;
+                # 下限 30 秒由配置校验器承担)
                 if self._qzone_notify_task_armed:
                     self._scheduler.unregister("qzone_notify_poll")
                     self._scheduler.register(
-                        "qzone_notify_poll", max(self.config.qzone.notification_interval_seconds, 30), self._qzone_notify_poll_tick,
+                        "qzone_notify_poll", self.config.qzone.notification_interval_seconds, self._qzone_notify_poll_tick,
                         jitter_ratio=self.config.qzone.request_jitter_ratio,
                     )
             # 指纹目标热重载:换目标即重建会话(旧指纹连接不复用);非法值在会话

@@ -277,10 +277,14 @@ class QzoneSection(PluginConfigBase):
 
     @model_validator(mode="after")
     def _qzone_risk_bounds(self):
-        """风控相关参数边界校验:抖动比例 0~0.5、发现缓存 TTL≥60、
-        限流退避基础时长≥1 分钟,越界直接拒绝加载(不静默钳制——钳制后的
-        实际节奏与配置面所见不符)。"""
+        """风控相关参数边界校验:通知间隔≥30 秒(高频轮询是限流风险源)、
+        抖动比例 0~0.5、发现缓存 TTL≥60、限流退避基础时长≥1 分钟,越界
+        直接拒绝加载(不静默钳制——钳制后的实际节奏与配置面所见不符)。"""
 
+        if self.notification_interval_seconds < 30:
+            raise ValueError(
+                f"notification_interval_seconds({self.notification_interval_seconds}) 须不小于 30"
+            )
         if not 0 <= self.request_jitter_ratio <= 0.5:
             raise ValueError(
                 f"request_jitter_ratio({self.request_jitter_ratio}) 须在 0~0.5 内"

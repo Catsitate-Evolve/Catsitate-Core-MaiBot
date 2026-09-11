@@ -262,7 +262,7 @@ class QzoneSection(PluginConfigBase):
     discovery_cache_ttl_seconds: int = _f(600, "发现层共享缓存 TTL(秒,最小60):浏览层与通知源B 共用一次请求源,该值即发现层端点调用频率的实际上限(600 秒≈至多 144 次/天)", label="发现缓存TTL(秒)")
     discovery_enabled: bool = _f(True, "发现层请求开关(急停阀):关闭后浏览层不再拉取统一时间线、通知源B 跳过(自扫评论·写动作·窗口开闭不受影响)", label="发现层开关")
     discovery_backoff_base_minutes: int = _f(30, "发现层限流指数退避基础时长(分钟):同日第1/2次限流退避 base/2×base 分钟,第3次起熔断至次日零点自动恢复", label="限流退避基础(分钟)")
-    browser_impersonate: str = _f("chrome", "传输层浏览器指纹(curl_cffi impersonate 值):chrome=跟随库内置最新版,或钉具体版本(如 chrome131);非法值启动时报错拒绝", label="浏览器指纹")
+    browser_impersonate: str = _f("chrome", "传输层浏览器指纹(curl_cffi impersonate 值):chrome=跟随库内置最新版,或钉具体版本(如 chrome131);非法值启动时报错拒绝;留空等同 chrome", label="浏览器指纹")
 
     @model_validator(mode="after")
     def _diary_word_count_ordered(self):
@@ -277,8 +277,9 @@ class QzoneSection(PluginConfigBase):
 
     @model_validator(mode="after")
     def _qzone_risk_bounds(self):
-        """风控相关参数边界校验:抖动比例 0~0.5、发现缓存 TTL≥60,
-        越界直接拒绝加载(不静默钳制——钳制后的实际节奏与配置面所见不符)。"""
+        """风控相关参数边界校验:抖动比例 0~0.5、发现缓存 TTL≥60、
+        限流退避基础时长≥1 分钟,越界直接拒绝加载(不静默钳制——钳制后的
+        实际节奏与配置面所见不符)。"""
 
         if not 0 <= self.request_jitter_ratio <= 0.5:
             raise ValueError(
@@ -287,6 +288,10 @@ class QzoneSection(PluginConfigBase):
         if self.discovery_cache_ttl_seconds < 60:
             raise ValueError(
                 f"discovery_cache_ttl_seconds({self.discovery_cache_ttl_seconds}) 须不小于 60"
+            )
+        if self.discovery_backoff_base_minutes < 1:
+            raise ValueError(
+                f"discovery_backoff_base_minutes({self.discovery_backoff_base_minutes}) 须不小于 1"
             )
         return self
 

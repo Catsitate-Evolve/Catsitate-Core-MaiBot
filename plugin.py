@@ -545,13 +545,23 @@ class CatsitatePlugin(MaiBotPlugin):
                         jitter_ratio=self.config.qzone.request_jitter_ratio,
                     )
             # 指纹目标热重载:换目标即重建会话(旧指纹连接不复用);非法值在会话
-            # 创建处报错上抛,由热重载框架的异常路径暴露
+            # 创建处报错上抛,由热重载框架的异常路径暴露。旧会话先替换再关闭
+            # (与 on_unload 同款 close 调用),关闭失败仅告警不阻断热重载
             if (
                 _CurlAsyncSession is not None
                 and self._qzone_curl_session is not None
                 and (self.config.qzone.browser_impersonate or "chrome") != self._qzone_impersonate_applied
             ):
+                # 先创建并替换新会话再关旧:创建失败(非法指纹值上抛)时旧会话
+                # 仍在位,后续请求不会被引向已关闭的会话
+                stale_session = self._qzone_curl_session
                 self._qzone_curl_session = self._qzone_make_curl_session()
+                try:
+                    await stale_session.close()
+                except Exception:
+                    self.ctx.logger.exception(
+                        "QQ空间旧指纹会话热重载关闭失败(仅告警,新会话已就位,不阻断热重载)"
+                    )
             self._assemble_guard()  # 护栏随配置热生效:enabled/patterns 变更即重编译
             # 阈值校验随配置热重载:speak_threshold_level
             # 经热改注入非法值时同样显式告警+回退——旧实现只在 on_load 校验一次,
@@ -1733,16 +1743,18 @@ class CatsitatePlugin(MaiBotPlugin):
         不延期(同一事件的翻页与首页会先后到达,计数膨胀会过早熔断)。"""
 
         now_mono = time.monotonic()
+        now = datetime.now()  # 单次取值供日键与熔断截止共用:两读跨午夜会落进不同日,
+        # 日键判旧日而熔断按新日的次日零点算,熔断被多算近一整天
         if now_mono < self._qzone_discovery_backoff_until:
             return  # 已在退避期内:同一限流事件的重复到达,保持原退避截止
-        today = datetime.now().strftime("%Y-%m-%d")
+        today = now.strftime("%Y-%m-%d")
         if self._qzone_backoff_count_day != today:
             self._qzone_backoff_count_day = today
             self._qzone_backoff_count = 0  # 跨天清零:熔断只约束当日
         self._qzone_backoff_count += 1
-        base_minutes = max(self.config.qzone.discovery_backoff_base_minutes, 1)
+        # 下界 1 由 config 校验器承担(越界拒绝加载),运行时不重复钳制
+        base_minutes = self.config.qzone.discovery_backoff_base_minutes
         if self._qzone_backoff_count >= 3:
-            now = datetime.now()
             midnight = (now + timedelta(days=1)).replace(hour=0, minute=0, second=0, microsecond=0)
             self._qzone_discovery_backoff_until = now_mono + (midnight - now).total_seconds()
             self.ctx.logger.warning(
@@ -1760,8 +1772,9 @@ class CatsitatePlugin(MaiBotPlugin):
     async def _qzone_shared_discovery(self, count: int) -> tuple[str, list, str]:
         """发现层统一入口:单飞+共享缓存+限流退避(浏览层与通知源B 共用一次请求源)。
 
-        浏览层(15 分钟/次)与通知源B(120 秒/次)原本各自直调统一时间线端点
-        (同端点同口径、首页均无游标),合计约 860 次/天持续触发服务端限流
+        浏览层(15 分钟/次)与通知源B(默认 300 秒/次,notification_interval_seconds)
+        原本各自直调统一时间线端点(同端点同口径、首页均无游标),两路直调
+        每天合计数百次请求,持续触发服务端限流
         (-10001);两处消费合并为一次请求源后,共享缓存命中即免请求,限流则共享
         同一退避窗口。返回 (state, 首页列表, 续页游标),state ∈ ok / rate_limited /
         disabled(发现层开关关闭,消费方各自显式让位)。
@@ -1778,7 +1791,9 @@ class CatsitatePlugin(MaiBotPlugin):
         now = time.monotonic()
         if now < self._qzone_discovery_backoff_until:
             return "rate_limited", [], ""  # 退避期内静默(进入退避时已告警)
-        ttl = max(self.config.qzone.discovery_cache_ttl_seconds, 60)
+        # 下界 60 由 config 校验器承担(越界拒绝加载),运行时不重复钳制——
+        # 再钳一次会与校验器「不静默钳制」语义矛盾(实际节奏与配置面所见不符)
+        ttl = self.config.qzone.discovery_cache_ttl_seconds
         if (
             self._qzone_discovery_cache is not None
             and now - self._qzone_discovery_cache[0] < ttl
@@ -2678,7 +2693,7 @@ class CatsitatePlugin(MaiBotPlugin):
                 # 自愈失败按空处理(源A/B 已得通知不丢);非 Auth 异常同样在调用点
                 # 独立隔离(源B 同款纪律):告警后按空继续不上抛
                 # ——上抛会触发扫描级原子性兜底,回退本轮源A/B 已登记的全部去重键,
-                # 通知未入队即中止且每 120 秒重复崩溃(实机:源C 相对时间折算遇
+                # 通知未入队即中止且按通知轮询节奏重复崩溃(实机:源C 相对时间折算遇
                 # 非闰年 2月29日 ValueError 无捕获沿 get_like_events 上抛)
                 try:
                     scanned_c, auth_err = await self._qzone_auth_retry(

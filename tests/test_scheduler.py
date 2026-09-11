@@ -86,11 +86,17 @@ async def test_jitter_ratio_keeps_interval_in_bounds():
     async def job():
         fired_ticks.append(scheduler._tick)
 
-    random.seed(11)  # 固定种子保证可复现
-    scheduler.register("jittered", 10, job, jitter_ratio=0.5)
-    for _ in range(120):
-        scheduler._tick += 1
-        await scheduler._run_due_tasks()
-    diffs = [b - a for a, b in zip(fired_ticks, fired_ticks[1:])]
-    assert all(5 <= d <= 15 for d in diffs)  # base×(1±0.5),tick=1s 下取整仍在界内
-    assert len(set(diffs)) > 1  # 间隔确实在抖(恒值即未生效)
+    # 播种前保存全局随机态、用毕还原:seed 会改写进程级 random,不还原会
+    # 泄漏到同进程其它依赖随机的用例(顺序耦合、偶发红)
+    rng_state = random.getstate()
+    try:
+        random.seed(11)  # 固定种子保证可复现
+        scheduler.register("jittered", 10, job, jitter_ratio=0.5)
+        for _ in range(120):
+            scheduler._tick += 1
+            await scheduler._run_due_tasks()
+        diffs = [b - a for a, b in zip(fired_ticks, fired_ticks[1:])]
+        assert all(5 <= d <= 15 for d in diffs)  # base×(1±0.5),tick=1s 下取整仍在界内
+        assert len(set(diffs)) > 1  # 间隔确实在抖(恒值即未生效)
+    finally:
+        random.setstate(rng_state)

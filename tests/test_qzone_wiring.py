@@ -3695,10 +3695,16 @@ def test_request_jitter_ratio_bounds(tmp_path):
     assert p._jittered(2.0) == 2.0 and p._jittered(300) == 300.0
 
     p.config.qzone.request_jitter_ratio = 0.2
-    _random.seed(7)  # 固定种子:抽样可复现
-    draws = [p._jittered(2.0) for _ in range(50)]
-    assert all(1.6 <= d <= 2.4 for d in draws)
-    assert len(set(draws)) > 1  # 抖动生效(恒值即失效)
+    # 播种前保存全局随机态、用毕还原:seed 会改写进程级 random,不还原会
+    # 泄漏到同进程其它依赖随机的用例(顺序耦合、偶发红)
+    rng_state = _random.getstate()
+    try:
+        _random.seed(7)  # 固定种子:抽样可复现
+        draws = [p._jittered(2.0) for _ in range(50)]
+        assert all(1.6 <= d <= 2.4 for d in draws)
+        assert len(set(draws)) > 1  # 抖动生效(恒值即失效)
+    finally:
+        _random.setstate(rng_state)
 
 
 def test_curl_session_uses_configured_impersonate():

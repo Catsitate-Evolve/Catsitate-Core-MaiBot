@@ -112,8 +112,15 @@ def test_qzone_section_defaults():
     assert "tool_search" not in q.tool_whitelist and "msg_react" not in q.tool_whitelist
     # M2 统一通知轮询总开关(间隔由 notification_interval_seconds 承担)
     assert q.comment_poll_enabled is True
-    # M2.1 统一通知轮询间隔(T11:高频短间隔模拟推送,注册时下限 30s)
-    assert q.notification_interval_seconds == 120
+    # M2.1 统一通知轮询间隔(默认 300:120 秒级高频是空间风控显著风险源,
+    # 评论晚几分钟知晓对拟人无感;注册时下限 30s)
+    assert q.notification_interval_seconds == 300
+    # 风控参数(请求节奏抖动/发现层缓存与开关/指数退避基础/指纹目标)
+    assert q.request_jitter_ratio == 0.2
+    assert q.discovery_cache_ttl_seconds == 600
+    assert q.discovery_enabled is True
+    assert q.discovery_backoff_base_minutes == 30
+    assert q.browser_impersonate == "chrome"
     # M3 表达:日记三字段(入睡任务生成并发布空间日记说说)
     assert q.diary_enabled is True
     assert q.diary_llm_model == "memory"

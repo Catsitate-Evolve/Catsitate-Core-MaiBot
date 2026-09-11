@@ -70,3 +70,27 @@ async def test_stop_cancels_loop():
     await scheduler.stop()
     with pytest.raises(asyncio.CancelledError):
         await task
+
+
+@pytest.mark.asyncio
+async def test_jitter_ratio_keeps_interval_in_bounds():
+    """抖动注册:每周期生效间隔独立抽取(随周期落库,不逐 tick 重抽),落在
+    base×(1±ratio) 内且间隔出现差异;比例 0 保持精确间隔(旧行为,由既有
+    用例覆盖)。"""
+
+    import random
+
+    scheduler = Scheduler(tick_seconds=1)
+    fired_ticks: list[int] = []
+
+    async def job():
+        fired_ticks.append(scheduler._tick)
+
+    random.seed(11)  # 固定种子保证可复现
+    scheduler.register("jittered", 10, job, jitter_ratio=0.5)
+    for _ in range(120):
+        scheduler._tick += 1
+        await scheduler._run_due_tasks()
+    diffs = [b - a for a, b in zip(fired_ticks, fired_ticks[1:])]
+    assert all(5 <= d <= 15 for d in diffs)  # base×(1±0.5),tick=1s 下取整仍在界内
+    assert len(set(diffs)) > 1  # 间隔确实在抖(恒值即未生效)

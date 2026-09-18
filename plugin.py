@@ -1900,10 +1900,12 @@ class CatsitatePlugin(MaiBotPlugin):
             # 后续刷新由定间隔任务承担;距上次实际拉取不足间隔时本轮跳过发现/
             # 充实(收窗判定与窗口激活在上方已照常执行),防进入拉取与节奏拉取
             # 相邻撞车。时刻在拉取尝试前打点:失败轮同样占距(防失败后连续重击);
-            # 共享层缓存命中同样占距:维持浏览轮节奏,且限流退避与拉取间距自然叠加
+            # 共享层缓存命中同样占距:维持浏览轮节奏,且限流退避与拉取间距自然叠加。
+            # 0.0 是「从未拉取」哨兵恒可拉:monotonic 是开机基准,刚开机系统
+            # uptime 小于间隔时若按数值比较,首轮会被误判「刚拉过」无端推迟
             interval_s = self._jittered(max(self.config.qzone.poll_interval_minutes, 1) * 60)
             now_mono = time.monotonic()
-            if now_mono - self._qzone_last_fetch_at < interval_s:
+            if self._qzone_last_fetch_at and now_mono - self._qzone_last_fetch_at < interval_s:
                 return
             self._qzone_last_fetch_at = now_mono
             # ① 发现层:统一时间线好友动态流(scope=2,7 天窗口)游标翻页

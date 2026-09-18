@@ -3040,6 +3040,27 @@ def test_poll_feeds_spacing_governs_fetch_rhythm(tmp_path):
     assert p.qzone_client.discovery_calls == 2
 
 
+def test_poll_feeds_zero_sentinel_first_fetch_proceeds_on_fresh_boot(tmp_path):
+    """间距哨兵语义(WSL 重启实测复现):monotonic 是开机基准,刚开机系统
+    uptime 小于拉取间隔时,默认 0.0(从未拉取)若按数值比较会被误判「刚拉过」
+    首轮无端推迟。锁定:0.0 哨兵恒可拉(间隔设超长仍首轮即拉);真实时间戳
+    打点后同间隔必拦。"""
+
+    p = _make_plugin(tmp_path)
+    p.config.qzone.request_jitter_ratio = 0  # 间距确定性
+    p.config.qzone.poll_interval_minutes = 100000  # 间隔远超任何 uptime:排除时钟偶然
+    now = datetime.now()
+    p._schedule_data = {"date": now.strftime("%Y-%m-%d"), "windows": [{
+        "kind": "daily", "start": (now - timedelta(minutes=1)).strftime("%Y-%m-%dT%H:%M"),
+        "end": (now + timedelta(hours=1)).strftime("%Y-%m-%dT%H:%M"),
+        "activity": "逛空间", "plan_speak": False, "topic": "", "read_qzone": True,
+    }]}
+    asyncio.run(p._qzone_poll_feeds())
+    assert p.qzone_client.discovery_calls == 1  # 0.0 哨兵=从未拉取,首轮必拉
+    asyncio.run(p._qzone_poll_feeds())
+    assert p.qzone_client.discovery_calls == 1  # 真实打点后同间隔必拦(正常间距语义)
+
+
 def test_schedule_tick_dispatches_poll_on_qzone_window_entry(tmp_path):
     """qzone 窗口开始即首拉:_schedule_tick 检出进入 read/send 窗口时立即
     派发一轮拉取(经 _qzone_poll_tick),同窗口只派发一次;非 qzone 窗口

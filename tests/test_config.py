@@ -34,7 +34,7 @@ def test_config_defaults():
 def test_default_config_dump():
     cfg = CatsitateConfig()
     data = cfg.model_dump(mode="json")
-    assert data["plugin"]["config_version"] == "1.0.11"
+    assert data["plugin"]["config_version"] == "1.0.12"
     assert data["favorability"]["level_rule_familiar"] == "认识一段时间,可自然闲聊"
     assert len(data["favorability"]) >= 5
 
@@ -112,8 +112,15 @@ def test_qzone_section_defaults():
     assert "tool_search" not in q.tool_whitelist and "msg_react" not in q.tool_whitelist
     # M2 统一通知轮询总开关(间隔由 notification_interval_seconds 承担)
     assert q.comment_poll_enabled is True
-    # M2.1 统一通知轮询间隔(T11:高频短间隔模拟推送,注册时下限 30s)
-    assert q.notification_interval_seconds == 120
+    # M2.1 统一通知轮询间隔(默认 300:120 秒级高频是空间风控显著风险源,
+    # 评论晚几分钟知晓对拟人无感;注册时下限 30s)
+    assert q.notification_interval_seconds == 300
+    # 风控参数(请求节奏抖动/发现层缓存与开关/指数退避基础/指纹目标)
+    assert q.request_jitter_ratio == 0.2
+    assert q.discovery_cache_ttl_seconds == 600
+    assert q.discovery_enabled is True
+    assert q.discovery_backoff_base_minutes == 30
+    assert q.browser_impersonate == "chrome"
     # M3 表达:日记三字段(入睡任务生成并发布空间日记说说)
     assert q.diary_enabled is True
     assert q.diary_llm_model == "memory"
@@ -137,6 +144,31 @@ def test_qzone_diary_word_count_range_rejects_inverted():
     QzoneSection(diary_word_count_min=100, diary_word_count_max=100)  # 相等合法
     with pytest.raises(ValidationError, match="diary_word_count_max"):
         QzoneSection(diary_word_count_min=300, diary_word_count_max=200)
+
+
+def test_qzone_risk_bounds_reject_out_of_range():
+    """风控参数边界校验:通知间隔≥30、抖动比例 0~0.5、发现缓存 TTL≥60、
+    退避基础时长≥1,越界 ValidationError 拒绝加载(不静默钳制——钳制后的
+    实际节奏与配置面所见不符);边界值本身合法。"""
+
+    import pytest
+    from pydantic import ValidationError
+
+    from catsitate_core.config import QzoneSection
+
+    with pytest.raises(ValidationError, match="notification_interval_seconds"):
+        QzoneSection(notification_interval_seconds=29)
+    with pytest.raises(ValidationError, match="request_jitter_ratio"):
+        QzoneSection(request_jitter_ratio=0.6)
+    with pytest.raises(ValidationError, match="request_jitter_ratio"):
+        QzoneSection(request_jitter_ratio=-0.1)
+    with pytest.raises(ValidationError, match="discovery_cache_ttl_seconds"):
+        QzoneSection(discovery_cache_ttl_seconds=59)
+    with pytest.raises(ValidationError, match="discovery_backoff_base_minutes"):
+        QzoneSection(discovery_backoff_base_minutes=0)
+    # 边界值合法:30/0.5/60/1 均可加载
+    QzoneSection(notification_interval_seconds=30, request_jitter_ratio=0.5,
+                 discovery_cache_ttl_seconds=60, discovery_backoff_base_minutes=1)
 
 
 def test_qzone_constants():

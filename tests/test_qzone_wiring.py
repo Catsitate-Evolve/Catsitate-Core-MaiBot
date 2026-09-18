@@ -1945,7 +1945,7 @@ def test_notify_scan_source_c_runtime_error_keeps_source_a_notifications(tmp_pat
     """审查修复(2026-09-03):源C 取数抛非 Auth 异常(如相对时间折算遇非闰年
     2月29日的 ValueError)——调用点独立隔离(源B 同款纪律):告警后按空处理
     继续不上抛;上抛会触发扫描级原子性兜底,回退本轮源A/B 已登记的全部去重键,
-    通知未入队即中止且每 120 秒重复崩溃。源A 通知照常入队注入、键不回退。"""
+    通知未入队即中止且按通知轮询节奏重复崩溃。源A 通知照常入队注入、键不回退。"""
 
     import time as _time
 
@@ -2612,6 +2612,7 @@ def test_notify_poll_source_b_spaces_friend_requests(tmp_path, monkeypatch):
     _patch_sleep(monkeypatch, sleeps)
 
     p = _make_plugin(tmp_path)
+    p.config.qzone.request_jitter_ratio = 0  # 间距确定性断言(抖动行为由专测覆盖)
     # bot 曾在两位好友说说下评论:与发现层求交后圈定 30000/30001
     fresh = (datetime.now() - timedelta(minutes=1)).strftime("%Y-%m-%dT%H:%M:%S")
     p.qzone_comment_seen.note_bot_comment("ffeed1", "30000", "评论一", fresh)
@@ -3017,6 +3018,7 @@ def test_poll_feeds_spacing_governs_fetch_rhythm(tmp_path):
     from time import monotonic
 
     p = _make_plugin(tmp_path)
+    p.config.qzone.request_jitter_ratio = 0  # 间距语义确定性断言(默认抖动下 16 分钟未必足距)
     now = datetime.now()
     p._schedule_data = {"date": now.strftime("%Y-%m-%d"), "windows": [{
         "kind": "daily", "start": (now - timedelta(minutes=1)).strftime("%Y-%m-%dT%H:%M"),
@@ -3036,6 +3038,27 @@ def test_poll_feeds_spacing_governs_fetch_rhythm(tmp_path):
     p._qzone_last_fetch_at = monotonic() - 16 * 60
     asyncio.run(p._qzone_poll_feeds())
     assert p.qzone_client.discovery_calls == 2
+
+
+def test_poll_feeds_zero_sentinel_first_fetch_proceeds_on_fresh_boot(tmp_path):
+    """间距哨兵语义(WSL 重启实测复现):monotonic 是开机基准,刚开机系统
+    uptime 小于拉取间隔时,默认 0.0(从未拉取)若按数值比较会被误判「刚拉过」
+    首轮无端推迟。锁定:0.0 哨兵恒可拉(间隔设超长仍首轮即拉);真实时间戳
+    打点后同间隔必拦。"""
+
+    p = _make_plugin(tmp_path)
+    p.config.qzone.request_jitter_ratio = 0  # 间距确定性
+    p.config.qzone.poll_interval_minutes = 100000  # 间隔远超任何 uptime:排除时钟偶然
+    now = datetime.now()
+    p._schedule_data = {"date": now.strftime("%Y-%m-%d"), "windows": [{
+        "kind": "daily", "start": (now - timedelta(minutes=1)).strftime("%Y-%m-%dT%H:%M"),
+        "end": (now + timedelta(hours=1)).strftime("%Y-%m-%dT%H:%M"),
+        "activity": "逛空间", "plan_speak": False, "topic": "", "read_qzone": True,
+    }]}
+    asyncio.run(p._qzone_poll_feeds())
+    assert p.qzone_client.discovery_calls == 1  # 0.0 哨兵=从未拉取,首轮必拉
+    asyncio.run(p._qzone_poll_feeds())
+    assert p.qzone_client.discovery_calls == 1  # 真实打点后同间隔必拦(正常间距语义)
 
 
 def test_schedule_tick_dispatches_poll_on_qzone_window_entry(tmp_path):
@@ -3520,6 +3543,7 @@ def test_shared_discovery_rate_limit_backoff(tmp_path):
     from catsitate_core.qzone.client import QzoneRateLimitError
 
     p = _make_plugin(tmp_path)
+    p.config.qzone.request_jitter_ratio = 0  # 退避节奏确定性断言(默认抖动下 16 分钟未必足距)
     p._schedule_data = _active_qzone_schedule()
     # 源B 名单非空(名单先行判定通过,会走到发现层统一入口)
     fresh = (datetime.now() - timedelta(minutes=1)).strftime("%Y-%m-%dT%H:%M:%S")
@@ -3555,7 +3579,7 @@ def test_shared_discovery_rate_limit_backoff(tmp_path):
         for level, a in p.logs
     )
     assert any(
-        level == "warning" and "30 分钟退避" in str(a[0]) and "期间零请求" in str(a[0])
+        level == "warning" and "分钟退避" in str(a[0]) and "期间零请求" in str(a[0])
         for level, a in p.logs
     )
     assert client.discovery_calls == 1
@@ -3568,14 +3592,15 @@ def test_shared_discovery_rate_limit_backoff(tmp_path):
         level == "debug" and "通知源B发现层限流退避中" in str(a[0]) for level, a in p.logs
     )
 
-    # 退避期内再跑一轮浏览+源B:零端点请求,退避告警仍只 1 条(warn-once)
+    # 退避期内再跑一轮浏览+源B:零端点请求,退避告警仍只 1 条(期内重复进入
+    # 不计数不延期,见 test_backoff_escalation_and_daily_breaker)
     p._qzone_last_fetch_at = _mono() - 16 * 60
     asyncio.run(p._qzone_poll_feeds())
     asyncio.run(p._qzone_notify_scan())
     assert client.discovery_calls == 1  # 退避期内零请求
     assert sum(
         1 for level, a in p.logs
-        if level == "warning" and "30 分钟退避" in str(a[0])
+        if level == "warning" and "分钟退避" in str(a[0])
     ) == 1
 
     # 退避过期+桩恢复:恢复真实拉取,info「退避结束」且退避态复位
@@ -3588,11 +3613,136 @@ def test_shared_discovery_rate_limit_backoff(tmp_path):
         level == "info" and "限流退避结束,恢复拉取" in str(a[0]) for level, a in p.logs
     )
     assert p._qzone_discovery_backoff_until == 0.0
-    assert p._qzone_discovery_backoff_warned is False
+    assert p._qzone_backoff_count == 1  # 当日退避计数保留(熔断按自然日清零,不随单次恢复复位)
 
     # 恢复后源B:吃共享缓存,零端点调用
     asyncio.run(p._qzone_notify_scan())
     assert client.discovery_calls == 2
+
+
+def test_backoff_escalation_and_daily_breaker(tmp_path):
+    """限流退避指数升级+当日熔断:同日第 1/2 次退避 base/2×base 分钟(默认
+    30/60),第 3 次熔断至次日零点;退避期内的重复进入不计数不延期(同一
+    事件的首页与翻页先后到达);跨天计数清零,次日从 base 重新开始。"""
+
+    from time import monotonic
+
+    p = _make_plugin(tmp_path)
+
+    before = monotonic()
+    p._qzone_enter_rate_limit_backoff()
+    assert 29 * 60 <= p._qzone_discovery_backoff_until - before <= 31 * 60  # 第 1 次:base
+    assert p._qzone_backoff_count == 1
+
+    p._qzone_discovery_backoff_until = 0.0  # 模拟退避期满(恢复路径清零)
+    before = monotonic()
+    p._qzone_enter_rate_limit_backoff()
+    assert 59 * 60 <= p._qzone_discovery_backoff_until - before <= 61 * 60  # 第 2 次:2×base
+    assert p._qzone_backoff_count == 2
+
+    # 退避期内的重复进入:不计数不延期
+    until_kept = p._qzone_discovery_backoff_until
+    p._qzone_enter_rate_limit_backoff()
+    assert p._qzone_discovery_backoff_until == until_kept and p._qzone_backoff_count == 2
+
+    p._qzone_discovery_backoff_until = 0.0
+    p._qzone_enter_rate_limit_backoff()
+    assert p._qzone_backoff_count == 3  # 第 3 次:熔断
+    now = datetime.now()
+    midnight = (now + timedelta(days=1)).replace(hour=0, minute=0, second=0, microsecond=0)
+    expected = (midnight - now).total_seconds()
+    assert abs((p._qzone_discovery_backoff_until - monotonic()) - expected) < 5  # 截止≈次日零点
+    assert any(level == "warning" and "熔断至次日零点" in str(a[0]) for level, a in p.logs)
+
+    # 跨天清零:日键过期后计数重置,退避从 base 重新开始
+    p._qzone_discovery_backoff_until = 0.0
+    p._qzone_backoff_count_day = "2000-01-01"
+    before = monotonic()
+    p._qzone_enter_rate_limit_backoff()
+    assert 29 * 60 <= p._qzone_discovery_backoff_until - before <= 31 * 60
+    assert p._qzone_backoff_count == 1
+
+
+def test_shared_discovery_disabled_and_ttl_config(tmp_path):
+    """发现层急停阀与缓存 TTL 配置:discovery_enabled=false 时统一入口返回
+    disabled 态且零端点调用(浏览/源B 各自让位);TTL 取配置值——新鲜期吃
+    缓存零请求,过期即重新拉取。"""
+
+    p = _make_plugin(tmp_path)
+    client = _StubUnifiedClient([])
+    p.qzone_client = client
+
+    p.config.qzone.discovery_enabled = False
+    state, batch, cursor = asyncio.run(p._qzone_shared_discovery(20))
+    assert state == "disabled" and batch == [] and cursor == ""
+    assert client.discovery_calls == 0  # 急停零请求
+
+    p.config.qzone.discovery_enabled = True
+    p.config.qzone.discovery_cache_ttl_seconds = 120
+    state, _, _ = asyncio.run(p._qzone_shared_discovery(20))
+    assert state == "ok" and client.discovery_calls == 1
+    asyncio.run(p._qzone_shared_discovery(20))
+    assert client.discovery_calls == 1  # TTL 内吃缓存
+    cached_at, cached_list = p._qzone_discovery_cache
+    p._qzone_discovery_cache = (cached_at - 121, cached_list)  # 人工回拨超 TTL
+    state, _, _ = asyncio.run(p._qzone_shared_discovery(20))
+    assert state == "ok" and client.discovery_calls == 2  # 过期重拉
+
+
+def test_browse_zero_pull_when_discovery_disabled(tmp_path):
+    """急停阀消费侧:发现层关闭时浏览轮零发现零充实(零端点调用),泵照常
+    推进、无异常告警——窗口与注入链路不受急停影响。"""
+
+    p = _make_plugin(tmp_path)
+    p.config.qzone.discovery_enabled = False
+    p._schedule_data = _active_qzone_schedule()
+    p.qzone_injector.window_started()
+    client = _StubUnifiedClient([])
+    p.qzone_client = client
+    asyncio.run(p._qzone_poll_feeds())
+    assert client.discovery_calls == 0
+    assert not any(level in ("warning", "exception") for level, a in p.logs)
+    assert any(level == "debug" and "发现层已关闭" in str(a[0]) for level, a in p.logs)
+
+
+def test_request_jitter_ratio_bounds(tmp_path):
+    """节奏抖动:比例 0 恒等于基准(确定性,既有精确断言依赖);比例 r 时
+    抽样落在 base×(1±r) 内且出现不同值(消除等距机器特征的本质)。"""
+
+    import random as _random
+
+    p = _make_plugin(tmp_path)
+    p.config.qzone.request_jitter_ratio = 0
+    assert p._jittered(2.0) == 2.0 and p._jittered(300) == 300.0
+
+    p.config.qzone.request_jitter_ratio = 0.2
+    # 播种前保存全局随机态、用毕还原:seed 会改写进程级 random,不还原会
+    # 泄漏到同进程其它依赖随机的用例(顺序耦合、偶发红)
+    rng_state = _random.getstate()
+    try:
+        _random.seed(7)  # 固定种子:抽样可复现
+        draws = [p._jittered(2.0) for _ in range(50)]
+        assert all(1.6 <= d <= 2.4 for d in draws)
+        assert len(set(draws)) > 1  # 抖动生效(恒值即失效)
+    finally:
+        _random.setstate(rng_state)
+
+
+def test_curl_session_uses_configured_impersonate():
+    """指纹目标可配置:会话创建读取 qzone.browser_impersonate(默认 chrome=
+    跟随 curl_cffi 内置最新,可钉具体版本);热重载换目标即重建会话。
+    (测试环境未必装 curl_cffi,以源码接线断言锁定消费点。)"""
+
+    import inspect
+
+    import plugin as plugin_mod
+
+    src = inspect.getsource(plugin_mod.CatsitatePlugin._qzone_make_curl_session)
+    assert "browser_impersonate" in src and "impersonate=target" in src
+    on_update_src = inspect.getsource(plugin_mod.CatsitatePlugin.on_config_update)
+    assert "_qzone_impersonate_applied" in on_update_src  # 热重载换目标重建会话
+    on_load_src = inspect.getsource(plugin_mod.CatsitatePlugin.on_load)
+    assert "jitter_ratio=self.config.qzone.request_jitter_ratio" in on_load_src  # 调度注册带抖动
 
 
 def test_notify_scan_source_b_uses_shared_discovery_cache(tmp_path, monkeypatch):
@@ -3605,6 +3755,7 @@ def test_notify_scan_source_b_uses_shared_discovery_cache(tmp_path, monkeypatch)
     sleeps: list = []
     _patch_sleep(monkeypatch, sleeps)
     p = _make_plugin(tmp_path)
+    p.config.qzone.request_jitter_ratio = 0  # 间距确定性断言(抖动行为由专测覆盖)
     p.qzone_injector.window_started()
     # bot 曾在好友 30000 说说下评论:名单非空,源B 走发现层交叉
     fresh = (datetime.now() - timedelta(minutes=1)).strftime("%Y-%m-%dT%H:%M:%S")
@@ -3724,7 +3875,7 @@ def test_poll_feeds_pagination_rate_limit_enters_backoff_without_legacy(tmp_path
     assert p.qzone_seen.is_new_candidate("p2") is True
     assert p._qzone_discovery_backoff_until > _monotonic()  # 已进入共享退避
     assert any(
-        level == "warning" and "进入 30 分钟退避" in str(a[0]) for level, a in p.logs
+        level == "warning" and "分钟退避" in str(a[0]) for level, a in p.logs
     )
     # 退避期内源B 与浏览的发现层消费零请求
     calls_after = len(client.calls)
@@ -3742,6 +3893,7 @@ def test_shared_discovery_pagination_passes_through(tmp_path, monkeypatch):
     sleeps: list = []
     _patch_sleep(monkeypatch, sleeps)
     p = _make_plugin(tmp_path)
+    p.config.qzone.request_jitter_ratio = 0  # 间距确定性断言(抖动行为由专测覆盖)
     p._schedule_data = _active_qzone_schedule()
     p.qzone_injector.window_started()
     fresh = (datetime.now() - timedelta(minutes=1)).strftime("%Y-%m-%dT%H:%M:%S")
@@ -4164,6 +4316,7 @@ def test_discovery_pagination_stops_when_second_page_all_seen(tmp_path, monkeypa
     sleeps: list = []
     _patch_sleep(monkeypatch, sleeps)
     p = _make_plugin(tmp_path)
+    p.config.qzone.request_jitter_ratio = 0  # 间距确定性断言(抖动行为由专测覆盖)
     p._schedule_data = _active_qzone_schedule()
     p.qzone_injector.window_started()
     p.qzone_seen.mark_queued("t2", abstime="200", author_uin="101", summary="旧")

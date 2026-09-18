@@ -12,7 +12,7 @@
 
 - **四个动作工具全域可用**:`qzone_like` / `qzone_comment` / `qzone_reply` / `qzone_post` 不受 `tool_whitelist` 管理、不可剔除——`view_friend_feeds` 结果里带说说ID,任何聊天流(真实 QQ 流与空间虚拟流)里都能互动。
 - **两个查看工具**:`view_friend_feeds`(指定好友最近说说,支持翻页)与 `view_friend_feed_detail`(单条说说完整信息含评论区)——是动作工具在真实聊天流里的参数来源。
-- **通知轮询**:`qzone_notify_poll` 调度任务(默认 120 秒,注册下限 30s),始终运行、醒着即可——通知是推送语义,不隶属任何浏览窗口。
+- **通知轮询**:`qzone_notify_poll` 调度任务(默认 300 秒;下限 30 秒由配置校验器拒绝越界),始终运行、醒着即可——通知是推送语义,不隶属任何浏览窗口。
 
 ## 二、完整逻辑
 

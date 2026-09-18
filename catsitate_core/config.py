@@ -18,7 +18,7 @@ class PluginSection(PluginConfigBase):
     __ui_order__ = 0
 
     enabled: bool = _f(False, "插件总开关", label="插件总开关")
-    config_version: str = _f("1.0.11", "配置版本", label="配置版本")
+    config_version: str = _f("1.0.12", "配置版本", label="配置版本")
     llm_daily_call_warning_threshold: int = _f(50, "旁路 LLM 每日调用告警阈值", label="旁路 LLM 每日告警阈值")
 
 
@@ -233,7 +233,7 @@ class QzoneSection(PluginConfigBase):
         label="虚拟流工具白名单",
     )
     comment_poll_enabled: bool = _f(True, "统一通知轮询开关(双源:自己说说新评论+他人说说楼中楼新回复,始终运行醒着即可)", label="通知轮询开关")
-    notification_interval_seconds: int = _f(120, "统一通知轮询间隔(秒,模拟推送通知的检查频率;最小30)", label="通知间隔(秒)")
+    notification_interval_seconds: int = _f(300, "统一通知轮询间隔(秒,模拟推送通知的检查频率;最小30;默认300——120 秒级高频是空间风控的显著风险源,评论晚几分钟知晓对拟人无感)", label="通知间隔(秒)")
     # 虚拟流会话身份不配置(2026-09-02):QZONE_VIRTUAL_GROUP_ID/NAME
     # 常量固化于 catsitate_core.qzone——伪群号可配置会被改成与真实群号相同的
     # 值,会话路由与 person 折叠随之漂移;旧配置残留键由加载侧告警提示可移除
@@ -258,6 +258,11 @@ class QzoneSection(PluginConfigBase):
     expression_llm_timeout_ms: int = _f(0, "表达润色超时(毫秒,0=默认)", label="表达润色超时(ms)")
     request_timeout_ms: int = _f(10000, "空间 HTTP 请求超时(毫秒)", label="HTTP 超时(毫秒)")
     cookie_refresh_minutes: int = _f(60, "cookie 刷新节流(分钟,间隔内跳过重取)", label="cookie 刷新节流(分钟)")
+    request_jitter_ratio: float = _f(0.2, "请求节奏抖动比例(0~0.5):通知/浏览拉取间隔与页间·好友间 2 秒请求间距按 ±比例 随机抖动,消除固定节奏的机器特征(风控行为层信号);0=关闭抖动", label="节奏抖动比例")
+    discovery_cache_ttl_seconds: int = _f(600, "发现层共享缓存 TTL(秒,最小60):浏览层与通知源B 共用一次请求源,该值即发现层端点调用频率的实际上限(600 秒≈至多 144 次/天)", label="发现缓存TTL(秒)")
+    discovery_enabled: bool = _f(True, "发现层请求开关(急停阀):关闭后浏览层不再拉取统一时间线、通知源B 跳过(自扫评论·写动作·窗口开闭不受影响)", label="发现层开关")
+    discovery_backoff_base_minutes: int = _f(30, "发现层限流指数退避基础时长(分钟):同日第1/2次限流退避 base/2×base 分钟,第3次起熔断至次日零点自动恢复", label="限流退避基础(分钟)")
+    browser_impersonate: str = _f("chrome", "传输层浏览器指纹(curl_cffi impersonate 值):chrome=跟随库内置最新版,或钉具体版本(如 chrome131);非法值启动时报错拒绝;留空等同 chrome", label="浏览器指纹")
 
     @model_validator(mode="after")
     def _diary_word_count_ordered(self):
@@ -267,6 +272,30 @@ class QzoneSection(PluginConfigBase):
             raise ValueError(
                 f"diary_word_count_max({self.diary_word_count_max})"
                 f" 必须大于等于 diary_word_count_min({self.diary_word_count_min})"
+            )
+        return self
+
+    @model_validator(mode="after")
+    def _qzone_risk_bounds(self):
+        """风控相关参数边界校验:通知间隔≥30 秒(高频轮询是限流风险源)、
+        抖动比例 0~0.5、发现缓存 TTL≥60、限流退避基础时长≥1 分钟,越界
+        直接拒绝加载(不静默钳制——钳制后的实际节奏与配置面所见不符)。"""
+
+        if self.notification_interval_seconds < 30:
+            raise ValueError(
+                f"notification_interval_seconds({self.notification_interval_seconds}) 须不小于 30"
+            )
+        if not 0 <= self.request_jitter_ratio <= 0.5:
+            raise ValueError(
+                f"request_jitter_ratio({self.request_jitter_ratio}) 须在 0~0.5 内"
+            )
+        if self.discovery_cache_ttl_seconds < 60:
+            raise ValueError(
+                f"discovery_cache_ttl_seconds({self.discovery_cache_ttl_seconds}) 须不小于 60"
+            )
+        if self.discovery_backoff_base_minutes < 1:
+            raise ValueError(
+                f"discovery_backoff_base_minutes({self.discovery_backoff_base_minutes}) 须不小于 1"
             )
         return self
 

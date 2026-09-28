@@ -114,7 +114,6 @@ class MemoSection(PluginConfigBase):
 
     enabled: bool = _f(True, "备忘录模块开关", label="备忘录模块开关")
     tool_enabled: bool = _f(True, "memo_write/memo_read 工具开关", label="备忘录工具开关")
-    command_enabled: bool = _f(True, "/记一下 命令开关", label="命令开关")
     default_ttl_hours: int = _f(24, "单条备忘缺省有效期(小时)", label="缺省有效期(小时)")
     max_ttl_hours: int = _f(168, "单条备忘有效期上限(小时)", label="有效期上限(小时)")
     entry_max_chars: int = _f(80, "备忘内容最大字符数(写入时强制)", label="内容最大字符数")

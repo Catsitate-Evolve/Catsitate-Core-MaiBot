@@ -28,7 +28,7 @@ try:
     from curl_cffi.requests import AsyncSession as _CurlAsyncSession
 except ImportError:  # pragma: no cover - 部署环境未装时走 httpx 回退
     _CurlAsyncSession = None
-from maibot_sdk import Command, HookHandler, MaiBotPlugin, MessageGateway, Tool
+from maibot_sdk import HookHandler, MaiBotPlugin, MessageGateway, Tool
 from maibot_sdk.types import HookMode, HookOrder, ToolParameterInfo
 
 # 实测结论:加载器仅将 plugins 父目录临时加入 sys.path,插件目录本身不在,
@@ -2803,18 +2803,6 @@ class CatsitatePlugin(MaiBotPlugin):
             raise
         finally:
             self._qzone_notify_running = False
-
-    # ---------- 命令 ----------
-
-    @Command("记一下", description="记一条短时备忘", pattern=r"^/记一下\s+(?P<content>.+)$", aliases=["/备忘"])
-    async def cmd_memo(self, content: str = "", stream_id: str = "", user_id: str = "", **kwargs: Any) -> str:
-        del kwargs
-        if not self.config.plugin.enabled or not self.config.memo.command_enabled:
-            return "备忘命令未启用。"
-        if len(content.strip()) > self.config.memo.entry_max_chars:
-            return f"备忘太长啦(>{self.config.memo.entry_max_chars} 字符),请精简后再发～"
-        ok, msg = self.memo.write(content, stream_id, user_id, None)
-        return msg if ok else f"备忘写入失败:{msg}"
 
     # ---------- Hook:主链路注入 ----------
 

@@ -53,7 +53,7 @@ Catsitate 是 MaiBot(QQ 猫娘机器人)的拟人化人格插件。它在 MaiBot
 
 | 工具 | 职责 |
 |---|---|
-| `memo_write` / `memo_read` | 短时备忘读写(工具路径;另有 `/记一下` 命令路径) |
+| `memo_write` / `memo_read` | 短时备忘读写(工具路径;`/记一下` 命令通道已于 2026-09-28 移除) |
 | `update_schedule` | 日程窗口的增/改/移 |
 | `msg_react` | 给消息贴 QQ 表情(白名单内 LLM 选表情) |
 | `poke_user` | 主动戳一戳(带冷却护栏) |

@@ -86,6 +86,8 @@
 
 验证:638 用例全绿(升级后的 SDK 2.8.2 环境);本地 docker 实机(MaiBot 1.3.1 镜像)插件加载成功、QQ空间虚拟平台就绪。
 
+实机联调中确认的插件调用面(全部通过):`adapter.napcat.account.get_cookies`(cookie 落盘)、on-message 钩子与消息字典解析(好感度批计数)、`is_notify` 通知过滤(SnowLuma 新通知格式下正确跳过)、旁路 `llm.generate` 任务名调用(memory 任务经 SiliconFlow 模型成功)、60s 调度器、QQ空间通知轮询。同周期**移除 `/记一下` 命令通道**(现版本需求不再需要;且实机复核发现宿主命令链把正则命名组整包经 `matched_groups` 传递、从不摊平到形参——1.2.0/1.2.3/1.3.1 三版一致,该命令自开发起即取不到内容,属存量缺陷;备忘录仅保留 `memo_write` 工具通道,`memo.command_enabled` 配置项一并移除)。`set_msg_emoji_like`/`send_poke` 两个工具 API 与 get_cookies 同链路(diff 逐行一致),待 planner 可用后自然闭环。
+
 ---
 
 ## v1.0.12(2026-09-18) QQ空间风控加固

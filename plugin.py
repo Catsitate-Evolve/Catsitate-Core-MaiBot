@@ -35,7 +35,7 @@ from maibot_sdk.types import HookMode, HookOrder, ToolParameterInfo
 # 绝对导入 catsitate_core.* 会失败。在此自行注册插件目录(sys.path 修改限于插件进程内)。
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 
-from catsitate_core.config import CatsitateConfig
+from catsitate_core.config import CatsitateConfig, apply_tab_layout
 from catsitate_core.favorability import LEVELS, LEVEL_INDEX, EXCLUSIVE_LEVEL, BatchEngine, SettleExecutor, build_favorability_block
 from catsitate_core.guard import compile_guard, match_guard
 from catsitate_core.image_relook import build_relook_prompt, find_image_segment
@@ -175,6 +175,27 @@ class CatsitatePlugin(MaiBotPlugin):
 
     config_model = CatsitateConfig
     config_reload_subscriptions = ("bot",)
+
+    @classmethod
+    def build_config_schema(
+        cls,
+        *,
+        plugin_id: str = "",
+        plugin_name: str = "",
+        plugin_version: str = "",
+        plugin_description: str = "",
+        plugin_author: str = "",
+    ) -> dict[str, Any]:
+        """构造 WebUI 配置 Schema:注入分页布局(页定义见 catsitate_core.config.CONFIG_TABS)。"""
+
+        schema = super().build_config_schema(
+            plugin_id=plugin_id,
+            plugin_name=plugin_name,
+            plugin_version=plugin_version,
+            plugin_description=plugin_description,
+            plugin_author=plugin_author,
+        )
+        return apply_tab_layout(schema)
 
     _persona_cache: str | None = None  # bot 人设缓存(config.get 一次,bot 配置变更时失效)
     _style_cache: str | None = None  # bot 行为风格缓存(同上)

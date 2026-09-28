@@ -2,7 +2,8 @@
 
 关键事实(联调实证):emotion_cgi_msglist_v6 是「指定用户说说列表」(uin=目标,
 响应顶层 msglist,条目含 tid/created_time/content/pic[].url1/commentlist),
-不是好友聚合接口(vFeeds 形态不存在);好友列表经 adapter 的 OneBot API 获取。
+不是好友聚合接口(vFeeds 形态不存在);好友发现走发现层统一时间线(scope=2 全好友动态流,
+逐好友路径的目标 uin 来自通知/注入上下文/工具参数,不经 adapter 取好友列表)。
 仅放纯函数:解析与签名。IO(QzoneClient)在 client.py,便于离线单测。
 """
 

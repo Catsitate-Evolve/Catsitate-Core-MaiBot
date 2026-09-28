@@ -1,8 +1,12 @@
 """Catsitate 插件配置模型(字段中文 label 供 WebUI 展示)。"""
 
+import logging
+
 from pydantic import model_validator
 
 from maibot_sdk import Field, PluginConfigBase
+
+logger = logging.getLogger(__name__)
 
 
 def _f(default, description, *, label="", **extra):
@@ -19,7 +23,7 @@ class PluginSection(PluginConfigBase):
     __ui_order__ = 0
 
     enabled: bool = _f(False, "插件总开关", label="插件总开关")
-    config_version: str = _f("1.0.13", "配置版本", label="配置版本")
+    config_version: str = _f("1.0.14", "配置版本", label="配置版本")
     llm_daily_call_warning_threshold: int = _f(50, "旁路 LLM 每日调用告警阈值", label="旁路 LLM 每日告警阈值")
 
 
@@ -380,6 +384,8 @@ def apply_tab_layout(schema: dict) -> dict:
 
     sections = schema.get("sections")
     if not isinstance(sections, dict):
+        # schema 结构异常属宿主侧契约破坏,显式告警而非静默丢布局(丢布局=配置页退化为无序平铺)
+        logger.warning("apply_tab_layout: schema.sections 非 dict(类型=%s),跳过分页布局注入", type(sections).__name__)
         return schema
     tabs: list[dict] = []
     for tab in CONFIG_TABS:

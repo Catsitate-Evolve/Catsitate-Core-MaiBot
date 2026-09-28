@@ -34,7 +34,7 @@ def test_config_defaults():
 def test_default_config_dump():
     cfg = CatsitateConfig()
     data = cfg.model_dump(mode="json")
-    assert data["plugin"]["config_version"] == "1.0.13"
+    assert data["plugin"]["config_version"] == "1.0.14"
     assert data["favorability"]["level_rule_familiar"] == "认识一段时间,可自然闲聊"
     assert len(data["favorability"]) >= 5
 
@@ -202,3 +202,17 @@ def test_config_schema_tab_layout():
     section_names = set(layouted["sections"])
     for tab in CONFIG_TABS:
         assert set(tab["sections"]) <= section_names, f"页 {tab['id']} 引用了不存在的节"
+
+
+def test_config_schema_tab_layout_abnormal_schema_warns(caplog):
+    """失败路径:schema.sections 非 dict 时跳过布局注入并显式告警(不静默)。"""
+    import logging
+
+    from catsitate_core.config import apply_tab_layout
+
+    bad = {"sections": ["not", "a", "dict"], "layout": {"type": "auto", "tabs": []}}
+    with caplog.at_level(logging.WARNING, logger="catsitate_core.config"):
+        out = apply_tab_layout(bad)
+    assert out is bad, "异常 schema 原样返回,不注入布局"
+    assert out["layout"]["type"] == "auto"
+    assert any("跳过分页布局注入" in r.message for r in caplog.records), "必须留告警日志"

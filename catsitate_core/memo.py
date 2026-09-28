@@ -75,7 +75,7 @@ class MemoService:
         extra_user_ids: list[str] | None = None,
         now: Callable[[], datetime] | None = None,
     ) -> tuple[bool, str]:
-        """写入备忘。失败返回 (False, 原因) 供工具/命令展示给用户。"""
+        """写入备忘。失败返回 (False, 原因) 供工具展示给用户。"""
 
         now_fn = now or datetime.now
         text = content.strip()

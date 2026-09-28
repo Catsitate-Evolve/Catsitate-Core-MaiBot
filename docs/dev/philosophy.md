@@ -41,7 +41,7 @@
 **核心**:MaiBot 主程序(包括 prompts/、配置、.meta.toml)只读,插件侧规避主程序缺陷而不修改它。
 
 这意味着:
-- **只使用 SDK 声明的 API**:`@Tool`/`@HookHandler`/`@Command`/`call_capability`,新能力须在 `_manifest.json` 的 capabilities 列表声明
+- **只使用 SDK 声明的 API**:`@Tool`/`@HookHandler`/`@MessageGateway`/`call_capability`,新能力须在 `_manifest.json` 的 capabilities 列表声明
 - **主程序行为在插件侧适配**:如主程序的 `is_mentioned` 消费位置在 `message_info.additional_config`(不在顶层),插件侧把键放到正确位置
 - **主程序缺陷以规避或报告处理**:不在插件代码里 patch 主程序
 

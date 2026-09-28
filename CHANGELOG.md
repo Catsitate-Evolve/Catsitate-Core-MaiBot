@@ -7,6 +7,29 @@
   - _manifest.json 的 version 与本文件最新正式版保持一致。
 -->
 
+## v1.0.13(2026-09-28) 宿主 1.3 适配·命令通道移除·配置页分页化
+
+### 宿主 MaiBot 1.3 适配(代码零改动,仅簿记)
+- `_manifest.json` 的 `host_application.max_version` 1.2.99→**1.3.99**:主程序自 1.0.1 起对跨次版本超范围的插件直接拒载,不扩范围则 1.3.x 无法加载。
+- 逐项核实上游三件套更新(MaiBot 1.2.0→1.3.1、maibot-plugin-sdk 2.7.1→2.8.2、QQ 适配器 NapCat 1.3.3→SnowLuma 合并版 v1.0.2)对本插件的全部触点,结论零破坏:
+  - SDK 2.8.x 纯增量(`llm.generate` 新增可选 `task_name`/`model_name`、`send.*` 新增可选 `return_details`,旧调用载荷逐字节等价),插件声明的 2.7.1~2.99.99 范围本就覆盖;
+  - `llm.generate` 路由语义(1.2.4+ 主程序):不带 `task_name` 时 `model` 先按任务名解析——本插件旁路调用一律传主程序任务名,语义保持(实机经 memory 任务实证成功);
+  - SnowLuma 合并版统一保留 `adapter.napcat.*` 命名空间(171 个公开 API),插件用到的 get_cookies/set_msg_emoji_like/send_poke 自 API 端点、服务层到传输层逐行比对一致;实机验证 get_cookies 与 send_poke 调用成功;
+  - 插件加载器 sys.path 行为、能力注册表、钩子目录、`PromptManager` 扫描路径、Runner 启动时序——1.2.0→1.3.1 源码 diff 逐项确认无变化。
+- 实机(MaiBot 1.3.1 + SnowLuma v1.0.2)全链路联调:消息钩子与消息字典解析、`is_notify` 通知过滤(SnowLuma 新通知格式下正确跳过)、旁路 LLM、注入块(planner prompt 快照实测含环境/日程/空间/备忘/好感度块)、`memo_write` 工具、`send_poke`、回复下发全部通过。
+
+### 移除 `/记一下` 命令通道
+- 现版本需求不再需要命令触发;且实机复核确认宿主命令链(1.2.0/1.2.3/1.3.1 三版逐字节一致)把正则命名组整包经 `matched_groups` 传递、从不摊平到函数形参——该命令自开发起即取不到内容,属存量缺陷。备忘录仅保留 `memo_write` 工具通道;`memo.command_enabled` 配置项一并移除(旧配置文件残留键被 `extra="ignore"` 无害忽略,WebUI 下次回写自动消失)。
+
+### WebUI 配置页分页化
+- 14 个配置节补齐 `__ui_icon__` 节级元数据(标题/排序此前已有);新增 `CONFIG_TABS` 页定义与 `apply_tab_layout()`,经插件类 `build_config_schema()` 覆写注入 `layout.type="tabs"`——WebUI 配置页由平铺折叠卡改为 **7 页标签页**(总控/注入与感知/好感度/作息与日程/QQ空间/互动与工具/内容护栏,每页带图标);未列入任何页的配置节自动归入「其他」兜底页,防新增节在 WebUI 隐身。
+- 纯展示层:配置数据与语义零变化;不支持 tabs 布局的旧宿主 WebUI 自动退化为节排序平铺。
+
+### 部署与迁移
+- 本版无数据库格式变更,无需迁移(版本表维持 v1 基线);无 prompt 模板变更,WebUI 自定义无需同步。
+- 升级宿主到 MaiBot 1.3.x 的部署需同步:QQ 适配器换装 SnowLuma 合并版(v1.0.2;旧 NapCat 适配器配置自动迁移,但 `config_version` 须为其支持的 2.4.0)、适配器内置黑白名单迁移到宿主统一策略 `config/adapter_policy.toml`(适配器侧名单已废弃)。
+- 测试基线:639 用例全绿(全离线,SDK 2.8.2 环境;新增配置分页布局断言用例)。
+
 ## v1.0.12(2026-09-18) QQ空间风控加固
 
 - 读路径五层防线(指纹/请求形态/量控/限流退避/频率下限)之上的**行为层加固**,新增配置全部带默认值、旧配置文件无需改动即可加载:

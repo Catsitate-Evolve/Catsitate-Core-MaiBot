@@ -74,6 +74,28 @@
 
 ---
 
+## v1.0.13(2026-09-28) 宿主 1.3 适配与命令通道移除
+
+上游三件套更新后的兼容性适配:MaiBot 1.2.0→1.3.1、maibot-plugin-sdk 2.7.1→2.8.2、QQ 适配器 NapCat 1.3.3→SnowLuma 合并版 1.0.2(NapCat 适配器仓库已并入 SnowLuma)。逐项核实后**插件代码零改动**,仅簿记一处:
+
+- **manifest host 范围**:1.2.99→1.3.99。主程序自 1.0.1 起对超出声明范围且跨次版本的插件直接拒载,不扩范围则 1.3.x 上无法加载(实测验证过该拒载路径)。
+- **SDK 2.8.x**:纯增量变更——`llm.generate` 新增可选 `task_name`/`model_name`、`send.*` 新增可选 `return_details`,无移除无签名破坏;本插件声明的 2.7.1~2.99.99 范围本就覆盖。
+- **llm.generate 路由语义**(1.2.4+ 主程序配套):调用未带 `task_name` 时 `model` 先按任务名解析、未命中才当具体模型名——本插件旁路调用一律传主程序任务名(memory/replyer/planner/utils),语义保持不变。
+- **适配器 API**:SnowLuma 合并版统一保留 `adapter.napcat.*` 命名空间(171 个公开 API,v1.0.2 起另有 `adapter.snowluma.*` 别名),插件用到的 3 个 API(get_cookies/set_msg_emoji_like/send_poke)名称与参数形状逐一核对一致。
+- **其余触点**:插件加载器 sys.path 行为、能力注册表、钩子目录、`PromptManager` 扫描路径、Runner 先于 load_prompts 的启动时序——1.2.0→1.3.1 源码 diff 逐项确认无变化。
+
+验证:638 用例全绿(升级后的 SDK 2.8.2 环境);本地 docker 实机(MaiBot 1.3.1 镜像)插件加载成功、QQ空间虚拟平台就绪。
+
+实机联调中确认的插件调用面(全部通过):`adapter.napcat.account.get_cookies`(cookie 落盘)、on-message 钩子与消息字典解析(好感度批计数)、`is_notify` 通知过滤(SnowLuma 新通知格式下正确跳过)、旁路 `llm.generate` 任务名调用(memory 任务经 SiliconFlow 模型成功)、60s 调度器、QQ空间通知轮询。同周期**移除 `/记一下` 命令通道**(现版本需求不再需要;且实机复核发现宿主命令链把正则命名组整包经 `matched_groups` 传递、从不摊平到形参——1.2.0/1.2.3/1.3.1 三版一致,该命令自开发起即取不到内容,属存量缺陷;备忘录仅保留 `memo_write` 工具通道,`memo.command_enabled` 配置项一并移除)。`set_msg_emoji_like`/`send_poke` 两个工具 API 与 get_cookies 同链路(diff 逐行一致),待 planner 可用后自然闭环。
+
+---
+
+## v1.0.13(2026-09-28) WebUI 配置页分页化(同版次)
+
+配置页由平铺折叠卡改为**标签页分页**:14 个配置节补齐 `__ui_icon__` 元数据(标题/排序此前已有),新增 `CONFIG_TABS` 页定义与 `apply_tab_layout()`(`catsitate_core/config.py`),经插件类 `build_config_schema()` 覆写注入 `schema.layout.type="tabs"`——7 页按功能域聚合:总控(plugin/debug)、注入与感知(inject/time_aware)、好感度、作息与日程(sleep/schedule)、QQ空间、互动与工具(memo/msg_react/poke/reply_guard/image_relook)、内容护栏;未列入任何页的节自动归入「其他」兜底页,防新增配置节在 WebUI 隐身(显式兜底,不静默)。配置数据与语义零变化(纯展示层),经运行中 WebUI 的 schema 接口实测返回 tabs 布局;新增布局断言用例,639 用例全绿。
+
+---
+
 ## v1.0.12(2026-09-18) QQ空间风控加固
 
 读路径五层防线之上的行为层加固:请求节奏全量随机抖动(request_jitter_ratio,调度器支持按周期独立抽取生效间隔)、通知轮询默认 120→300 秒、限流退避按当日次数指数升级(第 1/2 次 base/2×base 分钟,第 3 次当日熔断至次日零点;期内重复进入不计数)、浏览器指纹目标可配(默认跟随 curl_cffi 最新,热重载换目标重建会话)、发现层缓存 TTL 可配与急停开关(discovery_enabled,关闭后浏览零拉取/源B 跳过,写动作与自扫不受影响);四个风控参数下限统一归配置校验器拒绝,运行时零静默钳制。同周期修复拉取间距 0.0 哨兵在刚开机系统(uptime 小于间隔)被误判「刚拉过」、浏览首轮无端推迟的问题(WSL 重启后用例集体失败实测定位)。经双轴 code-review+整改复审(9/9)+遗留处理三道审查。638 用例全绿。

@@ -1,14 +1,14 @@
 # 备忘录模块
 
-> 源码:`catsitate_core/memo.py`(服务与校验)、`plugin.py`(工具/命令、注入块、提醒兜底 tick、清理调度)、`catsitate_core/storage.py`(SQLiteStore)。
+> 源码:`catsitate_core/memo.py`(服务与校验)、`plugin.py`(工具、注入块、提醒兜底 tick、清理调度)、`catsitate_core/storage.py`(SQLiteStore)。
 
-备忘录是 bot 的短时记忆:用户一句「记一下」或 LLM 自主调用工具写入,条目在有效期内注入对话上下文,带提醒时刻的条目到点触发提醒,过期自动清理。
+备忘录是 bot 的短时记忆:LLM 自主调用工具写入(用户口头说「记一下」由 bot 经工具落库),条目在有效期内注入对话上下文,带提醒时刻的条目到点触发提醒,过期自动清理。
 
 ## 一、模块职责与生命周期
 
 ### 职责
 
-- **短时记忆写入**:`/记一下` 命令(用户侧)与 `memo_write` 工具(LLM 侧)两个入口,单条备忘带有效期(TTL)与可选提醒时刻(`remind_at`)。
+- **短时记忆写入**:`memo_write` 工具(LLM 侧)单入口(2026-09-28 移除 `/记一下` 命令通道——宿主命令链的命名组整包经 `matched_groups` 传递、从不摊平到形参,该命令自开发起即取不到内容,属存量缺陷且现版本不再需要命令触发),单条备忘带有效期(TTL)与可选提醒时刻(`remind_at`)。
 - **按人跨流可见**:条目归属 = 主 QQ(`user_id`)+ 附带 QQ 列表(`extra_user_ids`,≤5 个)+ 所在流(`stream_id` 元数据)。读取是 OR 语义:所在流命中,或当前说话人是主 QQ/任一附带 QQ 命中,即返回——主 QQ 在任何聊天流里说话都能看到自己的备忘。
 - **到点提醒**:`remind_at` 到点的条目经日程收录或兜底 tick 注入对应流。
 - **过期清理**:每小时删除过期条目。
@@ -16,7 +16,7 @@
 ### 生命周期(单条备忘)
 
 ```
-写入(命令/工具,校验长度/TTL/remind_at 格式)
+写入(工具,校验长度/TTL/remind_at 格式)
   → 注入(有效期内,每次 planner 请求按"流 ∪ 说话人"带入上下文,≤ inject_max 条)
   → 提醒(remind_at 到点:日程收录 或 remind_fallback 兜底注入)
   → 清理(expires_at 到期,每小时 tick 删除)
@@ -39,8 +39,6 @@
 ## 二、完整逻辑
 
 ### 1. 写入
-
-**命令入口** `/记一下 <内容>`(别名 `/备忘`,`cmd_memo`):检查 `memo.command_enabled` 与内容长度后写入,TTL 用缺省值(不传 TTL,不传 remind_at/附带 QQ)。
 
 **工具入口 `memo_write`**(LLM 调用,`memo.tool_enabled` 控制):
 

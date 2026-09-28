@@ -28,14 +28,14 @@ try:
     from curl_cffi.requests import AsyncSession as _CurlAsyncSession
 except ImportError:  # pragma: no cover - 部署环境未装时走 httpx 回退
     _CurlAsyncSession = None
-from maibot_sdk import Command, HookHandler, MaiBotPlugin, MessageGateway, Tool
+from maibot_sdk import HookHandler, MaiBotPlugin, MessageGateway, Tool
 from maibot_sdk.types import HookMode, HookOrder, ToolParameterInfo
 
 # 实测结论:加载器仅将 plugins 父目录临时加入 sys.path,插件目录本身不在,
 # 绝对导入 catsitate_core.* 会失败。在此自行注册插件目录(sys.path 修改限于插件进程内)。
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 
-from catsitate_core.config import CatsitateConfig
+from catsitate_core.config import CatsitateConfig, apply_tab_layout
 from catsitate_core.favorability import LEVELS, LEVEL_INDEX, EXCLUSIVE_LEVEL, BatchEngine, SettleExecutor, build_favorability_block
 from catsitate_core.guard import compile_guard, match_guard
 from catsitate_core.image_relook import build_relook_prompt, find_image_segment
@@ -175,6 +175,27 @@ class CatsitatePlugin(MaiBotPlugin):
 
     config_model = CatsitateConfig
     config_reload_subscriptions = ("bot",)
+
+    @classmethod
+    def build_config_schema(
+        cls,
+        *,
+        plugin_id: str = "",
+        plugin_name: str = "",
+        plugin_version: str = "",
+        plugin_description: str = "",
+        plugin_author: str = "",
+    ) -> dict[str, Any]:
+        """构造 WebUI 配置 Schema:注入分页布局(页定义见 catsitate_core.config.CONFIG_TABS)。"""
+
+        schema = super().build_config_schema(
+            plugin_id=plugin_id,
+            plugin_name=plugin_name,
+            plugin_version=plugin_version,
+            plugin_description=plugin_description,
+            plugin_author=plugin_author,
+        )
+        return apply_tab_layout(schema)
 
     _persona_cache: str | None = None  # bot 人设缓存(config.get 一次,bot 配置变更时失效)
     _style_cache: str | None = None  # bot 行为风格缓存(同上)
@@ -2803,18 +2824,6 @@ class CatsitatePlugin(MaiBotPlugin):
             raise
         finally:
             self._qzone_notify_running = False
-
-    # ---------- 命令 ----------
-
-    @Command("记一下", description="记一条短时备忘", pattern=r"^/记一下\s+(?P<content>.+)$", aliases=["/备忘"])
-    async def cmd_memo(self, content: str = "", stream_id: str = "", user_id: str = "", **kwargs: Any) -> str:
-        del kwargs
-        if not self.config.plugin.enabled or not self.config.memo.command_enabled:
-            return "备忘命令未启用。"
-        if len(content.strip()) > self.config.memo.entry_max_chars:
-            return f"备忘太长啦(>{self.config.memo.entry_max_chars} 字符),请精简后再发～"
-        ok, msg = self.memo.write(content, stream_id, user_id, None)
-        return msg if ok else f"备忘写入失败:{msg}"
 
     # ---------- Hook:主链路注入 ----------
 

@@ -34,7 +34,7 @@ def test_config_defaults():
 def test_default_config_dump():
     cfg = CatsitateConfig()
     data = cfg.model_dump(mode="json")
-    assert data["plugin"]["config_version"] == "1.0.12"
+    assert data["plugin"]["config_version"] == "1.0.13"
     assert data["favorability"]["level_rule_familiar"] == "认识一段时间,可自然闲聊"
     assert len(data["favorability"]) >= 5
 
@@ -176,3 +176,29 @@ def test_qzone_constants():
 
     assert QZONE_PLATFORM == "qzone-qq"
     assert QZONE_GATEWAY_NAME == "catsitate_qzone"
+
+
+def test_config_schema_tab_layout():
+    """WebUI 分页布局:layout 为 tabs,页序单调,全部配置节落入某一页(兜底页防隐身)。"""
+    from maibot_sdk.config import generate_plugin_config_schema
+
+    from catsitate_core.config import CONFIG_TABS, apply_tab_layout
+
+    schema = generate_plugin_config_schema(CatsitateConfig)
+    layouted = apply_tab_layout(schema)
+    assert layouted["layout"]["type"] == "tabs"
+    tabs = layouted["layout"]["tabs"]
+    ids = [t["id"] for t in tabs]
+    assert len(ids) == len(set(ids)), "页 id 不得重复"
+    orders = [t["order"] for t in tabs]
+    assert orders == sorted(orders), "页序必须单调"
+    covered = {name for t in tabs for name in t["sections"]}
+    assert covered == set(layouted["sections"]), "每个配置节都必须落入某一页"
+    # 节级元数据:标题与图标进入 schema(页内卡片/平铺兜底两种渲染都依赖)
+    for name, section in layouted["sections"].items():
+        assert section["title"], f"节 {name} 缺标题"
+        assert section["icon"], f"节 {name} 缺图标"
+    # 页定义自身不得引用不存在的节(防配置节重命名后页指空)
+    section_names = set(layouted["sections"])
+    for tab in CONFIG_TABS:
+        assert set(tab["sections"]) <= section_names, f"页 {tab['id']} 引用了不存在的节"

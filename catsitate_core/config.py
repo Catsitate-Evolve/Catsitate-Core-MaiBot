@@ -15,15 +15,17 @@ def _f(default, description, *, label="", **extra):
 
 class PluginSection(PluginConfigBase):
     __ui_label__ = "插件"
+    __ui_icon__ = "settings"  # WebUI 节图标(lucide 名)
     __ui_order__ = 0
 
     enabled: bool = _f(False, "插件总开关", label="插件总开关")
-    config_version: str = _f("1.0.12", "配置版本", label="配置版本")
+    config_version: str = _f("1.0.13", "配置版本", label="配置版本")
     llm_daily_call_warning_threshold: int = _f(50, "旁路 LLM 每日调用告警阈值", label="旁路 LLM 每日告警阈值")
 
 
 class InjectSection(PluginConfigBase):
     __ui_label__ = "注入框架"
+    __ui_icon__ = "syringe"  # WebUI 节图标(lucide 名)
     __ui_order__ = 1
 
     enabled: bool = _f(True, "注入管线总开关(无截断,长度在源头控制)", label="注入管线总开关")
@@ -35,6 +37,7 @@ class InjectSection(PluginConfigBase):
 
 class TimeAwareSection(PluginConfigBase):
     __ui_label__ = "时间感知"
+    __ui_icon__ = "clock"  # WebUI 节图标(lucide 名)
     __ui_order__ = 2
 
     enabled: bool = _f(True, "节日/天气感知开关", label="时间感知开关")
@@ -47,6 +50,7 @@ class TimeAwareSection(PluginConfigBase):
 
 class FavorabilitySection(PluginConfigBase):
     __ui_label__ = "好感度"
+    __ui_icon__ = "heart"  # WebUI 节图标(lucide 名)
     __ui_order__ = 3
 
     def level_rules_list(self) -> list[str]:
@@ -110,11 +114,11 @@ class FavorabilitySection(PluginConfigBase):
 
 class MemoSection(PluginConfigBase):
     __ui_label__ = "备忘录"
+    __ui_icon__ = "sticky-note"  # WebUI 节图标(lucide 名)
     __ui_order__ = 4
 
     enabled: bool = _f(True, "备忘录模块开关", label="备忘录模块开关")
     tool_enabled: bool = _f(True, "memo_write/memo_read 工具开关", label="备忘录工具开关")
-    command_enabled: bool = _f(True, "/记一下 命令开关", label="命令开关")
     default_ttl_hours: int = _f(24, "单条备忘缺省有效期(小时)", label="缺省有效期(小时)")
     max_ttl_hours: int = _f(168, "单条备忘有效期上限(小时)", label="有效期上限(小时)")
     entry_max_chars: int = _f(80, "备忘内容最大字符数(写入时强制)", label="内容最大字符数")
@@ -123,6 +127,7 @@ class MemoSection(PluginConfigBase):
 
 class MsgReactSection(PluginConfigBase):
     __ui_label__ = "贴表情"
+    __ui_icon__ = "smile"  # WebUI 节图标(lucide 名)
     __ui_order__ = 5
 
     enabled: bool = _f(True, "贴表情工具开关", label="贴表情工具开关")
@@ -141,6 +146,7 @@ class MsgReactSection(PluginConfigBase):
 
 class PokeSection(PluginConfigBase):
     __ui_label__ = "戳一戳"
+    __ui_icon__ = "pointer"  # WebUI 节图标(lucide 名)
     __ui_order__ = 6
 
     poke_tool_enabled: bool = _f(True, "主动戳工具开关", label="主动戳工具开关")
@@ -149,6 +155,7 @@ class PokeSection(PluginConfigBase):
 
 class ReplyGuardSection(PluginConfigBase):
     __ui_label__ = "reply 补传"
+    __ui_icon__ = "reply"  # WebUI 节图标(lucide 名)
     __ui_order__ = 7
 
     enabled: bool = _f(True, "reply_guard 模块开关", label="reply 补传模块开关")
@@ -168,6 +175,7 @@ class ReplyGuardSection(PluginConfigBase):
 
 class ImageRelookSection(PluginConfigBase):
     __ui_label__ = "图片重看"
+    __ui_icon__ = "image"  # WebUI 节图标(lucide 名)
     __ui_order__ = 8
 
     enabled: bool = _f(True, "图片重看工具开关", label="图片重看工具开关")
@@ -185,6 +193,7 @@ class ImageRelookSection(PluginConfigBase):
 
 class SleepSection(PluginConfigBase):
     __ui_label__ = "睡眠"
+    __ui_icon__ = "moon"  # WebUI 节图标(lucide 名)
     __ui_order__ = 9
 
     enabled: bool = _f(True, "睡眠模块开关", label="睡眠模块开关")
@@ -199,6 +208,7 @@ class SleepSection(PluginConfigBase):
 
 class ScheduleSection(PluginConfigBase):
     __ui_label__ = "日程"
+    __ui_icon__ = "calendar"  # WebUI 节图标(lucide 名)
     __ui_order__ = 10
 
     enabled: bool = _f(True, "日程模块开关", label="日程模块开关")
@@ -218,6 +228,7 @@ class ScheduleSection(PluginConfigBase):
 
 class QzoneSection(PluginConfigBase):
     __ui_label__ = "QQ空间"
+    __ui_icon__ = "orbit"  # WebUI 节图标(lucide 名)
     __ui_order__ = 11
 
     enabled: bool = _f(True, "QQ空间模块开关(含评论/点赞等写动作)", label="QQ空间模块开关")
@@ -302,6 +313,7 @@ class QzoneSection(PluginConfigBase):
 
 class GuardSection(PluginConfigBase):
     __ui_label__ = "内容护栏"
+    __ui_icon__ = "shield"  # WebUI 节图标(lucide 名)
     __ui_order__ = 12
 
     enabled: bool = _f(False, "内容护栏总开关")
@@ -314,6 +326,7 @@ class GuardSection(PluginConfigBase):
 
 class DebugSection(PluginConfigBase):
     __ui_label__ = "调试"
+    __ui_icon__ = "bug"  # WebUI 节图标(lucide 名)
     __ui_order__ = 99
 
     enabled: bool = _f(
@@ -340,3 +353,42 @@ class CatsitateConfig(PluginConfigBase):
     qzone: QzoneSection = Field(default_factory=QzoneSection)
     guard: GuardSection = Field(default_factory=GuardSection)
     debug: DebugSection = Field(default_factory=DebugSection)
+
+# WebUI 配置页分页布局:标签页按功能域聚合若干配置节(节级展示元数据见各节类的 __ui_* 声明)。
+# 引用契约:宿主 WebUI 读取 schema.layout,type="tabs" 时按 tabs 渲染顶部标签页,
+# 每个 tab 的 sections 为节名列表(可多节共页);type 缺省/auto 时退化为按节排序平铺。
+CONFIG_TABS: list[dict] = [
+    {"id": "basic", "title": "总控", "icon": "settings", "order": 0, "sections": ["plugin", "debug"]},
+    {"id": "persona", "title": "注入与感知", "icon": "syringe", "order": 1, "sections": ["inject", "time_aware"]},
+    {"id": "favorability", "title": "好感度", "icon": "heart", "order": 2, "sections": ["favorability"]},
+    {"id": "routine", "title": "作息与日程", "icon": "moon", "order": 3, "sections": ["sleep", "schedule"]},
+    {"id": "qzone", "title": "QQ空间", "icon": "orbit", "order": 4, "sections": ["qzone"]},
+    {
+        "id": "interact", "title": "互动与工具", "icon": "wrench", "order": 5,
+        "sections": ["memo", "msg_react", "poke", "reply_guard", "image_relook"],
+    },
+    {"id": "guard", "title": "内容护栏", "icon": "shield", "order": 6, "sections": ["guard"]},
+]
+
+
+def apply_tab_layout(schema: dict) -> dict:
+    """把分页布局写入插件配置 Schema(WebUI 据此渲染标签页)。
+
+    页内只收 Schema 中真实存在的节(防节重命名后页指向空);
+    未列入任何页的节归入「其他」兜底页,防新增配置节在 WebUI 隐身。
+    """
+
+    sections = schema.get("sections")
+    if not isinstance(sections, dict):
+        return schema
+    tabs: list[dict] = []
+    for tab in CONFIG_TABS:
+        contained = [name for name in tab["sections"] if name in sections]
+        if contained:
+            tabs.append({**tab, "sections": contained})
+    grouped = {name for tab in tabs for name in tab["sections"]}
+    leftovers = [name for name in sections if name not in grouped]
+    if leftovers:
+        tabs.append({"id": "misc", "title": "其他", "icon": "list", "order": 99, "sections": leftovers})
+    schema["layout"] = {"type": "tabs", "tabs": tabs}
+    return schema

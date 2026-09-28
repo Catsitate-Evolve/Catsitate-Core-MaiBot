@@ -75,11 +75,9 @@ Catsitate 是 MaiBot(QQ 猫娘机器人)的拟人化人格插件。它在 MaiBot
 | `maisaka.planner.after_response` | `catsitate_qzone_turn` | OBSERVE/LATE | 虚拟流"轮完成"信号,推进空间注入泵 |
 | `maisaka.replyer.before_model_request` | `catsitate_qzone_replyer_scene` | BLOCKING/LATE | replyer 侧场景替换(replyer 的载荷在 before_request 上不带 items,须挂这里) |
 
-**(3) `@Command`——用户命令**:`/记一下 <内容>`(别名 `/备忘`),备忘录的用户直达入口。
+**(3) `@MessageGateway`——虚拟流消息网关**:`catsitate_qzone`,platform `qzone-qq`,**receive 模式(只进不出)**——QQ 空间动态经 `ctx.gateway.route_message` 投递进虚拟群会话(`qzone_feed`),bot 对说说的动作一律经 `qzone_*` 工具发出(直接打字发不出去,方法体内的出站分支只做防御性拒发)。
 
-**(4) `@MessageGateway`——虚拟流消息网关**:`catsitate_qzone`,platform `qzone-qq`,**receive 模式(只进不出)**——QQ 空间动态经 `ctx.gateway.route_message` 投递进虚拟群会话(`qzone_feed`),bot 对说说的动作一律经 `qzone_*` 工具发出(直接打字发不出去,方法体内的出站分支只做防御性拒发)。
-
-**(5) `call_capability`——能力调用**(`_manifest.json` 声明的 11 项):
+**(4) `call_capability`——能力调用**(`_manifest.json` 声明的 11 项):
 
 | 能力 | 用在哪 |
 |---|---|
@@ -88,7 +86,7 @@ Catsitate 是 MaiBot(QQ 猫娘机器人)的拟人化人格插件。它在 MaiBot
 | `chat.get_all_streams` | 聊天流列表缓存(说话人解析,10 分钟 TTL) |
 | `config.get` | 读主程序全局配置(bot 人设/行为风格、`group_chat_prompt` 等) |
 | `database.get` | 图片重看:拉主程序 `Images` 表取图片文件 |
-| `api.call` | adapter API(空间 cookie 获取、贴表情、戳一戳、好友列表) |
+| `api.call` | adapter API(空间 cookie 获取、贴表情、戳一戳;统一命名空间 `adapter.napcat.*`,SnowLuma 合并适配器同样提供) |
 | `maisaka.context.append` | 备忘提醒触发时向会话追加上下文 |
 | `maisaka.proactive.trigger` | 日程窗口主动发言、虚拟流冷启动自举 |
 | `person.get_id` | person 折叠校验(`qzone-qq` 与 `qq` 平台折叠为同一人) |

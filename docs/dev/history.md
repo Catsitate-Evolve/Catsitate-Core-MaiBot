@@ -74,7 +74,7 @@
 
 ---
 
-## 宿主 1.3 适配(2026-09-28,开发周期内,待随下个正式版发布)
+## v1.0.13(2026-09-28) 宿主 1.3 适配与命令通道移除
 
 上游三件套更新后的兼容性适配:MaiBot 1.2.0→1.3.1、maibot-plugin-sdk 2.7.1→2.8.2、QQ 适配器 NapCat 1.3.3→SnowLuma 合并版 1.0.2(NapCat 适配器仓库已并入 SnowLuma)。逐项核实后**插件代码零改动**,仅簿记一处:
 
@@ -90,7 +90,7 @@
 
 ---
 
-## WebUI 配置页分页化(2026-09-28,开发周期内,待随下个正式版发布)
+## v1.0.13(2026-09-28) WebUI 配置页分页化(同版次)
 
 配置页由平铺折叠卡改为**标签页分页**:14 个配置节补齐 `__ui_icon__` 元数据(标题/排序此前已有),新增 `CONFIG_TABS` 页定义与 `apply_tab_layout()`(`catsitate_core/config.py`),经插件类 `build_config_schema()` 覆写注入 `schema.layout.type="tabs"`——7 页按功能域聚合:总控(plugin/debug)、注入与感知(inject/time_aware)、好感度、作息与日程(sleep/schedule)、QQ空间、互动与工具(memo/msg_react/poke/reply_guard/image_relook)、内容护栏;未列入任何页的节自动归入「其他」兜底页,防新增配置节在 WebUI 隐身(显式兜底,不静默)。配置数据与语义零变化(纯展示层),经运行中 WebUI 的 schema 接口实测返回 tabs 布局;新增布局断言用例,639 用例全绿。
 

@@ -28,7 +28,7 @@ Catsitate 是 MaiBot(QQ 猫娘机器人)的拟人化人格插件。它在 MaiBot
 
 `plugin.py` 约 4400 行,但只做四件事:
 
-1. **注册交互面**——`@Tool` / `@HookHandler` / `@Command` / `@MessageGateway` 装饰的方法,是主程序经 RPC 能触达的全部入口;
+1. **注册交互面**——`@Tool` / `@HookHandler` / `@MessageGateway` 装饰的方法,是主程序经 RPC 能触达的全部入口;
 2. **装配**——`on_load` 实例化 `catsitate_core` 包的各引擎并接线(注入存储、配置、旁路 LLM 调用);
 3. **调度注册**——把周期任务注册进 `Scheduler`(`catsitate_core/services/scheduler.py`,60 秒 tick 的 asyncio 任务引擎,任务异常隔离不互相拖垮);
 4. **胶水逻辑**——跨模块的数据搬运(如把当日到期备忘拼进行程注入块)。

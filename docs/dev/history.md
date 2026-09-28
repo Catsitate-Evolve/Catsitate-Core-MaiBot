@@ -74,6 +74,12 @@
 
 ---
 
+## v1.0.14(2026-09-28) 双轴 code-review 整改
+
+标准/规格双轴完整审查 v1.0.12..dev 全部变更(并行双代理,标准轴对照工作区与仓库两级 AGENTS.md + 气味基线,规格轴对照 CHANGELOG/history 与用户四项原始需求)。整改:apply_tab_layout 静默跳过改显式告警+失败路径用例(硬违规)、memo.py docstring 命令残留、architecture/philosophy 的 @Command 残留引用、AGENTS.md 基线 638→640、history 的 send_poke 验证口径补记闭环事实;「旧宿主退化平铺」经 1.2.0 原始 dashboard 源码实证升级为「tabs 分页自 1.2.0 起即生效」。规格轴四项需求全部落地、无 scope creep。640 用例全绿。
+
+---
+
 ## v1.0.13(2026-09-28) 宿主 1.3 适配与命令通道移除
 
 上游三件套更新后的兼容性适配:MaiBot 1.2.0→1.3.1、maibot-plugin-sdk 2.7.1→2.8.2、QQ 适配器 NapCat 1.3.3→SnowLuma 合并版 1.0.2(NapCat 适配器仓库已并入 SnowLuma)。逐项核实后**插件代码零改动**,仅簿记一处:
@@ -86,7 +92,7 @@
 
 验证:638 用例全绿(升级后的 SDK 2.8.2 环境);本地 docker 实机(MaiBot 1.3.1 镜像)插件加载成功、QQ空间虚拟平台就绪。
 
-实机联调中确认的插件调用面(全部通过):`adapter.napcat.account.get_cookies`(cookie 落盘)、on-message 钩子与消息字典解析(好感度批计数)、`is_notify` 通知过滤(SnowLuma 新通知格式下正确跳过)、旁路 `llm.generate` 任务名调用(memory 任务经 SiliconFlow 模型成功)、60s 调度器、QQ空间通知轮询。同周期**移除 `/记一下` 命令通道**(现版本需求不再需要;且实机复核发现宿主命令链把正则命名组整包经 `matched_groups` 传递、从不摊平到形参——1.2.0/1.2.3/1.3.1 三版一致,该命令自开发起即取不到内容,属存量缺陷;备忘录仅保留 `memo_write` 工具通道,`memo.command_enabled` 配置项一并移除)。`set_msg_emoji_like`/`send_poke` 两个工具 API 与 get_cookies 同链路(diff 逐行一致),待 planner 可用后自然闭环。
+实机联调中确认的插件调用面(全部通过):`adapter.napcat.account.get_cookies`(cookie 落盘)、on-message 钩子与消息字典解析(好感度批计数)、`is_notify` 通知过滤(SnowLuma 新通知格式下正确跳过)、旁路 `llm.generate` 任务名调用(memory 任务经 SiliconFlow 模型成功)、60s 调度器、QQ空间通知轮询。同周期**移除 `/记一下` 命令通道**(现版本需求不再需要;且实机复核发现宿主命令链把正则命名组整包经 `matched_groups` 传递、从不摊平到形参——1.2.0/1.2.3/1.3.1 三版一致,该命令自开发起即取不到内容,属存量缺陷;备忘录仅保留 `memo_write` 工具通道,`memo.command_enabled` 配置项一并移除)。`set_msg_emoji_like`/`send_poke` 两个工具 API 与 get_cookies 同链路(diff 逐行一致);DeepSeek key 修复后实机闭环——planner 自主调用 `poke_user` 经 `send_poke` 实发成功(含冷却二次拦截),仅 `set_msg_emoji_like` 尚无自然触发场景未实测。
 
 ---
 

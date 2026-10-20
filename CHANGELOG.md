@@ -7,6 +7,35 @@
   - _manifest.json 的 version 与本文件最新正式版保持一致。
 -->
 
+## v1.0.15(2026-10-20) 宿主 1.3.11 适配·交互工具重构·偏移取证
+
+### 宿主 MaiBot 1.3.11 适配(manifest 无需改动)
+- 上游三件套再次跨版本:MaiBot 1.3.1→**1.3.11**、SDK 2.8.2→**2.12.0**(主程序锁定版)、SnowLuma 适配器 v1.0.2→**v1.1.7**。逐层核实后 **manifest 无需改动**(host 1.2.0~1.3.99 覆盖 1.3.11,SDK 2.7.1~2.99.99 覆盖 2.12.0)。
+- SDK 2.8.2→2.12.0 全部为增量(`ctx.webui`/`chat.get_avatar`/`maisaka.context.resolve_image`/`ReplyExtension`);`llm.generate`/`send.*`/`MaiBotPlugin`/配置模型四文件零变更,旁路 LLM 与 WebUI 分页不受影响。
+- 宿主:6 个订阅钩子点、planner 钩子载荷与 `hook_payloads` 逐字节一致;`context.append` 契约逐行一致;消息查询仅新增头像与 DB 线程化;prompt 扫描逻辑未变。**SDK 超范围改为仅告警放行,Host 范围仍硬拒**。
+- 适配器:插件所用 3 个 API(`get_cookies`/`send_poke`/`set_msg_emoji_like`)端点层与传输层逐字节未变,返回值仍为原样 OneBot 响应;通知/入站字典核心字段(含 `is_notify`、at 段、reply 段)逐键一致。**适配器 `config_version` 2.4.0→2.7.1**,部署需同步迁移。
+- **前向兼容**:宿主要求消息顶层 `account_id`/`scope`(旧格式回退下版本移除)。虚拟流消息共 **5 个**构造点(浏览/通知/发布回注/冷启动种子/日记回注)全部补齐,并新增源码级守卫用例防止新增构造点遗漏。实机验证:发布回注曾触发旧格式告警,修复后归零。
+- 实机全链路(MaiBot 1.3.11 + SnowLuma v1.1.7):发现层拉取→虚拟流注入→`qzone_comment`/`qzone_like`/`qzone_next`→发说说→`poke_user`→`memo_write`→侧链路 LLM,全部通过。
+
+### 贴表情与戳一戳交互重构
+- **表情表扩容并分组**:36 项→**172 项 / 10 个情绪组**(赞同鼓励/喜爱亲昵/开心大笑/调侃俏皮/无语无奈/安慰关心/惊讶意外/生气不满/期待心动/低落疲惫),ID 与名称以适配器官方 QQ 表情表为准,修正旧表错标(233 实为「掐一掐」、293 为「摸锦鲤」、9 才是「大哭」等);选择器 prompt 附 9 条俗称对照(狗头=doge、猪=猪头等)。
+- **选择器单入口**:`msg_react` 只收 `intent`(必填),由旁路 LLM 三步裁决(意图点名优先→情绪分组→只选表内 ID);不设模型直填 ID/名称的参数,校验责任集中在选择器与表内白名单。模板升 v4。
+- **戳一戳目标二选一**:`poke_user` 支持 `msg_id`(取发送者与所在群,推荐)或 `user_id`(群上下文取自当前流);**移除 `group_id` 参数**——群号由插件判定;两者冲突或上下文无法判定时显式拒绝。
+
+### 适配偏移取证
+- 启动打印环境指纹(`plugin/sdk/python/host 声明范围/sdk 声明范围`),升级前后可直接比对实际运行组合。
+- 新增 `[适配偏移]` 统一日志(格式 `区域 | expected | actual | detail`),覆盖:适配器三个 API 的回执形态、选择器输出不合契约、`message.get_by_id` 缺发送者、群聊流缺 `group_id`、planner 钩子载荷 `items` 异常。只记形态/键名/长度,不落消息正文与 QQ 号;正常路径仅 debug。
+
+### 空间回复对齐主程序 reply
+- `qzone_comment`/`qzone_reply` 新增**必填** `reply_reference`(planner 填上下文与回复方向,不是正文),润色层以「回复信息参考：」原样放进变量段、草稿恒在最后;缺失显式拒绝。
+- **不自动注入目标消息块**:被评论的说说/被回复的评论原文由 planner 按需写进 `reply_reference`;曾短暂实现的自动摘取(事件正文字段与评论正文映射)整体移除,不留死代码。
+
+### 部署与迁移
+- 本版无数据库格式变更,无需迁移(版本表维持 v1 基线)。
+- **prompt 模板变更**:`catsitate_msg_react.prompt` 升到 v4(选择器三步裁决),插件加载时自动部署到宿主 `prompts/zh-CN/`;若在 WebUI「提示词管理」里自定义过该模板,`data/custom_prompts/` 优先级更高、不受覆盖影响。
+- 宿主升级 1.3.x 需同步:SnowLuma 适配器 v1.1.7(配置 `config_version` 2.7.1)、`config/adapter_policy.toml`(若存在 `[defaults]` 且默认 block,须显式放行 `platform="qzone-qq"` 的虚拟流,否则空间注入被拒)。
+- 测试基线:**654 用例全绿**(全离线)。
+
 ## v1.0.14(2026-09-28) 双轴 code-review 整改
 
 对 v1.0.12..dev(v1.0.13 全周期+v1.0.14 前置变更)做标准/规格双轴完整 code-review,整改全部发现:

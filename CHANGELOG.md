@@ -25,6 +25,7 @@
 ### 适配偏移取证
 - 启动打印环境指纹(`plugin/sdk/python/host 声明范围/sdk 声明范围`),升级前后可直接比对实际运行组合。
 - 新增 `[适配偏移]` 统一日志(格式 `区域 | expected | actual | detail`),覆盖:适配器三个 API 的回执形态、选择器输出不合契约、`message.get_by_id` 缺发送者、群聊流缺 `group_id`、planner 钩子载荷 `items` 异常。只记形态/键名/长度,不落消息正文与 QQ 号;正常路径仅 debug。
+- **debug 文件同时捕获 ctx logger**:此前只挂 `catsitate.core`,而 `ctx.logger` 是 SDK 的 `plugin.<id>` logger(兄弟节点),导致 `ctx.logger.debug` 类观测(护栏通过/注入触发/选择器结果/戳目标来源)全部不可见;现两处同时挂载并在关闭时逐个恢复级别。
 
 ### 空间回复对齐主程序 reply
 - `qzone_comment`/`qzone_reply` 新增**必填** `reply_reference`(planner 填上下文与回复方向,不是正文),润色层以「回复信息参考：」原样放进变量段、草稿恒在最后;缺失显式拒绝。
@@ -34,7 +35,7 @@
 - 本版无数据库格式变更,无需迁移(版本表维持 v1 基线)。
 - **prompt 模板变更**:`catsitate_msg_react.prompt` 升到 v4(选择器三步裁决),插件加载时自动部署到宿主 `prompts/zh-CN/`;若在 WebUI「提示词管理」里自定义过该模板,`data/custom_prompts/` 优先级更高、不受覆盖影响。
 - 宿主升级 1.3.x 需同步:SnowLuma 适配器 v1.1.7(配置 `config_version` 2.7.1)、`config/adapter_policy.toml`(若存在 `[defaults]` 且默认 block,须显式放行 `platform="qzone-qq"` 的虚拟流,否则空间注入被拒)。
-- 测试基线:**654 用例全绿**(全离线)。
+- 测试基线:**655 用例全绿**(全离线)。
 
 ## v1.0.14(2026-09-28) 双轴 code-review 整改
 

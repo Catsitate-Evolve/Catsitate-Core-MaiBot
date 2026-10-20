@@ -203,7 +203,8 @@ class CatsitatePlugin(MaiBotPlugin):
     _style_cache: str | None = None  # bot 行为风格缓存(同上)
     _reply_style_cache: str | None = None  # bot 表达方式(personality.reply_style)缓存(表达润色用)
     _debug_handler: logging.Handler | None = None  # debug 日志文件 handler(配置开关控制)
-    _debug_prev_level: int = logging.NOTSET  # 开启前 logger 级别(关闭时恢复)
+    _debug_loggers: list = []  # 已挂 debug handler 的 logger(本地 catsitate.core + 插件 ctx logger)
+    _debug_prev_levels: dict = {}  # 各 logger 开启前级别(关闭时逐个恢复)
     _module_log_forwarder: logging.Handler | None = None  # 模块日志转发(on_load 挂载,unload 清理)
     _llm_warned_day: str = ""  # 旁路 LLM 用量告警的已告警日期(跨越当天只告警一次)
     _qzone_session_ids: set[str] = set()  # 虚拟流 session(运行时收集;豁免判定用)
@@ -5161,13 +5162,21 @@ class CatsitatePlugin(MaiBotPlugin):
         try:
             logs_dir.mkdir(parents=True, exist_ok=True)
             path = logs_dir / f"catsitate-{datetime.now().strftime('%Y%m%d')}.log"
-            self._debug_prev_level = plugin_logger.level
             handler = logging.FileHandler(path, encoding="utf-8")
             os.chmod(path, 0o600)  # 仅属主可读(安全纪律:日志含用户标识)
             handler.setLevel(logging.DEBUG)
             handler.setFormatter(logging.Formatter("%(asctime)s %(levelname)s %(name)s %(message)s"))
-            plugin_logger.addHandler(handler)
-            plugin_logger.setLevel(logging.DEBUG)
+            # ctx.logger 是 SDK 的本地 logger(名为 plugin.<id>),与 catsitate.core 是兄弟节点,
+            # 不共享 handler——两处都挂,否则所有 self.ctx.logger.debug 观测日志都会丢失
+            targets = [plugin_logger]
+            ctx_logger = self.ctx.logger
+            if isinstance(ctx_logger, logging.Logger) and ctx_logger.name != plugin_logger.name:
+                targets.append(ctx_logger)
+            self._debug_loggers = targets
+            self._debug_prev_levels = {lg.name: lg.level for lg in targets}
+            for lg in targets:
+                lg.addHandler(handler)
+                lg.setLevel(logging.DEBUG)
             self._debug_handler = handler
             self.ctx.logger.info("debug 日志已开启: %s", path)
         except OSError:
@@ -5180,12 +5189,16 @@ class CatsitatePlugin(MaiBotPlugin):
         on_unload 阶段配置对象仍可读,但直接按已挂载的 _debug_handler 清理即可。
         """
 
-        plugin_logger = logging.getLogger("catsitate.core")
         if self._debug_handler is not None:
-            plugin_logger.removeHandler(self._debug_handler)
+            for lg in self._debug_loggers or [logging.getLogger("catsitate.core")]:
+                lg.removeHandler(self._debug_handler)
+                prev = self._debug_prev_levels.get(lg.name)
+                if prev is not None:
+                    lg.setLevel(prev)
             self._debug_handler.close()
             self._debug_handler = None
-            plugin_logger.setLevel(self._debug_prev_level)  # 恢复开启前级别
+            self._debug_loggers = []
+            self._debug_prev_levels = {}
 
     async def _persona_context(self) -> tuple[str, str]:
         """bot 人设与行为风格(经 config.get 读主程序全局配置 personality.personality / personality.behavior_style,带缓存)。

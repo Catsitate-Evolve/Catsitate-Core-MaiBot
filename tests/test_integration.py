@@ -1780,3 +1780,36 @@ def test_environment_upcoming_days_without_solar_term_no_entry(tmp_path, monkeyp
     env = p._env_cache["env"]
     assert "立夏" not in env and "小满" not in env  # 最近节气 5/5 立夏、5/21 小满均不在窗口
     assert "冬至" not in env
+
+
+def test_debug_logging_captures_ctx_logger(tmp_path):
+    """debug 文件必须同时捕获 ctx logger(plugin.<id>)——否则观测类 debug 全丢。
+
+    回归背景:ctx.logger 是 SDK 的本地 logger,与 catsitate.core 是兄弟节点,
+    只挂后者时 self.ctx.logger.debug(护栏通过/注入触发/选择器结果)全部不可见。
+    """
+    import logging
+    from types import SimpleNamespace
+
+    from plugin import CatsitatePlugin
+
+    p = object.__new__(CatsitatePlugin)
+    ctx_logger = logging.getLogger("plugin.test.catsitate")
+    core_logger = logging.getLogger("catsitate.core")
+    p._ctx = SimpleNamespace(logger=ctx_logger, paths=SimpleNamespace(data_dir=tmp_path))
+    p._plugin_config_instance = SimpleNamespace(debug=SimpleNamespace(enabled=True))
+    p._debug_handler = None
+    p._debug_loggers = []
+    p._debug_prev_levels = {}
+    p._setup_debug_logging()
+    try:
+        ctx_logger.debug("观测测试-ctx")
+        core_logger.debug("观测测试-core")
+        for handler in list(ctx_logger.handlers) + list(core_logger.handlers):
+            handler.flush()
+        files = sorted((tmp_path / "logs").glob("catsitate-*.log"))
+        content = files[-1].read_text(encoding="utf-8")
+        assert "观测测试-ctx" in content, "ctx.logger 的 debug 必须落盘"
+        assert "观测测试-core" in content
+    finally:
+        p._teardown_debug_logging()

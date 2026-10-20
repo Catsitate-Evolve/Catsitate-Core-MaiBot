@@ -173,18 +173,23 @@ def test_build_notify_message_without_reply_segment():
     assert msg["raw_message"] == [{"type": "text", "data": feed.content}]
 
 
-def test_gateway_declared_platform_constant():
-    """网关平台必须是常量 qzone-qq(连字符别名折叠进 qq 人物命名空间)。
-    工具驱动架构:网关改 receive(只进不出,动作经工具发出),无出站路由回调。"""
+def test_gateway_declared_duplex_with_explicit_reject():
+    """网关平台必须是常量 qzone-qq;route_type 必须是 duplex。
+
+    宿主 1.3.7+ 在创建心流实例前检查路由是否有可调度发送驱动——receive-only
+    网关没有发送驱动,虚拟流会被误判为「适配器名单禁止创建聊天运行实例」
+    (2026-10-20 生产实机)。duplex 让宿主注册发送驱动以通过检查;出站回调
+    仍显式拒发(bot 对说说的动作只走 qzone_* 工具)。
+    """
     import inspect
 
     import plugin as _plugin  # tests/conftest 已把插件目录加入 sys.path
 
     src = inspect.getsource(_plugin)
     assert 'MessageGateway(' in src and 'qzone-qq' in src
-    assert 'MessageGateway("receive"' in src and 'MessageGateway("duplex"' not in src  # receive 网关
-    # 出站意外回调显式拒发(防御分支,错误显式暴露)
-    assert "意外出站回调" in src
+    assert '"duplex"' in src and 'MessageGateway("receive"' not in src
+    # 出站回调显式拒发(防御分支,错误显式暴露)
+    assert "出站回调" in src and '"success": False' in src
 
 
 def test_tool_driven_wiring_source_assertions():

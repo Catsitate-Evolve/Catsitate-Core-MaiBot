@@ -1825,19 +1825,27 @@ class CatsitatePlugin(MaiBotPlugin):
             return
         self.ctx.logger.info("QQ空间虚拟平台就绪(platform=%s,伪群=%s)", QZONE_PLATFORM, QZONE_VIRTUAL_GROUP_ID)
 
-    @MessageGateway("receive", name=QZONE_GATEWAY_NAME, description="QQ空间虚拟聊天平台(动态流入;互动经工具发出)", platform=QZONE_PLATFORM)
+    @MessageGateway(
+        "duplex", name=QZONE_GATEWAY_NAME,
+        description="QQ空间虚拟聊天平台(动态流入;互动经工具发出)", platform=QZONE_PLATFORM,
+    )
     async def qzone_gateway(self, *, message: dict, route: dict, metadata: dict) -> dict:
-        """receive 网关声明(工具驱动 2026-09-01):只进不出。
+        """duplex 网关声明:收/发路由均注册,出站仍显式拒发。
 
-        出站意图路由已随意图系统删除——bot 对说说的动作(评论/回复/点赞)一律经
-        qzone_comment/qzone_reply/qzone_like 工具发出,直接打字发不出去(receive
-        网关宿主侧本就不回调出站);本方法仅承载网关组件声明,receive 模式下宿主
-        不会调用,防御性保留显式拒发分支(错误显式暴露,不静默吞)。
+        为什么不是 receive(2026-10-20 生产实机):宿主 1.3.7+ 起在创建心流实例前
+        用 PlatformIOManager.is_target_allowed() 检查「该路由是否有可调度的发送
+        驱动」——只看发送路由。receive-only 网关没有发送驱动,虚拟流会被误判为
+        「适配器名单禁止创建聊天运行实例」,导致空间通知能注入但永远进不了 Planner。
+        声明 duplex 让宿主绑定发送驱动,检查得以通过;出站回调仍一律显式拒绝
+        (bot 对说说的动作只走 qzone_* 工具,直接打字本就不该发得出去)。
         """
 
         del route, metadata
-        self.ctx.logger.warning("QQ空间网关收到意外出站回调(receive 模式无出站路径,文本预览=%.30s)", str(message)[:64])
-        return {"success": False, "error": "QQ空间出站已改经工具发出(receive 网关无出站路径)"}
+        self.ctx.logger.warning(
+            "QQ空间网关收到出站回调(duplex 仅为满足宿主调度检查,出站已禁用;文本预览=%.30s)",
+            str(message)[:64],
+        )
+        return {"success": False, "error": "QQ空间出站已改经工具发出(虚拟流不承载出站)"}
 
     async def _qzone_poll_tick(self) -> None:
         """空间浏览轮询触发器:防重入后派发后台拉取,立即返回。

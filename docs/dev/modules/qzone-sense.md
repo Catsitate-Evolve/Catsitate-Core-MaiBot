@@ -21,7 +21,7 @@
 
 - **平台名** `qzone-qq`(常量,不可配置):主程序 `get_person_id` 对含 `-` 的平台名取连字符后段计算 person 命名空间,因此虚拟流里的好友与真实 QQ 聊天里的同一人折叠为同一个 person——bot 在空间和私聊里认识的是同一个人。启动自检会验证这个折叠,失效则整个 QQ 空间模块硬停用(人物分裂不可接受,不降级)。
 - **伪群**:`group_id="qzone_feed"`、`group_name="QQ空间"`(常量固化——可配置会被改成与真实群号相同的值,会话路由随之漂移)。主程序把它当一个普通群聊会话处理,session_id 由 md5(platform+account+group_id) 公式决定。
-- **网关**:`@MessageGateway("receive")` 只进不出——虚拟流里 bot 直接打字发不出去,一切动作经工具(见 [qzone-act.md](qzone-act.md))。
+- **网关**:`@MessageGateway("duplex")`——收路由用于动态注入,发送驱动仅供宿主调度检查,出站一律显式拒发;虚拟流里 bot 直接打字发不出去,一切动作经工具(见 [qzone-act.md](qzone-act.md))。
 - **场景替换**:虚拟流会话的 planner/replyer 两侧 system 段中,群聊场景提示词被原位替换为空间场景文案(`scene.py`,模板 `qzone_scene`,经三层链可被 WebUI 覆盖),告诉 bot「你在刷QQ空间,〔〕里是工具参数,不感兴趣保持沉默」。
 - **浏览者身份**:注入消息的 `is_mentioned` 强制为 1.0(嵌在 `message_info.additional_config`——主程序只读该位置)——每条说说注入后必然触发一轮 planner 决策,这是「串行浏览决策环」的设计依赖:bot 看一条、决定要不要互动、再看下一条。
 

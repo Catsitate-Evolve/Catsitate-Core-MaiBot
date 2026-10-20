@@ -252,3 +252,10 @@ catsitate_core_maibot/
 - 排查一次异常会话:`grep '\[适配偏移\]' logs/catsitate-YYYYMMDD.log`
 - 评估升级影响:先比对启动的环境指纹,再检查偏移日志是否出现新区域
 - 作为下一版适配输入:偏移条目中的 `expected/actual` 可直接对照宿主或适配器的实际返回结构
+
+## 五、WebUI 数据管理页
+
+- **声明**:仓库根 `webui.json`(`schema_version: 2`),`custom` 页面 `entry=webui/admin.html`,`required_capabilities: ["custom_pages"]`;不写进 manifest capabilities(页面只绑定本插件静态 API)。入口在 WebUI 顶部工作区「Catsitate」→「数据管理」。
+- **范围**:`favorability` / `memo` 读写;`favorability_log` / `qzone_fav_events` 只读。明确排除 `batch_counter`(仅作为好感度重置的一部分清理)、`qzone_*` 去重表、`llm_usage`、`weather_snapshot`、`qzone_cookies`。
+- **分层**:`admin.py`(数据服务,全部 SQL 与业务校验)→ `admin_api.py`(10 个静态 `@API`,mixin 继承)→ `webui/admin.html`(只调 webui.json 声明的别名,不接触 SQL/网络)。管理操作日志记 user_id/字段/行数,不记备忘正文。
+- **不变量**:好感度 `level` 由 `score` 按引擎规则派生(不手改);「特别」全表独占,改为 100 分时他人持有则显式拒绝;重置同时清空该用户 `batch_counter`;备忘有效期按“从现在起”重算,提醒时刻可清空;提醒时间做日历存在性校验(`2026-13-01T09:00` 必须拒绝)。

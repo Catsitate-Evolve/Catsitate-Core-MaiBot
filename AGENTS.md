@@ -50,7 +50,7 @@ Catsitate 的 MaiBot 核心人格行为插件(独立 git repo;运行宿主为 Ma
 
 ```bash
 # 必须在本仓库根目录下运行(不在宿主主程序目录,否则 pytest 会收集主程序测试并报 ImportError)
-python3 -m pytest tests/ -q        # 全量(当前 655 用例)
+python3 -m pytest tests/ -q        # 全量(当前 668 用例)
 python3 -m pytest tests/test_integration.py -v   # 集成冒烟
 ```
 
@@ -63,4 +63,5 @@ python3 -m pytest tests/test_integration.py -v   # 集成冒烟
 - **日程**:1 睡眠 + 1~8 活动窗口(greeting=问候陪伴/daily=日常);仅 plan_speak=true 的活动窗口起点拉起主动任务(greeting→特别者私聊问候,daily→按门槛选流),false 窗口不拉;入睡生成 + 窗口终点补生成是仅有的两条生成路径。
 - **QQ空间虚拟流**:`qzone-qq` 伪群流,duplex 网关(收路由+发送驱动;出站一律显式拒发,发送驱动仅满足宿主调度检查);动作一律经工具(评论/楼中楼回复/点赞/发说说),注入消息带 ID 锚,工具目标三级解析(registry→seen→awaiting);通知走 P1 优先级、推送语义不依赖浏览窗口;浏览窗口(read_qzone)结束收 P2 队列并生成「空间见闻」(素材=近 24h 滚动窗,截断保留最新)。风控:请求节奏全量随机抖动(`request_jitter_ratio`);发现层限流退避按当日次数指数升级(第 3 次当日熔断至次日零点),缓存 TTL/发现层开关/退避基础时长/浏览器指纹均可配。
 - **内容护栏**:`guard.patterns` 全局正则单列表,四拦截点(空间动作工具/日记/replyer/最终发送);命中即取消发布、置空或中止发送,warning 可审计;非法正则整组拒绝。
+- **WebUI 管理页**:`webui.json` + `webui/admin.html` 只开放用户数据(`favorability`/`memo` 读写,`favorability_log`/`qzone_fav_events` 只读);去重账本、统计、缓存、cookie 不开放。等级由分数派生、「特别」全表独占、重置清批次——这些不变量由 `admin.py` 强制,页面不得绕过。
 - **prompt 模板版本化**:模板须带 `version` 字段,变更时升版本号(`SIDE_TEMPLATES` 与 `prompt_templates/*.prompt` 同步,镜像测试锁定一致)。

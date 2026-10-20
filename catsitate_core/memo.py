@@ -27,6 +27,11 @@ def validate_remind_at(remind_at: str) -> str:
         return ""
     if not _REMIND_AT_RE.fullmatch(remind_at):
         return f"提醒时间格式非法:应为 ISO 格式如 2026-08-16T19:00(收到:{remind_at})"
+    try:
+        datetime.fromisoformat(remind_at)
+    except ValueError:
+        # 形如 2026-13-01T09:00 能过正则但日期不存在——写入后永远不会命中 due_on,必须显式拒绝
+        return f"提醒时间不存在:{remind_at}"
     return ""
 
 

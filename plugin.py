@@ -36,6 +36,7 @@ from maibot_sdk.types import HookMode, HookOrder, ToolParameterInfo
 # 绝对导入 catsitate_core.* 会失败。在此自行注册插件目录(sys.path 修改限于插件进程内)。
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 
+from catsitate_core.admin_api import AdminAPIMixin
 from catsitate_core.config import CatsitateConfig, apply_tab_layout
 from catsitate_core.favorability import LEVELS, LEVEL_INDEX, EXCLUSIVE_LEVEL, BatchEngine, SettleExecutor, build_favorability_block
 from catsitate_core.guard import compile_guard, match_guard
@@ -172,7 +173,7 @@ class _ModuleLogForwarder(logging.Handler):
             self._sink.info("%s: %s", record.name, message)
 
 
-class CatsitatePlugin(MaiBotPlugin):
+class CatsitatePlugin(AdminAPIMixin, MaiBotPlugin):
     """Catsitate 猫耳少女核心插件。"""
 
     config_model = CatsitateConfig

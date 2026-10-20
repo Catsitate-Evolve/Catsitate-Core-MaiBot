@@ -1,0 +1,569 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Catsitate 数据管理</title>
+<style>
+  :root{
+    --adm-bg:#f6f7f9; --adm-panel:#ffffff; --adm-fg:#1f2328; --adm-muted:#6b7280;
+    --adm-border:#e5e7eb; --adm-primary:#2563eb; --adm-danger:#dc2626; --adm-hover:#f3f4f6;
+    --adm-input:#ffffff; --adm-shadow:0 8px 30px rgba(15,23,42,.12);
+  }
+  .dark{
+    --adm-bg:#0f1115; --adm-panel:#161a20; --adm-fg:#e6e8eb; --adm-muted:#9aa3ad;
+    --adm-border:#2a3038; --adm-primary:#5b9dff; --adm-danger:#ff6b6b; --adm-hover:#1d232b;
+    --adm-input:#10141a; --adm-shadow:0 8px 30px rgba(0,0,0,.45);
+  }
+  *{box-sizing:border-box}
+  body{margin:0;background:var(--adm-bg);color:var(--adm-fg);
+    font:14px/1.55 -apple-system,BlinkMacSystemFont,"Segoe UI","PingFang SC","Microsoft YaHei",sans-serif}
+  .wrap{max-width:1180px;margin:0 auto;padding:20px 18px 40px}
+  header{display:flex;align-items:flex-start;justify-content:space-between;gap:12px;margin-bottom:14px}
+  h1{font-size:20px;margin:0 0 2px}
+  .sub{color:var(--adm-muted);font-size:12px}
+  .tabs{display:flex;gap:6px;flex-wrap:wrap;border-bottom:1px solid var(--adm-border);margin-bottom:14px}
+  .tab{border:0;background:transparent;color:var(--adm-muted);padding:9px 14px;cursor:pointer;
+    border-bottom:2px solid transparent;font-size:14px;border-radius:6px 6px 0 0}
+  .tab:hover{background:var(--adm-hover);color:var(--adm-fg)}
+  .tab.on{color:var(--adm-primary);border-bottom-color:var(--adm-primary);font-weight:600}
+  .panel{background:var(--adm-panel);border:1px solid var(--adm-border);border-radius:10px;padding:14px}
+  .toolbar{display:flex;gap:8px;align-items:center;flex-wrap:wrap;margin-bottom:12px}
+  .toolbar .grow{flex:1;min-width:160px}
+  input,select,textarea{background:var(--adm-input);color:var(--adm-fg);border:1px solid var(--adm-border);
+    border-radius:6px;padding:7px 9px;font:inherit;outline:none;width:100%}
+  input:focus,select:focus,textarea:focus{border-color:var(--adm-primary)}
+  textarea{resize:vertical;min-height:72px}
+  button{font:inherit;border:1px solid var(--adm-border);background:var(--adm-panel);color:var(--adm-fg);
+    border-radius:6px;padding:7px 12px;cursor:pointer}
+  button:hover{background:var(--adm-hover)}
+  button.primary{background:var(--adm-primary);border-color:var(--adm-primary);color:#fff}
+  button.primary:hover{filter:brightness(1.06)}
+  button.danger{color:var(--adm-danger);border-color:var(--adm-danger)}
+  button.small{padding:3px 8px;font-size:12px}
+  button:disabled{opacity:.55;cursor:not-allowed}
+  table{width:100%;border-collapse:collapse}
+  th,td{padding:9px 8px;border-bottom:1px solid var(--adm-border);text-align:left;vertical-align:top;font-size:13px}
+  th{color:var(--adm-muted);font-weight:600;white-space:nowrap}
+  tbody tr:hover{background:var(--adm-hover)}
+  td.clip{max-width:340px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+  .muted{color:var(--adm-muted)}
+  .badge{display:inline-block;padding:1px 7px;border-radius:999px;border:1px solid var(--adm-border);font-size:12px}
+  .badge.expired{color:var(--adm-danger);border-color:var(--adm-danger)}
+  .pager{display:flex;align-items:center;justify-content:flex-end;gap:10px;margin-top:12px;color:var(--adm-muted);font-size:12px}
+  .empty{padding:36px 0;text-align:center;color:var(--adm-muted)}
+  .err{display:none;margin-bottom:12px;padding:9px 12px;border:1px solid var(--adm-danger);
+    color:var(--adm-danger);border-radius:8px;background:transparent}
+  .err.show{display:block}
+  .overlay{position:fixed;inset:0;background:rgba(0,0,0,.45);display:none;align-items:center;
+    justify-content:center;padding:18px;z-index:50}
+  .overlay.show{display:flex}
+  .modal{background:var(--adm-panel);border:1px solid var(--adm-border);border-radius:12px;
+    box-shadow:var(--adm-shadow);width:min(520px,100%);max-height:90vh;overflow:auto}
+  .modal h3{margin:0;padding:14px 16px;border-bottom:1px solid var(--adm-border);font-size:15px}
+  .modal .body{padding:14px 16px;display:flex;flex-direction:column;gap:10px}
+  .modal .foot{display:flex;justify-content:flex-end;gap:8px;padding:12px 16px;border-top:1px solid var(--adm-border)}
+  .field label{display:block;font-size:12px;color:var(--adm-muted);margin-bottom:4px}
+  .row{display:flex;gap:10px;align-items:center;flex-wrap:wrap}
+  .row > *{flex:1;min-width:120px}
+  .check{display:flex;align-items:center;gap:6px;color:var(--adm-muted);font-size:12px}
+  .check input{width:auto}
+  .modal .err-inline{display:none;color:var(--adm-danger);font-size:12px}
+  .modal .err-inline.show{display:block}
+  .toast{position:fixed;right:18px;bottom:18px;background:var(--adm-panel);border:1px solid var(--adm-border);
+    border-radius:8px;padding:10px 14px;box-shadow:var(--adm-shadow);opacity:0;transform:translateY(6px);
+    transition:.18s;pointer-events:none;z-index:60}
+  .toast.show{opacity:1;transform:translateY(0)}
+</style>
+</head>
+<body>
+<div class="wrap">
+  <header>
+    <div>
+      <h1>Catsitate 数据管理</h1>
+      <div class="sub">好感度与备忘录可读写;空间好感事件与判定日志只读。去重账本、用量统计、天气缓存不在此页。</div>
+    </div>
+    <button id="refresh">刷新</button>
+  </header>
+
+  <div class="err" id="err"></div>
+
+  <div class="tabs" id="tabs">
+    <button class="tab on" data-tab="fav">好感度</button>
+    <button class="tab" data-tab="memo">备忘录</button>
+    <button class="tab" data-tab="log">判定日志</button>
+    <button class="tab" data-tab="event">空间事件</button>
+  </div>
+
+  <div class="panel" id="panel-fav">
+    <div class="toolbar">
+      <div class="grow"><input id="fav-kw" placeholder="搜索 QQ 或注记"></div>
+      <button id="fav-search">搜索</button>
+    </div>
+    <div id="fav-body"></div>
+    <div class="pager" id="fav-pager"></div>
+  </div>
+
+  <div class="panel" id="panel-memo" style="display:none">
+    <div class="toolbar">
+      <div class="grow"><input id="memo-kw" placeholder="搜索 QQ 或内容"></div>
+      <button id="memo-search">搜索</button>
+      <button id="memo-add" class="primary">新增备忘</button>
+      <button id="memo-del-selected" class="danger" style="display:none">删除所选</button>
+    </div>
+    <div id="memo-body"></div>
+    <div class="pager" id="memo-pager"></div>
+  </div>
+
+  <div class="panel" id="panel-log" style="display:none">
+    <div class="toolbar">
+      <div class="grow"><input id="log-user" placeholder="按 QQ 过滤(可空)"></div>
+      <div><input id="log-from" type="date"></div>
+      <div><input id="log-to" type="date"></div>
+      <button id="log-search">查询</button>
+    </div>
+    <div id="log-body"></div>
+    <div class="pager" id="log-pager"></div>
+  </div>
+
+  <div class="panel" id="panel-event" style="display:none">
+    <div class="toolbar">
+      <div class="grow"><input id="event-user" placeholder="按 QQ 过滤(可空)"></div>
+      <div><input id="event-from" type="date"></div>
+      <div><input id="event-to" type="date"></div>
+      <button id="event-search">查询</button>
+    </div>
+    <div id="event-body"></div>
+    <div class="pager" id="event-pager"></div>
+  </div>
+</div>
+
+<div class="overlay" id="overlay">
+  <div class="modal">
+    <h3 id="modal-title"></h3>
+    <div class="body">
+      <div class="err-inline" id="modal-err"></div>
+      <div id="modal-body"></div>
+    </div>
+    <div class="foot">
+      <button id="modal-cancel">取消</button>
+      <button id="modal-ok" class="primary">确定</button>
+    </div>
+  </div>
+</div>
+<div class="toast" id="toast"></div>
+
+<script>
+(function () {
+  "use strict";
+
+  var PAGE_SIZE = 20;
+  var bridge = window.maibot;
+  var state = {
+    tab: "fav",
+    page: { fav: 1, memo: 1, log: 1, event: 1 },
+    keyword: { fav: "", memo: "" },
+    filter: {
+      log: { user_id: "", date_from: "", date_to: "" },
+      event: { user_id: "", date_from: "", date_to: "" }
+    },
+    selected: new Set(),
+    lastTotal: { fav: 0, memo: 0, log: 0, event: 0 }
+  };
+
+  function $(id) { return document.getElementById(id); }
+
+  function el(tag, attrs, children) {
+    var node = document.createElement(tag);
+    if (attrs) {
+      Object.keys(attrs).forEach(function (key) {
+        if (key === "text") { node.textContent = attrs[key]; }
+        else if (key === "class") { node.className = attrs[key]; }
+        else if (key === "html") { node.innerHTML = attrs[key]; }
+        else if (key.slice(0, 2) === "on") { node.addEventListener(key.slice(2).toLowerCase(), attrs[key]); }
+        else if (attrs[key] !== null && attrs[key] !== undefined) { node.setAttribute(key, attrs[key]); }
+      });
+    }
+    (children || []).forEach(function (child) {
+      if (child === null || child === undefined) { return; }
+      node.appendChild(typeof child === "string" ? document.createTextNode(child) : child);
+    });
+    return node;
+  }
+
+  function showError(message) {
+    var box = $("err");
+    box.textContent = message || "操作失败";
+    box.classList.add("show");
+  }
+  function clearError() { $("err").classList.remove("show"); }
+
+  var toastTimer = null;
+  function toast(message) {
+    var node = $("toast");
+    node.textContent = message;
+    node.classList.add("show");
+    clearTimeout(toastTimer);
+    toastTimer = setTimeout(function () { node.classList.remove("show"); }, 2200);
+  }
+
+  function applyTheme(theme) {
+    var dark = String(theme || "").toLowerCase().indexOf("dark") >= 0;
+    document.documentElement.classList.toggle("dark", dark);
+  }
+
+  async function query(name, args) {
+    var result;
+    try {
+      result = await bridge.query(name, args || {});
+    } catch (exc) {
+      throw new Error("查询失败:" + (exc && exc.message ? exc.message : String(exc)));
+    }
+    if (!result || result.ok !== true) {
+      throw new Error((result && result.error) || "查询失败");
+    }
+    return result;
+  }
+
+  async function action(name, args) {
+    var result;
+    try {
+      result = await bridge.action(name, args || {});
+    } catch (exc) {
+      throw new Error("操作失败:" + (exc && exc.message ? exc.message : String(exc)));
+    }
+    if (!result || result.ok !== true) {
+      throw new Error((result && result.error) || "操作失败");
+    }
+    return result;
+  }
+
+  function pager(node, tab, total) {
+    state.lastTotal[tab] = total;
+    var pages = Math.max(1, Math.ceil(total / PAGE_SIZE));
+    var current = state.page[tab];
+    node.textContent = "";
+    node.appendChild(el("span", { text: "第 " + current + " / " + pages + " 页 · 共 " + total + " 条" }));
+    node.appendChild(el("button", {
+      class: "small", text: "上一页", disabled: current <= 1 ? "disabled" : null,
+      onclick: function () { if (current > 1) { state.page[tab] = current - 1; load(tab); } }
+    }));
+    node.appendChild(el("button", {
+      class: "small", text: "下一页", disabled: current >= pages ? "disabled" : null,
+      onclick: function () { if (current < pages) { state.page[tab] = current + 1; load(tab); } }
+    }));
+  }
+
+  function table(columns, rows, emptyText) {
+    if (!rows.length) { return el("div", { class: "empty", text: emptyText || "暂无数据" }); }
+    var thead = el("thead", {}, [el("tr", {}, columns.map(function (c) { return el("th", { text: c.label }); }))]);
+    var tbody = el("tbody", {}, rows.map(function (row) {
+      return el("tr", {}, columns.map(function (c) {
+        var value = c.render ? c.render(row) : row[c.field];
+        var cell = el("td");
+        if (value instanceof Node) { cell.appendChild(value); }
+        else if (value === null || value === undefined) { cell.textContent = ""; }
+        else { cell.textContent = String(value); }
+        if (c.clip) { cell.className = "clip"; cell.title = cell.textContent; }
+        return cell;
+      }));
+    }));
+    return el("table", {}, [thead, tbody]);
+  }
+
+  function levelBadge(row) {
+    return el("span", { class: "badge", text: (row.level_name || "?") + "(" + row.score + ")" });
+  }
+
+  async function load(tab) {
+    clearError();
+    try {
+      if (tab === "fav") {
+        var fav = await query("fav", {
+          page: state.page.fav, page_size: PAGE_SIZE, keyword: state.keyword.fav
+        });
+        $("fav-body").replaceChildren(table([
+          { label: "QQ", render: function (r) { return r.user_id; } },
+          { label: "等级 / 分数", render: levelBadge },
+          { label: "注记", field: "note", clip: true },
+          { label: "判定时间", field: "judged_at" },
+          { label: "操作", render: function (r) {
+              return el("div", { class: "row" }, [
+                el("button", { class: "small", text: "编辑", onclick: function () { openFavEdit(r); } }),
+                el("button", { class: "small danger", text: "重置", onclick: function () { confirmFavReset(r); } })
+              ]);
+            } }
+        ], fav.items, "暂无好感度记录"));
+        pager($("fav-pager"), "fav", fav.total);
+      } else if (tab === "memo") {
+        var memo = await query("memo", {
+          page: state.page.memo, page_size: PAGE_SIZE, keyword: state.keyword.memo
+        });
+        state.selected.clear();
+        $("memo-body").replaceChildren(table([
+          { label: "", render: function (r) {
+              return el("input", {
+                type: "checkbox", checked: state.selected.has(r.id) ? "checked" : null,
+                onchange: function (ev) {
+                  if (ev.target.checked) { state.selected.add(r.id); } else { state.selected.delete(r.id); }
+                  $("memo-del-selected").style.display = state.selected.size ? "" : "none";
+                }
+              });
+            } },
+          { label: "ID", field: "id" },
+          { label: "QQ", field: "user_id" },
+          { label: "内容", field: "content", clip: true },
+          { label: "状态", render: function (r) {
+              return el("span", { class: "badge" + (r.expired ? " expired" : ""), text: r.expired ? "已过期" : "有效" });
+            } },
+          { label: "到期", field: "expires_at" },
+          { label: "提醒", render: function (r) { return r.remind_at || "—"; } },
+          { label: "操作", render: function (r) {
+              return el("div", { class: "row" }, [
+                el("button", { class: "small", text: "编辑", onclick: function () { openMemoEdit(r); } }),
+                el("button", { class: "small danger", text: "删除", onclick: function () { confirmMemoDelete([r.id]); } })
+              ]);
+            } }
+        ], memo.items, "暂无备忘"));
+        $("memo-del-selected").style.display = state.selected.size ? "" : "none";
+        pager($("memo-pager"), "memo", memo.total);
+      } else if (tab === "log") {
+        var log = await query("log", Object.assign({
+          page: state.page.log, page_size: PAGE_SIZE
+        }, state.filter.log));
+        $("log-body").replaceChildren(table([
+          { label: "时间", field: "judged_at" },
+          { label: "QQ", field: "user_id" },
+          { label: "Δ", field: "delta" },
+          { label: "注记", field: "note", clip: true },
+          { label: "判定 ID", field: "judge_id", clip: true }
+        ], log.items, "暂无判定日志"));
+        pager($("log-pager"), "log", log.total);
+      } else if (tab === "event") {
+        var event = await query("event", Object.assign({
+          page: state.page.event, page_size: PAGE_SIZE
+        }, state.filter.event));
+        $("event-body").replaceChildren(table([
+          { label: "创建时间", field: "created_at" },
+          { label: "日期", field: "day" },
+          { label: "QQ", field: "user_id" },
+          { label: "类型", field: "kind" },
+          { label: "文本", field: "text", clip: true }
+        ], event.items, "暂无空间事件"));
+        pager($("event-pager"), "event", event.total);
+      }
+    } catch (exc) {
+      showError(exc.message || String(exc));
+    }
+  }
+
+  // ── 弹窗 ──────────────────────────────────────────────
+  var modalSubmit = null;
+
+  function closeModal() {
+    $("overlay").classList.remove("show");
+    $("modal-err").classList.remove("show");
+    $("modal-ok").disabled = false;
+    modalSubmit = null;
+  }
+
+  function openModal(title, bodyNodes, onSubmit, options) {
+    $("modal-title").textContent = title;
+    $("modal-body").replaceChildren.apply($("modal-body"), bodyNodes);
+    $("modal-err").classList.remove("show");
+    $("modal-ok").disabled = false;
+    $("modal-ok").textContent = (options && options.okText) || "确定";
+    $("modal-ok").className = (options && options.danger) ? "danger" : "primary";
+    modalSubmit = onSubmit;
+    $("overlay").classList.add("show");
+  }
+
+  $("modal-cancel").addEventListener("click", closeModal);
+  $("modal-ok").addEventListener("click", async function () {
+    if (!modalSubmit) { return; }
+    var button = $("modal-ok");
+    button.disabled = true;
+    $("modal-err").classList.remove("show");
+    try {
+      await modalSubmit();
+      closeModal();
+    } catch (exc) {
+      $("modal-err").textContent = exc.message || String(exc);
+      $("modal-err").classList.add("show");
+      button.disabled = false;
+    }
+  });
+  $("overlay").addEventListener("click", function (ev) {
+    if (ev.target === $("overlay")) { closeModal(); }
+  });
+
+  function field(label, input, hint) {
+    return el("div", { class: "field" }, [
+      el("label", { text: label }), input,
+      hint ? el("div", { class: "sub", text: hint }) : null
+    ]);
+  }
+
+  function openFavEdit(row) {
+    var score = el("input", { type: "number", min: "0", max: "100", value: String(row.score) });
+    var note = el("input", { type: "text", maxlength: "200", value: row.note || "" });
+    openModal("编辑好感度 · " + row.user_id, [
+      field("分数(0~100,100 即「特别」,全表独占)", score),
+      field("关系注记(可空,上限按配置)", note)
+    ], async function () {
+      var args = { user_id: row.user_id };
+      if (String(score.value).trim() !== "") { args.score = Number(score.value); }
+      args.note = note.value;
+      await action("fav_update", args);
+      toast("已保存");
+      await load("fav");
+    });
+  }
+
+  function confirmFavReset(row) {
+    openModal("重置好感度", [
+      el("div", { text: "将把 " + row.user_id + " 的分数/等级/注记归零,并清理未结算批次;判定日志保留。" })
+    ], async function () {
+      await action("fav_reset", { user_id: row.user_id });
+      toast("已重置");
+      await load("fav");
+    }, { okText: "确认重置", danger: true });
+  }
+
+  function openMemoCreate() {
+    var user = el("input", { type: "text", placeholder: "QQ 号" });
+    var content = el("textarea", { maxlength: "200", placeholder: "备忘内容" });
+    var ttl = el("input", { type: "number", min: "0", placeholder: "留空 = 配置默认" });
+    var remind = el("input", { type: "text", placeholder: "YYYY-MM-DDTHH:MM(留空 = 不提醒)" });
+    var extra = el("input", { type: "text", placeholder: "附带 QQ,逗号分隔(可空,≤5 个)" });
+    openModal("新增备忘", [
+      field("用户 QQ", user),
+      field("内容", content),
+      field("有效期(小时)", ttl),
+      field("提醒时刻", remind),
+      field("附带 QQ", extra)
+    ], async function () {
+      var args = { user_id: user.value.trim(), content: content.value.trim() };
+      if (!args.user_id) { throw new Error("请填写用户 QQ"); }
+      if (!args.content) { throw new Error("请填写备忘内容"); }
+      if (String(ttl.value).trim() !== "") { args.ttl_hours = Number(ttl.value); }
+      if (remind.value.trim()) { args.remind_at = remind.value.trim(); }
+      if (extra.value.trim()) { args.extra_user_ids = extra.value.trim(); }
+      var res = await action("memo_create", args);
+      toast("已新增备忘 #" + (res.id || ""));
+      state.page.memo = 1;
+      await load("memo");
+    });
+  }
+
+  function openMemoEdit(row) {
+    var content = el("textarea", { maxlength: "200" });
+    content.value = row.content || "";
+    var ttlCheck = el("input", { type: "checkbox" });
+    var ttl = el("input", { type: "number", min: "1", placeholder: "hours", disabled: "disabled" });
+    var remindCheck = el("input", { type: "checkbox" });
+    var remind = el("input", { type: "text", placeholder: "YYYY-MM-DDTHH:MM(清空则留空)" });
+    remind.value = row.remind_at || "";
+    remind.disabled = true;
+    ttlCheck.addEventListener("change", function () { ttl.disabled = !ttlCheck.checked; });
+    remindCheck.addEventListener("change", function () { remind.disabled = !remindCheck.checked; });
+    openModal("编辑备忘 #" + row.id, [
+      field("内容", content),
+      el("label", { class: "check" }, [ttlCheck, "重置有效期(从现在起)"]),
+      field("有效期(小时)", ttl),
+      el("label", { class: "check" }, [remindCheck, "修改提醒时刻(清空即取消提醒)"]),
+      field("提醒时刻", remind)
+    ], async function () {
+      var args = { memo_id: row.id, content: content.value.trim() };
+      if (!args.content) { throw new Error("备忘内容不能为空"); }
+      if (ttlCheck.checked) {
+        if (String(ttl.value).trim() === "") { throw new Error("请填写新的有效期"); }
+        args.ttl_hours = Number(ttl.value);
+      }
+      if (remindCheck.checked) { args.remind_at = remind.value.trim(); }
+      await action("memo_update", args);
+      toast("已保存");
+      await load("memo");
+    });
+  }
+
+  function confirmMemoDelete(ids) {
+    openModal("删除备忘", [
+      el("div", { text: ids.length === 1 ? ("确认删除备忘 #" + ids[0] + "?") : ("确认删除所选 " + ids.length + " 条备忘?") })
+    ], async function () {
+      if (ids.length === 1) { await action("memo_delete", { memo_id: ids[0] }); }
+      else { await action("memo_batch_delete", { ids: ids.join(",") }); }
+      toast("已删除");
+      await load("memo");
+    }, { okText: "确认删除", danger: true });
+  }
+
+  // ── 事件绑定 ──────────────────────────────────────────
+  $("tabs").addEventListener("click", function (ev) {
+    var button = ev.target.closest("[data-tab]");
+    if (!button) { return; }
+    var tab = button.getAttribute("data-tab");
+    if (tab === state.tab) { return; }
+    state.tab = tab;
+    document.querySelectorAll(".tab").forEach(function (t) { t.classList.toggle("on", t === button); });
+    ["fav", "memo", "log", "event"].forEach(function (name) {
+      $("panel-" + name).style.display = name === tab ? "" : "none";
+    });
+    load(tab);
+  });
+
+  $("refresh").addEventListener("click", function () { load(state.tab); });
+
+  $("fav-search").addEventListener("click", function () {
+    state.keyword.fav = $("fav-kw").value.trim(); state.page.fav = 1; load("fav");
+  });
+  $("fav-kw").addEventListener("keydown", function (ev) { if (ev.key === "Enter") { $("fav-search").click(); } });
+
+  $("memo-search").addEventListener("click", function () {
+    state.keyword.memo = $("memo-kw").value.trim(); state.page.memo = 1; load("memo");
+  });
+  $("memo-kw").addEventListener("keydown", function (ev) { if (ev.key === "Enter") { $("memo-search").click(); } });
+  $("memo-add").addEventListener("click", openMemoCreate);
+  $("memo-del-selected").addEventListener("click", function () {
+    confirmMemoDelete(Array.from(state.selected));
+  });
+
+  $("log-search").addEventListener("click", function () {
+    state.filter.log = {
+      user_id: $("log-user").value.trim(),
+      date_from: $("log-from").value,
+      date_to: $("log-to").value
+    };
+    state.page.log = 1; load("log");
+  });
+  $("event-search").addEventListener("click", function () {
+    state.filter.event = {
+      user_id: $("event-user").value.trim(),
+      date_from: $("event-from").value,
+      date_to: $("event-to").value
+    };
+    state.page.event = 1; load("event");
+  });
+
+  // ── 启动 ──────────────────────────────────────────────
+  (async function boot() {
+    if (!bridge) {
+      showError("未检测到 WebUI 桥接接口(maibot),请从插件扩展页打开本页面");
+      return;
+    }
+    try {
+      if (bridge.ready && typeof bridge.ready.then === "function") { await bridge.ready; }
+    } catch (exc) {
+      showError("页面与宿主握手失败:" + (exc && exc.message ? exc.message : String(exc)));
+      return;
+    }
+    applyTheme(bridge.context && bridge.context.theme);
+    window.addEventListener("maibot:context", function (ev) {
+      applyTheme(ev && ev.detail && ev.detail.theme);
+    });
+    load("fav");
+  })();
+})();
+</script>
+</body>
+</html>

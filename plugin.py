@@ -3063,6 +3063,8 @@ class CatsitatePlugin(MaiBotPlugin):
             return {"action": "continue", "modified_kwargs": kwargs}
         hit = match_guard(self._guard_compiled, final_text)
         if not hit:
+            # 通过路径留痕:护栏是否真正被调用,只能从日志区分「检查通过」与「钩子未触发」
+            self.ctx.logger.debug("内容护栏最终防线:检查通过(文本长度=%d)", len(final_text))
             return {"action": "continue", "modified_kwargs": kwargs}
         self.ctx.logger.warning(
             "内容护栏拦截:最终发送 命中规则%d,中止发送(文本:%s...)", hit, final_text[:60]

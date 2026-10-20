@@ -82,7 +82,11 @@
 - **宿主插件运行时**:版本校验策略变化——**SDK 超出声明范围改为仅告警放行,Host 范围仍硬拒**(跨次版本),故 manifest 的 host 上限仍是硬约束(已覆盖);6 个订阅钩子点、`planner.before_request` 载荷(`items`/`tool_definitions`/`built_message_count`/`session_id`)与 `hook_payloads` 序列化逐字节一致;`maisaka.context.append` 入参与返回字典逐行一致(内部类 `SessionBackedMessage`→`InternalContextMessage` 改名不影响契约);消息查询能力仅新增头像与 DB 线程化;prompt 扫描路径逻辑未变(仅改用实例根路径解析);`[plugin].enabled` 新增宿主保留键带回,插件自行声明该键时以模型值为准,语义不变。
 - **消息字典**:新增 `received_at`/`account_id`/`scope` 字段;`group_info` 校验放宽(有群号无群名不再退化为私聊,对插件有利)。宿主对缺 `account_id` 的入站消息走旧格式回退并**告警「下个版本移除」**——插件虚拟流消息经 `gateway.route_message` 投递时宿主虽会回填路由键,但告警仍会产生且下版本回退移除后将被拒收,**故本周期前向兼容改造**:`build_feed_message`/`build_notify_message` 新增 `account_id`/`scope` 参数,注入侧以 `favorability.bot_user_id`(与网关注册同源)填充。
 - **适配器(v1.0.2→v1.1.7)**:插件所用 3 个 API(`adapter.napcat.account.get_cookies`/`message.send_poke`/`message.set_msg_emoji_like`)的端点层与 `_call_napcat_action` 逐字节未变,服务层与 `transport.py` 无相关改动(传输层 diff 为 0),返回值仍为原样 OneBot 响应;通知/入站消息字典核心字段(含 `is_notify`、at 段 `target_user_id`、reply 段结构)逐键一致,新增正式 `account_id`/`scope`。**适配器 `config_version` 2.4.0→2.7.1**,部署配置需同步迁移(否则 Runner 版本校验会按默认骨架重建)。
-- 验证:641 用例全绿(SDK 2.12.0 环境;含正式归属字段断言);docker 实机(MaiBot 1.3.11 + SnowLuma v1.1.7)插件与适配器零失败加载,两侧配置值原样保留,cookie 重取与通知轮询在登录后恢复正常。
+- 验证:642 用例全绿(SDK 2.12.0 环境;含正式归属字段断言与源码级构造点守卫);docker 实机(MaiBot 1.3.11 + SnowLuma v1.1.7)插件与适配器零失败加载,两侧配置值原样保留。
+- **实机运行时发现两处静态核实无法覆盖的问题**(均已修复):
+  1. 虚拟流消息共 **5 个**构造点(浏览/通知/发布回注/冷启动种子/日记回注),初版只改了前两个;发布回注在 16:42:24 实机触发旧格式路由告警(`qzone_self_*`)才暴露。已全部补齐并加源码级守卫用例。
+  2. **宿主对网关注入同样执行统一名单策略**:`config/adapter_policy.toml` 的严格白名单(默认 block)把虚拟群 `qzone_feed` 一并挡掉,注入被拒(16:49 实机复现)。已在策略中新增仅匹配 `platform = "qzone-qq"` 的放行条目;真实 QQ 群聊/私聊仍走原白名单。**生产升级必须同步这条规则**,否则空间感知全链路静默失效(仅日志可见「注入被宿主拒绝」)。
+- 修复后实机全链路:发现层拉取 8 条→入队 6 条→注入 5 条并触发虚拟流 Planner→`qzone_comment`/`qzone_like`/`qzone_next` 实际调用成功;旧格式路由告警计数归零。
 
 ---
 

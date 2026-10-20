@@ -588,3 +588,22 @@ def test_format_comment_block_caps_and_labels():
     assert "评论区(前3条/共61条):" in text3
     # 空区块
     assert format_comment_block([], comment_total=0) == ""
+
+
+def test_virtual_messages_carry_formal_route_fields():
+    """正式归属字段:宿主 1.3.11 起消息顶层 account_id/scope,旧格式下版本移除。
+
+    两条构造器都必须带上(缺字段会走宿主旧格式回退并告警,回退移除后消息被拒收);
+    未提供账号时写 None(字段存在且合法),不省略键。
+    """
+    feed_msg = build_feed_message(_feed(), seq=1, group_id="qzone_feed", group_name="QQ空间",
+                                  images=[], now_epoch=1750000100.0, account_id="3545773341")
+    assert feed_msg["account_id"] == "3545773341" and "scope" in feed_msg
+    notify_msg = build_notify_message(_feed(), group_id="qzone_feed", group_name="QQ空间",
+                                      now_epoch=1750000100.0, account_id="3545773341")
+    assert notify_msg["account_id"] == "3545773341" and "scope" in notify_msg
+    # 未配置 bot 账号:键必须存在(宁可显式 None,也不触发宿主旧格式回退)
+    bare = build_notify_message(_feed(), group_id="g", group_name="n", now_epoch=1750000100.0)
+    assert "account_id" in bare and bare["account_id"] is None
+    assert "account_id" in build_feed_message(_feed(), seq=1, group_id="g", group_name="n",
+                                              images=[], now_epoch=1750000100.0)

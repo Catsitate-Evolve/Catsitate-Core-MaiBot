@@ -473,8 +473,9 @@ class CatsitatePlugin(MaiBotPlugin):
             self.ctx.logger.warning("lunar-python 未安装:农历节日/节气不可用(公历回退链不受影响)")
         try:
             from maibot_sdk import __version__ as _sdk_version
-        except Exception:  # noqa: BLE001
+        except Exception as exc:  # noqa: BLE001
             _sdk_version = "unknown"
+            self.ctx.logger.warning("环境指纹: SDK 版本读取失败(%s),记为 unknown", rpc_error_brief(exc))
         try:
             _manifest = json.loads((Path(__file__).parent / "_manifest.json").read_text(encoding="utf-8"))
             _host_range = _manifest.get("host_application") or {}
@@ -484,8 +485,9 @@ class CatsitatePlugin(MaiBotPlugin):
                 f"host={_host_range.get('min_version', '?')}~{_host_range.get('max_version', '?')} "
                 f"sdk_range={_sdk_range.get('min_version', '?')}~{_sdk_range.get('max_version', '?')}"
             )
-        except Exception:  # noqa: BLE001
+        except Exception as exc:  # noqa: BLE001
             _fp = f"plugin=? sdk={_sdk_version} py={platform.python_version()}"
+            self.ctx.logger.warning("环境指纹: manifest 读取失败(%s),指纹不完整", rpc_error_brief(exc))
         self.ctx.logger.info("catsitate_core 已加载:注入/备忘录/好感度/贴表情/戳一戳/reply补传/图片重看")
         self.ctx.logger.info("环境指纹(适配取证): %s", _fp)
 
@@ -881,26 +883,31 @@ class CatsitatePlugin(MaiBotPlugin):
         """解析戳一戳目标:返回 (目标 QQ, 群号或空串, 错误原因)。
 
         优先 msg_id 反查发送者与消息所在群;仅给 user_id 时,群上下文取自当前聊天流
-        (群聊带群号、私聊为空)——群号不由模型传,避免传错群。
+        (群聊带群号、私聊为空)——群号不由模型传,避免传错群。上下文无法判定时
+        显式失败并提示改用 msg_id,不静默当私聊戳。
         """
 
         if msg_id:
-            try:
-                result = await self.ctx.call_capability(
-                    "message.get_by_id", message_id=msg_id, chat_id=stream_id
-                )
-            except Exception as exc:  # noqa: BLE001
-                return "", "", f"消息解析失败(能力调用异常:{rpc_error_brief(exc)})"
-            if isinstance(result, dict) and isinstance(result.get("message"), dict):
-                result = result["message"]  # SDK 解包键
-            if not isinstance(result, dict):
-                return "", "", f"消息 {msg_id} 解析失败(返回形态:{type(result).__name__})"
-            info = result.get("message_info") or {}
-            target = str((info.get("user_info") or {}).get("user_id") or "").strip()
-            group = str((info.get("group_info") or {}).get("group_id") or "").strip()
+            result, parse_err = await self._fetch_message_dict(msg_id, stream_id)
+            if result is None:
+                self._log_drift("poke:message", expected="dict(message_info)",
+                                actual=parse_err, detail=f"msg={msg_id}")
+                return "", "", f"消息 {msg_id} 解析失败({parse_err})"
+            info = result.get("message_info")
+            if not isinstance(info, dict):
+                self._log_drift("poke:message", expected="message_info:dict",
+                                actual=type(info).__name__, detail=f"msg={msg_id}")
+                return "", "", f"消息 {msg_id} 缺少 message_info"
+            user_info = info.get("user_info")
+            group_info = info.get("group_info")
+            user_info = user_info if isinstance(user_info, dict) else {}
+            group_info = group_info if isinstance(group_info, dict) else {}
+            target = str(user_info.get("user_id") or user_info.get("sender_id") or "").strip()
+            group = str(group_info.get("group_id") or "").strip()
             if not target:
+                keys = ",".join(sorted(str(k) for k in info.keys())[:8])
                 self._log_drift("poke:message", expected="message_info.user_info.user_id",
-                                actual="缺失", detail=f"keys={','.join(sorted(info.keys())[:8])}")
+                                actual="缺失", detail=f"keys={keys}")
                 return "", "", f"消息 {msg_id} 缺少发送者信息"
             if user_id and user_id != target:
                 return "", "", f"user_id({user_id})与消息 {msg_id} 的发送者({target})不一致"
@@ -908,16 +915,34 @@ class CatsitatePlugin(MaiBotPlugin):
         if not user_id:
             return "", "", "请提供 msg_id(戳该消息发送者)或 user_id(目标 QQ 号)。"
         await self._refresh_stream_cache()
-        stream = self._stream_cache.get(stream_id) or {}
-        group = str(stream.get("group_id") or "") if stream.get("is_group_session") else ""
-        if stream.get("is_group_session") and not group:
+        stream = self._stream_cache.get(stream_id)
+        if not isinstance(stream, dict):
+            self._log_drift("poke:stream", expected="流信息(chat.get_all_streams)",
+                            actual="未找到", detail=f"stream={stream_id}")
+            return "", "", "无法从当前聊天流判定群聊/私聊,请改用 msg_id 指定目标消息。"
+        raw_is_group = stream.get("is_group_session")
+        is_group = raw_is_group is True or str(raw_is_group).strip().lower() == "true"
+        group = str(stream.get("group_id") or "") if is_group else ""
+        if is_group and not group:
             self._log_drift("poke:stream", expected="群聊流含 group_id",
                             actual="group_id 为空", detail=f"stream={stream_id}")
+            return "", "", "当前群聊流缺少群号,无法戳一戳,请改用 msg_id 指定目标消息。"
         self.ctx.logger.debug(
-            "戳一戳目标解析: 来源=%s 上下文=%s", "msg_id" if msg_id else "user_id",
-            "群聊" if group else "私聊",
+            "戳一戳目标解析: 来源=user_id 上下文=%s", "群聊" if is_group else "私聊",
         )
         return user_id, group, ""
+
+    @staticmethod
+    def _require_reply_reference(value: Any, action: str) -> tuple[str, str]:
+        """reply_reference 必填校验(与主程序 reply 工具同构):返回 (值, 错误原因)。"""
+
+        reference = str(value or "").strip()
+        if not reference:
+            return "", (
+                f"{action}工具必须提供非空字符串 reply_reference,"
+                f"请填写本次{action}的上下文关键信息与回复方向后重新调用。"
+            )
+        return reference, ""
 
     @Tool(
         "inspect_image",
@@ -1240,9 +1265,9 @@ class CatsitatePlugin(MaiBotPlugin):
         content = content.strip()
         if not content:
             return "评论内容不能为空。"
-        reply_reference = str(reply_reference or "").strip()
-        if not reply_reference:
-            return "评论工具必须提供非空字符串 reply_reference,请填写本次评论的上下文关键信息与回复方向后重新调用。"
+        reply_reference, ref_err = self._require_reply_reference(reply_reference, "评论")
+        if ref_err:
+            return ref_err
         if len(content) > 200:
             return f"评论太长了({len(content)} 字,上限 200),请精简。"
         # 目标解析前置:纯本地查询(registry → seen_store → awaiting → 显式失败,
@@ -1338,9 +1363,9 @@ class CatsitatePlugin(MaiBotPlugin):
         if not (feed_id.strip() and comment_id.strip() and content.strip()):
             return "说说ID、评论ID和回复内容都不能为空——评论ID 照抄消息尾部〔〕或 view_friend_feed_detail 结果里的标注。"
         content = content.strip()
-        reply_reference = str(reply_reference or "").strip()
-        if not reply_reference:
-            return "回复工具必须提供非空字符串 reply_reference,请填写本次回复的上下文关键信息与回复方向后重新调用。"
+        reply_reference, ref_err = self._require_reply_reference(reply_reference, "回复")
+        if ref_err:
+            return ref_err
         if len(content) > 200:
             return f"回复太长了({len(content)} 字,上限 200)。"
         # 目标解析前置(说说+楼中楼二元组,均为纯本地查询)——锚失效时在润色
@@ -4881,6 +4906,26 @@ class CatsitatePlugin(MaiBotPlugin):
         result = await self.ctx.call_capability("message.get_recent", chat_id=stream_id, limit=limit)
         return result if isinstance(result, list) else []
 
+    async def _fetch_message_dict(self, message_id: str, stream_id: str) -> tuple[dict | None, str]:
+        """经 message.get_by_id 取消息字典(解包 SDK "message" 键);失败返回 (None, 原因)。
+
+        原因文案供调用方拼接(「消息 X 解析{原因}」),不抛异常;异常只记类型不插值正文。
+        """
+
+        try:
+            result = await self.ctx.call_capability(
+                "message.get_by_id", message_id=message_id, chat_id=stream_id
+            )
+        except Exception as exc:  # noqa: BLE001
+            return None, f"能力调用异常({rpc_error_brief(exc)})"
+        if isinstance(result, dict) and isinstance(result.get("message"), dict):
+            result = result["message"]  # SDK 解包键
+        if result is None:
+            return None, "返回 None"
+        if not isinstance(result, dict):
+            return None, f"返回非 dict({type(result).__name__})"
+        return result, ""
+
     async def _resolve_quote_sender(self, stream_id: str, reply_to_id: str) -> tuple[str | None, str]:
         """经主机能力 message.get_by_id 解析 reply 消息原发送者(实机:reply 段为纯消息 id)。
 
@@ -4889,20 +4934,9 @@ class CatsitatePlugin(MaiBotPlugin):
         失败返回 (None, 原因),不抛异常——原因供调用方每轮至多一条 warning。
         """
 
-        try:
-            result = await self.ctx.call_capability(
-                "message.get_by_id", message_id=reply_to_id, chat_id=stream_id
-            )
-        except Exception as exc:  # noqa: BLE001
-            # 仅记异常类型,不插值 exc 本体(安全纪律,同 decay.py)
-            return None, f"能力调用异常({rpc_error_brief(exc)})"
+        result, parse_err = await self._fetch_message_dict(reply_to_id, stream_id)
         if result is None:
-            return None, f"消息 {reply_to_id} 解析返回 None"
-        if not isinstance(result, dict):
-            return None, f"消息 {reply_to_id} 解析返回非 dict({type(result).__name__})"
-        payload = result.get("message")
-        if isinstance(payload, dict):
-            result = payload  # SDK 解包键 "message"
+            return None, f"消息 {reply_to_id} 解析{parse_err}"
         info = result.get("message_info") or {}
         user_info = info.get("user_info") or {}
         sender = str(user_info.get("user_id") or user_info.get("sender_id") or "")

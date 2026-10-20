@@ -90,7 +90,7 @@ def test_alias_hints_and_single_intent_contract():
     info = getattr(CatsitatePlugin.msg_react, "__maibot_component_info__")
     assert [p.name for p in info.parameters] == ["message_id", "intent"]
     assert "选择器" in info.description and "意图" in info.description
-    assert "狗头=doge" in EMOJI_ALIAS_HINTS and "点赞=" in EMOJI_ALIAS_HINTS
+    assert "狗头=doge" in EMOJI_ALIAS_HINTS and "猪=猪头" in EMOJI_ALIAS_HINTS and "骷髅头=骷髅" in EMOJI_ALIAS_HINTS
     # 选择器 prompt 的稳定段同时含分组表与俗称对照
     p = object.__new__(CatsitatePlugin)
     from catsitate_core.config import MsgReactSection

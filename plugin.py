@@ -1348,6 +1348,8 @@ class CatsitatePlugin(MaiBotPlugin):
         echo_msg = {
             "message_id": f"qzone_self_{int(time.time())}_{self._qzone_seq}",
             "platform": QZONE_PLATFORM,
+            "account_id": bot_uin or None,
+            "scope": None,
             "timestamp": str(int(time.time())),
             "message_info": {
                 # 发送者=bot 自己:昵称用 bot 名(主程序对自身消息按 bot 名显示,
@@ -2380,6 +2382,8 @@ class CatsitatePlugin(MaiBotPlugin):
             msg = {
                 "message_id": f"qzone_seed_{int(time.time())}_{self._qzone_seq}",
                 "platform": QZONE_PLATFORM,
+                "account_id": bot_uin or None,
+                "scope": None,
                 "timestamp": str(int(time.time())),
                 "message_info": {
                     "user_info": {"user_id": bot_uin, "user_nickname": await self._bot_echo_nickname()},
@@ -4229,6 +4233,8 @@ class CatsitatePlugin(MaiBotPlugin):
             msg = {
                 "message_id": f"qzone_self_diary_{int(time.time())}_{self._qzone_seq}",
                 "platform": QZONE_PLATFORM,
+                "account_id": bot_uin or None,
+                "scope": None,
                 "timestamp": str(int(time.time())),
                 "message_info": {
                     "user_info": {"user_id": bot_uin, "user_nickname": await self._bot_echo_nickname()},

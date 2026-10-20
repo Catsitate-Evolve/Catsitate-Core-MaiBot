@@ -607,3 +607,24 @@ def test_virtual_messages_carry_formal_route_fields():
     assert "account_id" in bare and bare["account_id"] is None
     assert "account_id" in build_feed_message(_feed(), seq=1, group_id="g", group_name="n",
                                               images=[], now_epoch=1750000100.0)
+
+
+def test_every_virtual_message_builder_sets_route_fields():
+    """源码级守卫:所有构造虚拟流消息的位置都必须带 account_id/scope。
+
+    宿主对缺字段的消息走旧格式回退并告警,回退移除后将被拒收;构造点分散在
+    messages.py(浏览/通知)与 plugin.py(发布回注/冷启动种子/日记回注),
+    新增构造点时本用例在 CI 内直接失败。
+    """
+    from pathlib import Path
+
+    missing = []
+    for path in (Path("catsitate_core/qzone/messages.py"), Path("plugin.py")):
+        lines = path.read_text(encoding="utf-8").splitlines()
+        for idx, line in enumerate(lines):
+            if '"message_id": f"qzone' not in line:
+                continue
+            window = "\n".join(lines[idx: idx + 8])
+            if '"account_id"' not in window:
+                missing.append(f"{path}:{idx + 1}")
+    assert not missing, "以下消息构造点缺少正式归属字段: " + ", ".join(missing)

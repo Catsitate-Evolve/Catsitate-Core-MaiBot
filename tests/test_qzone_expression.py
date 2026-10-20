@@ -140,3 +140,43 @@ def test_feed_body_registry_first_then_seen(tmp_path):
     assert p._qzone_feed_body("t1", _Ctx()) == "registry 全文"
     assert p._qzone_feed_body("t1", None) == "seen 摘要"
     assert p._qzone_feed_body("t1", type("E", (), {"content_summary": ""})()) == "seen 摘要"
+
+
+@pytest.mark.asyncio
+async def test_polish_reply_reference_precedes_target_context():
+    """reply_reference 原样进变量段且排在目标消息块之前(对齐主程序 replyer 的顺序)。"""
+    call, calls = _llm({"success": True, "response": "嗯"})
+    await polish_action_text(
+        call, persona="p", voice="v", draft="草稿",
+        scene="QQ空间里,想给好友的说说写一条评论",
+        reply_reference="她刚考完试,心情不错;上次聊到想去看海",
+        target_context=["你正在评论 小明 的这条说说:\n今天去爬山了"],
+    )
+    contents = [m["content"] for m in calls[0]]
+    assert contents[4] == "回复信息参考：\n她刚考完试,心情不错;上次聊到想去看海"
+    assert contents[5] == "你正在评论 小明 的这条说说:\n今天去爬山了"
+    assert contents[-1] == "【待发内容】\n草稿"
+
+
+def test_qzone_reply_tools_require_reply_reference():
+    """两个空间回复工具与主程序 reply 同构:reply_reference 必填,缺失即显式拒绝。"""
+    import asyncio
+    import inspect
+    import logging
+    from types import SimpleNamespace
+
+    from plugin import CatsitatePlugin
+
+    for tool_name in ("qzone_comment", "qzone_reply"):
+        info = getattr(getattr(CatsitatePlugin, tool_name), "__maibot_component_info__")
+        params = {p.name: p.required for p in info.parameters}
+        assert params.get("reply_reference") is True, tool_name
+
+    p = object.__new__(CatsitatePlugin)
+    p._qzone_available = True
+    p._ctx = SimpleNamespace(logger=logging.getLogger("test.qzone"))
+
+    msg = asyncio.run(p.qzone_comment(feed_id="t1", content="hi", reply_reference=""))
+    assert "reply_reference" in msg
+    msg2 = asyncio.run(p.qzone_reply(feed_id="t1", comment_id="c1", content="hi", reply_reference="  "))
+    assert "reply_reference" in msg2

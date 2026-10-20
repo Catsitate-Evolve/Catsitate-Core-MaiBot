@@ -79,7 +79,8 @@
 对照主程序 replyer 的做法(目标消息块:发送者 + msg_id + 引用 ID + **正文前 300 字** + 「这条才是你要回复的目标」,外加 planner 的 `reply_reference` 背景段)补齐空间润色层的上下文:
 
 - `FeedItem` 新增 `comment_text`(通知事件正文,@ 已转可读昵称),`FeedContext` 新增 `comment_text_map`(comment_tid → 评论原文,与 comment_map 同款键级合并);通知注入登记事件原文,浏览注入与详情查看登记结构化评论原文。
-- `polish_action_text` 新增 `target_context` 参数:上下文行进变量段、草稿恒在最后;润色模板本就声明「参考上面给你的信息」,无需改模板。
+- **`reply_reference` 直接对齐主程序 reply 工具**:`qzone_comment`/`qzone_reply` 新增必填参数 `reply_reference`(planner 填上下文关键信息与回复方向,不是正文),润色层以「回复信息参考：」原样使用,排在目标上下文之前;缺失时显式拒绝并提示重新调用。
+- `polish_action_text` 新增 `reply_reference` 与 `target_context` 参数:上下文行进变量段、草稿恒在最后;润色模板本就声明「参考上面给你的信息」,无需改模板。
 - `qzone_comment` 注入「你正在评论 {作者} 的这条说说:…」;`qzone_reply` 注入「你正在回复这条评论:…」+「它出现在这条说说下:…」;正文优先 registry、回退 seen 摘要,评论原文精确→前缀匹配,缺失时只给场景语不编造。
 - 测试基线 **655 全绿**(新增目标上下文顺序、评论原文查找、正文回退三组用例)。
 

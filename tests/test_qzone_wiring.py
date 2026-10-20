@@ -334,7 +334,7 @@ def test_qzone_comment_success_via_registry(tmp_path):
                    content_summary="今天去了海边", comment_map={"ct0": ("20000", "小红")})
     # seen 预登记(mark_interacted 的落库对象;registry-only 通知说说无行则 UPDATE 空转,无害)
     p.qzone_seen.mark_queued("fulltid0001abc", abstime="1", author_uin="10001", summary="动态")
-    res = asyncio.run(p.qzone_comment(feed_id="fulltid0001", content="好看!", stream_id="s1"))
+    res = asyncio.run(p.qzone_comment(feed_id="fulltid0001", content="好看!", reply_reference="测试上下文", stream_id="s1"))
     assert res.startswith("评论成功,已发出:")
     # fid 回填为全量 tid(锚前缀不可直接发 API);target_qq=说说主人;正文=润色结果
     assert p.qzone_client.comment_calls == [("fulltid0001abc", "10001", "好看!")]
@@ -364,7 +364,7 @@ def test_qzone_comment_polish_failure_falls_back_to_draft(tmp_path):
         return {"success": False}
 
     p._side_llm_call = _fail
-    res = asyncio.run(p.qzone_comment(feed_id="genfail1", content="夸一下", stream_id="s1"))
+    res = asyncio.run(p.qzone_comment(feed_id="genfail1", content="夸一下", reply_reference="测试上下文", stream_id="s1"))
     assert res.startswith("评论成功,已发出:")
     assert p.qzone_client.comment_calls == [("genfail1", "10001", "夸一下")]  # 草稿直发
     assert any(level == "warning" and "表达润色失败" in str(a[0]) for level, a in p.logs)
@@ -376,7 +376,7 @@ def test_qzone_comment_at_prefix_uses_commenter_nickname(tmp_path):
 
     p = _make_tool_plugin(tmp_path)
     _register_feed(p, tid="notifyfeed01", owner=BOT_UIN, commenter_uin="20000", commenter_nickname="小红")
-    res = asyncio.run(p.qzone_comment(feed_id="notifyfeed01", content="谢谢你!",
+    res = asyncio.run(p.qzone_comment(feed_id="notifyfeed01", content="谢谢你!", reply_reference="测试上下文",
                                       at_user_id="20000", stream_id="s1"))
     assert res.startswith("评论成功,已发出:") and "@小红" in res
     # 源A:说说主人=bot 自己,评论带 @ 前缀(napcat 适配器同格式)
@@ -395,13 +395,13 @@ def test_qzone_comment_target_resolution_failure_and_fallback(tmp_path):
     (零写调用,不臆造目标);seen_store 回退:7 天内浏览过的动态按前缀命中。"""
 
     p = _make_tool_plugin(tmp_path)
-    res = asyncio.run(p.qzone_comment(feed_id="nosuchid", content="?", stream_id="s1"))
+    res = asyncio.run(p.qzone_comment(feed_id="nosuchid", content="?", reply_reference="测试上下文", stream_id="s1"))
     assert "未找到说说" in res
     assert p.qzone_client.comment_calls == []
     # 回退:registry 无记录,但 seen_store 有 7 天内浏览记录(前缀匹配)
     p.qzone_seen.mark_queued("seentid0001", abstime="1", author_uin="10003", summary="旧动态")
     p.qzone_seen.mark_seen("seentid0001", datetime.now().strftime("%Y-%m-%dT%H:%M:%S"))
-    res2 = asyncio.run(p.qzone_comment(feed_id="seentid0001", content="补一条", stream_id="s1"))
+    res2 = asyncio.run(p.qzone_comment(feed_id="seentid0001", content="补一条", reply_reference="测试上下文", stream_id="s1"))
     assert res2.startswith("评论成功,已发出:")
     assert p.qzone_client.comment_calls == [("seentid0001", "10003", "补一条")]
 
@@ -413,19 +413,19 @@ def test_qzone_comment_reply_anchor_miss_skips_polish_llm(tmp_path):
 
     p = _make_tool_plugin(tmp_path)
     # qzone_comment:说说锚失效
-    res = asyncio.run(p.qzone_comment(feed_id="nosuchanchor", content="你好", stream_id="s1"))
+    res = asyncio.run(p.qzone_comment(feed_id="nosuchanchor", content="你好", reply_reference="测试上下文", stream_id="s1"))
     assert "未找到说说" in res
     assert p.expr_llm_calls == []  # 润色 LLM 零调用
     assert p.qzone_client.comment_calls == []
 
     # qzone_reply:说说锚失效
-    res2 = asyncio.run(p.qzone_reply(feed_id="nosuchanchor", comment_id="c1", content="你好", stream_id="s1"))
+    res2 = asyncio.run(p.qzone_reply(feed_id="nosuchanchor", comment_id="c1", content="你好", reply_reference="测试上下文", stream_id="s1"))
     assert "未找到说说" in res2
     assert p.qzone_client.reply_calls == []
 
     # qzone_reply:说说锚有效但评论锚失效(二元组解析同样前置)
     _register_feed(p, tid="feednoanchor", owner="10001")
-    res3 = asyncio.run(p.qzone_reply(feed_id="feednoanchor", comment_id="gone", content="你好", stream_id="s1"))
+    res3 = asyncio.run(p.qzone_reply(feed_id="feednoanchor", comment_id="gone", content="你好", reply_reference="测试上下文", stream_id="s1"))
     assert "未找到这条评论" in res3
     assert p.expr_llm_calls == []  # 三种锚失效形态全零润色调用
     assert p.qzone_client.reply_calls == []
@@ -442,7 +442,7 @@ def test_qzone_comment_auth_error_invalidates_cookie(tmp_path):
     p = _make_tool_plugin(tmp_path)
     _register_feed(p, tid="feedX", owner="10001")
     p.qzone_client = _AuthFailClient()
-    res = asyncio.run(p.qzone_comment(feed_id="feedX", content="你好", stream_id="s1"))
+    res = asyncio.run(p.qzone_comment(feed_id="feedX", content="你好", reply_reference="测试上下文", stream_id="s1"))
     # 同轮自愈(2026-09-02 #7):作废→重取(桩默认重取失败)→显式回执,不再「下轮再试」
     assert "登录态失效且 cookie 重取失败" in res
     assert p.qzone_cookie.invalidate_calls == 1  # cookie 已作废并尝试重取
@@ -465,7 +465,7 @@ def test_qzone_comment_auth_error_invalidates_cookie(tmp_path):
 
     p2.qzone_client = _AuthOnceClient()
     p2.qzone_cookie.get_result = {"p_skey": "fresh"}
-    res = asyncio.run(p2.qzone_comment(feed_id="feedX", content="你好", stream_id="s1"))
+    res = asyncio.run(p2.qzone_comment(feed_id="feedX", content="你好", reply_reference="测试上下文", stream_id="s1"))
     assert res.startswith("评论成功,已发出:")  # 同轮重试成功,动作未放弃
     assert p2.qzone_cookie.invalidate_calls == 1 and p2.qzone_client.calls == 2
 
@@ -497,12 +497,12 @@ def test_qzone_biz_error_too_frequent_receipts(tmp_path):
     _register_feed(p, tid="feedF", owner="10001")
     p.qzone_client = _BizFailClient()
 
-    res = asyncio.run(p.qzone_comment(feed_id="feedF", content="你好", stream_id="s1"))
+    res = asyncio.run(p.qzone_comment(feed_id="feedF", content="你好", reply_reference="测试上下文", stream_id="s1"))
     assert "操作太频繁" in res and "别重试" in res
     _register_feed(p, tid="feedR", owner=BOT_UIN,
                    commenter_uin="20000", commenter_nickname="小红",
                    comment_tid="ct1", comment_uin="20000")
-    res = asyncio.run(p.qzone_reply(feed_id="feedR", comment_id="ct1", content="好", stream_id="s1"))
+    res = asyncio.run(p.qzone_reply(feed_id="feedR", comment_id="ct1", content="好", reply_reference="测试上下文", stream_id="s1"))
     assert "操作太频繁" in res and "别再重试这条" in res
     res = asyncio.run(p.qzone_post(content="发一条", stream_id="s1"))
     assert "操作太频繁" in res and "先歇一歇" in res
@@ -514,7 +514,7 @@ def test_qzone_biz_error_too_frequent_receipts(tmp_path):
         code = -9999
 
     p.qzone_client = _BizOtherClient()
-    res = asyncio.run(p.qzone_comment(feed_id="feedF", content="你好", stream_id="s1"))
+    res = asyncio.run(p.qzone_comment(feed_id="feedF", content="你好", reply_reference="测试上下文", stream_id="s1"))
     assert "code=-9999" in res and "先不要立刻重试" in res and "操作太频繁" not in res
 
 
@@ -527,7 +527,7 @@ def test_qzone_reply_real_thread_with_correct_pair(tmp_path):
     _register_feed(p, tid="feedR1", owner=BOT_UIN,
                    commenter_uin="20000", commenter_nickname="小红",
                    comment_tid="ct9", comment_uin="20000")
-    res = asyncio.run(p.qzone_reply(feed_id="feedR1", comment_id="ct9", content="谢谢!", stream_id="s1"))
+    res = asyncio.run(p.qzone_reply(feed_id="feedR1", comment_id="ct9", content="谢谢!", reply_reference="测试上下文", stream_id="s1"))
     assert res.startswith("回复成功,已回复 小红 的评论:")
     # 二元组对位:fid=全量 tid,target_qq=说说主人(源A=bot),commentUin=主评论作者
     assert p.qzone_client.reply_calls == [
@@ -548,7 +548,7 @@ def test_qzone_reply_source_b_pair_bot_head_commenter_target(tmp_path):
     _register_feed(p, tid="feedR2", owner="30000",
                    commenter_uin="30000", commenter_nickname="阿好",
                    comment_tid="bc1", comment_uin=BOT_UIN)
-    res = asyncio.run(p.qzone_reply(feed_id="feedR2", comment_id="bc1", content="说得对", stream_id="s1"))
+    res = asyncio.run(p.qzone_reply(feed_id="feedR2", comment_id="bc1", content="说得对", reply_reference="测试上下文", stream_id="s1"))
     assert res.startswith("回复成功,已回复 阿好 的评论:")
     fid, target_qq, ctid, cuin, cnick, content, at_uin, at_nick = p.qzone_client.reply_calls[0]
     assert (fid, target_qq, ctid) == ("feedR2", "30000", "bc1")
@@ -563,10 +563,10 @@ def test_qzone_reply_requires_all_params_and_session(tmp_path):
 
     p = _make_tool_plugin(tmp_path)
     _register_feed(p, tid="feedR3", owner="10001")
-    res = asyncio.run(p.qzone_reply(feed_id="", comment_id="c1", content="x", stream_id="s1"))
+    res = asyncio.run(p.qzone_reply(feed_id="", comment_id="c1", content="x", reply_reference="测试上下文", stream_id="s1"))
     assert "都不能为空" in res
     # 真实流调用不再被流门控拒绝,而是评论级解析失败显式指引
-    res2 = asyncio.run(p.qzone_reply(feed_id="feedR3", comment_id="c1", content="x", stream_id="other"))
+    res2 = asyncio.run(p.qzone_reply(feed_id="feedR3", comment_id="c1", content="x", reply_reference="测试上下文", stream_id="other"))
     assert "未找到这条评论" in res2 and "view_friend_feed_detail" in res2
     assert p.qzone_client.reply_calls == []
 
@@ -1322,7 +1322,7 @@ def test_qzone_comment_guard_hit_blocks_api_and_accounting(tmp_path):
     _register_feed(p, tid="guardhit01", owner="10001")
     # seen 预登记(mark_interacted 的落库对象,拦截时不得被置位)
     p.qzone_seen.mark_queued("guardhit01", abstime="1", author_uin="10001", summary="动态")
-    res = asyncio.run(p.qzone_comment(feed_id="guardhit01", content="这条评论带敏感词", stream_id="s1"))
+    res = asyncio.run(p.qzone_comment(feed_id="guardhit01", content="这条评论带敏感词", reply_reference="测试上下文", stream_id="s1"))
     assert res == "内容被拦截(命中规则1),未发布。"
     assert p.qzone_client.comment_calls == []  # 零 API 调用
     rows = p.qzone_seen.store.query("SELECT interacted FROM qzone_feeds WHERE tid = 'guardhit01'")
@@ -1346,7 +1346,7 @@ def test_qzone_reply_guard_hit_blocks_api(tmp_path):
                    commenter_uin="20000", commenter_nickname="小红",
                    comment_tid="gc1", comment_uin="20000")
     res = asyncio.run(p.qzone_reply(feed_id="guardhit02", comment_id="gc1",
-                                    content="回复里也有敏感词", stream_id="s1"))
+                                    content="回复里也有敏感词", reply_reference="测试上下文", stream_id="s1"))
     assert res == "内容被拦截(命中规则1),未发布。"
     assert p.qzone_client.reply_calls == []  # 零 API 调用
     assert p.qzone_comment_seen.store.query("SELECT 1 FROM qzone_fav_events") == []  # 零记账
@@ -1384,10 +1384,10 @@ def test_guard_enabled_miss_publishes_normally(tmp_path):
     _register_feed(p, tid="cleanfeed01", owner="10001",
                    commenter_uin="20000", commenter_nickname="小红",
                    comment_tid="cc1", comment_uin="20000")
-    res_c = asyncio.run(p.qzone_comment(feed_id="cleanfeed01", content="很不错的照片", stream_id="s1"))
+    res_c = asyncio.run(p.qzone_comment(feed_id="cleanfeed01", content="很不错的照片", reply_reference="测试上下文", stream_id="s1"))
     assert res_c.startswith("评论成功,已发出:")
     res_r = asyncio.run(p.qzone_reply(feed_id="cleanfeed01", comment_id="cc1",
-                                      content="谢谢你", stream_id="s1"))
+                                      content="谢谢你", reply_reference="测试上下文", stream_id="s1"))
     assert res_r.startswith("回复成功")
     res_p = asyncio.run(p.qzone_post(content="今天心情很好", stream_id="s1"))
     assert res_p.startswith("发布成功,已发出说说:")
@@ -1406,10 +1406,10 @@ def test_guard_disabled_matching_text_publishes(tmp_path):
     _register_feed(p, tid="offfeed001", owner="10001",
                    commenter_uin="20000", commenter_nickname="小红",
                    comment_tid="oc1", comment_uin="20000")
-    res_c = asyncio.run(p.qzone_comment(feed_id="offfeed001", content="评论带敏感词也照发", stream_id="s1"))
+    res_c = asyncio.run(p.qzone_comment(feed_id="offfeed001", content="评论带敏感词也照发", reply_reference="测试上下文", stream_id="s1"))
     assert res_c.startswith("评论成功,已发出:")
     res_r = asyncio.run(p.qzone_reply(feed_id="offfeed001", comment_id="oc1",
-                                      content="回复带敏感词", stream_id="s1"))
+                                      content="回复带敏感词", reply_reference="测试上下文", stream_id="s1"))
     assert res_r.startswith("回复成功")
     res_p = asyncio.run(p.qzone_post(content="说说带敏感词", stream_id="s1"))
     assert res_p.startswith("发布成功,已发出说说:")
@@ -2250,13 +2250,13 @@ def test_qzone_reply_mixed_notify_and_comment_map_uses_matching_anchor(tmp_path)
                    comment_map={"ct_other": ("30000", "小蓝")})  # 浏览/detail 补充的评论锚
     # ① 回复另一条评论:comment_map 命中(通知锚不匹配)→ 二元组=小蓝、@小蓝
     res = asyncio.run(p.qzone_reply(feed_id="feedMix", comment_id="ct_other",
-                                    content="看到这条了", stream_id="s1"))
+                                    content="看到这条了", reply_reference="测试上下文", stream_id="s1"))
     assert res.startswith("回复成功,已回复 小蓝")
     call = p.qzone_client.reply_calls[-1]
     assert call[3] == "30000" and call[6] == "30000"  # comment_uin/at_uin=评论作者
     # ② 回复通知的主评论:锚匹配 → 通知二元组(bot 自己的主评论)+@评论者小红
     res2 = asyncio.run(p.qzone_reply(feed_id="feedMix", comment_id="ct_notify",
-                                     content="回你", stream_id="s1"))
+                                     content="回你", reply_reference="测试上下文", stream_id="s1"))
     assert res2.startswith("回复成功,已回复 小红")
     call2 = p.qzone_client.reply_calls[-1]
     assert call2[3] == BOT_UIN and call2[6] == "20000"  # 二元组=bot、@=评论者
@@ -2386,14 +2386,14 @@ def test_qzone_reply_via_comment_map_targets_comment_author(tmp_path):
     _register_feed(p, tid="feedM", owner="10001",
                    comment_map={"cm1": ("20000", "小红")})
     res = asyncio.run(p.qzone_reply(feed_id="feedM", comment_id="cm1",
-                                    content="回你!", stream_id="real-chat"))
+                                    content="回你!", reply_reference="测试上下文", stream_id="real-chat"))
     assert res.startswith("回复成功,已回复 小红")  # @ 目标=评论作者(昵称)
     assert p.qzone_client.reply_calls[0][3] == "20000"  # comment_uin=主评论作者
     assert p.qzone_client.reply_calls[0][6] == "20000"  # at_uin
 
     _register_feed(p, tid="feedN", owner="10001")  # 无评论锚
     res2 = asyncio.run(p.qzone_reply(feed_id="feedN", comment_id="gone1",
-                                     content="x", stream_id="real-chat"))
+                                     content="x", reply_reference="测试上下文", stream_id="real-chat"))
     assert "未找到这条评论" in res2 and "view_friend_feed_detail" in res2
 
 

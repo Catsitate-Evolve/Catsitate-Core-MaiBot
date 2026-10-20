@@ -1170,7 +1170,8 @@ class CatsitatePlugin(MaiBotPlugin):
         self._guard_compiled = _guard_list
 
     async def _qzone_polish(
-        self, draft: str, *, limit: int, scene: str, target_context: list[str] | None = None
+        self, draft: str, *, limit: int, scene: str,
+        reply_reference: str = "", target_context: list[str] | None = None,
     ) -> str:
         """表达润色:planner 草稿按人设+表达方式+场景语改写;失败告警后原样返回(草稿直发)。
 
@@ -1181,8 +1182,8 @@ class CatsitatePlugin(MaiBotPlugin):
         persona, _ = await self._persona_context()
         polished = await polish_action_text(
             self._qzone_expression_call(), persona=persona, voice=await self._voice_style(),
-            draft=draft, scene=scene, target_context=target_context,
-            limit=limit, logger=self.ctx.logger,
+            draft=draft, scene=scene, reply_reference=reply_reference,
+            target_context=target_context, limit=limit, logger=self.ctx.logger,
         )
         return polished or draft
 
@@ -1234,16 +1235,26 @@ class CatsitatePlugin(MaiBotPlugin):
     @Tool(
         "qzone_comment",
         description="评论好友的QQ空间说说。content 填你想说的内容,用你平时的口吻直接写。",
-        brief_description="评论说说",
+        brief_description="评论说说(需给 reply_reference 上下文与回复方向)",
         parameters=[
             ToolParameterInfo(name="feed_id", param_type="string", description="目标说说ID(照抄消息尾部「说说ID=」)", required=True),
             ToolParameterInfo(name="content", param_type="string", description="评论内容(≤200字,用你平时的口吻直接写)", required=True),
+            ToolParameterInfo(
+                name="reply_reference", param_type="string",
+                description=(
+                    "本次评论的上下文关键信息与回复方向,包括当前聊天状态、人物关系、事实信息、回忆信息;"
+                    "不是评论正文"
+                ),
+                required=True,
+            ),
             ToolParameterInfo(name="at_user_id", param_type="string", description="回应评论时填评论者QQ,会自动@TA", required=False),
         ],
         visibility="visible",
     )
-    async def qzone_comment(self, feed_id: str = "", content: str = "", at_user_id: str = "",
-                            **kwargs: Any) -> str:
+    async def qzone_comment(
+        self, feed_id: str = "", content: str = "", reply_reference: str = "",
+        at_user_id: str = "", **kwargs: Any,
+    ) -> str:
         """评论说说——bot 自主决定是否/如何评论(工具驱动,替代意图路由)。"""
         del kwargs  # 全域工具:view_friend_feeds 提供说说ID 后任何聊天里都可评论
         if not self._qzone_available:
@@ -1253,6 +1264,9 @@ class CatsitatePlugin(MaiBotPlugin):
         content = content.strip()
         if not content:
             return "评论内容不能为空。"
+        reply_reference = str(reply_reference or "").strip()
+        if not reply_reference:
+            return "评论工具必须提供非空字符串 reply_reference,请填写本次评论的上下文关键信息与回复方向后重新调用。"
         if len(content) > 200:
             return f"评论太长了({len(content)} 字,上限 200),请精简。"
         # 目标解析前置:纯本地查询(registry → seen_store → awaiting → 显式失败,
@@ -1269,7 +1283,8 @@ class CatsitatePlugin(MaiBotPlugin):
         )
         # 表达润色:planner 草稿按人设+表达方式+场景语改写(失败以草稿直发)
         content = await self._qzone_polish(
-            content, limit=200, scene="QQ空间里,想给好友的说说写一条评论", target_context=target_ctx
+            content, limit=200, scene="QQ空间里,想给好友的说说写一条评论",
+            reply_reference=reply_reference, target_context=target_ctx,
         )
         # v1.0.0 内容护栏:润色后的最终文本匹配(草稿直发形态同样覆盖),命中即
         # 拦截——零 API 调用零记账零 seen,回执明示规则编号
@@ -1323,16 +1338,26 @@ class CatsitatePlugin(MaiBotPlugin):
     @Tool(
         "qzone_reply",
         description="回复好友在你说说下的评论或对你评论的回复(QQ空间楼中楼),任何聊天里都可用。feed_id/comment_id 照抄消息尾部〔〕、浏览动态评论区,或 view_friend_feed_detail 结果里的标注。",
-        brief_description="回复评论(楼中楼)",
+        brief_description="回复评论(楼中楼,需给 reply_reference 上下文与回复方向)",
         parameters=[
             ToolParameterInfo(name="feed_id", param_type="string", description="目标说说ID(照抄消息尾部「说说ID=」)", required=True),
             ToolParameterInfo(name="comment_id", param_type="string", description="要回复的主评论ID(照抄消息尾部「评论ID=」)", required=True),
             ToolParameterInfo(name="content", param_type="string", description="回复内容(≤200字,用你平时的口吻直接写)", required=True),
+            ToolParameterInfo(
+                name="reply_reference", param_type="string",
+                description=(
+                    "本次回复的上下文关键信息与回复方向,包括当前聊天状态、人物关系、事实信息、回忆信息;"
+                    "不是回复正文"
+                ),
+                required=True,
+            ),
         ],
         visibility="visible",
     )
-    async def qzone_reply(self, feed_id: str = "", comment_id: str = "", content: str = "",
-                          **kwargs: Any) -> str:
+    async def qzone_reply(
+        self, feed_id: str = "", comment_id: str = "", content: str = "",
+        reply_reference: str = "", **kwargs: Any,
+    ) -> str:
         """楼中楼回复——commentId+commentUin 二元组精确匹配主评论(联调实证)。
 
         全域工具:comment_id 锚来源=空间流通知参数行、
@@ -1343,6 +1368,9 @@ class CatsitatePlugin(MaiBotPlugin):
         if not (feed_id.strip() and comment_id.strip() and content.strip()):
             return "说说ID、评论ID和回复内容都不能为空——评论ID 照抄消息尾部〔〕或 view_friend_feed_detail 结果里的标注。"
         content = content.strip()
+        reply_reference = str(reply_reference or "").strip()
+        if not reply_reference:
+            return "回复工具必须提供非空字符串 reply_reference,请填写本次回复的上下文关键信息与回复方向后重新调用。"
         if len(content) > 200:
             return f"回复太长了({len(content)} 字,上限 200)。"
         # 目标解析前置(说说+楼中楼二元组,均为纯本地查询)——锚失效时在润色
@@ -1384,7 +1412,8 @@ class CatsitatePlugin(MaiBotPlugin):
         # 表达润色:planner 草稿按人设+表达方式+场景语改写(失败以草稿直发)
         content = await self._qzone_polish(
             content, limit=200,
-            scene="QQ空间里,想回复好友在你的说说下写的评论", target_context=target_ctx,
+            scene="QQ空间里,想回复好友在你的说说下写的评论",
+            reply_reference=reply_reference, target_context=target_ctx,
         )
         # v1.0.0 内容护栏:润色后的最终文本匹配(草稿直发形态同样覆盖),命中即
         # 拦截——零 API 调用零记账,回执明示规则编号

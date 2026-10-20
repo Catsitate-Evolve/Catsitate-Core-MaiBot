@@ -45,6 +45,7 @@ from catsitate_core.memo import MemoService, validate_remind_at
 from catsitate_core.migrations import read_db_version, run_migrations
 from catsitate_core.msg_react import MsgReactEngine, parse_choice_resp
 from catsitate_core.poke import PokeEngine
+from catsitate_core.qq_emoji import AVAILABLE_REACT_EMOJIS, resolve_emoji_by_name
 from catsitate_core.prompt_deploy import sync_prompt_templates
 from catsitate_core.qzone import (
     QZONE_GATEWAY_NAME,
@@ -752,16 +753,28 @@ class CatsitatePlugin(MaiBotPlugin):
 
     @Tool(
         "msg_react",
-        description="给目标消息贴一个表情回应(从配置白名单中选择最合适的)。",
+        description=(
+            "给目标消息贴一个表情回应。两种用法:给 intent(想表达的情绪/意图,如「赞同」「调侃」「安慰」)"
+            "由插件按情绪分组自动挑选;或给 emoji 直接指定表情名称(如「喵喵」「点赞」「doge」)。"
+        ),
         brief_description="贴表情",
-        detailed_description="仅表情白名单内的 emoji_id 可贴;同一聊天流有冷却(工程护栏)。",
+        detailed_description="表情表按情绪分组,仅表内表情可贴;私聊不支持;同一聊天流有冷却(工程护栏)。",
         parameters=[
             ToolParameterInfo(name="message_id", param_type="string", description="目标消息 ID", required=True),
-            ToolParameterInfo(name="intent", param_type="string", description="贴表情意图(可选文字)", required=False),
+            ToolParameterInfo(
+                name="intent", param_type="string",
+                description="想表达的情绪或意图(可选);不给 intent 时须给 emoji", required=False,
+            ),
+            ToolParameterInfo(
+                name="emoji", param_type="string",
+                description="直接指定表情名称或 id(如「喵喵」「点赞」「狗头」「76」);给了就不走 LLM 挑选", required=False,
+            ),
         ],
         visibility="visible",
     )
-    async def msg_react(self, message_id: str = "", intent: str = "", **kwargs: Any) -> str:
+    async def msg_react(
+        self, message_id: str = "", intent: str = "", emoji: str = "", **kwargs: Any
+    ) -> str:
         if str(kwargs.get("platform") or "") == QZONE_PLATFORM:
             return "当前是QQ空间动态流,这个动作用不上哦。"
         if not self.config.plugin.enabled or not self.config.msg_react.enabled:
@@ -772,52 +785,119 @@ class CatsitatePlugin(MaiBotPlugin):
         ok, reason = self.react.check_cooldown(stream_id)
         if not ok:
             return reason
-        target_text = await self._fetch_message_text(stream_id, message_id)
-        messages, _ = self.react.build_choose_prompt(target_text or f"消息 {message_id}", intent)
-        result = await self._side_llm_call(messages, self.config.msg_react.llm_model, "msg_react", self.config.msg_react.llm_timeout_ms)
-        if not isinstance(result, dict) or not result.get("success"):
-            # 不落响应原文(安全考虑):仅记失败形态
-            detail = f"success={result.get('success')}" if isinstance(result, dict) else f"结果类型={type(result).__name__}"
-            return f"选表情 LLM 调用失败({detail})"
-        emoji, err = parse_choice_resp(str(result.get("response") or ""))
-        if emoji is None:
-            return f"选表情失败:{err}"
-        api_result = await self.ctx.api.call("adapter.napcat.message.set_msg_emoji_like", message_id=message_id, emoji_id=emoji)
+        # 直接指定:按名称/别名解析;解析失败且没有 intent 时显式报错(不猜)
+        chosen: str | None = None
+        direct_note = ""
+        if str(emoji or "").strip():
+            resolved, err = resolve_emoji_by_name(emoji)
+            if resolved is not None:
+                chosen = str(resolved)
+            elif not str(intent or "").strip():
+                return f"指定表情失败:{err}"
+            else:
+                direct_note = f"(指定「{emoji}」未匹配,改按意图挑选)"
+        if chosen is None:
+            if not str(intent or "").strip():
+                return "请给出贴表情意图(intent)或表情名称(emoji)。"
+            target_text = await self._fetch_message_text(stream_id, message_id)
+            messages, _ = self.react.build_choose_prompt(target_text or f"消息 {message_id}", intent)
+            result = await self._side_llm_call(messages, self.config.msg_react.llm_model, "msg_react", self.config.msg_react.llm_timeout_ms)
+            if not isinstance(result, dict) or not result.get("success"):
+                # 不落响应原文(安全考虑):仅记失败形态
+                detail = f"success={result.get('success')}" if isinstance(result, dict) else f"结果类型={type(result).__name__}"
+                return f"选表情 LLM 调用失败({detail})"
+            emoji_id, err = parse_choice_resp(str(result.get("response") or ""))
+            if emoji_id is None:
+                return f"选表情失败:{err}"
+            chosen = emoji_id
+        api_result = await self.ctx.api.call("adapter.napcat.message.set_msg_emoji_like", message_id=message_id, emoji_id=chosen)
         if not self._api_ok(api_result):
             return f"贴表情 API 失败:{api_result}"
         self.react.mark_used(stream_id)
-        return f"已贴表情 {emoji}"
+        name = AVAILABLE_REACT_EMOJIS.get(int(chosen), "")
+        label = f"「{name}」" if name else ""
+        return f"已贴表情{label}({chosen}){direct_note}"
 
     @Tool(
         "poke_user",
-        description="主动戳一戳目标用户(仅冷却限制)。",
+        description=(
+            "戳一戳某个用户。可用 msg_id 指定某条消息的发送者(推荐,不会指错人),"
+            "也可直接用 user_id 指定 QQ 号;群聊/私聊上下文由当前流自动判定,不要传群号。"
+        ),
         brief_description="主动戳一戳",
+        detailed_description="目标二选一:msg_id 或 user_id;按目标用户冷却(工程护栏)。",
         parameters=[
-            ToolParameterInfo(name="user_id", param_type="string", description="目标用户 ID", required=True),
-            ToolParameterInfo(name="group_id", param_type="string", description="群号(群聊必填,私聊留空)", required=False),
+            ToolParameterInfo(
+                name="msg_id", param_type="string",
+                description="目标消息 ID,戳该消息的发送者;与 user_id 二选一", required=False,
+            ),
+            ToolParameterInfo(
+                name="user_id", param_type="string",
+                description="目标用户 QQ 号;与 msg_id 二选一", required=False,
+            ),
         ],
         visibility="visible",
     )
-    async def poke_user(self, user_id: str = "", group_id: str = "", **kwargs: Any) -> str:
+    async def poke_user(self, msg_id: str = "", user_id: str = "", **kwargs: Any) -> str:
         if str(kwargs.get("platform") or "") == QZONE_PLATFORM:
             return "当前是QQ空间动态流,这个动作用不上哦。"
-        del kwargs
         if not self.config.plugin.enabled or not self.config.poke.poke_tool_enabled:
             return "主动戳工具未启用。"
-        ok, reason = self.poke.can_poke(user_id)
+        stream_id = str(kwargs.get("stream_id") or "")
+        target, group_id, err = await self._resolve_poke_target(
+            str(msg_id or "").strip(), str(user_id or "").strip(), stream_id
+        )
+        if err:
+            return err
+        ok, reason = self.poke.can_poke(target)
         if not ok:
             return reason
         # 实测 API 签名:send_poke(user_id, group_id, target_id, qq_id)
         api_result = await self.ctx.api.call(
             "adapter.napcat.message.send_poke",
-            user_id=user_id,
+            user_id=target,
             group_id=group_id or None,
-            target_id=user_id,
+            target_id=target,
         )
         if not self._api_ok(api_result):
             return f"戳一戳 API 失败:{api_result}"
-        self.poke.mark_poked(user_id)
+        self.poke.mark_poked(target)
         return "已戳。"
+
+    async def _resolve_poke_target(
+        self, msg_id: str, user_id: str, stream_id: str
+    ) -> tuple[str, str, str]:
+        """解析戳一戳目标:返回 (目标 QQ, 群号或空串, 错误原因)。
+
+        优先 msg_id 反查发送者与消息所在群;仅给 user_id 时,群上下文取自当前聊天流
+        (群聊带群号、私聊为空)——群号不由模型传,避免传错群。
+        """
+
+        if msg_id:
+            try:
+                result = await self.ctx.call_capability(
+                    "message.get_by_id", message_id=msg_id, chat_id=stream_id
+                )
+            except Exception as exc:  # noqa: BLE001
+                return "", "", f"消息解析失败(能力调用异常:{rpc_error_brief(exc)})"
+            if isinstance(result, dict) and isinstance(result.get("message"), dict):
+                result = result["message"]  # SDK 解包键
+            if not isinstance(result, dict):
+                return "", "", f"消息 {msg_id} 解析失败(返回形态:{type(result).__name__})"
+            info = result.get("message_info") or {}
+            target = str((info.get("user_info") or {}).get("user_id") or "").strip()
+            group = str((info.get("group_info") or {}).get("group_id") or "").strip()
+            if not target:
+                return "", "", f"消息 {msg_id} 缺少发送者信息"
+            if user_id and user_id != target:
+                return "", "", f"user_id({user_id})与消息 {msg_id} 的发送者({target})不一致"
+            return target, group, ""
+        if not user_id:
+            return "", "", "请提供 msg_id(戳该消息发送者)或 user_id(目标 QQ 号)。"
+        await self._refresh_stream_cache()
+        stream = self._stream_cache.get(stream_id) or {}
+        group = str(stream.get("group_id") or "") if stream.get("is_group_session") else ""
+        return user_id, group, ""
 
     @Tool(
         "inspect_image",

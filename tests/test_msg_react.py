@@ -7,7 +7,7 @@ from catsitate_core.msg_react import MsgReactEngine, parse_choice_resp
 from catsitate_core.storage import JsonSnapshot
 
 NOW = datetime(2026, 8, 14, 12, 0, 0)
-VALID_IDS = ["5", "13", "233"]  # 精选表情表内的 id(5 大哭 / 13 呲牙 / 233 笑哭)
+VALID_IDS = ["9", "13", "182"]  # 表内 id(9 大哭 / 13 呲牙 / 182 笑哭)
 
 
 def make_engine(tmp_path):
@@ -37,7 +37,8 @@ def test_build_choose_prompt_stable_prefix_first(tmp_path):
     # 稳定段(指令 system + 表情表)在前、变量(消息+意图)在后
     assert messages[0]["role"] == "system"
     assert "可选表情" in messages[1]["content"]
-    assert "5 大哭" in messages[1]["content"]  # 表情表在稳定段
+    assert "【安慰/关心】" in messages[1]["content"]  # 分组标题在稳定段
+    assert "106 委屈" in messages[1]["content"]  # 表情条目在稳定段
     assert "今天好累" in messages[-2]["content"]
     assert "想安慰对方" in messages[-1]["content"]
     assert cache_key
@@ -48,7 +49,7 @@ def test_parse_choice_valid():
 
 
 def test_parse_choice_out_of_table_rejected(tmp_path):
-    result = parse_choice_resp('{"emoji_id": "0"}')  # 0 惊讶不在精选表内
+    result = parse_choice_resp('{"emoji_id": "9999"}')  # 9999 不在表内
     assert result[0] is None and result[1]
 
 
@@ -63,3 +64,34 @@ def test_parse_choice_bare_braces(tmp_path):
     # 无围栏时前后杂文本中提取第一段裸花括号(与 parse_judge_response 兜底一致)
     result = parse_choice_resp('好的,我选:\n{"emoji_id": "13"}\n就这样')
     assert result == ("13", "")
+
+
+def test_emoji_table_grouped_and_consistent():
+    """分组表与扁平表一致:每项属于至少一组,组内 id 均在扁平表内。"""
+    from catsitate_core.qq_emoji import AVAILABLE_REACT_EMOJIS, REACT_EMOJI_GROUPS
+
+    assert len(AVAILABLE_REACT_EMOJIS) >= 100, "表情表应已扩容"
+    grouped: set[int] = set()
+    for label, hint, ids in REACT_EMOJI_GROUPS:
+        assert label and hint
+        for i in ids:
+            assert i in AVAILABLE_REACT_EMOJIS, f"{label} 引用了表外 id {i}"
+            grouped.add(i)
+    assert grouped == set(AVAILABLE_REACT_EMOJIS), "存在未归组的表情"
+
+
+def test_resolve_emoji_by_name_modes():
+    """直接指定表情:精确名、别名、id、无匹配、歧义五种路径。"""
+    from catsitate_core.qq_emoji import resolve_emoji_by_name
+
+    assert resolve_emoji_by_name("喵喵") == (307, "")
+    assert resolve_emoji_by_name("[喵喵]") == (307, "")          # 入站表情渲染格式
+    assert resolve_emoji_by_name("点赞")[0] in (76, 201)          # 精确名与别名都合法
+    assert resolve_emoji_by_name("狗头") == (179, "")             # 俗称别名
+    assert resolve_emoji_by_name("76") == (76, "")
+    missing_id, reason = resolve_emoji_by_name("9999")
+    assert missing_id is None and "不在表内" in reason
+    ambiguous, reason = resolve_emoji_by_name("笑")
+    assert ambiguous is None and "多个表情" in reason
+    unknown, reason = resolve_emoji_by_name("完全不存在的表情")
+    assert unknown is None and "没有与" in reason

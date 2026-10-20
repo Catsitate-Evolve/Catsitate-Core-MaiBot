@@ -55,8 +55,8 @@ Catsitate 是 MaiBot(QQ 猫娘机器人)的拟人化人格插件。它在 MaiBot
 |---|---|
 | `memo_write` / `memo_read` | 短时备忘读写(工具路径;`/记一下` 命令通道已于 2026-09-28 移除) |
 | `update_schedule` | 日程窗口的增/改/移 |
-| `msg_react` | 给消息贴 QQ 表情(白名单内 LLM 选表情) |
-| `poke_user` | 主动戳一戳(带冷却护栏) |
+| `msg_react` | 给消息贴 QQ 表情:给意图(intent)由旁路 LLM 从**按情绪分组的 170 项表**挑选;也可给表情名/别名(emoji)直接指定,不走 LLM |
+| `poke_user` | 主动戳一戳:目标可用 `msg_id`(取发送者与所在群)或 `user_id`(群上下文取自当前流)二选一,群号不由模型传;按人冷却 |
 | `inspect_image` | 图片重看(VLM 问答) |
 | `qzone_like` / `qzone_comment` / `qzone_reply` / `qzone_post` | 空间互动四件套(赞/评论/楼中楼/发说说) |
 | `view_friend_feeds` / `view_friend_feed_detail` | 在真实聊天里查看好友说说(为动作工具提供 `feed_id`/图片素材) |
@@ -172,7 +172,7 @@ catsitate_core_maibot/
 │   ├── memo.py          短时备忘录(SQLite)
 │   ├── favorability.py  好感度批次结算(计数触发 + LLM 结算)
 │   ├── decay.py         好感度自然衰减
-│   ├── msg_react.py     贴表情引擎(白名单 LLM 选表情 + 冷却)
+│   ├── msg_react.py     贴表情引擎(分组表 LLM 选表情 + 冷却)
 │   ├── qq_emoji.py      贴表情可用表情表(QQ 表情 id)
 │   ├── poke.py          戳一戳引擎(冷却限频)
 │   ├── image_relook.py  图片重看 prompt 组装

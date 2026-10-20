@@ -1,0 +1,112 @@
+{
+  "schema_version": 2,
+  "workspace_title": "Catsitate",
+  "required_capabilities": ["custom_pages"],
+  "pages": [
+    {
+      "id": "admin",
+      "title": "数据管理",
+      "description": "管理好感度与备忘录;空间好感事件与判定日志只读",
+      "mode": "custom",
+      "placement": "workspace",
+      "icon": "database",
+      "entry": "webui/admin.html",
+      "layout": "document",
+      "queries": {
+        "fav": {
+          "api": "admin_fav_list",
+          "version": "1",
+          "parameters": {
+            "page": {"type": "integer", "required": true, "minimum": 1},
+            "page_size": {"type": "integer", "required": true, "minimum": 1, "maximum": 50},
+            "keyword": {"type": "string", "max_length": 200}
+          }
+        },
+        "memo": {
+          "api": "admin_memo_list",
+          "version": "1",
+          "parameters": {
+            "page": {"type": "integer", "required": true, "minimum": 1},
+            "page_size": {"type": "integer", "required": true, "minimum": 1, "maximum": 50},
+            "keyword": {"type": "string", "max_length": 200}
+          }
+        },
+        "log": {
+          "api": "admin_log_list",
+          "version": "1",
+          "parameters": {
+            "page": {"type": "integer", "required": true, "minimum": 1},
+            "page_size": {"type": "integer", "required": true, "minimum": 1, "maximum": 50},
+            "user_id": {"type": "string", "max_length": 40},
+            "date_from": {"type": "string", "max_length": 20},
+            "date_to": {"type": "string", "max_length": 20}
+          }
+        },
+        "event": {
+          "api": "admin_event_list",
+          "version": "1",
+          "parameters": {
+            "page": {"type": "integer", "required": true, "minimum": 1},
+            "page_size": {"type": "integer", "required": true, "minimum": 1, "maximum": 50},
+            "user_id": {"type": "string", "max_length": 40},
+            "date_from": {"type": "string", "max_length": 20},
+            "date_to": {"type": "string", "max_length": 20}
+          }
+        }
+      },
+      "actions": {
+        "fav_update": {
+          "api": "admin_fav_update",
+          "version": "1",
+          "parameters": {
+            "user_id": {"type": "string", "required": true, "max_length": 40},
+            "score": {"type": "integer", "minimum": 0, "maximum": 100},
+            "note": {"type": "string", "max_length": 200}
+          }
+        },
+        "fav_reset": {
+          "api": "admin_fav_reset",
+          "version": "1",
+          "parameters": {
+            "user_id": {"type": "string", "required": true, "max_length": 40}
+          }
+        },
+        "memo_create": {
+          "api": "admin_memo_create",
+          "version": "1",
+          "parameters": {
+            "user_id": {"type": "string", "required": true, "max_length": 40},
+            "content": {"type": "string", "required": true, "max_length": 200},
+            "ttl_hours": {"type": "number", "minimum": 0, "maximum": 8760},
+            "remind_at": {"type": "string", "max_length": 40},
+            "extra_user_ids": {"type": "string", "max_length": 4000}
+          }
+        },
+        "memo_update": {
+          "api": "admin_memo_update",
+          "version": "1",
+          "parameters": {
+            "memo_id": {"type": "integer", "required": true, "minimum": 1},
+            "content": {"type": "string", "max_length": 200},
+            "ttl_hours": {"type": "number", "minimum": 0, "maximum": 8760},
+            "remind_at": {"type": "string", "max_length": 40}
+          }
+        },
+        "memo_delete": {
+          "api": "admin_memo_delete",
+          "version": "1",
+          "parameters": {
+            "memo_id": {"type": "integer", "required": true, "minimum": 1}
+          }
+        },
+        "memo_batch_delete": {
+          "api": "admin_memo_batch_delete",
+          "version": "1",
+          "parameters": {
+            "ids": {"type": "string", "required": true, "max_length": 4000}
+          }
+        }
+      }
+    }
+  ]
+}

@@ -28,6 +28,12 @@ def _level_for_score(score: int) -> int:
     return 0
 
 
+def level_for_score(score: int) -> int:
+    """分数 -> 等级下标(公开入口,管理页与外部调用使用;映射规则同 _level_for_score)。"""
+
+    return _level_for_score(score)
+
+
 class BatchEngine:
     """好感度批次引擎。"""
 

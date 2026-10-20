@@ -74,6 +74,18 @@
 
 ---
 
+## v1.1.0(2026-10-20) WebUI 数据管理页
+
+在插件目录声明 WebUI 自定义页面,让运维在浏览器里管理用户数据,不再需要 SQLite 客户端:
+
+- **页面**:`webui.json`(schema_version 2)+ `webui/admin.html`(custom,隔离沙箱,inline CSS/JS,无外部依赖);顶部工作区「Catsitate」→「数据管理」,四个 tab:好感度 / 备忘录 / 判定日志 / 空间事件。
+- **范围**:`favorability`、`memo` 读写;`favorability_log`、`qzone_fav_events` 只读。明确排除去重账本(batch_counter 仅作为好感度重置的一部分清理)、qzone 去重表、llm_usage、weather 缓存、cookie 文件。
+- **不变量**:好感度等级由分数按引擎规则重算(不允许手改 level);「特别」全表独占,改为 100 分时若他人持有则显式拒绝;重置同时清理该用户 batch_counter,避免积压批次立刻覆盖;备忘有效期按“从现在起”重算,提醒时刻可清空;所有日期做存在性校验。
+- **实现**:`catsitate_core/admin.py` 数据服务 + `admin_api.py` 十个静态 `@API`(mixin 继承,`collect_components` 经 `dir(instance)` 可收集);页面只调声明过的查询/操作,绑定参数在服务端二次校验。
+- **测试**:`test_admin.py`(CRUD/重置/独占/分页/过滤/校验)与 `test_webui_contract.py`(webui.json ↔ @API ↔ 页面别名三方一致),基线 **668 全绿**。
+
+---
+
 ## v1.0.16(2026-10-20) 空间心流调度修复与官方表情表更正
 
 ### QQ空间心流创建被误判为「适配器名单禁止」(生产实机)

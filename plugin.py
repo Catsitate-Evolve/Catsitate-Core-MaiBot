@@ -14,6 +14,7 @@ import hashlib
 import json
 import logging
 import os
+import platform
 import random
 import sys
 import time
@@ -470,7 +471,23 @@ class CatsitatePlugin(MaiBotPlugin):
             from lunar_python import Solar as _solar_probe  # noqa: F401
         except ImportError:
             self.ctx.logger.warning("lunar-python 未安装:农历节日/节气不可用(公历回退链不受影响)")
+        try:
+            from maibot_sdk import __version__ as _sdk_version
+        except Exception:  # noqa: BLE001
+            _sdk_version = "unknown"
+        try:
+            _manifest = json.loads((Path(__file__).parent / "_manifest.json").read_text(encoding="utf-8"))
+            _host_range = _manifest.get("host_application") or {}
+            _sdk_range = _manifest.get("sdk") or {}
+            _fp = (
+                f"plugin={_manifest.get('version', '?')} sdk={_sdk_version} py={platform.python_version()} "
+                f"host={_host_range.get('min_version', '?')}~{_host_range.get('max_version', '?')} "
+                f"sdk_range={_sdk_range.get('min_version', '?')}~{_sdk_range.get('max_version', '?')}"
+            )
+        except Exception:  # noqa: BLE001
+            _fp = f"plugin=? sdk={_sdk_version} py={platform.python_version()}"
         self.ctx.logger.info("catsitate_core 已加载:注入/备忘录/好感度/贴表情/戳一戳/reply补传/图片重看")
+        self.ctx.logger.info("环境指纹(适配取证): %s", _fp)
 
     def _validate_schedule_threshold(self) -> None:
         """schedule.speak_threshold_level 非法值显式告警并回退默认:threshold_met
@@ -792,11 +809,18 @@ class CatsitatePlugin(MaiBotPlugin):
             # 不落响应原文(安全考虑):仅记失败形态
             detail = f"success={result.get('success')}" if isinstance(result, dict) else f"结果类型={type(result).__name__}"
             return f"选表情 LLM 调用失败({detail})"
-        emoji_id, err = parse_choice_resp(str(result.get("response") or ""))
+        raw_resp = str(result.get("response") or "")
+        emoji_id, err = parse_choice_resp(raw_resp)
         if emoji_id is None:
+            self._log_drift("selector:msg_react", expected='{"emoji_id":"<表内id>"}',
+                            actual=f"len={len(raw_resp)}", detail=err)
             return f"选表情失败:{err}"
+        self.ctx.logger.debug(
+            "选择器 msg_react: intent_len=%d -> %s(%s)",
+            len(intent), emoji_id, AVAILABLE_REACT_EMOJIS.get(int(emoji_id), "?"),
+        )
         api_result = await self.ctx.api.call("adapter.napcat.message.set_msg_emoji_like", message_id=message_id, emoji_id=emoji_id)
-        if not self._api_ok(api_result):
+        if not self._api_ok(api_result, capability="adapter.napcat.message.set_msg_emoji_like"):
             return f"贴表情 API 失败:{api_result}"
         self.react.mark_used(stream_id)
         name = AVAILABLE_REACT_EMOJIS.get(int(emoji_id), "")
@@ -846,7 +870,7 @@ class CatsitatePlugin(MaiBotPlugin):
             group_id=group_id or None,
             target_id=target,
         )
-        if not self._api_ok(api_result):
+        if not self._api_ok(api_result, capability="adapter.napcat.message.send_poke"):
             return f"戳一戳 API 失败:{api_result}"
         self.poke.mark_poked(target)
         return "已戳。"
@@ -875,6 +899,8 @@ class CatsitatePlugin(MaiBotPlugin):
             target = str((info.get("user_info") or {}).get("user_id") or "").strip()
             group = str((info.get("group_info") or {}).get("group_id") or "").strip()
             if not target:
+                self._log_drift("poke:message", expected="message_info.user_info.user_id",
+                                actual="缺失", detail=f"keys={','.join(sorted(info.keys())[:8])}")
                 return "", "", f"消息 {msg_id} 缺少发送者信息"
             if user_id and user_id != target:
                 return "", "", f"user_id({user_id})与消息 {msg_id} 的发送者({target})不一致"
@@ -884,6 +910,13 @@ class CatsitatePlugin(MaiBotPlugin):
         await self._refresh_stream_cache()
         stream = self._stream_cache.get(stream_id) or {}
         group = str(stream.get("group_id") or "") if stream.get("is_group_session") else ""
+        if stream.get("is_group_session") and not group:
+            self._log_drift("poke:stream", expected="群聊流含 group_id",
+                            actual="group_id 为空", detail=f"stream={stream_id}")
+        self.ctx.logger.debug(
+            "戳一戳目标解析: 来源=%s 上下文=%s", "msg_id" if msg_id else "user_id",
+            "群聊" if group else "私聊",
+        )
         return user_id, group, ""
 
     @Tool(
@@ -2914,7 +2947,10 @@ class CatsitatePlugin(MaiBotPlugin):
             self.ctx.logger.debug("注入块构造: %s", [b.module for b in blocks])
             messages = self._messages_from_kwargs(kwargs)
             if messages is None:
-                self.ctx.logger.debug("注入跳过: messages 取不到")
+                raw_items = kwargs.get("items")
+                self._log_drift("hook:maisaka.planner.before_request", expected="items:list",
+                                actual=type(raw_items).__name__,
+                                detail="keys=" + ",".join(sorted(str(k) for k in kwargs.keys())[:10]))
                 return {"action": "continue", "modified_kwargs": kwargs}
             stream_id = str(kwargs.get("session_id") or "")
             is_qzone_session = stream_id in self._qzone_session_id_set() and self._qzone_available
@@ -4957,13 +4993,38 @@ class CatsitatePlugin(MaiBotPlugin):
                 return str(m.get("processed_plain_text") or "")
         return ""
 
-    @staticmethod
-    def _api_ok(result: Any) -> bool:
-        """napcat API 返回格式实测为 {'status': 'ok', ...}(非 success 字段)。"""
+    _DRIFT_PREFIX = "[适配偏移]"
+
+    def _log_drift(self, area: str, *, expected: str, actual: str, detail: str = "") -> None:
+        """记录「实际输出与预期契约不一致」的取证日志(供下一版适配)。
+
+        纪律:只记形态/键名/长度,不落消息正文与 QQ 号;warning 级保证主日志可见。
+        """
+
+        self.ctx.logger.warning(
+            "%s %s | expected=%s | actual=%s | detail=%s",
+            self._DRIFT_PREFIX, area, expected, actual, detail or "-",
+        )
+
+    def _api_ok(self, result: Any, *, capability: str = "") -> bool:
+        """napcat API 返回格式实测为 {'status': 'ok', ...}(非 success 字段)。
+
+        两种已知形态都不符时记一条「适配偏移」取证——适配器/宿主改回执结构时,
+        日志可直接作为下一版适配的依据,而不是只表现为工具失败。
+        """
 
         if isinstance(result, dict) and result.get("success"):
             return True
-        return isinstance(result, dict) and str(result.get("status") or "").lower() in ("ok", "success")
+        if isinstance(result, dict) and str(result.get("status") or "").lower() in ("ok", "success"):
+            return True
+        if not isinstance(result, dict):
+            self._log_drift(f"api:{capability or '?'}", expected="dict(status/success)",
+                            actual=type(result).__name__)
+        elif "status" not in result and "success" not in result:
+            keys = ",".join(sorted(str(k) for k in result.keys())[:8])
+            self._log_drift(f"api:{capability or '?'}", expected="status 或 success 字段",
+                            actual=f"keys=[{keys}]")
+        return False
 
     def _output_items(self, kwargs: dict[str, Any]) -> list[dict]:
         items = kwargs.get(self._OUTPUT_ITEMS_KEY)

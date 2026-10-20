@@ -212,3 +212,43 @@ catsitate_core_maibot/
 | 后台任务必须持有引用 | 裸 `asyncio.create_task` 的任务可能被垃圾回收 | 任何 `task.cancel()`/gather 清理路径 | `_spawn_background_task` 把任务存入 `_background_tasks`,done 后 discard;`on_unload` 统一取消 |
 | 空间模块整体可停用 | 依赖 cookie/自检/网关三重前置,任一失败继续用其余功能 | 自检失败、网关就绪上报被拒、`bot_user_id` 为空 | `_qzone_available = False`,空间轮询/注入/工具全部短路,告警留痕 |
 | 生产容器路径约定 | 本地开发与生产(`/MaiMBot`)目录布局一致 | 旁路模板部署推导主程序根 | `prompt_deploy` 从插件路径上溯四级推导,不依赖硬编码绝对路径;布局异常则告警跳过 |
+
+## 四、调试与适配偏移取证
+
+宿主 / SDK / 适配器升级时,真正的风险不是「加载失败」(那会立刻报错),而是**契约悄悄变了、插件仍在跑但行为偏移**。为此插件把「实际输出与预期契约不一致」统一记为可 grep 的证据,而不是只表现为一次工具失败。
+
+### 环境指纹
+
+`on_load` 每次打印一行 INFO:
+
+```
+环境指纹(适配取证): plugin=1.0.14 sdk=2.12.0 py=3.14.x host=1.2.0~1.3.99 sdk_range=2.7.1~2.99.99
+```
+
+升级前后对比这一行即可确认实际运行的三方版本组合(manifest 声明范围一并带上,便于判断是否靠兼容模式在跑)。
+
+### 偏移日志 `[适配偏移]`
+
+统一格式(warning 级,主日志可见;debug 开关打开时另有细粒度上下文):
+
+```
+[适配偏移] <区域> | expected=<预期契约> | actual=<实际形态> | detail=<键名/长度等>
+```
+
+已埋点的区域:
+
+| 区域 | 触发条件 | 取证内容 |
+|---|---|---|
+| `api:adapter.napcat.*` | 适配器回执既无 `success` 也无 `status`(两种已知形态都不符) | 返回类型或实际键名列表 |
+| `selector:msg_react` | 选择器未返回合法 `{"emoji_id": ...}` 或 id 不在表内 | 响应长度 + 解析失败原因 |
+| `poke:message` | `message.get_by_id` 返回值缺发送者字段 | `message_info` 实际键名 |
+| `poke:stream` | 群聊流信息缺 `group_id`(戳一戳无法判定群上下文) | 流 ID |
+| `hook:maisaka.planner.before_request` | 钩子载荷 `items` 缺失或非 list | 实际类型 + 载荷键名 |
+
+纪律:只记形态、键名、长度,**不落消息正文与 QQ 号**;正常路径只留 debug(选择器选择结果、戳一戳解析来源),不进 warning。
+
+### 使用方式
+
+- 排查一次异常会话:`grep '\[适配偏移\]' logs/catsitate-YYYYMMDD.log`
+- 评估升级影响:先比对启动的环境指纹,再检查偏移日志是否出现新区域
+- 作为下一版适配输入:偏移条目中的 `expected/actual` 可直接对照宿主或适配器的实际返回结构

@@ -106,3 +106,41 @@ def test_poke_tool_no_longer_accepts_group_id():
 
     src = inspect.getsource(CatsitatePlugin.poke_user.__wrapped__ if hasattr(CatsitatePlugin.poke_user, "__wrapped__") else CatsitatePlugin.poke_user)
     assert "group_id: str" not in src
+
+
+def test_drift_log_carries_structured_fields(caplog):
+    """偏移取证日志:统一前缀 + 预期/实际/细节三字段(供 grep 收集下一版适配证据)。"""
+    import logging
+
+    p = _bare_plugin()
+    with caplog.at_level(logging.WARNING):
+        p._log_drift("api:x", expected="dict(status/success)", actual="list", detail="len=3")
+    msg = caplog.records[-1].getMessage()
+    assert "[适配偏移]" in msg and "api:x" in msg
+    assert "expected=dict(status/success)" in msg and "actual=list" in msg and "detail=len=3" in msg
+
+
+def test_api_ok_known_shapes_pass_without_drift(caplog):
+    import logging
+
+    p = _bare_plugin()
+    with caplog.at_level(logging.WARNING):
+        assert p._api_ok({"status": "ok"}) is True
+        assert p._api_ok({"success": True}) is True
+        assert p._api_ok({"status": "failed", "retcode": 100}) is False  # 已知失败形态:不记偏移
+        drift = [r for r in caplog.records if "[适配偏移]" in r.getMessage()]
+        assert not drift, "已知形态不得产生偏移日志"
+
+
+def test_api_ok_unknown_shape_logs_drift(caplog):
+    """适配器回执改成未知结构时:返回 False 且留下可 grep 的偏移证据。"""
+    import logging
+
+    p = _bare_plugin()
+    with caplog.at_level(logging.WARNING):
+        assert p._api_ok({"retcode": 0, "data": {}}, capability="adapter.test") is False
+        assert p._api_ok("boom", capability="adapter.test") is False
+    msgs = [r.getMessage() for r in caplog.records if "[适配偏移]" in r.getMessage()]
+    assert len(msgs) == 2
+    assert "keys=[data,retcode]" in msgs[0]
+    assert "actual=str" in msgs[1]

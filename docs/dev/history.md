@@ -74,6 +74,56 @@
 
 ---
 
+## 空间回复直接对齐主程序 reply(2026-10-20,开发周期内,待随下个正式版发布)
+
+对照主程序 reply 流程(`reply` 工具参数 = `msg_id` + 必填 `reply_reference` 上下文摘要;replyer 侧另有自动构造的目标消息块),给空间润色层定稿上下文方案:
+
+- **`reply_reference` 必填**:`qzone_comment`/`qzone_reply` 新增参数(planner 填聊天状态/人物关系/事实/回忆等上下文与回复方向,**不是正文**),润色层以「回复信息参考：」原样放进变量段、草稿恒在最后(与宿主表达选择器的措辞和顺序一致);缺失时显式拒绝并提示重新调用。
+- **不自动注入目标消息块**:被评论的说说/被回复的评论原文不再由插件摘取拼进 prompt——这类内容由 planner 按需写进 `reply_reference`,避免润色层拿到与草稿无关的长文本。曾短暂实现过自动目标块(`FeedItem.comment_text` / `FeedContext.comment_text_map` + 两个查找辅助函数),按此决定整体移除,不留死代码。
+- 润色模板无需改动(本就声明「参考上面给你的信息,只改写【待发内容】」);稳定段(人设/表达方式/场景语)不变,前缀缓存不受影响。
+- 测试基线 **654 全绿**(新增「reply_reference 在变量段、草稿恒最后」与「两个工具必填校验」用例)。
+
+---
+
+## 适配偏移取证(2026-10-20,开发周期内,待随下个正式版发布)
+
+针对「升级后不报错但行为悄悄偏移」的场景,新增可 grep 的证据链,而不是只在工具失败时才暴露:
+
+- **环境指纹**:`on_load` 打印 `plugin/sdk/python/host 声明范围/sdk 声明范围` 一行 INFO,升级前后可直接比对实际运行组合。
+- **`[适配偏移]` 统一日志**:格式 `[适配偏移] <区域> | expected=… | actual=… | detail=…`,warning 级。已埋点五处——适配器回执形态未知、选择器输出不合契约、`message.get_by_id` 缺发送者字段、群聊流缺 `group_id`、planner 钩子载荷 `items` 缺失或非 list。
+- 纪律:只记形态/键名/长度,不落消息正文与 QQ 号;正常路径(选择器选择结果、戳一戳目标来源)只留 debug。
+- 测试基线 **652 全绿**(新增偏移日志结构与 `_api_ok` 三形态用例)。
+
+---
+
+## 贴表情与戳一戳交互重构(2026-10-20,开发周期内,待随下个正式版发布)
+
+参考 SnowLuma 适配器同名工具后重做两个交互工具,解决「模型不知道表情 ID」与「群号由模型传易错」两个结构性问题:
+
+- **贴表情表扩容并分组**:`qq_emoji.py` 由 36 项人工精选改为 **172 项、10 个情绪组**(赞同鼓励/喜爱亲昵/开心大笑/调侃俏皮/无语无奈/安慰关心/惊讶意外/生气不满/期待心动/低落疲惫),id 与名称以适配器官方 QQ 表情表(2026-09-28 同步)为准,顺带按官方表修正旧表错标(233 实为「掐一掐」、293 为「摸锦鲤」、9 才是「大哭」等,错标 ID 不再入表);另给选择器 prompt 提供 9 条俗称对照(狗头=doge、猪=猪头、骷髅头=骷髅等),帮助它把意图里的俗称映射到表内名称。
+- **选择 prompt 与模板 v4**:选表情 prompt 的稳定段改为分组表(每组带情绪提示)+俗称对照,模板升级为三步裁决(点名优先→情绪分组→只选表内 id)。
+- **选择器单入口**(`msg_react`):工具只收 `intent` 一个参数,由旁路 LLM 统一裁决——意图里明确点名了表情(含俗称,如「喵喵」「狗头」)时选择器优先匹配表内同名/最接近项,否则按情绪分组挑选。不设模型直填 id/名称的参数:模型写错描述或 id 时无从校验,校验责任集中在选择器 + 表内 id 白名单。
+- **戳一戳目标二选一**(`poke_user`):`msg_id` 取消息发送者与所在群(不会指错人);`user_id` 时群上下文取自当前聊天流。**移除 `group_id` 参数**——群号由插件判定,不再依赖模型传参。两者同时给出且不一致时显式报错。
+- 测试基线 **649 全绿**(新增分组一致性、工具参数契约、戳目标解析四路径与「工具不再接收 group_id」守卫;本周期后续增至 654)。
+
+---
+
+## 宿主 1.3.11 适配(2026-10-20,开发周期内,待随下个正式版发布)
+
+上游再次跨版本:MaiBot 1.3.1→**1.3.11**(10 个版本)、maibot-plugin-sdk 2.8.2→**2.12.0**(主程序 1.3.11 锁定的实际安装版,要求 ≥2.12.0)、SnowLuma 适配器 v1.0.2→**v1.1.7**。逐层核实后**插件 manifest 无需改动**(host 1.2.0~1.3.99 已覆盖 1.3.11;SDK 2.7.1~2.99.99 覆盖 2.12.0),仅一项前向兼容代码变更:
+
+- **SDK(2.8.2→2.12.0,8 个文件)**:全部为增量——新增 `ctx.webui` 代理、`chat.get_avatar`、`maisaka.context.resolve_image`、`ReplyExtension` 组件与 `webui.claim_upload`;`llm.generate`/`send.*`/`MaiBotPlugin`/配置模型(`build_config_schema` 钩子)四文件零变更,旁路 LLM 与 WebUI 分页 schema 均不受影响。`Tool` 的 `platforms` 参数在 2.12.0 尚未提供(2.13+ 引入),插件未声明,无影响。
+- **宿主插件运行时**:版本校验策略变化——**SDK 超出声明范围改为仅告警放行,Host 范围仍硬拒**(跨次版本),故 manifest 的 host 上限仍是硬约束(已覆盖);6 个订阅钩子点、`planner.before_request` 载荷(`items`/`tool_definitions`/`built_message_count`/`session_id`)与 `hook_payloads` 序列化逐字节一致;`maisaka.context.append` 入参与返回字典逐行一致(内部类 `SessionBackedMessage`→`InternalContextMessage` 改名不影响契约);消息查询能力仅新增头像与 DB 线程化;prompt 扫描路径逻辑未变(仅改用实例根路径解析);`[plugin].enabled` 新增宿主保留键带回,插件自行声明该键时以模型值为准,语义不变。
+- **消息字典**:新增 `received_at`/`account_id`/`scope` 字段;`group_info` 校验放宽(有群号无群名不再退化为私聊,对插件有利)。宿主对缺 `account_id` 的入站消息走旧格式回退并**告警「下个版本移除」**——插件虚拟流消息经 `gateway.route_message` 投递时宿主虽会回填路由键,但告警仍会产生且下版本回退移除后将被拒收,**故本周期前向兼容改造**:`build_feed_message`/`build_notify_message` 新增 `account_id`/`scope` 参数,注入侧以 `favorability.bot_user_id`(与网关注册同源)填充。
+- **适配器(v1.0.2→v1.1.7)**:插件所用 3 个 API(`adapter.napcat.account.get_cookies`/`message.send_poke`/`message.set_msg_emoji_like`)的端点层与 `_call_napcat_action` 逐字节未变,服务层与 `transport.py` 无相关改动(传输层 diff 为 0),返回值仍为原样 OneBot 响应;通知/入站消息字典核心字段(含 `is_notify`、at 段 `target_user_id`、reply 段结构)逐键一致,新增正式 `account_id`/`scope`。**适配器 `config_version` 2.4.0→2.7.1**,部署配置需同步迁移(否则 Runner 版本校验会按默认骨架重建)。
+- 验证:642 用例全绿(SDK 2.12.0 环境;含正式归属字段断言与源码级构造点守卫);docker 实机(MaiBot 1.3.11 + SnowLuma v1.1.7)插件与适配器零失败加载,两侧配置值原样保留。
+- **实机运行时发现两处静态核实无法覆盖的问题**(均已修复):
+  1. 虚拟流消息共 **5 个**构造点(浏览/通知/发布回注/冷启动种子/日记回注),初版只改了前两个;发布回注在 16:42:24 实机触发旧格式路由告警(`qzone_self_*`)才暴露。已全部补齐并加源码级守卫用例。
+  2. **宿主对网关注入同样执行统一名单策略**:`config/adapter_policy.toml` 的严格白名单(默认 block)把虚拟群 `qzone_feed` 一并挡掉,注入被拒(16:49 实机复现)。已在策略中新增仅匹配 `platform = "qzone-qq"` 的放行条目;真实 QQ 群聊/私聊仍走原白名单。**该策略自 1.3.0/1.3.1 起就对插件网关消息生效,并非 1.3.11 新增**;是否拦到虚拟流取决于配置形状:存在 `[defaults.group] default_action="block"` 时 `qzone_feed` 会因未命中白名单被拦(本机即此情形,2026-09-28 迁移旧适配器名单时引入),仅有 `[[adapters]]`(按 platform=qq 精确匹配)而无 `[defaults]` 时未命中目标走隐式放行(生产配置即此情形,不受影响)。建议生产即便当前隐式放行也显式补一条 `platform="qzone-qq"` 放行规则,避免将来新增 `[defaults]` 时空间感知静默失效(仅日志可见「注入被宿主拒绝」)。
+- 修复后实机全链路:发现层拉取 8 条→入队 6 条→注入 5 条并触发虚拟流 Planner→`qzone_comment`/`qzone_like`/`qzone_next` 实际调用成功;旧格式路由告警计数归零。
+
+---
+
 ## v1.0.14(2026-09-28) 双轴 code-review 整改
 
 标准/规格双轴完整审查 v1.0.12..dev 全部变更(并行双代理,标准轴对照工作区与仓库两级 AGENTS.md + 气味基线,规格轴对照 CHANGELOG/history 与用户四项原始需求)。整改:apply_tab_layout 静默跳过改显式告警+失败路径用例(硬违规)、memo.py docstring 命令残留、architecture/philosophy 的 @Command 残留引用、AGENTS.md 基线 638→640、history 的 send_poke 验证口径补记闭环事实;「旧宿主退化平铺」经 1.2.0 原始 dashboard 源码实证升级为「tabs 分页自 1.2.0 起即生效」。规格轴四项需求全部落地、无 scope creep。640 用例全绿。

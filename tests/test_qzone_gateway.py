@@ -588,3 +588,43 @@ def test_format_comment_block_caps_and_labels():
     assert "评论区(前3条/共61条):" in text3
     # 空区块
     assert format_comment_block([], comment_total=0) == ""
+
+
+def test_virtual_messages_carry_formal_route_fields():
+    """正式归属字段:宿主 1.3.11 起消息顶层 account_id/scope,旧格式下版本移除。
+
+    两条构造器都必须带上(缺字段会走宿主旧格式回退并告警,回退移除后消息被拒收);
+    未提供账号时写 None(字段存在且合法),不省略键。
+    """
+    feed_msg = build_feed_message(_feed(), seq=1, group_id="qzone_feed", group_name="QQ空间",
+                                  images=[], now_epoch=1750000100.0, account_id="3545773341")
+    assert feed_msg["account_id"] == "3545773341" and "scope" in feed_msg
+    notify_msg = build_notify_message(_feed(), group_id="qzone_feed", group_name="QQ空间",
+                                      now_epoch=1750000100.0, account_id="3545773341")
+    assert notify_msg["account_id"] == "3545773341" and "scope" in notify_msg
+    # 未配置 bot 账号:键必须存在(宁可显式 None,也不触发宿主旧格式回退)
+    bare = build_notify_message(_feed(), group_id="g", group_name="n", now_epoch=1750000100.0)
+    assert "account_id" in bare and bare["account_id"] is None
+    assert "account_id" in build_feed_message(_feed(), seq=1, group_id="g", group_name="n",
+                                              images=[], now_epoch=1750000100.0)
+
+
+def test_every_virtual_message_builder_sets_route_fields():
+    """源码级守卫:所有构造虚拟流消息的位置都必须带 account_id/scope。
+
+    宿主对缺字段的消息走旧格式回退并告警,回退移除后将被拒收;构造点分散在
+    messages.py(浏览/通知)与 plugin.py(发布回注/冷启动种子/日记回注),
+    新增构造点时本用例在 CI 内直接失败。
+    """
+    from pathlib import Path
+
+    missing = []
+    for path in (Path("catsitate_core/qzone/messages.py"), Path("plugin.py")):
+        lines = path.read_text(encoding="utf-8").splitlines()
+        for idx, line in enumerate(lines):
+            if '"message_id": f"qzone' not in line:
+                continue
+            window = "\n".join(lines[idx: idx + 8])
+            if '"account_id"' not in window:
+                missing.append(f"{path}:{idx + 1}")
+    assert not missing, "以下消息构造点缺少正式归属字段: " + ", ".join(missing)

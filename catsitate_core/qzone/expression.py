@@ -24,6 +24,7 @@ def _sanitize(text: str) -> str:
 async def polish_action_text(
     llm_call: Callable[[list[dict]], Awaitable[dict[str, Any]]],
     *, persona: str, voice: str, draft: str, scene: str = "",
+    reply_reference: str = "",
     limit: int = 200, logger: Any = None,
 ) -> str:
     """按人设与表达方式润色草稿。返回润色后文本;失败/为空返回空串
@@ -38,7 +39,14 @@ async def polish_action_text(
     ]
     if (scene or "").strip():
         stable_ctx.append(f"你正在{scene.strip()}。")
-    variable_tail = [f"【待发内容】\n{draft}"]
+    # 上下文对齐主程序 reply 工具:planner 的 reply_reference 原样进变量段
+    # (措辞与宿主表达选择器一致),草稿恒在最后;模板已声明「参考上面给你的信息」,
+    # 只改写【待发内容】
+    variable_tail: list[str] = []
+    reference = (reply_reference or "").strip()
+    if reference:
+        variable_tail.append(f"回复信息参考：\n{reference}")
+    variable_tail.append(f"【待发内容】\n{draft}")
     messages, _ = build_side_prompt("qzone_expression", stable_ctx, variable_tail)
     # 调用异常兜底(2026-09-02):RPC 超时(E_TIMEOUT)等异常原先直接上抛会炸掉
     # 整个动作工具——契约是「润色失败不阻断动作,以草稿直发」;E_TIMEOUT 以

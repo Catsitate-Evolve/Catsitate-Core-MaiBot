@@ -92,3 +92,41 @@ async def test_polish_rpc_exception_falls_back_to_draft():
     text = await polish_action_text(call, persona="p", voice="v", draft="草稿内容", logger=_Logger())
     assert text == ""  # 空=调用方以草稿直发
     assert any(w.startswith("QQ空间表达润色调用异常(RPC 超时") for w in warned)
+
+
+
+@pytest.mark.asyncio
+async def test_polish_reply_reference_in_variable_tail():
+    """上下文只来自 planner 的 reply_reference:原样进变量段、草稿恒在最后(不再注入目标消息块)。"""
+    call, calls = _llm({"success": True, "response": "嗯"})
+    await polish_action_text(
+        call, persona="p", voice="v", draft="草稿",
+        scene="QQ空间里,想给好友的说说写一条评论",
+        reply_reference="她刚考完试,心情不错;上次聊到想去看海",
+    )
+    contents = [m["content"] for m in calls[0]]
+    assert contents[4] == "回复信息参考：\n她刚考完试,心情不错;上次聊到想去看海"
+    assert contents[-1] == "【待发内容】\n草稿"
+
+
+def test_qzone_reply_tools_require_reply_reference():
+    """两个空间回复工具与主程序 reply 同构:reply_reference 必填,缺失即显式拒绝。"""
+    import asyncio
+    import logging
+    from types import SimpleNamespace
+
+    from plugin import CatsitatePlugin
+
+    for tool_name in ("qzone_comment", "qzone_reply"):
+        info = getattr(getattr(CatsitatePlugin, tool_name), "__maibot_component_info__")
+        params = {p.name: p.required for p in info.parameters}
+        assert params.get("reply_reference") is True, tool_name
+
+    p = object.__new__(CatsitatePlugin)
+    p._qzone_available = True
+    p._ctx = SimpleNamespace(logger=logging.getLogger("test.qzone"))
+
+    msg = asyncio.run(p.qzone_comment(feed_id="t1", content="hi", reply_reference=""))
+    assert "reply_reference" in msg
+    msg2 = asyncio.run(p.qzone_reply(feed_id="t1", comment_id="c1", content="hi", reply_reference="  "))
+    assert "reply_reference" in msg2

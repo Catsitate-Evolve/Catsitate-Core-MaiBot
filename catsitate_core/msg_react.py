@@ -9,7 +9,7 @@ from typing import Callable
 
 from .config import MsgReactSection
 from .llm_provider import build_side_prompt
-from .qq_emoji import compact_emoji_table, load_emoji_table
+from .qq_emoji import EMOJI_ALIAS_HINTS, grouped_emoji_table, load_emoji_table
 from .storage import JsonSnapshot
 
 _ISO = "%Y-%m-%dT%H:%M:%S"
@@ -77,6 +77,6 @@ class MsgReactEngine:
 
         return build_side_prompt(
             "msg_react",
-            [f"可选表情(id 描述):{compact_emoji_table()}"],
+            [f"可选表情(按情绪分组,格式 id 名称):\n{grouped_emoji_table()}\n俗称对照:{EMOJI_ALIAS_HINTS}"],
             [f"目标消息:{target_text}", f"贴表情意图:{intent}"],
         )

@@ -116,7 +116,12 @@ class CookieManager:
             global _MISSING_PSKEY_WARNED
             if not _MISSING_PSKEY_WARNED:
                 _MISSING_PSKEY_WARNED = True
-                logger.warning("空间 cookie 缺少 p_skey(响应形态:%s),无法请求空间接口", type(result).__name__)
+                keys = ",".join(sorted(str(k) for k in result.keys())[:8]) if isinstance(result, dict) else ""
+                logger.warning(
+                    "[适配偏移] api:adapter.napcat.account.get_cookies | expected=cookies(含 p_skey) | "
+                    "actual=%s%s | detail=无法提取 p_skey",
+                    type(result).__name__, f" keys=[{keys}]" if keys else "",
+                )
             return self._cookies or None
         self._cookies = cookies
         self._fetched_at = now

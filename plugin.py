@@ -14,6 +14,7 @@ import hashlib
 import json
 import logging
 import os
+import platform
 import random
 import sys
 import time
@@ -45,6 +46,7 @@ from catsitate_core.memo import MemoService, validate_remind_at
 from catsitate_core.migrations import read_db_version, run_migrations
 from catsitate_core.msg_react import MsgReactEngine, parse_choice_resp
 from catsitate_core.poke import PokeEngine
+from catsitate_core.qq_emoji import AVAILABLE_REACT_EMOJIS
 from catsitate_core.prompt_deploy import sync_prompt_templates
 from catsitate_core.qzone import (
     QZONE_GATEWAY_NAME,
@@ -469,7 +471,25 @@ class CatsitatePlugin(MaiBotPlugin):
             from lunar_python import Solar as _solar_probe  # noqa: F401
         except ImportError:
             self.ctx.logger.warning("lunar-python 未安装:农历节日/节气不可用(公历回退链不受影响)")
+        try:
+            from maibot_sdk import __version__ as _sdk_version
+        except Exception as exc:  # noqa: BLE001
+            _sdk_version = "unknown"
+            self.ctx.logger.warning("环境指纹: SDK 版本读取失败(%s),记为 unknown", rpc_error_brief(exc))
+        try:
+            _manifest = json.loads((Path(__file__).parent / "_manifest.json").read_text(encoding="utf-8"))
+            _host_range = _manifest.get("host_application") or {}
+            _sdk_range = _manifest.get("sdk") or {}
+            _fp = (
+                f"plugin={_manifest.get('version', '?')} sdk={_sdk_version} py={platform.python_version()} "
+                f"host={_host_range.get('min_version', '?')}~{_host_range.get('max_version', '?')} "
+                f"sdk_range={_sdk_range.get('min_version', '?')}~{_sdk_range.get('max_version', '?')}"
+            )
+        except Exception as exc:  # noqa: BLE001
+            _fp = f"plugin=? sdk={_sdk_version} py={platform.python_version()}"
+            self.ctx.logger.warning("环境指纹: manifest 读取失败(%s),指纹不完整", rpc_error_brief(exc))
         self.ctx.logger.info("catsitate_core 已加载:注入/备忘录/好感度/贴表情/戳一戳/reply补传/图片重看")
+        self.ctx.logger.info("环境指纹(适配取证): %s", _fp)
 
     def _validate_schedule_threshold(self) -> None:
         """schedule.speak_threshold_level 非法值显式告警并回退默认:threshold_met
@@ -752,12 +772,21 @@ class CatsitatePlugin(MaiBotPlugin):
 
     @Tool(
         "msg_react",
-        description="给目标消息贴一个表情回应(从配置白名单中选择最合适的)。",
-        brief_description="贴表情",
-        detailed_description="仅表情白名单内的 emoji_id 可贴;同一聊天流有冷却(工程护栏)。",
+        description=(
+            "贴表情:说明想表达的情绪/意图(如「赞同」「调侃」「安慰」);"
+            "若想指定某个表情,把名称写进意图(如「喵喵」「狗头」),由选择器在表内匹配。"
+        ),
+        brief_description=(
+            "贴表情:给意图(intent),由选择器按情绪分组挑选;想指定表情就把名称写进意图"
+        ),
+        detailed_description="表情表按情绪分组、仅表内表情可贴;私聊不支持;同一聊天流有冷却(工程护栏)。",
         parameters=[
             ToolParameterInfo(name="message_id", param_type="string", description="目标消息 ID", required=True),
-            ToolParameterInfo(name="intent", param_type="string", description="贴表情意图(可选文字)", required=False),
+            ToolParameterInfo(
+                name="intent", param_type="string",
+                description="想表达的情绪/意图;想指定具体表情时直接写名称或俗称(如「喵喵」「狗头」)",
+                required=True,
+            ),
         ],
         visibility="visible",
     )
@@ -768,6 +797,9 @@ class CatsitatePlugin(MaiBotPlugin):
             return "贴表情工具未启用。"
         if not str(kwargs.get("group_id") or ""):
             return "贴表情仅限群聊(QQ 私聊不支持贴表情)。"
+        intent = str(intent or "").strip()
+        if not intent:
+            return "请说明贴表情的意图(如「赞同」「调侃」「安慰」,或直接写表情名「喵喵」)。"
         stream_id = str(kwargs.get("stream_id") or "")
         ok, reason = self.react.check_cooldown(stream_id)
         if not ok:
@@ -779,45 +811,138 @@ class CatsitatePlugin(MaiBotPlugin):
             # 不落响应原文(安全考虑):仅记失败形态
             detail = f"success={result.get('success')}" if isinstance(result, dict) else f"结果类型={type(result).__name__}"
             return f"选表情 LLM 调用失败({detail})"
-        emoji, err = parse_choice_resp(str(result.get("response") or ""))
-        if emoji is None:
+        raw_resp = str(result.get("response") or "")
+        emoji_id, err = parse_choice_resp(raw_resp)
+        if emoji_id is None:
+            self._log_drift("selector:msg_react", expected='{"emoji_id":"<表内id>"}',
+                            actual=f"len={len(raw_resp)}", detail=err)
             return f"选表情失败:{err}"
-        api_result = await self.ctx.api.call("adapter.napcat.message.set_msg_emoji_like", message_id=message_id, emoji_id=emoji)
-        if not self._api_ok(api_result):
+        self.ctx.logger.debug(
+            "选择器 msg_react: intent_len=%d -> %s(%s)",
+            len(intent), emoji_id, AVAILABLE_REACT_EMOJIS.get(int(emoji_id), "?"),
+        )
+        api_result = await self.ctx.api.call("adapter.napcat.message.set_msg_emoji_like", message_id=message_id, emoji_id=emoji_id)
+        if not self._api_ok(api_result, capability="adapter.napcat.message.set_msg_emoji_like"):
             return f"贴表情 API 失败:{api_result}"
         self.react.mark_used(stream_id)
-        return f"已贴表情 {emoji}"
+        name = AVAILABLE_REACT_EMOJIS.get(int(emoji_id), "")
+        label = f"「{name}」" if name else ""
+        return f"已贴表情{label}({emoji_id})"
 
     @Tool(
         "poke_user",
-        description="主动戳一戳目标用户(仅冷却限制)。",
-        brief_description="主动戳一戳",
+        description=(
+            "戳一戳:用 msg_id 戳该消息发送者(推荐,不会指错人),或用 user_id 直接指定 QQ 号;"
+            "群聊/私聊上下文自动判定,不要传群号。"
+        ),
+        brief_description=(
+            "戳一戳:用 msg_id 戳消息发送者,或用 user_id 直接指定 QQ 号"
+        ),
+        detailed_description="目标二选一:msg_id 或 user_id;按目标用户冷却(工程护栏)。",
         parameters=[
-            ToolParameterInfo(name="user_id", param_type="string", description="目标用户 ID", required=True),
-            ToolParameterInfo(name="group_id", param_type="string", description="群号(群聊必填,私聊留空)", required=False),
+            ToolParameterInfo(
+                name="msg_id", param_type="string",
+                description="目标消息 ID,戳该消息的发送者;与 user_id 二选一", required=False,
+            ),
+            ToolParameterInfo(
+                name="user_id", param_type="string",
+                description="目标用户 QQ 号;与 msg_id 二选一", required=False,
+            ),
         ],
         visibility="visible",
     )
-    async def poke_user(self, user_id: str = "", group_id: str = "", **kwargs: Any) -> str:
+    async def poke_user(self, msg_id: str = "", user_id: str = "", **kwargs: Any) -> str:
         if str(kwargs.get("platform") or "") == QZONE_PLATFORM:
             return "当前是QQ空间动态流,这个动作用不上哦。"
-        del kwargs
         if not self.config.plugin.enabled or not self.config.poke.poke_tool_enabled:
             return "主动戳工具未启用。"
-        ok, reason = self.poke.can_poke(user_id)
+        stream_id = str(kwargs.get("stream_id") or "")
+        target, group_id, err = await self._resolve_poke_target(
+            str(msg_id or "").strip(), str(user_id or "").strip(), stream_id
+        )
+        if err:
+            return err
+        ok, reason = self.poke.can_poke(target)
         if not ok:
             return reason
         # 实测 API 签名:send_poke(user_id, group_id, target_id, qq_id)
         api_result = await self.ctx.api.call(
             "adapter.napcat.message.send_poke",
-            user_id=user_id,
+            user_id=target,
             group_id=group_id or None,
-            target_id=user_id,
+            target_id=target,
         )
-        if not self._api_ok(api_result):
+        if not self._api_ok(api_result, capability="adapter.napcat.message.send_poke"):
             return f"戳一戳 API 失败:{api_result}"
-        self.poke.mark_poked(user_id)
+        self.poke.mark_poked(target)
         return "已戳。"
+
+    async def _resolve_poke_target(
+        self, msg_id: str, user_id: str, stream_id: str
+    ) -> tuple[str, str, str]:
+        """解析戳一戳目标:返回 (目标 QQ, 群号或空串, 错误原因)。
+
+        优先 msg_id 反查发送者与消息所在群;仅给 user_id 时,群上下文取自当前聊天流
+        (群聊带群号、私聊为空)——群号不由模型传,避免传错群。上下文无法判定时
+        显式失败并提示改用 msg_id,不静默当私聊戳。
+        """
+
+        if msg_id:
+            result, parse_err = await self._fetch_message_dict(msg_id, stream_id)
+            if result is None:
+                self._log_drift("poke:message", expected="dict(message_info)",
+                                actual=parse_err, detail=f"msg={msg_id}")
+                return "", "", f"消息 {msg_id} 解析失败({parse_err})"
+            info = result.get("message_info")
+            if not isinstance(info, dict):
+                self._log_drift("poke:message", expected="message_info:dict",
+                                actual=type(info).__name__, detail=f"msg={msg_id}")
+                return "", "", f"消息 {msg_id} 缺少 message_info"
+            user_info = info.get("user_info")
+            group_info = info.get("group_info")
+            user_info = user_info if isinstance(user_info, dict) else {}
+            group_info = group_info if isinstance(group_info, dict) else {}
+            target = str(user_info.get("user_id") or user_info.get("sender_id") or "").strip()
+            group = str(group_info.get("group_id") or "").strip()
+            if not target:
+                keys = ",".join(sorted(str(k) for k in info.keys())[:8])
+                self._log_drift("poke:message", expected="message_info.user_info.user_id",
+                                actual="缺失", detail=f"keys={keys}")
+                return "", "", f"消息 {msg_id} 缺少发送者信息"
+            if user_id and user_id != target:
+                return "", "", f"user_id({user_id})与消息 {msg_id} 的发送者({target})不一致"
+            return target, group, ""
+        if not user_id:
+            return "", "", "请提供 msg_id(戳该消息发送者)或 user_id(目标 QQ 号)。"
+        await self._refresh_stream_cache()
+        stream = self._stream_cache.get(stream_id)
+        if not isinstance(stream, dict):
+            self._log_drift("poke:stream", expected="流信息(chat.get_all_streams)",
+                            actual="未找到", detail=f"stream={stream_id}")
+            return "", "", "无法从当前聊天流判定群聊/私聊,请改用 msg_id 指定目标消息。"
+        raw_is_group = stream.get("is_group_session")
+        is_group = raw_is_group is True or str(raw_is_group).strip().lower() == "true"
+        group = str(stream.get("group_id") or "") if is_group else ""
+        if is_group and not group:
+            self._log_drift("poke:stream", expected="群聊流含 group_id",
+                            actual="group_id 为空", detail=f"stream={stream_id}")
+            return "", "", "当前群聊流缺少群号,无法戳一戳,请改用 msg_id 指定目标消息。"
+        self.ctx.logger.debug(
+            "戳一戳目标解析: 来源=user_id 上下文=%s", "群聊" if is_group else "私聊",
+        )
+        return user_id, group, ""
+
+    @staticmethod
+    def _require_reply_reference(value: Any, action: str) -> tuple[str, str]:
+        """reply_reference 必填校验(与主程序 reply 工具同构):返回 (值, 错误原因)。"""
+
+        reference = str(value or "").strip()
+        if not reference:
+            return "", (
+                f"{action}工具必须提供非空字符串 reply_reference,"
+                f"请填写本次{action}的上下文关键信息与回复方向后重新调用。"
+            )
+        return reference, ""
 
     @Tool(
         "inspect_image",
@@ -1069,13 +1194,19 @@ class CatsitatePlugin(MaiBotPlugin):
             return
         self._guard_compiled = _guard_list
 
-    async def _qzone_polish(self, draft: str, *, limit: int, scene: str) -> str:
-        """表达润色:planner 草稿按人设+表达方式+场景语改写;失败告警后原样返回(草稿直发)。"""
+    async def _qzone_polish(
+        self, draft: str, *, limit: int, scene: str, reply_reference: str = ""
+    ) -> str:
+        """表达润色:planner 草稿按人设+表达方式+场景语改写;失败告警后原样返回(草稿直发)。
+
+        上下文只取 planner 给的 reply_reference(对齐主程序 reply 工具),不自动注入目标消息块。
+        """
 
         persona, _ = await self._persona_context()
         polished = await polish_action_text(
             self._qzone_expression_call(), persona=persona, voice=await self._voice_style(),
-            draft=draft, scene=scene, limit=limit, logger=self.ctx.logger,
+            draft=draft, scene=scene, reply_reference=reply_reference,
+            limit=limit, logger=self.ctx.logger,
         )
         return polished or draft
 
@@ -1105,16 +1236,26 @@ class CatsitatePlugin(MaiBotPlugin):
     @Tool(
         "qzone_comment",
         description="评论好友的QQ空间说说。content 填你想说的内容,用你平时的口吻直接写。",
-        brief_description="评论说说",
+        brief_description="评论说说(需给 reply_reference 上下文与回复方向)",
         parameters=[
             ToolParameterInfo(name="feed_id", param_type="string", description="目标说说ID(照抄消息尾部「说说ID=」)", required=True),
             ToolParameterInfo(name="content", param_type="string", description="评论内容(≤200字,用你平时的口吻直接写)", required=True),
+            ToolParameterInfo(
+                name="reply_reference", param_type="string",
+                description=(
+                    "本次评论的上下文关键信息与回复方向,包括当前聊天状态、人物关系、事实信息、回忆信息;"
+                    "不是评论正文"
+                ),
+                required=True,
+            ),
             ToolParameterInfo(name="at_user_id", param_type="string", description="回应评论时填评论者QQ,会自动@TA", required=False),
         ],
         visibility="visible",
     )
-    async def qzone_comment(self, feed_id: str = "", content: str = "", at_user_id: str = "",
-                            **kwargs: Any) -> str:
+    async def qzone_comment(
+        self, feed_id: str = "", content: str = "", reply_reference: str = "",
+        at_user_id: str = "", **kwargs: Any,
+    ) -> str:
         """评论说说——bot 自主决定是否/如何评论(工具驱动,替代意图路由)。"""
         del kwargs  # 全域工具:view_friend_feeds 提供说说ID 后任何聊天里都可评论
         if not self._qzone_available:
@@ -1124,6 +1265,9 @@ class CatsitatePlugin(MaiBotPlugin):
         content = content.strip()
         if not content:
             return "评论内容不能为空。"
+        reply_reference, ref_err = self._require_reply_reference(reply_reference, "评论")
+        if ref_err:
+            return ref_err
         if len(content) > 200:
             return f"评论太长了({len(content)} 字,上限 200),请精简。"
         # 目标解析前置:纯本地查询(registry → seen_store → awaiting → 显式失败,
@@ -1131,8 +1275,12 @@ class CatsitatePlugin(MaiBotPlugin):
         fid, owner_uin, ctx = self._qzone_resolve_feed(feed_id)
         if not fid:
             return f"未找到说说 {feed_id[:12]},可能已过期,请核对消息尾部的说说ID。"
-        # 表达润色:planner 草稿按人设+表达方式+场景语改写(失败以草稿直发)
-        content = await self._qzone_polish(content, limit=200, scene="QQ空间里,想给好友的说说写一条评论")
+        # 表达润色:planner 草稿按人设+表达方式+场景语改写(失败以草稿直发);
+        # 上下文只用 planner 的 reply_reference,不自动注入目标消息块
+        content = await self._qzone_polish(
+            content, limit=200, scene="QQ空间里,想给好友的说说写一条评论",
+            reply_reference=reply_reference,
+        )
         # v1.0.0 内容护栏:润色后的最终文本匹配(草稿直发形态同样覆盖),命中即
         # 拦截——零 API 调用零记账零 seen,回执明示规则编号
         hit = match_guard(self._guard_compiled, content)
@@ -1185,16 +1333,26 @@ class CatsitatePlugin(MaiBotPlugin):
     @Tool(
         "qzone_reply",
         description="回复好友在你说说下的评论或对你评论的回复(QQ空间楼中楼),任何聊天里都可用。feed_id/comment_id 照抄消息尾部〔〕、浏览动态评论区,或 view_friend_feed_detail 结果里的标注。",
-        brief_description="回复评论(楼中楼)",
+        brief_description="回复评论(楼中楼,需给 reply_reference 上下文与回复方向)",
         parameters=[
             ToolParameterInfo(name="feed_id", param_type="string", description="目标说说ID(照抄消息尾部「说说ID=」)", required=True),
             ToolParameterInfo(name="comment_id", param_type="string", description="要回复的主评论ID(照抄消息尾部「评论ID=」)", required=True),
             ToolParameterInfo(name="content", param_type="string", description="回复内容(≤200字,用你平时的口吻直接写)", required=True),
+            ToolParameterInfo(
+                name="reply_reference", param_type="string",
+                description=(
+                    "本次回复的上下文关键信息与回复方向,包括当前聊天状态、人物关系、事实信息、回忆信息;"
+                    "不是回复正文"
+                ),
+                required=True,
+            ),
         ],
         visibility="visible",
     )
-    async def qzone_reply(self, feed_id: str = "", comment_id: str = "", content: str = "",
-                          **kwargs: Any) -> str:
+    async def qzone_reply(
+        self, feed_id: str = "", comment_id: str = "", content: str = "",
+        reply_reference: str = "", **kwargs: Any,
+    ) -> str:
         """楼中楼回复——commentId+commentUin 二元组精确匹配主评论(联调实证)。
 
         全域工具:comment_id 锚来源=空间流通知参数行、
@@ -1205,6 +1363,9 @@ class CatsitatePlugin(MaiBotPlugin):
         if not (feed_id.strip() and comment_id.strip() and content.strip()):
             return "说说ID、评论ID和回复内容都不能为空——评论ID 照抄消息尾部〔〕或 view_friend_feed_detail 结果里的标注。"
         content = content.strip()
+        reply_reference, ref_err = self._require_reply_reference(reply_reference, "回复")
+        if ref_err:
+            return ref_err
         if len(content) > 200:
             return f"回复太长了({len(content)} 字,上限 200)。"
         # 目标解析前置(说说+楼中楼二元组,均为纯本地查询)——锚失效时在润色
@@ -1234,8 +1395,13 @@ class CatsitatePlugin(MaiBotPlugin):
         if not notify_hit and not map_entry:
             return (f"未找到这条评论(评论ID={cid[:12]} 锚可能已过期)——"
                     "先用 view_friend_feed_detail 查看该说说,照抄最新评论ID再回复。")
-        # 表达润色:planner 草稿按人设+表达方式+场景语改写(失败以草稿直发)
-        content = await self._qzone_polish(content, limit=200, scene="QQ空间里,想回复好友在你的说说下写的评论")
+        # 表达润色:planner 草稿按人设+表达方式+场景语改写(失败以草稿直发);
+        # 上下文只用 planner 的 reply_reference,不自动注入目标消息块
+        content = await self._qzone_polish(
+            content, limit=200,
+            scene="QQ空间里,想回复好友在你的说说下写的评论",
+            reply_reference=reply_reference,
+        )
         # v1.0.0 内容护栏:润色后的最终文本匹配(草稿直发形态同样覆盖),命中即
         # 拦截——零 API 调用零记账,回执明示规则编号
         hit = match_guard(self._guard_compiled, content)
@@ -1348,6 +1514,8 @@ class CatsitatePlugin(MaiBotPlugin):
         echo_msg = {
             "message_id": f"qzone_self_{int(time.time())}_{self._qzone_seq}",
             "platform": QZONE_PLATFORM,
+            "account_id": bot_uin or None,
+            "scope": None,
             "timestamp": str(int(time.time())),
             "message_info": {
                 # 发送者=bot 自己:昵称用 bot 名(主程序对自身消息按 bot 名显示,
@@ -2140,6 +2308,8 @@ class CatsitatePlugin(MaiBotPlugin):
         """单条注入(泵弹出后的主体):构造(通知=带 reply 段/浏览=图片链)→
         route → mark_seen → registry 登记。异常分支内各自处理;取消由泵层
         统一回队。"""
+        # 正式归属字段(宿主 1.3.11 起:消息顶层 account_id/scope,旧格式下版本移除)
+        account = str(self.config.favorability.bot_user_id or "").strip()
         if feed.source == "notify":
             # 通知走专用构造:带 reply 段引用**原说说**的注入消息
             # (napcat quote 式上下文关联)——引用目标经 seen_store.get_message_id
@@ -2154,6 +2324,7 @@ class CatsitatePlugin(MaiBotPlugin):
                 feed, group_id=QZONE_VIRTUAL_GROUP_ID,
                 group_name=QZONE_VIRTUAL_GROUP_NAME, now_epoch=time.time(),
                 reply_target_id=reply_target_id, reply_target_sender=feed.origin_sender,
+                account_id=account,
             )
         else:
             # 图片公共管线:下载(失败跳过+
@@ -2170,7 +2341,7 @@ class CatsitatePlugin(MaiBotPlugin):
                 msg = build_feed_message(
                     feed, seq=self._qzone_seq, group_id=QZONE_VIRTUAL_GROUP_ID,
                     group_name=QZONE_VIRTUAL_GROUP_NAME, images=pack.segments,
-                    now_epoch=time.time(),
+                    now_epoch=time.time(), account_id=account,
                 )
             except Exception:
                 self.ctx.logger.exception("QQ空间图片管线/消息构造异常(tid=%s),降级全占位注入", feed.tid)
@@ -2180,7 +2351,7 @@ class CatsitatePlugin(MaiBotPlugin):
                 msg = build_feed_message(
                     feed, seq=self._qzone_seq, group_id=QZONE_VIRTUAL_GROUP_ID,
                     group_name=QZONE_VIRTUAL_GROUP_NAME, images=images,
-                    now_epoch=time.time(),
+                    now_epoch=time.time(), account_id=account,
                 )
         try:
             # SDK route_message 返回 bool accepted(不抛异常):宿主 adapter policy
@@ -2377,6 +2548,8 @@ class CatsitatePlugin(MaiBotPlugin):
             msg = {
                 "message_id": f"qzone_seed_{int(time.time())}_{self._qzone_seq}",
                 "platform": QZONE_PLATFORM,
+                "account_id": bot_uin or None,
+                "scope": None,
                 "timestamp": str(int(time.time())),
                 "message_info": {
                     "user_info": {"user_id": bot_uin, "user_nickname": await self._bot_echo_nickname()},
@@ -2840,7 +3013,10 @@ class CatsitatePlugin(MaiBotPlugin):
             self.ctx.logger.debug("注入块构造: %s", [b.module for b in blocks])
             messages = self._messages_from_kwargs(kwargs)
             if messages is None:
-                self.ctx.logger.debug("注入跳过: messages 取不到")
+                raw_items = kwargs.get("items")
+                self._log_drift("hook:maisaka.planner.before_request", expected="items:list",
+                                actual=type(raw_items).__name__,
+                                detail="keys=" + ",".join(sorted(str(k) for k in kwargs.keys())[:10]))
                 return {"action": "continue", "modified_kwargs": kwargs}
             stream_id = str(kwargs.get("session_id") or "")
             is_qzone_session = stream_id in self._qzone_session_id_set() and self._qzone_available
@@ -3060,6 +3236,8 @@ class CatsitatePlugin(MaiBotPlugin):
             return {"action": "continue", "modified_kwargs": kwargs}
         hit = match_guard(self._guard_compiled, final_text)
         if not hit:
+            # 通过路径留痕:护栏是否真正被调用,只能从日志区分「检查通过」与「钩子未触发」
+            self.ctx.logger.debug("内容护栏最终防线:检查通过(文本长度=%d)", len(final_text))
             return {"action": "continue", "modified_kwargs": kwargs}
         self.ctx.logger.warning(
             "内容护栏拦截:最终发送 命中规则%d,中止发送(文本:%s...)", hit, final_text[:60]
@@ -4224,6 +4402,8 @@ class CatsitatePlugin(MaiBotPlugin):
             msg = {
                 "message_id": f"qzone_self_diary_{int(time.time())}_{self._qzone_seq}",
                 "platform": QZONE_PLATFORM,
+                "account_id": bot_uin or None,
+                "scope": None,
                 "timestamp": str(int(time.time())),
                 "message_info": {
                     "user_info": {"user_id": bot_uin, "user_nickname": await self._bot_echo_nickname()},
@@ -4726,6 +4906,26 @@ class CatsitatePlugin(MaiBotPlugin):
         result = await self.ctx.call_capability("message.get_recent", chat_id=stream_id, limit=limit)
         return result if isinstance(result, list) else []
 
+    async def _fetch_message_dict(self, message_id: str, stream_id: str) -> tuple[dict | None, str]:
+        """经 message.get_by_id 取消息字典(解包 SDK "message" 键);失败返回 (None, 原因)。
+
+        原因文案供调用方拼接(「消息 X 解析{原因}」),不抛异常;异常只记类型不插值正文。
+        """
+
+        try:
+            result = await self.ctx.call_capability(
+                "message.get_by_id", message_id=message_id, chat_id=stream_id
+            )
+        except Exception as exc:  # noqa: BLE001
+            return None, f"能力调用异常({rpc_error_brief(exc)})"
+        if isinstance(result, dict) and isinstance(result.get("message"), dict):
+            result = result["message"]  # SDK 解包键
+        if result is None:
+            return None, "返回 None"
+        if not isinstance(result, dict):
+            return None, f"返回非 dict({type(result).__name__})"
+        return result, ""
+
     async def _resolve_quote_sender(self, stream_id: str, reply_to_id: str) -> tuple[str | None, str]:
         """经主机能力 message.get_by_id 解析 reply 消息原发送者(实机:reply 段为纯消息 id)。
 
@@ -4734,20 +4934,9 @@ class CatsitatePlugin(MaiBotPlugin):
         失败返回 (None, 原因),不抛异常——原因供调用方每轮至多一条 warning。
         """
 
-        try:
-            result = await self.ctx.call_capability(
-                "message.get_by_id", message_id=reply_to_id, chat_id=stream_id
-            )
-        except Exception as exc:  # noqa: BLE001
-            # 仅记异常类型,不插值 exc 本体(安全纪律,同 decay.py)
-            return None, f"能力调用异常({rpc_error_brief(exc)})"
+        result, parse_err = await self._fetch_message_dict(reply_to_id, stream_id)
         if result is None:
-            return None, f"消息 {reply_to_id} 解析返回 None"
-        if not isinstance(result, dict):
-            return None, f"消息 {reply_to_id} 解析返回非 dict({type(result).__name__})"
-        payload = result.get("message")
-        if isinstance(payload, dict):
-            result = payload  # SDK 解包键 "message"
+            return None, f"消息 {reply_to_id} 解析{parse_err}"
         info = result.get("message_info") or {}
         user_info = info.get("user_info") or {}
         sender = str(user_info.get("user_id") or user_info.get("sender_id") or "")
@@ -4879,13 +5068,38 @@ class CatsitatePlugin(MaiBotPlugin):
                 return str(m.get("processed_plain_text") or "")
         return ""
 
-    @staticmethod
-    def _api_ok(result: Any) -> bool:
-        """napcat API 返回格式实测为 {'status': 'ok', ...}(非 success 字段)。"""
+    _DRIFT_PREFIX = "[适配偏移]"
+
+    def _log_drift(self, area: str, *, expected: str, actual: str, detail: str = "") -> None:
+        """记录「实际输出与预期契约不一致」的取证日志(供下一版适配)。
+
+        纪律:只记形态/键名/长度,不落消息正文与 QQ 号;warning 级保证主日志可见。
+        """
+
+        self.ctx.logger.warning(
+            "%s %s | expected=%s | actual=%s | detail=%s",
+            self._DRIFT_PREFIX, area, expected, actual, detail or "-",
+        )
+
+    def _api_ok(self, result: Any, *, capability: str = "") -> bool:
+        """napcat API 返回格式实测为 {'status': 'ok', ...}(非 success 字段)。
+
+        两种已知形态都不符时记一条「适配偏移」取证——适配器/宿主改回执结构时,
+        日志可直接作为下一版适配的依据,而不是只表现为工具失败。
+        """
 
         if isinstance(result, dict) and result.get("success"):
             return True
-        return isinstance(result, dict) and str(result.get("status") or "").lower() in ("ok", "success")
+        if isinstance(result, dict) and str(result.get("status") or "").lower() in ("ok", "success"):
+            return True
+        if not isinstance(result, dict):
+            self._log_drift(f"api:{capability or '?'}", expected="dict(status/success)",
+                            actual=type(result).__name__)
+        elif "status" not in result and "success" not in result:
+            keys = ",".join(sorted(str(k) for k in result.keys())[:8])
+            self._log_drift(f"api:{capability or '?'}", expected="status 或 success 字段",
+                            actual=f"keys=[{keys}]")
+        return False
 
     def _output_items(self, kwargs: dict[str, Any]) -> list[dict]:
         items = kwargs.get(self._OUTPUT_ITEMS_KEY)

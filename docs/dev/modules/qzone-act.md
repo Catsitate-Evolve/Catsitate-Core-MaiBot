@@ -21,8 +21,8 @@
 | 工具 | 端点 | 关键参数 |
 |---|---|---|
 | `qzone_like(feed_id?)` | internal_dolike_app | unikey/curkey=说说 URL,appid=311;缺省 feed_id 时对「当前正在浏览的说说」点赞(awaiting) |
-| `qzone_comment(feed_id, content, at_user_id?)` | emotion_cgi_re_feeds | topicId=`{主人}_{fid}__1`;at_user_id 触发 `@{uin,nick,auto:1}` 前缀(自动 @ 对方) |
-| `qzone_reply(feed_id, comment_id, content)` | 同评论端点 + commentId/commentUin | 二元组精确匹配主评论;@ 前缀目标与二元组解耦 |
+| `qzone_comment(feed_id, content, reply_reference, at_user_id?)` | emotion_cgi_re_feeds | topicId=`{主人}_{fid}__1`;at_user_id 触发 `@{uin,nick,auto:1}` 前缀(自动 @ 对方);reply_reference 必填(planner 的上下文与回复方向,交润色层,不是正文) |
+| `qzone_reply(feed_id, comment_id, content, reply_reference)` | 同评论端点 + commentId/commentUin | 二元组精确匹配主评论;@ 前缀目标与二元组解耦;reply_reference 必填(同 qzone_comment) |
 | `qzone_post(content)` | emotion_cgi_publish_v6 | 纯文本;发布成功后回注虚拟流(见 qzone-express.md) |
 
 写路径共同纪律:`content` 由 planner 直写草稿、发出前经表达润色层顺口吻(qzone-express.md)与内容护栏(guard.md);长度硬校验在工具入参(评论/回复 ≤200 字、说说 ≤500 字);**失败不重试**(登录态失效的同轮自愈除外)。

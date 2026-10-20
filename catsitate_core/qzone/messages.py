@@ -167,6 +167,7 @@ def format_comment_param_line(
 def build_notify_message(
     feed: FeedItem, *, group_id: str, group_name: str, now_epoch: float,
     reply_target_id: str = "", reply_target_sender: str = "",
+    account_id: str = "", scope: str = "",
 ) -> dict:
     """构造通知注入消息——带 reply 段引用原说说(napcat quote 式上下文关联)。
 
@@ -193,6 +194,8 @@ def build_notify_message(
     return {
         "message_id": f"qzone_notify_{feed.tid}_{int(now_epoch)}",
         "platform": QZONE_PLATFORM,
+        "account_id": account_id or None,
+        "scope": scope or None,
         "timestamp": str(int(now_epoch)),
         "message_info": {
             "user_info": {"user_id": str(feed.uin), "user_nickname": feed.nickname},
@@ -280,6 +283,8 @@ def build_feed_message(
     group_name: str,
     images: list[tuple[str, bytes]],
     now_epoch: float,
+    account_id: str = "",
+    scope: str = "",
 ) -> dict:
     """构造一条说说注入消息。images 为 (url, bytes) 列表,下载失败(None)的图
     以占位呈现(全失败按图数 [图片×N],模型可知图数;images 空段时 N 取
@@ -354,6 +359,8 @@ def build_feed_message(
     return {
         "message_id": f"qzone_{feed.tid}_{seq}",
         "platform": QZONE_PLATFORM,
+        "account_id": account_id or None,
+        "scope": scope or None,
         "timestamp": str(int(now_epoch)),
         "message_info": {
             "user_info": {"user_id": str(feed.uin), "user_nickname": feed.nickname},

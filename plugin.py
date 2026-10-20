@@ -2140,6 +2140,8 @@ class CatsitatePlugin(MaiBotPlugin):
         """单条注入(泵弹出后的主体):构造(通知=带 reply 段/浏览=图片链)→
         route → mark_seen → registry 登记。异常分支内各自处理;取消由泵层
         统一回队。"""
+        # 正式归属字段(宿主 1.3.11 起:消息顶层 account_id/scope,旧格式下版本移除)
+        account = str(self.config.favorability.bot_user_id or "").strip()
         if feed.source == "notify":
             # 通知走专用构造:带 reply 段引用**原说说**的注入消息
             # (napcat quote 式上下文关联)——引用目标经 seen_store.get_message_id
@@ -2154,6 +2156,7 @@ class CatsitatePlugin(MaiBotPlugin):
                 feed, group_id=QZONE_VIRTUAL_GROUP_ID,
                 group_name=QZONE_VIRTUAL_GROUP_NAME, now_epoch=time.time(),
                 reply_target_id=reply_target_id, reply_target_sender=feed.origin_sender,
+                account_id=account,
             )
         else:
             # 图片公共管线:下载(失败跳过+
@@ -2170,7 +2173,7 @@ class CatsitatePlugin(MaiBotPlugin):
                 msg = build_feed_message(
                     feed, seq=self._qzone_seq, group_id=QZONE_VIRTUAL_GROUP_ID,
                     group_name=QZONE_VIRTUAL_GROUP_NAME, images=pack.segments,
-                    now_epoch=time.time(),
+                    now_epoch=time.time(), account_id=account,
                 )
             except Exception:
                 self.ctx.logger.exception("QQ空间图片管线/消息构造异常(tid=%s),降级全占位注入", feed.tid)
@@ -2180,7 +2183,7 @@ class CatsitatePlugin(MaiBotPlugin):
                 msg = build_feed_message(
                     feed, seq=self._qzone_seq, group_id=QZONE_VIRTUAL_GROUP_ID,
                     group_name=QZONE_VIRTUAL_GROUP_NAME, images=images,
-                    now_epoch=time.time(),
+                    now_epoch=time.time(), account_id=account,
                 )
         try:
             # SDK route_message 返回 bool accepted(不抛异常):宿主 adapter policy

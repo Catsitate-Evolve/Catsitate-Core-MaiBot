@@ -33,9 +33,6 @@ class FeedContext:
     # 浏览注入/查看工具从结构化评论填充;通知注入填通知二元组。qzone_reply 解析
     # comment_id 时据此确定主评论作者与 @ 目标(无通知上下文时的唯一来源)。
     comment_map: dict[str, tuple[str, str]] = field(default_factory=dict)
-    # 评论正文映射(comment_tid → 评论/回复原文):润色层「正在回复的评论」上下文来源;
-    # 与 comment_map 同款键级合并(通知登记新事件正文,浏览/详情补全历史评论)
-    comment_text_map: dict[str, str] = field(default_factory=dict)
 
 
 class FeedContextRegistry:
@@ -76,7 +73,6 @@ class FeedContextRegistry:
                     **{k: (v[0], v[1] or old.comment_map.get(k, ("", ""))[1])
                        for k, v in ctx.comment_map.items()},
                 },
-                comment_text_map={**old.comment_text_map, **ctx.comment_text_map},
             )
             ctx = merged
         self._entries[ctx.tid] = (ctx, time.monotonic())

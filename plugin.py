@@ -1170,44 +1170,20 @@ class CatsitatePlugin(MaiBotPlugin):
         self._guard_compiled = _guard_list
 
     async def _qzone_polish(
-        self, draft: str, *, limit: int, scene: str,
-        reply_reference: str = "", target_context: list[str] | None = None,
+        self, draft: str, *, limit: int, scene: str, reply_reference: str = ""
     ) -> str:
         """表达润色:planner 草稿按人设+表达方式+场景语改写;失败告警后原样返回(草稿直发)。
 
-        target_context 为「这条回复针对什么」的上下文行(被评论的说说正文/被回复的评论原文),
-        仿主程序 replyer 的目标消息块:让润色模型知道在回应谁、回应什么事,而不是只看到草稿。
+        上下文只取 planner 给的 reply_reference(对齐主程序 reply 工具),不自动注入目标消息块。
         """
 
         persona, _ = await self._persona_context()
         polished = await polish_action_text(
             self._qzone_expression_call(), persona=persona, voice=await self._voice_style(),
             draft=draft, scene=scene, reply_reference=reply_reference,
-            target_context=target_context, limit=limit, logger=self.ctx.logger,
+            limit=limit, logger=self.ctx.logger,
         )
         return polished or draft
-
-    def _qzone_feed_body(self, fid: str, ctx: Any) -> str:
-        """说说正文:优先 registry 全文,回退 seen_store 摘要。"""
-
-        body = str(getattr(ctx, "content_summary", "") or "").strip() if ctx is not None else ""
-        if not body:
-            body = str(self.qzone_seen.get_summary(fid) or "").strip()
-        return body
-
-    def _qzone_comment_text(self, ctx: Any, comment_id: str) -> str:
-        """被回复评论的原文:精确命中优先,其次前缀命中(消息尾锚只给前 12 位)。"""
-
-        text_map = getattr(ctx, "comment_text_map", {}) if ctx is not None else {}
-        if not isinstance(text_map, dict):
-            return ""
-        direct = str(text_map.get(comment_id) or "").strip()
-        if direct:
-            return direct
-        for key, value in text_map.items():
-            if str(key).startswith(comment_id) and str(value or "").strip():
-                return str(value).strip()
-        return ""
 
     async def _qzone_auth_retry(self, call, label: str) -> tuple[Any, str]:
         """QzoneAuthError 同轮自愈(不得放弃本轮动作)。
@@ -1274,17 +1250,11 @@ class CatsitatePlugin(MaiBotPlugin):
         fid, owner_uin, ctx = self._qzone_resolve_feed(feed_id)
         if not fid:
             return f"未找到说说 {feed_id[:12]},可能已过期,请核对消息尾部的说说ID。"
-        # 目标上下文(仿主程序 replyer 的目标消息块):被评论说说的作者与正文,
-        # 让润色模型知道「在回应什么」;正文缺省时只给场景语(不编造)
-        feed_body = self._qzone_feed_body(fid, ctx)
-        owner_name = str(getattr(ctx, "owner_nickname", "") or "").strip() or owner_uin or "好友"
-        target_ctx = (
-            [f"你正在评论 {owner_name} 的这条说说:\n{clip_text(feed_body, 300)}"] if feed_body else []
-        )
-        # 表达润色:planner 草稿按人设+表达方式+场景语改写(失败以草稿直发)
+        # 表达润色:planner 草稿按人设+表达方式+场景语改写(失败以草稿直发);
+        # 上下文只用 planner 的 reply_reference,不自动注入目标消息块
         content = await self._qzone_polish(
             content, limit=200, scene="QQ空间里,想给好友的说说写一条评论",
-            reply_reference=reply_reference, target_context=target_ctx,
+            reply_reference=reply_reference,
         )
         # v1.0.0 内容护栏:润色后的最终文本匹配(草稿直发形态同样覆盖),命中即
         # 拦截——零 API 调用零记账零 seen,回执明示规则编号
@@ -1400,20 +1370,12 @@ class CatsitatePlugin(MaiBotPlugin):
         if not notify_hit and not map_entry:
             return (f"未找到这条评论(评论ID={cid[:12]} 锚可能已过期)——"
                     "先用 view_friend_feed_detail 查看该说说,照抄最新评论ID再回复。")
-        # 目标上下文(仿主程序 replyer 的目标消息块):先给「被回复的评论原文」,
-        # 再给「它出现在哪条说说下」,避免润色模型只看到草稿而答非所问
-        feed_body = self._qzone_feed_body(fid, ctx)
-        reply_to_text = self._qzone_comment_text(ctx, cid)
-        target_ctx: list[str] = []
-        if reply_to_text:
-            target_ctx.append(f"你正在回复这条评论:\n{clip_text(reply_to_text, 300)}")
-        if feed_body:
-            target_ctx.append(f"这条评论出现在这条说说下:\n{clip_text(feed_body, 300)}")
-        # 表达润色:planner 草稿按人设+表达方式+场景语改写(失败以草稿直发)
+        # 表达润色:planner 草稿按人设+表达方式+场景语改写(失败以草稿直发);
+        # 上下文只用 planner 的 reply_reference,不自动注入目标消息块
         content = await self._qzone_polish(
             content, limit=200,
             scene="QQ空间里,想回复好友在你的说说下写的评论",
-            reply_reference=reply_reference, target_context=target_ctx,
+            reply_reference=reply_reference,
         )
         # v1.0.0 内容护栏:润色后的最终文本匹配(草稿直发形态同样覆盖),命中即
         # 拦截——零 API 调用零记账,回执明示规则编号
@@ -1623,7 +1585,6 @@ class CatsitatePlugin(MaiBotPlugin):
                 tid=f.tid, owner_uin=qq, owner_nickname=f.nickname or qq, kind="feed",
                 content_summary=f.content or "(纯图)",
                 comment_map={c.comment_tid: (c.uin, c.nickname) for c in f.comments},
-                comment_text_map={c.comment_tid: c.content for c in f.comments if c.comment_tid and c.content},
             ))
             # 图片公共管线:下载(失败跳过+
             # 告警)→多图角标合成→压缩预算,恒单图 content_item;[:3] 截断已删除
@@ -1699,7 +1660,6 @@ class CatsitatePlugin(MaiBotPlugin):
             tid=target.tid, owner_uin=owner, owner_nickname=target.nickname or owner, kind="feed",
             content_summary=target.content or "(纯图)",
             comment_map={c.comment_tid: (c.uin, c.nickname) for c in target.comments},
-            comment_text_map={c.comment_tid: c.content for c in target.comments if c.comment_tid and c.content},
         ))
         # 查看即已见:落 seen 表(浏览轮询据此跳过;源A 评论扫描另一张表不受影响)
         now_iso = datetime.now().strftime("%Y-%m-%dT%H:%M:%S")
@@ -2417,12 +2377,6 @@ class CatsitatePlugin(MaiBotPlugin):
                 if feed.source == "notify" and feed.comment_tid
                 else {c.comment_tid: (c.uin, c.nickname) for c in feed.comments}
             ),
-            # 评论正文:通知=事件原文;浏览=结构化评论全量(润色上下文来源)
-            comment_text_map=(
-                {feed.comment_tid: feed.comment_text}
-                if feed.source == "notify" and feed.comment_tid and feed.comment_text
-                else {c.comment_tid: c.content for c in feed.comments if c.comment_tid and c.content}
-            ),
         ))
         self.ctx.logger.info("QQ空间动态已注入(tid=%s,作者=%s)", feed.tid, feed.nickname)
 
@@ -2714,8 +2668,6 @@ class CatsitatePlugin(MaiBotPlugin):
                         # 楼中楼二元组素材(qzone_reply):主评论 tid+主评论作者
                         # (源A=评论好友的评论,作者=好友;源B=bot 的评论,作者=bot)
                         comment_tid=c.comment_tid, comment_uin=str(c.uin),
-                        # 事件正文(@ 转可读昵称):润色层「正在回复的评论」上下文
-                        comment_text=parse_qzone_mentions(c.content, bot_uin=bot_uin),
                     ))
                     try:
                         self.qzone_comment_seen.fav_event(
@@ -2779,8 +2731,6 @@ class CatsitatePlugin(MaiBotPlugin):
                     # (bot 自己的顶层评论时即 bot;好友顶层评论的线程内为好友)
                     comment_tid=r.parent_comment_tid,
                     comment_uin=r.parent_comment_uin or bot_uin,
-                    # 事件正文=好友这条楼中楼回复(润色层要回应的对象)
-                    comment_text=parse_qzone_mentions(r.content, bot_uin=bot_uin),
                 ))
                 try:
                     self.qzone_comment_seen.fav_event(

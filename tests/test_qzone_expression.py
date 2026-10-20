@@ -94,74 +94,24 @@ async def test_polish_rpc_exception_falls_back_to_draft():
     assert any(w.startswith("QQ空间表达润色调用异常(RPC 超时") for w in warned)
 
 
-@pytest.mark.asyncio
-async def test_polish_target_context_precedes_draft():
-    """目标上下文(被评论说说/被回复评论)进变量段、草稿保持最后——仿主程序 replyer 的目标消息块。"""
-    call, calls = _llm({"success": True, "response": "好家伙"})
-    text = await polish_action_text(
-        call, persona="猫耳少女", voice="短句", draft="哈哈哈",
-        scene="QQ空间里,想给好友的说说写一条评论",
-        target_context=["你正在评论 小明 的这条说说:\n今天去爬山了", "这条评论出现在这条说说下:\n背景"],
-    )
-    assert text == "好家伙"
-    contents = [m["content"] for m in calls[0]]
-    assert contents[4] == "你正在评论 小明 的这条说说:\n今天去爬山了"
-    assert contents[5] == "这条评论出现在这条说说下:\n背景"
-    assert contents[-1] == "【待发内容】\n哈哈哈"
-
-
-def test_comment_text_lookup_exact_and_prefix():
-    """评论正文查找:精确→前缀(消息尾锚只给前 12 位);无上下文返回空串。"""
-    from plugin import CatsitatePlugin
-
-    class _Ctx:
-        comment_text_map = {"abcdef123456789": "好友的原评论", "zzz": ""}
-
-    p = object.__new__(CatsitatePlugin)
-    assert p._qzone_comment_text(_Ctx(), "abcdef123456789") == "好友的原评论"
-    assert p._qzone_comment_text(_Ctx(), "abcdef123456") == "好友的原评论"
-    assert p._qzone_comment_text(_Ctx(), "zzz") == ""
-    assert p._qzone_comment_text(None, "abcdef") == ""
-
-
-def test_feed_body_registry_first_then_seen(tmp_path):
-    """说说正文:registry 全文优先;缺省回退 seen_store 摘要。"""
-    from plugin import CatsitatePlugin
-
-    class _Seen:
-        def get_summary(self, tid):
-            return "seen 摘要"
-
-    class _Ctx:
-        content_summary = "registry 全文"
-
-    p = object.__new__(CatsitatePlugin)
-    p.qzone_seen = _Seen()
-    assert p._qzone_feed_body("t1", _Ctx()) == "registry 全文"
-    assert p._qzone_feed_body("t1", None) == "seen 摘要"
-    assert p._qzone_feed_body("t1", type("E", (), {"content_summary": ""})()) == "seen 摘要"
-
 
 @pytest.mark.asyncio
-async def test_polish_reply_reference_precedes_target_context():
-    """reply_reference 原样进变量段且排在目标消息块之前(对齐主程序 replyer 的顺序)。"""
+async def test_polish_reply_reference_in_variable_tail():
+    """上下文只来自 planner 的 reply_reference:原样进变量段、草稿恒在最后(不再注入目标消息块)。"""
     call, calls = _llm({"success": True, "response": "嗯"})
     await polish_action_text(
         call, persona="p", voice="v", draft="草稿",
         scene="QQ空间里,想给好友的说说写一条评论",
         reply_reference="她刚考完试,心情不错;上次聊到想去看海",
-        target_context=["你正在评论 小明 的这条说说:\n今天去爬山了"],
     )
     contents = [m["content"] for m in calls[0]]
     assert contents[4] == "回复信息参考：\n她刚考完试,心情不错;上次聊到想去看海"
-    assert contents[5] == "你正在评论 小明 的这条说说:\n今天去爬山了"
     assert contents[-1] == "【待发内容】\n草稿"
 
 
 def test_qzone_reply_tools_require_reply_reference():
     """两个空间回复工具与主程序 reply 同构:reply_reference 必填,缺失即显式拒绝。"""
     import asyncio
-    import inspect
     import logging
     from types import SimpleNamespace
 

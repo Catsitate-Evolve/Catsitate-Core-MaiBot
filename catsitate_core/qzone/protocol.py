@@ -53,8 +53,6 @@ class FeedItem:
     origin_sender: str = ""    # 原说说作者 uin(reply 段用)
     comment_tid: str = ""      # 通知场景:主评论 tid(qzone_reply 用,工具驱动 2026-09-01)
     comment_uin: str = ""      # 通知场景:主评论作者 uin(楼中楼二元组;源A=评论好友,源B=bot 自己)
-    # 通知事件正文(评论/回复原文,@ 已解析为可读昵称):润色层「你正在回复的评论」上下文来源
-    comment_text: str = ""
     # 该说说近期评论摘要(「昵称:内容」前 3 条,注入历史与上下文素材;
     # 结构化评论区块(get_user_feeds 经 parse_feed_comments_full 填充:
     # 顶层评论+楼中楼;通知项无此数据保持空)

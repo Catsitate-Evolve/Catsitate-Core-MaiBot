@@ -18,11 +18,10 @@
 
 ### 2.1 表达润色
 
-调用链:`qzone_comment/qzone_reply/qzone_post` → `_qzone_polish(draft, limit, scene)` → `expression.polish_action_text`:
+调用链:`qzone_comment/qzone_reply/qzone_post` → `_qzone_polish(draft, limit, scene, reply_reference)` → `expression.polish_action_text`:
 
-- **prompt 组装**(`build_side_prompt("qzone_expression", stable_ctx, variable_tail)`):稳定上下文=「bot 人设」(`personality.personality`)+「你平时说话的方式」(`personality.reply_style`)+场景语(如「你正在QQ空间里,想给好友的说说写一条评论」);变量素材=**目标上下文**(见下)+【待发内容】草稿(恒在最后)。
-- **reply_reference**(2026-10-20,直接对齐主程序 reply 工具):`qzone_comment`/`qzone_reply` 新增**必填**参数 `reply_reference`——planner 填本次互动的上下文关键信息与回复方向(聊天状态/人物关系/事实/回忆,不是正文),润色层以「回复信息参考：」原样放进变量段,排在目标上下文之前(与主程序 replyer 的 items 顺序一致)。缺失时工具显式拒绝并提示重新调用。
-- **目标上下文**(2026-10-20,仿主程序 replyer 的目标消息块):`qzone_comment` 注入「你正在评论 {作者} 的这条说说:(正文前 300 字)」;`qzone_reply` 注入「你正在回复这条评论:(原文前 300 字)」+「这条评论出现在这条说说下:(正文前 300 字)」——避免润色模型只看到草稿而答非所问。评论原文来自 `FeedContext.comment_text_map`(通知登记事件正文,浏览/详情登记结构化评论;精确→前缀匹配,锚只给前 12 位),说说正文优先 registry 全文、回退 seen_store 摘要;上下文缺失时只给场景语,不编造。
+- **prompt 组装**(`build_side_prompt("qzone_expression", stable_ctx, variable_tail)`):稳定上下文=「bot 人设」(`personality.personality`)+「你平时说话的方式」(`personality.reply_style`)+场景语(如「你正在QQ空间里,想给好友的说说写一条评论」);变量素材=planner 的 **reply_reference**(「回复信息参考：」原样,见下)+【待发内容】草稿(恒在最后);不自动注入目标消息块。
+- **reply_reference**(2026-10-20,直接对齐主程序 reply 工具):`qzone_comment`/`qzone_reply` 新增**必填**参数 `reply_reference`——planner 填本次互动的上下文关键信息与回复方向(聊天状态/人物关系/事实/回忆,不是正文),润色层以「回复信息参考：」原样放进变量段,排在【待发内容】草稿之前(与主程序 replyer 的 items 顺序一致)。缺失时工具显式拒绝并提示重新调用。
 - **模板指令**(`qzone_expression` v6,仿主程序改写器):完全重组许可+「不要修改关键事实部分:人名、数字、时间、地点,以及明确说过的话、做过的事,都保持原样,只调整说法和语气」——顺口吻不等于改事实。
 - **输出卫生**:`_sanitize` 剥首尾引号与空白(模型偶尔给正文套引号);不做字符级 emoji 过滤(会误伤表达,交给措辞约束)。
 - **超长软性重润**:润色结果超 limit 时只做一次带「这次改短一些,不超过 N 字」的重润;重润仍超长就按模型原样发出——**不硬截断**(工具入参的 200/500 字校验不变,那是 planner 草稿的门槛)。

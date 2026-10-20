@@ -754,10 +754,12 @@ class CatsitatePlugin(MaiBotPlugin):
     @Tool(
         "msg_react",
         description=(
-            "给目标消息贴一个表情回应。两种用法:给 intent(想表达的情绪/意图,如「赞同」「调侃」「安慰」)"
-            "由插件按情绪分组自动挑选;或给 emoji 直接指定表情名称(如「喵喵」「点赞」「doge」)。"
+            "贴表情:给 intent(情绪/意图,如「赞同」「调侃」「安慰」)按情绪分组自动选;"
+            "或给 emoji 直接指定名称(如「喵喵」「点赞」「doge」)。"
         ),
-        brief_description="贴表情",
+        brief_description=(
+            "贴表情:给 intent(情绪/意图)自动选,或给 emoji 直接指定名称"
+        ),
         detailed_description="表情表按情绪分组,仅表内表情可贴;私聊不支持;同一聊天流有冷却(工程护栏)。",
         parameters=[
             ToolParameterInfo(name="message_id", param_type="string", description="目标消息 ID", required=True),
@@ -821,10 +823,12 @@ class CatsitatePlugin(MaiBotPlugin):
     @Tool(
         "poke_user",
         description=(
-            "戳一戳某个用户。可用 msg_id 指定某条消息的发送者(推荐,不会指错人),"
-            "也可直接用 user_id 指定 QQ 号;群聊/私聊上下文由当前流自动判定,不要传群号。"
+            "戳一戳:用 msg_id 戳该消息发送者(推荐,不会指错人),或用 user_id 直接指定 QQ 号;"
+            "群聊/私聊上下文自动判定,不要传群号。"
         ),
-        brief_description="主动戳一戳",
+        brief_description=(
+            "戳一戳:用 msg_id 戳消息发送者,或用 user_id 直接指定 QQ 号"
+        ),
         detailed_description="目标二选一:msg_id 或 user_id;按目标用户冷却(工程护栏)。",
         parameters=[
             ToolParameterInfo(

@@ -55,7 +55,7 @@ Catsitate 是 MaiBot(QQ 猫娘机器人)的拟人化人格插件。它在 MaiBot
 |---|---|
 | `memo_write` / `memo_read` | 短时备忘读写(工具路径;`/记一下` 命令通道已于 2026-09-28 移除) |
 | `update_schedule` | 日程窗口的增/改/移 |
-| `msg_react` | 给消息贴 QQ 表情:唯一参数是意图(intent),由旁路 LLM 从**按情绪分组的 170 项表**挑选;想指定表情时把名称/俗称写进意图,由选择器在表内匹配 |
+| `msg_react` | 给消息贴 QQ 表情:唯一参数是意图(intent),由旁路 LLM 从**koishi QFace 官方 372 项目录**(精选 10 情绪组 + 其他组)挑选;想指定表情时把名称/俗称写进意图,由选择器在表内匹配 |
 | `poke_user` | 主动戳一戳:目标可用 `msg_id`(取发送者与所在群)或 `user_id`(群上下文取自当前流)二选一,群号不由模型传;按人冷却 |
 | `inspect_image` | 图片重看(VLM 问答) |
 | `qzone_like` / `qzone_comment` / `qzone_reply` / `qzone_post` | 空间互动四件套(赞/评论/楼中楼/发说说) |
@@ -75,7 +75,7 @@ Catsitate 是 MaiBot(QQ 猫娘机器人)的拟人化人格插件。它在 MaiBot
 | `maisaka.planner.after_response` | `catsitate_qzone_turn` | OBSERVE/LATE | 虚拟流"轮完成"信号,推进空间注入泵 |
 | `maisaka.replyer.before_model_request` | `catsitate_qzone_replyer_scene` | BLOCKING/LATE | replyer 侧场景替换(replyer 的载荷在 before_request 上不带 items,须挂这里) |
 
-**(3) `@MessageGateway`——虚拟流消息网关**:`catsitate_qzone`,platform `qzone-qq`,**receive 模式(只进不出)**——QQ 空间动态经 `ctx.gateway.route_message` 投递进虚拟群会话(`qzone_feed`),bot 对说说的动作一律经 `qzone_*` 工具发出(直接打字发不出去,方法体内的出站分支只做防御性拒发)。
+**(3) `@MessageGateway`——虚拟流消息网关**:`catsitate_qzone`,platform `qzone-qq`,**duplex(收路由 + 发送驱动;出站一律显式拒发)**——QQ 空间动态经 `ctx.gateway.route_message` 投递进虚拟群会话(`qzone_feed`),bot 对说说的动作一律经 `qzone_*` 工具发出(直接打字发不出去)。声明 duplex 而非 receive 的原因:宿主 1.3.7+ 创建心流前用 `is_target_allowed()` 检查该路由是否有可调度发送驱动,receive-only 会被误判为「适配器名单禁止创建聊天运行实例」,空间通知能注入却永远进不了 Planner(2026-10-20 生产实机);发送驱动只用于满足调度检查,出站回调仍显式拒绝。
 
 **(4) `call_capability`——能力调用**(`_manifest.json` 声明的 11 项):
 

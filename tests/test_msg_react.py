@@ -80,18 +80,26 @@ def test_emoji_table_grouped_and_consistent():
     assert grouped == set(AVAILABLE_REACT_EMOJIS), "存在未归组的表情"
 
 
-def test_resolve_emoji_by_name_modes():
-    """直接指定表情:精确名、别名、id、无匹配、歧义五种路径。"""
-    from catsitate_core.qq_emoji import resolve_emoji_by_name
+def test_alias_hints_and_single_intent_contract():
+    """直连参数已移除:工具只有 message_id+intent;俗称提示供选择器 prompt 使用。"""
+    import inspect
 
-    assert resolve_emoji_by_name("喵喵") == (307, "")
-    assert resolve_emoji_by_name("[喵喵]") == (307, "")          # 入站表情渲染格式
-    assert resolve_emoji_by_name("点赞")[0] in (76, 201)          # 精确名与别名都合法
-    assert resolve_emoji_by_name("狗头") == (179, "")             # 俗称别名
-    assert resolve_emoji_by_name("76") == (76, "")
-    missing_id, reason = resolve_emoji_by_name("9999")
-    assert missing_id is None and "不在表内" in reason
-    ambiguous, reason = resolve_emoji_by_name("笑")
-    assert ambiguous is None and "多个表情" in reason
-    unknown, reason = resolve_emoji_by_name("完全不存在的表情")
-    assert unknown is None and "没有与" in reason
+    from catsitate_core.qq_emoji import EMOJI_ALIAS_HINTS
+    from plugin import CatsitatePlugin
+
+    info = getattr(CatsitatePlugin.msg_react, "__maibot_component_info__")
+    assert [p.name for p in info.parameters] == ["message_id", "intent"]
+    assert "选择器" in info.description and "意图" in info.description
+    assert "狗头=doge" in EMOJI_ALIAS_HINTS and "点赞=" in EMOJI_ALIAS_HINTS
+    # 选择器 prompt 的稳定段同时含分组表与俗称对照
+    p = object.__new__(CatsitatePlugin)
+    from catsitate_core.config import MsgReactSection
+    from catsitate_core.msg_react import MsgReactEngine
+    from catsitate_core.storage import JsonSnapshot
+    import tempfile, pathlib
+    tmp = pathlib.Path(tempfile.mkdtemp())
+    engine = MsgReactEngine(JsonSnapshot(tmp / "r.json"), MsgReactSection())
+    messages, _ = engine.build_choose_prompt("今天好累", "想安慰对方")
+    stable = messages[1]["content"]
+    assert "【安慰/关心】" in stable and "俗称对照" in stable
+    assert "今天好累" in messages[-2]["content"]

@@ -45,7 +45,7 @@ from catsitate_core.memo import MemoService, validate_remind_at
 from catsitate_core.migrations import read_db_version, run_migrations
 from catsitate_core.msg_react import MsgReactEngine, parse_choice_resp
 from catsitate_core.poke import PokeEngine
-from catsitate_core.qq_emoji import AVAILABLE_REACT_EMOJIS, resolve_emoji_by_name
+from catsitate_core.qq_emoji import AVAILABLE_REACT_EMOJIS
 from catsitate_core.prompt_deploy import sync_prompt_templates
 from catsitate_core.qzone import (
     QZONE_GATEWAY_NAME,
@@ -754,71 +754,54 @@ class CatsitatePlugin(MaiBotPlugin):
     @Tool(
         "msg_react",
         description=(
-            "贴表情:给 intent(情绪/意图,如「赞同」「调侃」「安慰」)按情绪分组自动选;"
-            "或给 emoji 直接指定名称(如「喵喵」「点赞」「doge」)。"
+            "贴表情:说明想表达的情绪/意图(如「赞同」「调侃」「安慰」);"
+            "若想指定某个表情,把名称写进意图(如「喵喵」「狗头」),由选择器在表内匹配。"
         ),
         brief_description=(
-            "贴表情:给 intent(情绪/意图)自动选,或给 emoji 直接指定名称"
+            "贴表情:给意图(intent),由选择器按情绪分组挑选;想指定表情就把名称写进意图"
         ),
-        detailed_description="表情表按情绪分组,仅表内表情可贴;私聊不支持;同一聊天流有冷却(工程护栏)。",
+        detailed_description="表情表按情绪分组、仅表内表情可贴;私聊不支持;同一聊天流有冷却(工程护栏)。",
         parameters=[
             ToolParameterInfo(name="message_id", param_type="string", description="目标消息 ID", required=True),
             ToolParameterInfo(
                 name="intent", param_type="string",
-                description="想表达的情绪或意图(可选);不给 intent 时须给 emoji", required=False,
-            ),
-            ToolParameterInfo(
-                name="emoji", param_type="string",
-                description="直接指定表情名称或 id(如「喵喵」「点赞」「狗头」「76」);给了就不走 LLM 挑选", required=False,
+                description="想表达的情绪/意图;想指定具体表情时直接写名称或俗称(如「喵喵」「狗头」)",
+                required=True,
             ),
         ],
         visibility="visible",
     )
-    async def msg_react(
-        self, message_id: str = "", intent: str = "", emoji: str = "", **kwargs: Any
-    ) -> str:
+    async def msg_react(self, message_id: str = "", intent: str = "", **kwargs: Any) -> str:
         if str(kwargs.get("platform") or "") == QZONE_PLATFORM:
             return "当前是QQ空间动态流,这个动作用不上哦。"
         if not self.config.plugin.enabled or not self.config.msg_react.enabled:
             return "贴表情工具未启用。"
         if not str(kwargs.get("group_id") or ""):
             return "贴表情仅限群聊(QQ 私聊不支持贴表情)。"
+        intent = str(intent or "").strip()
+        if not intent:
+            return "请说明贴表情的意图(如「赞同」「调侃」「安慰」,或直接写表情名「喵喵」)。"
         stream_id = str(kwargs.get("stream_id") or "")
         ok, reason = self.react.check_cooldown(stream_id)
         if not ok:
             return reason
-        # 直接指定:按名称/别名解析;解析失败且没有 intent 时显式报错(不猜)
-        chosen: str | None = None
-        direct_note = ""
-        if str(emoji or "").strip():
-            resolved, err = resolve_emoji_by_name(emoji)
-            if resolved is not None:
-                chosen = str(resolved)
-            elif not str(intent or "").strip():
-                return f"指定表情失败:{err}"
-            else:
-                direct_note = f"(指定「{emoji}」未匹配,改按意图挑选)"
-        if chosen is None:
-            if not str(intent or "").strip():
-                return "请给出贴表情意图(intent)或表情名称(emoji)。"
-            target_text = await self._fetch_message_text(stream_id, message_id)
-            messages, _ = self.react.build_choose_prompt(target_text or f"消息 {message_id}", intent)
-            result = await self._side_llm_call(messages, self.config.msg_react.llm_model, "msg_react", self.config.msg_react.llm_timeout_ms)
-            if not isinstance(result, dict) or not result.get("success"):
-                # 不落响应原文(安全考虑):仅记失败形态
-                detail = f"success={result.get('success')}" if isinstance(result, dict) else f"结果类型={type(result).__name__}"
-                return f"选表情 LLM 调用失败({detail})"
-            emoji_id, err = parse_choice_resp(str(result.get("response") or ""))
-            if emoji_id is None:
-                return f"选表情失败:{err}"
-            chosen = emoji_id
-        api_result = await self.ctx.api.call("adapter.napcat.message.set_msg_emoji_like", message_id=message_id, emoji_id=chosen)
+        target_text = await self._fetch_message_text(stream_id, message_id)
+        messages, _ = self.react.build_choose_prompt(target_text or f"消息 {message_id}", intent)
+        result = await self._side_llm_call(messages, self.config.msg_react.llm_model, "msg_react", self.config.msg_react.llm_timeout_ms)
+        if not isinstance(result, dict) or not result.get("success"):
+            # 不落响应原文(安全考虑):仅记失败形态
+            detail = f"success={result.get('success')}" if isinstance(result, dict) else f"结果类型={type(result).__name__}"
+            return f"选表情 LLM 调用失败({detail})"
+        emoji_id, err = parse_choice_resp(str(result.get("response") or ""))
+        if emoji_id is None:
+            return f"选表情失败:{err}"
+        api_result = await self.ctx.api.call("adapter.napcat.message.set_msg_emoji_like", message_id=message_id, emoji_id=emoji_id)
         if not self._api_ok(api_result):
             return f"贴表情 API 失败:{api_result}"
         self.react.mark_used(stream_id)
-        name = AVAILABLE_REACT_EMOJIS.get(int(chosen), "")
+        name = AVAILABLE_REACT_EMOJIS.get(int(emoji_id), "")
         label = f"「{name}」" if name else ""
-        return f"已贴表情{label}({chosen}){direct_note}"
+        return f"已贴表情{label}({emoji_id})"
 
     @Tool(
         "poke_user",

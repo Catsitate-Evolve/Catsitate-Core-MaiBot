@@ -6,7 +6,7 @@
     {
       "id": "admin",
       "title": "数据管理",
-      "description": "管理好感度与备忘录;空间好感事件与判定日志只读",
+      "description": "管理好感度与备忘录;空间好感事件与判定日志只读;去重账本、用量统计、天气缓存不在此页",
       "mode": "custom",
       "placement": "workspace",
       "icon": "database",

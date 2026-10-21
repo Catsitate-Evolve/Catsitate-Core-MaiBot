@@ -263,4 +263,4 @@ replyer 原始输出(如「[表情包: ...]」)被核心后处理剥掉含中文
 - **不变量**:好感度等级由分数按引擎规则重算(不允许手改 level);「特别」全表独占,改为 100 分时若他人持有则显式拒绝;重置同时清理该用户 batch_counter,避免积压批次立刻覆盖;备忘有效期按“从现在起”重算,提醒时刻可清空;所有日期做存在性校验。
 - **实现**:`catsitate_core/admin.py` 数据服务 + `admin_api.py` 十个静态 `@API`(mixin 继承,`collect_components` 经 `dir(instance)` 可收集);页面只调声明过的查询/操作,绑定参数在服务端二次校验。
 - **测试**:`test_admin.py`(CRUD/重置/独占/分页/过滤/校验)与 `test_webui_contract.py`(webui.json ↔ @API ↔ 页面别名三方一致)。
-- **评审整改**(双轴 + 浏览器验收):layout document→viewport(弹窗被 iframe 裁切);分页参数/负 TTL/提醒晚于到期改为显式拒绝;备忘创建改原子 `lastrowid`;管理日志补 user_id/字段并修正 logger 转发;备忘内容完整换行展示;新增“只触碰允许表”源码守卫与 `MAX_PAGE_SIZE` 契约断言;新增 `modules/webui-admin.md`。基线 **674 全绿**。
+- **评审整改**(双轴 + 浏览器验收):layout document→viewport(弹窗被 iframe 裁切);分页参数/负 TTL/提醒晚于到期改为显式拒绝;备忘创建改原子 `lastrowid`;管理日志补 user_id/字段并修正 logger 转发;备忘内容完整换行展示;新增“只触碰允许表”源码守卫与 `MAX_PAGE_SIZE` 契约断言;视觉改为全量映射宿主 `--maibot-*` 主题令牌(背景/表面/文字/主色/圆角/字体,明暗与皮肤自动跟随),加入切页/表格/弹窗/按钮动效并尊重 reduced-motion,去掉与宿主重复的页标题;新增 `modules/webui-admin.md`。基线 **674 全绿**。

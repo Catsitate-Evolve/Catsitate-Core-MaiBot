@@ -26,6 +26,8 @@
 - 管理日志补齐 user_id/字段名/涉及用户,logger 改到 `catsitate_core.admin`(经模块转发进主日志);备忘正文不落日志。
 - 备忘内容/好感度注记改为换行完整显示(不再省略号截断);新增备忘回执展示服务端提示(如附带 QQ 截断)。
 - 源码守卫:管理服务只允许触碰 `favorability/favorability_log/memo/batch_counter/qzone_fav_events`;契约测试锁定 `page_size` 上限与 `MAX_PAGE_SIZE`。
+- 视觉:全部颜色映射宿主 `--maibot-*` 主题令牌(背景/表面/文字/边框/主色/圆角/字体),明暗模式与 dashboard 皮肤自动跟随;去掉与宿主外层重复的页标题;面板改为宿主表面色。
+- 动效:切 tab 面板淡入上移、表格行淡入、弹窗缩放淡入、按钮悬停微抬、toast 滑入;全部在 `prefers-reduced-motion: reduce` 下关闭。
 - 文档:新增 `docs/dev/modules/webui-admin.md`;`memo.md` 同步提醒时间日历存在性校验。
 
 ### 部署与迁移

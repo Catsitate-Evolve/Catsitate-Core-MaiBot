@@ -46,7 +46,13 @@
 
 `webui/admin.html` 单文件(内联 CSS/JS,无外部依赖),`layout: "viewport"`(弹窗需覆盖整个可视区;`document` 会随内容收缩导致弹窗被裁切)。四个 tab;行内操作 + 弹窗表单 + 页内自定义确认框(不依赖浏览器 `confirm`);数据一律 `textContent` 渲染,无 `innerHTML` 注入路径。
 
-## 五、测试
+## 五、视觉与动效
+
+- **主题跟随**:所有颜色取自宿主注入的 `--maibot-*` 令牌(`background/surface/foreground/muted/border/primary/primary-foreground/danger/soft/radius/font-body`),页面背景、面板、文字、边框、主色、圆角与字体与主程序完全一致;明暗切换与 dashboard 皮肤由宿主 `color-scheme`/令牌自动驱动,页面无需自行维护配色。`light-dark()` 仅作为脱离宿主时的兜底。
+- **动效**:切 tab 面板淡入上移(`adm-panel-in`)、表格行淡入(`adm-row-in`)、弹窗缩放淡入(`adm-modal-in`)、按钮悬停微抬、toast 滑入;全部在 `prefers-reduced-motion: reduce` 下禁用。
+- **布局**:`layout: "viewport"`,弹窗固定覆盖可视区;页面不重复宿主已有的标题与说明。
+
+## 六、测试
 
 - `tests/test_admin.py`:CRUD、特别独占、重置清批次、分页/过滤、负 TTL、提醒晚于到期、附带 QQ 截断提示、源码级“只触碰允许表”守卫、异常信封。
 - `tests/test_webui_contract.py`:webui.json schema/capabilities/entry 尺寸、页面别名 ⊂ 声明、绑定 API 存在且参数名匹配、page_size 上限与 `MAX_PAGE_SIZE` 一致、mixin 组件可被收集。

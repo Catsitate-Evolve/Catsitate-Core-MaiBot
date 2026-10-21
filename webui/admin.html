@@ -5,41 +5,55 @@
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>Catsitate 数据管理</title>
 <style>
+  /* 宿主主题令牌(--maibot-*):背景/表面/文字/边框/主色全部跟随主程序,自动适配明暗与皮肤 */
   :root{
-    --adm-bg:#f6f7f9; --adm-panel:#ffffff; --adm-fg:#1f2328; --adm-muted:#6b7280;
-    --adm-border:#e5e7eb; --adm-primary:#2563eb; --adm-danger:#dc2626; --adm-hover:#f3f4f6;
-    --adm-input:#ffffff; --adm-shadow:0 8px 30px rgba(15,23,42,.12);
+    color-scheme:light dark;
+    --adm-bg:var(--maibot-background,light-dark(#fbfafa,#100d0b));
+    --adm-panel:var(--maibot-surface,light-dark(#fcfbfb,#1a1613));
+    --adm-fg:var(--maibot-foreground,light-dark(#1f1812,#f9f8f7));
+    --adm-muted:var(--maibot-muted,light-dark(#8e7761,#b7a595));
+    --adm-border:var(--maibot-border,light-dark(#ede9e5,#352c24));
+    --adm-primary:var(--maibot-primary,#e06f06);
+    --adm-on-primary:var(--maibot-primary-foreground,#f6f5f3);
+    --adm-danger:var(--maibot-danger,light-dark(#f53e3e,#940808));
+    --adm-danger-text:light-dark(var(--maibot-danger,#f53e3e),color-mix(in srgb,var(--maibot-danger,#940808) 50%,white));
+    --adm-hover:var(--maibot-soft,light-dark(#f6f5f4,#322c28));
+    --adm-input:var(--maibot-background,light-dark(#fbfafa,#100d0b));
+    --adm-radius:var(--maibot-radius,8px);
+    --adm-font:var(--maibot-font-body,-apple-system,BlinkMacSystemFont,"Segoe UI","PingFang SC","Microsoft YaHei",sans-serif);
+    --adm-shadow:0 10px 30px rgba(0,0,0,.10);
   }
-  .dark{
-    --adm-bg:#0f1115; --adm-panel:#161a20; --adm-fg:#e6e8eb; --adm-muted:#9aa3ad;
-    --adm-border:#2a3038; --adm-primary:#5b9dff; --adm-danger:#ff6b6b; --adm-hover:#1d232b;
-    --adm-input:#10141a; --adm-shadow:0 8px 30px rgba(0,0,0,.45);
-  }
+  html,body{background:var(--adm-bg)}
   *{box-sizing:border-box}
-  body{margin:0;background:var(--adm-bg);color:var(--adm-fg);
-    font:14px/1.55 -apple-system,BlinkMacSystemFont,"Segoe UI","PingFang SC","Microsoft YaHei",sans-serif}
+  body{margin:0;background:var(--adm-bg);color:var(--adm-fg);font:14px/1.55 var(--adm-font)}
   .wrap{max-width:1180px;margin:0 auto;padding:20px 18px 40px}
   header{display:flex;align-items:flex-start;justify-content:space-between;gap:12px;margin-bottom:14px}
   h1{font-size:20px;margin:0 0 2px}
   .sub{color:var(--adm-muted);font-size:12px}
-  .tabs{display:flex;gap:6px;flex-wrap:wrap;border-bottom:1px solid var(--adm-border);margin-bottom:14px}
+  .tabbar{display:flex;align-items:flex-end;justify-content:space-between;gap:10px;
+    border-bottom:1px solid var(--adm-border);margin-bottom:14px}
+  .tabbar > button{margin-bottom:6px}
+  .tabs{display:flex;gap:6px;flex-wrap:wrap}
   .tab{border:0;background:transparent;color:var(--adm-muted);padding:9px 14px;cursor:pointer;
     border-bottom:2px solid transparent;font-size:14px;border-radius:6px 6px 0 0}
+  .tab{transition:color .16s ease,background-color .16s ease,border-color .16s ease}
   .tab:hover{background:var(--adm-hover);color:var(--adm-fg)}
   .tab.on{color:var(--adm-primary);border-bottom-color:var(--adm-primary);font-weight:600}
-  .panel{background:var(--adm-panel);border:1px solid var(--adm-border);border-radius:10px;padding:14px}
+  .panel{background:var(--adm-panel);border:1px solid var(--adm-border);border-radius:calc(var(--adm-radius) + 4px);padding:14px}
   .toolbar{display:flex;gap:8px;align-items:center;flex-wrap:wrap;margin-bottom:12px}
   .toolbar .grow{flex:1;min-width:160px}
   input,select,textarea{background:var(--adm-input);color:var(--adm-fg);border:1px solid var(--adm-border);
-    border-radius:6px;padding:7px 9px;font:inherit;outline:none;width:100%}
+    border-radius:var(--adm-radius);padding:7px 9px;font:inherit;outline:none;width:100%}
   input:focus,select:focus,textarea:focus{border-color:var(--adm-primary)}
   textarea{resize:vertical;min-height:72px}
   button{font:inherit;border:1px solid var(--adm-border);background:var(--adm-panel);color:var(--adm-fg);
-    border-radius:6px;padding:7px 12px;cursor:pointer}
-  button:hover{background:var(--adm-hover)}
-  button.primary{background:var(--adm-primary);border-color:var(--adm-primary);color:#fff}
+    border-radius:var(--adm-radius);padding:7px 12px;cursor:pointer;
+    transition:background-color .15s ease,border-color .15s ease,transform .12s ease,box-shadow .15s ease}
+  button:hover{background:var(--adm-hover);transform:translateY(-1px)}
+  button:active{transform:translateY(0);box-shadow:none}
+  button.primary{background:var(--adm-primary);border-color:var(--adm-primary);color:var(--adm-on-primary)}
   button.primary:hover{filter:brightness(1.06)}
-  button.danger{color:var(--adm-danger);border-color:var(--adm-danger)}
+  button.danger{color:var(--adm-danger-text);border-color:var(--adm-danger)}
   button.small{padding:3px 8px;font-size:12px}
   button:disabled{opacity:.55;cursor:not-allowed}
   table{width:100%;border-collapse:collapse}
@@ -48,10 +62,10 @@
   tbody tr:hover{background:var(--adm-hover)}
   td.clip{max-width:340px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
   .actions{display:flex;gap:6px;align-items:center;white-space:nowrap}
-  td.wrap{white-space:pre-wrap;word-break:break-word;max-width:360px}
+  td.cell-wrap{white-space:pre-wrap;word-break:break-word;max-width:360px}
   .muted{color:var(--adm-muted)}
   .badge{display:inline-block;padding:1px 7px;border-radius:999px;border:1px solid var(--adm-border);font-size:12px;white-space:nowrap}
-  .badge.expired{color:var(--adm-danger);border-color:var(--adm-danger)}
+  .badge.expired{color:var(--adm-danger-text);border-color:var(--adm-danger)}
   .pager{display:flex;align-items:center;justify-content:flex-end;gap:10px;margin-top:12px;color:var(--adm-muted);font-size:12px}
   .empty{padding:36px 0;text-align:center;color:var(--adm-muted)}
   .err{display:none;margin-bottom:12px;padding:9px 12px;border:1px solid var(--adm-danger);
@@ -60,7 +74,7 @@
   .overlay{position:fixed;inset:0;background:rgba(0,0,0,.45);display:none;align-items:center;
     justify-content:center;padding:18px;z-index:50}
   .overlay.show{display:flex}
-  .modal{background:var(--adm-panel);border:1px solid var(--adm-border);border-radius:12px;
+  .modal{background:var(--adm-panel);border:1px solid var(--adm-border);border-radius:calc(var(--adm-radius) + 4px);
     box-shadow:var(--adm-shadow);width:min(520px,100%);max-height:90vh;overflow:auto}
   .modal h3{margin:0;padding:14px 16px;border-bottom:1px solid var(--adm-border);font-size:15px}
   .modal .body{padding:14px 16px;display:flex;flex-direction:column;gap:10px}
@@ -72,29 +86,35 @@
   .check input{width:auto}
   .modal .err-inline{display:none;color:var(--adm-danger);font-size:12px}
   .modal .err-inline.show{display:block}
-  .toast{position:fixed;right:18px;bottom:18px;background:var(--adm-panel);border:1px solid var(--adm-border);
+  .toast{position:fixed;right:18px;bottom:18px;background:var(--adm-panel);border:1px solid var(--adm-border);border-radius:var(--adm-radius);
     border-radius:8px;padding:10px 14px;box-shadow:var(--adm-shadow);opacity:0;transform:translateY(6px);
     transition:.18s;pointer-events:none;z-index:60}
   .toast.show{opacity:1;transform:translateY(0)}
+  @keyframes adm-panel-in{from{opacity:0;transform:translateY(5px)}to{opacity:1;transform:none}}
+  .panel.is-entering{animation:adm-panel-in .2s cubic-bezier(.2,.8,.2,1)}
+  @keyframes adm-row-in{from{opacity:0}to{opacity:1}}
+  tbody tr{animation:adm-row-in .16s ease-out both}
+  @keyframes adm-overlay-in{from{opacity:0}to{opacity:1}}
+  .overlay.show{animation:adm-overlay-in .16s ease-out}
+  @keyframes adm-modal-in{from{opacity:0;transform:translateY(8px) scale(.97)}to{opacity:1;transform:none}}
+  .overlay.show .modal{animation:adm-modal-in .2s cubic-bezier(.2,.8,.2,1)}
+  @media (prefers-reduced-motion: reduce){
+    *,*::before,*::after{animation:none!important;transition:none!important}
+  }
 </style>
 </head>
 <body>
 <div class="wrap">
-  <header>
-    <div>
-      <h1>Catsitate 数据管理</h1>
-      <div class="sub">好感度与备忘录可读写;空间好感事件与判定日志只读。去重账本、用量统计、天气缓存不在此页。</div>
-    </div>
-    <button id="refresh">刷新</button>
-  </header>
-
   <div class="err" id="err"></div>
 
-  <div class="tabs" id="tabs">
-    <button class="tab on" data-tab="fav">好感度</button>
-    <button class="tab" data-tab="memo">备忘录</button>
-    <button class="tab" data-tab="log">判定日志</button>
-    <button class="tab" data-tab="event">空间事件</button>
+  <div class="tabbar">
+    <div class="tabs" id="tabs">
+      <button class="tab on" data-tab="fav">好感度</button>
+      <button class="tab" data-tab="memo">备忘录</button>
+      <button class="tab" data-tab="log">判定日志</button>
+      <button class="tab" data-tab="event">空间事件</button>
+    </div>
+    <button id="refresh" class="small" title="重新查询当前页">刷新</button>
   </div>
 
   <div class="panel" id="panel-fav">
@@ -207,11 +227,6 @@
     toastTimer = setTimeout(function () { node.classList.remove("show"); }, 2200);
   }
 
-  function applyTheme(theme) {
-    var dark = String(theme || "").toLowerCase().indexOf("dark") >= 0;
-    document.documentElement.classList.toggle("dark", dark);
-  }
-
   async function query(name, args) {
     var result;
     try {
@@ -264,7 +279,7 @@
         else if (value === null || value === undefined) { cell.textContent = ""; }
         else { cell.textContent = String(value); }
         if (c.clip) { cell.className = "clip"; cell.title = cell.textContent; }
-        if (c.wrap) { cell.className = "wrap"; }
+        if (c.wrap) { cell.className = "cell-wrap"; }
         return cell;
       }));
     }));
@@ -514,6 +529,10 @@
     ["fav", "memo", "log", "event"].forEach(function (name) {
       $("panel-" + name).style.display = name === tab ? "" : "none";
     });
+    var panel = $("panel-" + tab);
+    panel.classList.remove("is-entering");
+    void panel.offsetWidth;  // 强制回流,重复切换也能重放动画
+    panel.classList.add("is-entering");
     load(tab);
   });
 
@@ -562,10 +581,7 @@
       showError("页面与宿主握手失败:" + (exc && exc.message ? exc.message : String(exc)));
       return;
     }
-    applyTheme(bridge.context && bridge.context.theme);
-    window.addEventListener("maibot:context", function (ev) {
-      applyTheme(ev && ev.detail && ev.detail.theme);
-    });
+
     load("fav");
   })();
 })();

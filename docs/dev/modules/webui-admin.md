@@ -48,9 +48,10 @@
 
 ## 五、视觉与动效
 
-- **主题跟随**:所有颜色取自宿主注入的 `--maibot-*` 令牌(`background/surface/foreground/muted/border/primary/primary-foreground/danger/soft/radius/font-body`),页面背景、面板、文字、边框、主色、圆角与字体与主程序完全一致;明暗切换与 dashboard 皮肤由宿主 `color-scheme`/令牌自动驱动,页面无需自行维护配色。`light-dark()` 仅作为脱离宿主时的兜底。
-- **动效**:切 tab 面板淡入上移(`adm-panel-in`)、表格行淡入(`adm-row-in`)、弹窗缩放淡入(`adm-modal-in`)、按钮悬停微抬、toast 滑入;全部在 `prefers-reduced-motion: reduce` 下禁用。
-- **布局**:`layout: "viewport"`,弹窗固定覆盖可视区;页面不重复宿主已有的标题与说明。
+- **主题跟随**:所有颜色取自宿主注入的 `--maibot-*` 令牌(`background/surface/foreground/muted/border/primary/primary-foreground/danger/soft/radius/font-body`),页面背景、面板、文字、边框、主色、圆角与字体均取自主程序同步的令牌;明暗切换与纯色皮肤由宿主 `color-scheme`/令牌自动驱动,页面无需自行维护配色。宿主若使用带纹理或自定义底图的皮肤,页面只对齐其纯色令牌、不复刻纹理;令牌缺失时以 `light-dark()` 兜底。
+- **层级**:弹窗不压暗整页(避免 iframe 边界硬边),仅用投影分层;overlay 留 40/36px 边距(投影外扩 24px),保证阴影落在 iframe 内;toast 无边框半透明 + 投影,距边界 32px。
+- **动效**:切 tab 面板淡入上移(`adm-panel-in`)、表格行淡入(`adm-row-in`)、弹窗进入(`adm-modal-in`)与**关闭**(`adm-modal-out`)、按钮悬停微抬、toast 滑入;全部在 `prefers-reduced-motion: reduce` 下禁用。关闭动画开始即禁用提交并清理定时器,退出途中不会误触写操作。
+- **布局**:`layout: "viewport"`;页面固定为 iframe 可视高度,各 tab 列表在面板内部滚动(`overflow:auto`,表头 `sticky`,分页固定在底部),长列表不会把整页撑高后被截断;页面不重复宿主已有的标题与说明。
 
 ## 六、测试
 

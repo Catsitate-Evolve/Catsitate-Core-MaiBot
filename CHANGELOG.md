@@ -7,6 +7,22 @@
   - _manifest.json 的 version 与本文件最新正式版保持一致。
 -->
 
+## v1.1.1(2026-10-21) 管理页视觉融合·长列表内部滚动
+
+### 视觉
+- 颜色全量映射宿主 `--maibot-*` 主题令牌(`background/surface/foreground/muted/border/primary/primary-foreground/danger/soft/radius/font-body`),明暗模式与 dashboard 纯色皮肤自动跟随;页面背景、面板、文字、边框、主色、圆角、字体与主程序一致(带纹理/底图的皮肤只对齐纯色令牌,不复刻纹理)。
+- 去掉与宿主外层重复的页标题;面板使用宿主表面色。
+- 弹窗不再压暗整页,**仅用投影区分层级**,并内收边距(overlay 40/36px,投影外扩 24px)避免投影被 iframe 边界裁切;toast 改为无边框半透明 + 投影,距边界 32px,投影完整可见。
+
+### 动效
+- 切 tab 面板淡入上移、表格行淡入、弹窗进入缩放淡入与**关闭淡出/缩小**、按钮悬停微抬、toast 滑入;全部在 `prefers-reduced-motion: reduce` 下关闭。关闭动画一开始即撤销提交入口并清理定时器,避免退出途中误触写操作。
+
+### 长列表
+- 页面固定为 iframe 可视高度,各 tab 的列表在面板内部滚动(表头 `sticky` 吸顶、分页固定在底部),不再把整页撑高后被截断;滚动条可见。暗色模式下错误/危险文字使用专用高对比色。
+
+### 部署与迁移
+- 无数据库格式变更、无 prompt 模板变更;测试基线 674 全绿。
+
 ## v1.1.0(2026-10-20) WebUI 数据管理页
 
 ### 新增
@@ -26,8 +42,6 @@
 - 管理日志补齐 user_id/字段名/涉及用户,logger 改到 `catsitate_core.admin`(经模块转发进主日志);备忘正文不落日志。
 - 备忘内容/好感度注记改为换行完整显示(不再省略号截断);新增备忘回执展示服务端提示(如附带 QQ 截断)。
 - 源码守卫:管理服务只允许触碰 `favorability/favorability_log/memo/batch_counter/qzone_fav_events`;契约测试锁定 `page_size` 上限与 `MAX_PAGE_SIZE`。
-- 视觉:全部颜色映射宿主 `--maibot-*` 主题令牌(背景/表面/文字/边框/主色/圆角/字体),明暗模式与 dashboard 皮肤自动跟随;去掉与宿主外层重复的页标题;面板改为宿主表面色。
-- 动效:切 tab 面板淡入上移、表格行淡入、弹窗缩放淡入、按钮悬停微抬、toast 滑入;全部在 `prefers-reduced-motion: reduce` 下关闭。
 - 文档:新增 `docs/dev/modules/webui-admin.md`;`memo.md` 同步提醒时间日历存在性校验。
 
 ### 部署与迁移

@@ -21,14 +21,11 @@
     --adm-input:var(--maibot-background,light-dark(#fbfafa,#100d0b));
     --adm-radius:var(--maibot-radius,8px);
     --adm-font:var(--maibot-font-body,-apple-system,BlinkMacSystemFont,"Segoe UI","PingFang SC","Microsoft YaHei",sans-serif);
-    --adm-shadow:0 10px 30px rgba(0,0,0,.10);
   }
-  html,body{background:var(--adm-bg)}
+  html,body{background:var(--adm-bg);height:100%;overflow:hidden}
   *{box-sizing:border-box}
   body{margin:0;background:var(--adm-bg);color:var(--adm-fg);font:14px/1.55 var(--adm-font)}
-  .wrap{max-width:1180px;margin:0 auto;padding:20px 18px 40px}
-  header{display:flex;align-items:flex-start;justify-content:space-between;gap:12px;margin-bottom:14px}
-  h1{font-size:20px;margin:0 0 2px}
+  .wrap{max-width:1180px;margin:0 auto;padding:20px 18px 20px;height:100%;display:flex;flex-direction:column;min-height:0}
   .sub{color:var(--adm-muted);font-size:12px}
   .tabbar{display:flex;align-items:flex-end;justify-content:space-between;gap:10px;
     border-bottom:1px solid var(--adm-border);margin-bottom:14px}
@@ -39,7 +36,16 @@
   .tab{transition:color .16s ease,background-color .16s ease,border-color .16s ease}
   .tab:hover{background:var(--adm-hover);color:var(--adm-fg)}
   .tab.on{color:var(--adm-primary);border-bottom-color:var(--adm-primary);font-weight:600}
-  .panel{background:var(--adm-panel);border:1px solid var(--adm-border);border-radius:calc(var(--adm-radius) + 4px);padding:14px}
+  .panel{background:var(--adm-panel);border:1px solid var(--adm-border);border-radius:calc(var(--adm-radius) + 4px);
+    padding:14px;flex:1;min-height:0;display:flex;flex-direction:column}
+  .toolbar{flex:none}
+  :is(#fav-body,#memo-body,#log-body,#event-body){flex:1;min-height:0;overflow:auto;border-radius:var(--adm-radius);
+    scrollbar-width:thin;scrollbar-color:var(--adm-border) transparent}
+  :is(#fav-body,#memo-body,#log-body,#event-body)::-webkit-scrollbar{width:10px;height:10px}
+  :is(#fav-body,#memo-body,#log-body,#event-body)::-webkit-scrollbar-thumb{
+    background:var(--adm-border);border-radius:999px;border:3px solid transparent;background-clip:content-box}
+  :is(#fav-body,#memo-body,#log-body,#event-body)::-webkit-scrollbar-track{background:transparent}
+  thead th{position:sticky;top:0;background:var(--adm-panel);z-index:2}
   .toolbar{display:flex;gap:8px;align-items:center;flex-wrap:wrap;margin-bottom:12px}
   .toolbar .grow{flex:1;min-width:160px}
   input,select,textarea{background:var(--adm-input);color:var(--adm-fg);border:1px solid var(--adm-border);
@@ -66,16 +72,17 @@
   .muted{color:var(--adm-muted)}
   .badge{display:inline-block;padding:1px 7px;border-radius:999px;border:1px solid var(--adm-border);font-size:12px;white-space:nowrap}
   .badge.expired{color:var(--adm-danger-text);border-color:var(--adm-danger)}
-  .pager{display:flex;align-items:center;justify-content:flex-end;gap:10px;margin-top:12px;color:var(--adm-muted);font-size:12px}
+  .pager{flex:none;display:flex;align-items:center;justify-content:flex-end;gap:10px;margin-top:12px;color:var(--adm-muted);font-size:12px}
   .empty{padding:36px 0;text-align:center;color:var(--adm-muted)}
   .err{display:none;margin-bottom:12px;padding:9px 12px;border:1px solid var(--adm-danger);
-    color:var(--adm-danger);border-radius:8px;background:transparent}
+    color:var(--adm-danger-text);border-radius:8px;background:transparent}
   .err.show{display:block}
-  .overlay{position:fixed;inset:0;background:rgba(0,0,0,.45);display:none;align-items:center;
-    justify-content:center;padding:18px;z-index:50}
+  /* 不压暗页面:仅靠弹窗投影区分层级,避免 iframe 边界出现硬边 */
+  .overlay{position:fixed;inset:0;display:none;align-items:center;justify-content:center;padding:40px 36px;z-index:50;
+    background:transparent}
   .overlay.show{display:flex}
-  .modal{background:var(--adm-panel);border:1px solid var(--adm-border);border-radius:calc(var(--adm-radius) + 4px);
-    box-shadow:var(--adm-shadow);width:min(520px,100%);max-height:90vh;overflow:auto}
+  .modal{position:relative;z-index:1;background:var(--adm-panel);border:1px solid var(--adm-border);border-radius:calc(var(--adm-radius) + 4px);
+    box-shadow:0 8px 24px rgba(0,0,0,.26),0 2px 8px rgba(0,0,0,.12);width:min(520px,100%);max-height:100%;overflow:auto}
   .modal h3{margin:0;padding:14px 16px;border-bottom:1px solid var(--adm-border);font-size:15px}
   .modal .body{padding:14px 16px;display:flex;flex-direction:column;gap:10px}
   .modal .foot{display:flex;justify-content:flex-end;gap:8px;padding:12px 16px;border-top:1px solid var(--adm-border)}
@@ -84,11 +91,14 @@
   .row > *{flex:1;min-width:120px}
   .check{display:flex;align-items:center;gap:6px;color:var(--adm-muted);font-size:12px}
   .check input{width:auto}
-  .modal .err-inline{display:none;color:var(--adm-danger);font-size:12px}
+  .modal .err-inline{display:none;color:var(--adm-danger-text);font-size:12px}
   .modal .err-inline.show{display:block}
-  .toast{position:fixed;right:18px;bottom:18px;background:var(--adm-panel);border:1px solid var(--adm-border);border-radius:var(--adm-radius);
-    border-radius:8px;padding:10px 14px;box-shadow:var(--adm-shadow);opacity:0;transform:translateY(6px);
-    transition:.18s;pointer-events:none;z-index:60}
+  .toast{position:fixed;right:32px;bottom:32px;border:0;border-radius:var(--adm-radius);
+    background:var(--adm-panel);
+    background:color-mix(in srgb,var(--adm-panel) 88%,transparent);
+    -webkit-backdrop-filter:blur(12px) saturate(1.04);backdrop-filter:blur(12px) saturate(1.04);
+    padding:10px 14px;box-shadow:0 8px 22px rgba(0,0,0,.16),0 2px 6px rgba(0,0,0,.08);
+    opacity:0;transform:translateY(6px);transition:opacity .18s ease,transform .18s ease;pointer-events:none;z-index:60}
   .toast.show{opacity:1;transform:translateY(0)}
   @keyframes adm-panel-in{from{opacity:0;transform:translateY(5px)}to{opacity:1;transform:none}}
   .panel.is-entering{animation:adm-panel-in .2s cubic-bezier(.2,.8,.2,1)}
@@ -98,6 +108,10 @@
   .overlay.show{animation:adm-overlay-in .16s ease-out}
   @keyframes adm-modal-in{from{opacity:0;transform:translateY(8px) scale(.97)}to{opacity:1;transform:none}}
   .overlay.show .modal{animation:adm-modal-in .2s cubic-bezier(.2,.8,.2,1)}
+  @keyframes adm-overlay-out{to{opacity:0}}
+  @keyframes adm-modal-out{to{opacity:0;transform:translateY(6px) scale(.97)}}
+  .overlay.is-closing{animation:adm-overlay-out .18s ease-in forwards}
+  .overlay.is-closing .modal{animation:adm-modal-out .18s ease-in forwards}
   @media (prefers-reduced-motion: reduce){
     *,*::before,*::after{animation:none!important;transition:none!important}
   }
@@ -379,17 +393,37 @@
 
   // ── 弹窗 ──────────────────────────────────────────────
   var modalSubmit = null;
+  var modalClosing = false;
+  var modalCloseTimer = null;
 
   function closeModal() {
-    $("overlay").classList.remove("show");
-    $("modal-err").classList.remove("show");
-    $("modal-ok").disabled = false;
+    var overlay = $("overlay");
+    if (!overlay.classList.contains("show") || modalClosing) { return; }
+    // 关闭一开始就撤销提交入口,避免退出动画期间取消后误触写操作
     modalSubmit = null;
+    $("modal-ok").disabled = true;
+    var finish = function () {
+      modalCloseTimer = null;
+      overlay.classList.remove("show", "is-closing");
+      $("modal-err").classList.remove("show");
+      $("modal-ok").disabled = false;
+      modalClosing = false;
+    };
+    if (window.matchMedia && window.matchMedia("(prefers-reduced-motion: reduce)").matches) {
+      finish();
+      return;
+    }
+    modalClosing = true;
+    overlay.classList.add("is-closing");
+    modalCloseTimer = setTimeout(finish, 190);
   }
 
   function openModal(title, bodyNodes, onSubmit, options) {
+    if (modalCloseTimer) { clearTimeout(modalCloseTimer); modalCloseTimer = null; }
     $("modal-title").textContent = title;
     $("modal-body").replaceChildren.apply($("modal-body"), bodyNodes);
+    $("overlay").classList.remove("is-closing");
+    modalClosing = false;
     $("modal-err").classList.remove("show");
     $("modal-ok").disabled = false;
     $("modal-ok").textContent = (options && options.okText) || "确定";

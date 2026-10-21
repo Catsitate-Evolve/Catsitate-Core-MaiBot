@@ -47,8 +47,10 @@
   th{color:var(--adm-muted);font-weight:600;white-space:nowrap}
   tbody tr:hover{background:var(--adm-hover)}
   td.clip{max-width:340px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+  .actions{display:flex;gap:6px;align-items:center;white-space:nowrap}
+  td.wrap{white-space:pre-wrap;word-break:break-word;max-width:360px}
   .muted{color:var(--adm-muted)}
-  .badge{display:inline-block;padding:1px 7px;border-radius:999px;border:1px solid var(--adm-border);font-size:12px}
+  .badge{display:inline-block;padding:1px 7px;border-radius:999px;border:1px solid var(--adm-border);font-size:12px;white-space:nowrap}
   .badge.expired{color:var(--adm-danger);border-color:var(--adm-danger)}
   .pager{display:flex;align-items:center;justify-content:flex-end;gap:10px;margin-top:12px;color:var(--adm-muted);font-size:12px}
   .empty{padding:36px 0;text-align:center;color:var(--adm-muted)}
@@ -168,7 +170,6 @@
       event: { user_id: "", date_from: "", date_to: "" }
     },
     selected: new Set(),
-    lastTotal: { fav: 0, memo: 0, log: 0, event: 0 }
   };
 
   function $(id) { return document.getElementById(id); }
@@ -179,7 +180,6 @@
       Object.keys(attrs).forEach(function (key) {
         if (key === "text") { node.textContent = attrs[key]; }
         else if (key === "class") { node.className = attrs[key]; }
-        else if (key === "html") { node.innerHTML = attrs[key]; }
         else if (key.slice(0, 2) === "on") { node.addEventListener(key.slice(2).toLowerCase(), attrs[key]); }
         else if (attrs[key] !== null && attrs[key] !== undefined) { node.setAttribute(key, attrs[key]); }
       });
@@ -239,7 +239,6 @@
   }
 
   function pager(node, tab, total) {
-    state.lastTotal[tab] = total;
     var pages = Math.max(1, Math.ceil(total / PAGE_SIZE));
     var current = state.page[tab];
     node.textContent = "";
@@ -265,6 +264,7 @@
         else if (value === null || value === undefined) { cell.textContent = ""; }
         else { cell.textContent = String(value); }
         if (c.clip) { cell.className = "clip"; cell.title = cell.textContent; }
+        if (c.wrap) { cell.className = "wrap"; }
         return cell;
       }));
     }));
@@ -285,10 +285,10 @@
         $("fav-body").replaceChildren(table([
           { label: "QQ", render: function (r) { return r.user_id; } },
           { label: "等级 / 分数", render: levelBadge },
-          { label: "注记", field: "note", clip: true },
+          { label: "注记", field: "note", wrap: true },
           { label: "判定时间", field: "judged_at" },
           { label: "操作", render: function (r) {
-              return el("div", { class: "row" }, [
+              return el("div", { class: "actions" }, [
                 el("button", { class: "small", text: "编辑", onclick: function () { openFavEdit(r); } }),
                 el("button", { class: "small danger", text: "重置", onclick: function () { confirmFavReset(r); } })
               ]);
@@ -299,6 +299,11 @@
         var memo = await query("memo", {
           page: state.page.memo, page_size: PAGE_SIZE, keyword: state.keyword.memo
         });
+        if (!memo.items.length && state.page.memo > 1) {
+          // 删除末页最后一条后自动回退一页,避免停在空页
+          state.page.memo -= 1;
+          return load("memo");
+        }
         state.selected.clear();
         $("memo-body").replaceChildren(table([
           { label: "", render: function (r) {
@@ -312,14 +317,14 @@
             } },
           { label: "ID", field: "id" },
           { label: "QQ", field: "user_id" },
-          { label: "内容", field: "content", clip: true },
+          { label: "内容", field: "content", wrap: true },
           { label: "状态", render: function (r) {
               return el("span", { class: "badge" + (r.expired ? " expired" : ""), text: r.expired ? "已过期" : "有效" });
             } },
           { label: "到期", field: "expires_at" },
           { label: "提醒", render: function (r) { return r.remind_at || "—"; } },
           { label: "操作", render: function (r) {
-              return el("div", { class: "row" }, [
+              return el("div", { class: "actions" }, [
                 el("button", { class: "small", text: "编辑", onclick: function () { openMemoEdit(r); } }),
                 el("button", { class: "small danger", text: "删除", onclick: function () { confirmMemoDelete([r.id]); } })
               ]);
@@ -335,7 +340,7 @@
           { label: "时间", field: "judged_at" },
           { label: "QQ", field: "user_id" },
           { label: "Δ", field: "delta" },
-          { label: "注记", field: "note", clip: true },
+          { label: "注记", field: "note", wrap: true },
           { label: "判定 ID", field: "judge_id", clip: true }
         ], log.items, "暂无判定日志"));
         pager($("log-pager"), "log", log.total);
@@ -450,7 +455,7 @@
       if (remind.value.trim()) { args.remind_at = remind.value.trim(); }
       if (extra.value.trim()) { args.extra_user_ids = extra.value.trim(); }
       var res = await action("memo_create", args);
-      toast("已新增备忘 #" + (res.id || ""));
+      toast(res.message ? ("已新增备忘 #" + res.id + " · " + res.message) : ("已新增备忘 #" + (res.id || "")));
       state.page.memo = 1;
       await load("memo");
     });

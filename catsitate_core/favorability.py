@@ -14,7 +14,7 @@ EXCLUSIVE_LEVEL: int = 4  # LEVELS 下标:「特别」
 _ISO = "%Y-%m-%dT%H:%M:%S"
 
 
-def _level_for_score(score: int) -> int:
+def level_for_score(score: int) -> int:
     """分数 → 等级下标:0-9 陌生 / 10-29 熟悉 / 30-59 亲近 / 60-99 挚友 / ≥100 特别。"""
 
     if score >= 100:
@@ -28,10 +28,6 @@ def _level_for_score(score: int) -> int:
     return 0
 
 
-def level_for_score(score: int) -> int:
-    """分数 -> 等级下标(公开入口,管理页与外部调用使用;映射规则同 _level_for_score)。"""
-
-    return _level_for_score(score)
 
 
 class BatchEngine:
@@ -176,7 +172,7 @@ class BatchEngine:
         # 负分钳制(「分数可降到 0」):结算/衰减共用入口,落库前统一钳到 0,
         # 不得出现负分(一处两路生效)
         score = max(0, score)
-        level = _level_for_score(score)
+        level = level_for_score(score)
         status = "ok"
         if level >= EXCLUSIVE_LEVEL and self.is_exclusive_holder(user_id):
             # 特别之位已被他人占据:钳制在 99 分(挚友),显式返回状态由调用方记录

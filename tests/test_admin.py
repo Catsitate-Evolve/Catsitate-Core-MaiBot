@@ -102,18 +102,18 @@ def test_favorability_reset_clears_batch(admin):
 
 
 def test_memo_create_list_update_delete(admin):
-    created = admin.create_memo("10001", "周五交报告", ttl_hours=2, remind_at="2026-10-23T09:00")
+    created = admin.create_memo("10001", "周五交报告", ttl_hours=72, remind_at="2026-10-21T09:00")
     assert created["ok"] and created["id"] > 0
     listing = admin.list_memo(keyword="报告")
     assert listing["ok"] and listing["total"] == 1
     item = listing["items"][0]
     assert item["user_id"] == "10001" and item["expired"] is False
 
-    updated = admin.update_memo(item["id"], content="周一交报告", ttl_hours=5, remind_at="")
+    updated = admin.update_memo(item["id"], content="周一交报告", ttl_hours=96, remind_at="")
     assert updated["ok"]
     row = admin.store.query("SELECT content, remind_at, expires_at FROM memo WHERE id=?", (item["id"],))[0]
     assert row[0] == "周一交报告" and row[1] == ""
-    assert row[2] > _now(offset_hours=4)
+    assert row[2] > _now(offset_hours=90)
 
     assert admin.delete_memo(item["id"])["ok"]
     assert admin.store.query("SELECT COUNT(*) FROM memo")[0][0] == 0
@@ -165,3 +165,47 @@ def test_readonly_lists_filter_and_paginate(admin):
     assert events["items"][0]["kind"] == "COMMENT"
     missing = admin.list_qzone_events(user_id="99999")
     assert missing["ok"] and missing["total"] == 0
+
+
+def test_page_args_reject_invalid_values(admin):
+    assert admin.list_favorability(page=0)["ok"] is False
+    assert admin.list_memo(page=1, page_size=51)["ok"] is False
+    assert admin.list_favorability(page="x")["ok"] is False
+    assert admin.list_qzone_events(page_size=0)["ok"] is False
+
+
+def test_memo_negative_ttl_and_remind_after_expiry_rejected(admin):
+    assert admin.create_memo("10001", "x", ttl_hours=-1)["ok"] is False
+    assert admin.create_memo("10001", "x", ttl_hours=1, remind_at="2030-01-01T00:00")["ok"] is False
+    created = admin.create_memo("10001", "有效备忘")
+    assert created["ok"]
+    assert admin.update_memo(created["id"], ttl_hours=-1)["ok"] is False
+    assert admin.update_memo(created["id"], ttl_hours=1, remind_at="2030-01-01T00:00")["ok"] is False
+
+
+def test_memo_extra_ids_truncation_message_surfaced(admin):
+    extras = ",".join(str(900000000 + i) for i in range(8))
+    result = admin.create_memo("10001", "带附带", extra_user_ids=extras)
+    assert result["ok"] is True
+    assert "仅保留前 5 个" in result["message"]
+
+
+def test_admin_sql_touches_only_allowed_tables():
+    """源码守卫:管理服务只能触碰四类用户数据表(+重置清 batch_counter)。"""
+    import re
+    from pathlib import Path
+
+    source = Path("catsitate_core/admin.py").read_text(encoding="utf-8")
+    tables = set(re.findall(r"(?:FROM|INTO|UPDATE|DELETE\s+FROM)\s+([a-z_]+)", source))
+    assert tables <= {"favorability", "favorability_log", "memo", "batch_counter", "qzone_fav_events"}, tables
+
+
+def test_admin_call_wraps_service_construction_errors():
+    from catsitate_core.admin_api import AdminAPIMixin
+
+    class _Boom(AdminAPIMixin):
+        def _admin_service(self):
+            raise RuntimeError("boom")
+
+    result = object.__new__(_Boom)._admin_call("list_favorability")
+    assert result["ok"] is False and "内部错误" in result["error"]

@@ -88,3 +88,14 @@ def test_plugin_collects_admin_api_components():
     assert {"admin_memo_list", "admin_memo_create", "admin_memo_update"} <= names
     assert {"admin_memo_delete", "admin_memo_batch_delete"} <= names
     assert {"admin_log_list", "admin_event_list"} <= names
+
+
+def test_page_size_limit_matches_service_constant():
+    """webui.json 的 page_size 上限必须与管理服务常量一致(双份定义需锁死)。"""
+    from catsitate_core.admin import MAX_PAGE_SIZE
+
+    data = json.loads((ROOT / "webui.json").read_text(encoding="utf-8"))
+    page = data["pages"][0]
+    for alias, binding in page["queries"].items():
+        declared = binding.get("parameters", {}).get("page_size", {})
+        assert declared.get("maximum") == MAX_PAGE_SIZE, f"{alias} page_size 上限与 MAX_PAGE_SIZE 不一致"

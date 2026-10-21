@@ -36,6 +36,13 @@ class SQLiteStore:
         with self._connect() as conn:
             conn.execute(sql, tuple(params))
 
+    def execute_returning_id(self, sql: str, params: Sequence[Any] = ()) -> int:
+        """执行写语句并返回自增主键(同一连接内 lastrowid,原子,不靠反查)。"""
+
+        with self._connect() as conn:
+            cursor = conn.execute(sql, tuple(params))
+            return int(cursor.lastrowid or 0)
+
     def query(self, sql: str, params: Sequence[Any] = ()) -> list[tuple[Any, ...]]:
         """查询并返回元组列表。"""
 

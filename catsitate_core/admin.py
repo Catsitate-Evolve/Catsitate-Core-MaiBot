@@ -25,7 +25,7 @@ from .storage import SQLiteStore
 
 _ISO = "%Y-%m-%dT%H:%M:%S"
 _DATE_RE = re.compile(r"^\d{4}-\d{2}-\d{2}$")
-_MAX_PAGE_SIZE = 50
+MAX_PAGE_SIZE = 50
 _MAX_BATCH_DELETE = 200
 
 
@@ -37,16 +37,19 @@ def _fail(message: str) -> dict[str, Any]:
     return {"ok": False, "error": message}
 
 
-def _page_args(page: Any, page_size: Any) -> tuple[int, int]:
+def _page_args(page: Any, page_size: Any) -> tuple[int, int, str]:
+    """校验分页参数;非法返回错误原因(不静默归整,避免把越界请求伪装成第 1 页)。"""
+
     try:
-        current = max(1, int(page))
+        current = int(page)
+        size = int(page_size)
     except (TypeError, ValueError):
-        current = 1
-    try:
-        size = min(_MAX_PAGE_SIZE, max(1, int(page_size)))
-    except (TypeError, ValueError):
-        size = 20
-    return current, size
+        return 1, 20, "分页参数必须是整数"
+    if current < 1:
+        return 1, 20, "页码必须大于等于 1"
+    if size < 1 or size > MAX_PAGE_SIZE:
+        return 1, 20, f"每页条数必须在 1~{MAX_PAGE_SIZE}"
+    return current, size, ""
 
 
 def _normalize_date(value: str) -> tuple[str, str]:
@@ -77,12 +80,14 @@ class AdminService:
         self.store = store
         self.memo_config = memo_config
         self.fav_config = fav_config
-        self.logger = logger or logging.getLogger("catsitate.core.admin")
+        self.logger = logger or logging.getLogger("catsitate_core.admin")
 
     # ─── 好感度(读写) ─────────────────────────────────────────────
 
     def list_favorability(self, page: Any = 1, page_size: Any = 20, keyword: str = "") -> dict[str, Any]:
-        current, size = _page_args(page, page_size)
+        current, size, page_err = _page_args(page, page_size)
+        if page_err:
+            return _fail(page_err)
         kw = str(keyword or "").strip()
         where = ""
         params: list[Any] = []
@@ -176,7 +181,9 @@ class AdminService:
     # ─── 备忘录(读写) ─────────────────────────────────────────────
 
     def list_memo(self, page: Any = 1, page_size: Any = 20, keyword: str = "") -> dict[str, Any]:
-        current, size = _page_args(page, page_size)
+        current, size, page_err = _page_args(page, page_size)
+        if page_err:
+            return _fail(page_err)
         kw = str(keyword or "").strip()
         where = ""
         params: list[Any] = []
@@ -221,6 +228,8 @@ class AdminService:
             ttl_value = float(ttl_hours or 0)
         except (TypeError, ValueError):
             return _fail("有效期必须是数字")
+        if ttl_value < 0:
+            return _fail("有效期不能为负数")
         ttl: float | None = None
         if ttl_value > 0:
             if ttl_value > self.memo_config.max_ttl_hours:
@@ -229,18 +238,26 @@ class AdminService:
         remind = str(remind_at or "").strip()
         if err := validate_remind_at(remind):
             return _fail(err)
+        current = datetime.now()
+        effective_ttl = ttl_value if ttl_value > 0 else float(self.memo_config.default_ttl_hours)
+        expires_at = (current + timedelta(hours=effective_ttl)).strftime(_ISO)
+        if remind and remind > expires_at:
+            return _fail(f"提醒时刻({remind})晚于到期时间({expires_at}),永远不会触发")
         extras = [
             part.strip() for part in re.split(r"[,，、\s]+", str(extra_user_ids or ""))
             if part.strip()
         ]
         service = MemoService(self.store, self.memo_config)
-        ok, message = service.write(text, "", uid, ttl, remind_at=remind, extra_user_ids=extras)
+        ok, message, memo_id = service.write_with_id(
+            text, "", uid, ttl, remind_at=remind, extra_user_ids=extras, now=lambda: current
+        )
         if not ok:
             return _fail(message)
-        row = self.store.query("SELECT id FROM memo WHERE user_id = ? ORDER BY id DESC LIMIT 1", (uid,))
-        memo_id = int(row[0][0]) if row else 0
-        self.logger.info("[管理页] 新增备忘 id=%s user_id=%s 有效期=%s", memo_id, uid, ttl or "默认")
-        return {"ok": True, "id": memo_id, "message": message}
+        self.logger.info(
+            "[管理页] 新增备忘 id=%s user_id=%s 有效期=%s 提醒=%s",
+            memo_id, uid, ttl or "默认", remind or "无",
+        )
+        return {"ok": True, "id": memo_id or 0, "message": message}
 
     def update_memo(
         self, memo_id: int, content: str | None = None,
@@ -251,7 +268,7 @@ class AdminService:
         except (TypeError, ValueError):
             return _fail("备忘 ID 必须是整数")
         row = self.store.query(
-            "SELECT content, expires_at, remind_at FROM memo WHERE id = ?", (mid,)
+            "SELECT content, expires_at, remind_at, user_id FROM memo WHERE id = ?", (mid,)
         )
         if not row:
             return _fail(f"未找到备忘:{mid}")
@@ -259,6 +276,8 @@ class AdminService:
             ttl_value = float(ttl_hours or 0)
         except (TypeError, ValueError):
             return _fail("有效期必须是数字")
+        if ttl_value < 0:
+            return _fail("有效期不能为负数")
         if content is None and remind_at is None and ttl_value <= 0:
             return _fail("没有可修改的字段")
         updates: list[str] = []
@@ -277,15 +296,22 @@ class AdminService:
                 return _fail(err)
             updates.append("remind_at = ?")
             params.append(remind)
+        final_expires = str(row[0][1] or "")
         if ttl_value > 0:
             if ttl_value > self.memo_config.max_ttl_hours:
                 return _fail(f"有效期过长:单条上限 {self.memo_config.max_ttl_hours} 小时")
-            expires = (datetime.now() + timedelta(hours=ttl_value)).strftime(_ISO)
+            final_expires = (datetime.now() + timedelta(hours=ttl_value)).strftime(_ISO)
             updates.append("expires_at = ?")
-            params.append(expires)
+            params.append(final_expires)
+        if remind_at is not None and str(remind_at).strip() and final_expires:
+            if str(remind_at).strip() > final_expires:
+                return _fail(f"提醒时刻({remind_at})晚于到期时间({final_expires}),永远不会触发")
         params.append(mid)
         self.store.execute(f"UPDATE memo SET {', '.join(updates)} WHERE id = ?", params)
-        self.logger.info("[管理页] 修改备忘 id=%s 字段数=%s", mid, len(updates))
+        self.logger.info(
+            "[管理页] 修改备忘 id=%s user_id=%s 字段=%s",
+            mid, row[0][3], ",".join(u.split(" = ")[0] for u in updates),
+        )
         return {"ok": True, "id": mid}
 
     def delete_memo(self, memo_id: int) -> dict[str, Any]:
@@ -293,10 +319,11 @@ class AdminService:
             mid = int(memo_id)
         except (TypeError, ValueError):
             return _fail("备忘 ID 必须是整数")
-        if not self.store.query("SELECT 1 FROM memo WHERE id = ?", (mid,)):
+        row = self.store.query("SELECT user_id FROM memo WHERE id = ?", (mid,))
+        if not row:
             return _fail(f"未找到备忘:{mid}")
         self.store.execute("DELETE FROM memo WHERE id = ?", (mid,))
-        self.logger.info("[管理页] 删除备忘 id=%s", mid)
+        self.logger.info("[管理页] 删除备忘 id=%s user_id=%s", mid, row[0][0])
         return {"ok": True, "deleted": 1}
 
     def batch_delete_memos(self, ids: str) -> dict[str, Any]:
@@ -313,13 +340,17 @@ class AdminService:
         if len(parsed) > _MAX_BATCH_DELETE:
             return _fail(f"单次最多删除 {_MAX_BATCH_DELETE} 条")
         placeholders = ",".join("?" for _ in parsed)
-        existing = int(self.store.query(
-            f"SELECT COUNT(*) FROM memo WHERE id IN ({placeholders})", parsed
-        )[0][0])
-        if existing == 0:
+        rows = self.store.query(
+            f"SELECT id, user_id FROM memo WHERE id IN ({placeholders})", parsed
+        )
+        if not rows:
             return _fail("所选备忘均不存在(可能已被删除)")
+        existing = len(rows)
+        users = sorted({str(r[1] or "") for r in rows if str(r[1] or "").strip()})
         self.store.execute(f"DELETE FROM memo WHERE id IN ({placeholders})", parsed)
-        self.logger.info("[管理页] 批量删除备忘 请求=%s 实际=%s", len(parsed), existing)
+        self.logger.info(
+            "[管理页] 批量删除备忘 请求=%s 实际=%s 涉及用户=%s", len(parsed), existing, ",".join(users)
+        )
         return {"ok": True, "deleted": existing}
 
     # ─── 好感度日志 / 空间事件(只读) ────────────────────────────────
@@ -328,7 +359,9 @@ class AdminService:
         self, page: Any = 1, page_size: Any = 20,
         user_id: str = "", date_from: str = "", date_to: str = "",
     ) -> dict[str, Any]:
-        current, size = _page_args(page, page_size)
+        current, size, page_err = _page_args(page, page_size)
+        if page_err:
+            return _fail(page_err)
         uid = str(user_id or "").strip()
         start, err = _normalize_date(date_from)
         if err:
@@ -367,7 +400,9 @@ class AdminService:
         self, page: Any = 1, page_size: Any = 20,
         user_id: str = "", date_from: str = "", date_to: str = "",
     ) -> dict[str, Any]:
-        current, size = _page_args(page, page_size)
+        current, size, page_err = _page_args(page, page_size)
+        if page_err:
+            return _fail(page_err)
         uid = str(user_id or "").strip()
         start, err = _normalize_date(date_from)
         if err:

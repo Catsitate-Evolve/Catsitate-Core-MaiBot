@@ -28,12 +28,13 @@ Catsitate 是 MaiBot(QQ 机器人)的拟人化人格插件——让 bot 像真�
 | [modules/qzone-act.md](modules/qzone-act.md) | QQ空间·互动 | 评论/回复/点赞/发说说工具与通知 |
 | [modules/qzone-express.md](modules/qzone-express.md) | QQ空间·表达 | 润色层/日记/见闻/图片拼接 |
 | [modules/storage.md](modules/storage.md) | 存储层 | SQLite/JSON 持久化 |
+| [modules/webui-admin.md](modules/webui-admin.md) | WebUI 数据管理 | 浏览器内管理好感度/备忘(日志与空间事件只读) |
 | [modules/guard.md](modules/guard.md) | 内容护栏 | 正则拦截违规文本 |
 
 ## 快速上手
 
 ```bash
-# 跑全量测试(668 用例,离线 stub,不触网)
+# 跑全量测试(674 用例,离线 stub,不触网)
 cd <本仓库根> && python3 -m pytest tests/ -q
 
 # 查看当前版本

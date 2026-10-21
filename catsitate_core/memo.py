@@ -82,21 +82,39 @@ class MemoService:
     ) -> tuple[bool, str]:
         """写入备忘。失败返回 (False, 原因) 供工具展示给用户。"""
 
+        ok, message, _memo_id = self.write_with_id(
+            content, stream_id, user_id, ttl_hours,
+            remind_at=remind_at, extra_user_ids=extra_user_ids, now=now,
+        )
+        return ok, message
+
+    def write_with_id(
+        self,
+        content: str,
+        stream_id: str,
+        user_id: str,
+        ttl_hours: float | None,
+        remind_at: str = "",
+        extra_user_ids: list[str] | None = None,
+        now: Callable[[], datetime] | None = None,
+    ) -> tuple[bool, str, int | None]:
+        """写入备忘并返回自增 id(管理页需要;失败时 id 为 None)。"""
+
         now_fn = now or datetime.now
         text = content.strip()
         if not text:
-            return False, "备忘内容不能为空"
+            return False, "备忘内容不能为空", None
         if len(text) > self.config.entry_max_chars:
-            return False, f"备忘过长:请精简到 {self.config.entry_max_chars} 字以内"
+            return False, f"备忘过长:请精简到 {self.config.entry_max_chars} 字以内", None
         if ttl_hours is None:
             ttl_hours = float(self.config.default_ttl_hours)
         if ttl_hours <= 0:
-            return False, "有效期必须大于 0 小时"
+            return False, "有效期必须大于 0 小时", None
         if ttl_hours > self.config.max_ttl_hours:
-            return False, f"有效期过长:单条上限 {self.config.max_ttl_hours} 小时"
+            return False, f"有效期过长:单条上限 {self.config.max_ttl_hours} 小时", None
         remind_at = str(remind_at or "")
         if err := validate_remind_at(remind_at):
-            return False, err  # 格式非法拒绝写入,防 due_on 永不匹配导致静默丢提醒
+            return False, err, None  # 格式非法拒绝写入,防 due_on 永不匹配导致静默丢提醒
         # 附带 QQ 清洗:去空/去重(保序)/剔除主 QQ 自身,超上限截断并提示
         main_uid = str(user_id or "")
         cleaned: list[str] = []
@@ -109,7 +127,7 @@ class MemoService:
             cleaned = cleaned[:_EXTRA_USER_IDS_MAX]
         current = now_fn()
         expires = current + timedelta(hours=ttl_hours)
-        self.store.execute(
+        memo_id = self.store.execute_returning_id(
             "INSERT INTO memo (content, stream_id, user_id, expires_at, created_at, remind_at, extra_user_ids) "
             "VALUES (?, ?, ?, ?, ?, ?, ?)",
             (
@@ -125,7 +143,7 @@ class MemoService:
         msg = f"已记下({ttl_hours:.0f} 小时内有效)"
         if truncated:
             msg += f";附带QQ超出上限,仅保留前 {_EXTRA_USER_IDS_MAX} 个"
-        return True, msg
+        return True, msg, memo_id
 
     def due_on(self, day: str, *, now: Callable[[], datetime] | None = None) -> list[dict]:
         """某自然日(YYYY-MM-DD)到期的备忘(未过期),按到期时刻升序。"""

@@ -11,7 +11,7 @@
       "placement": "workspace",
       "icon": "database",
       "entry": "webui/admin.html",
-      "layout": "document",
+      "layout": "viewport",
       "queries": {
         "fav": {
           "api": "admin_fav_list",

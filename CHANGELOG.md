@@ -19,10 +19,19 @@
 - 安全:写操作服务端校验存在性/范围/长度/「特别」独占/日期存在性;管理操作日志只记 user_id、字段名、影响行数,**不记录备忘正文**。
 - 修复:`validate_remind_at` 增加日历存在性校验——`2026-13-01T09:00` 这类值能通过正则但永远不会命中 `due_on`,此前会静默丢提醒,现显式拒绝。
 
+### 评审整改(双轴 code-review + 浏览器验收)
+- 浏览器实机发现 `layout: "document"` 下 iframe 随内容收缩、弹窗被裁切 → 改 `viewport`。
+- 分页参数非法不再静默归整(页码/每页条数显式报错);负 TTL 显式拒绝;提醒时刻晚于到期时间显式拒绝(否则提醒永不触发)。
+- 新增备忘改为同一连接 `lastrowid` 原子取 id(`MemoService.write_with_id`),不再反查。
+- 管理日志补齐 user_id/字段名/涉及用户,logger 改到 `catsitate_core.admin`(经模块转发进主日志);备忘正文不落日志。
+- 备忘内容/好感度注记改为换行完整显示(不再省略号截断);新增备忘回执展示服务端提示(如附带 QQ 截断)。
+- 源码守卫:管理服务只允许触碰 `favorability/favorability_log/memo/batch_counter/qzone_fav_events`;契约测试锁定 `page_size` 上限与 `MAX_PAGE_SIZE`。
+- 文档:新增 `docs/dev/modules/webui-admin.md`;`memo.md` 同步提醒时间日历存在性校验。
+
 ### 部署与迁移
 - 无数据库格式变更,无需迁移;无 prompt 模板变更。
 - 需要宿主 1.3.6+(custom 页面与 `maibot.query/action`);`webui.json` 已声明 `required_capabilities: ["custom_pages"]`,宿主或前端不支持时页面显示兼容性错误。
-- 测试基线:**668 用例全绿**(全离线)。
+- 测试基线:**674 用例全绿**(全离线)。
 
 ## v1.0.16(2026-10-20) 空间心流调度修复·官方表情表完整更正
 

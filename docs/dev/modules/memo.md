@@ -44,7 +44,7 @@
 
 - 参数:`content`(必填)、`stream_id`/`user_id`(缺省当前流/当前说话人)、`ttl_hours`(单条有效期)、`remind_at`(ISO 提醒时刻)、`related_user_ids`(附带 QQ,逗号分隔,兼容中文逗号/顿号)。
 - 群聊 `user_id` 常为空:以 `fav_count` Hook 维护的 `_last_speaker_map`(流 → 最近真实说话人)兜底归属;该映射纯内存,重启丢失(可接受,`_resolve_speaker` 回退仍在)。
-- `remind_at` 先过 `validate_remind_at`(正则 `^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}(:\d{2})?$`),非法显式返回中文错误给 LLM——拒绝写入而非静默丢提醒。
+- `remind_at` 先过 `validate_remind_at`(正则 `^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}(:\d{2})?$` + `datetime.fromisoformat` 日历存在性校验),非法显式返回中文错误——`2026-13-01T09:00` 这类值能过正则但永远不会命中 `due_on`,必须拒绝写入而非静默丢提醒。管理页另校验提醒时刻不得晚于到期时间。
 
 **`MemoService.write` 源头校验**(两入口共用):
 
